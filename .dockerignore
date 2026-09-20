@@ -1,4 +1,4 @@
-# 静态审查（构建环境缺失：本机无 docker，本文件从未参与过 docker build）——docs/运维手册.md §6
+# 静态审查（构建环境缺失：本机无 docker，本文件从未参与过 docker build）——docs/运维手册.md §3.6
 # 目的：让构建上下文只含源码与锁文件，剔除本机产物、日志与数据。
 .git
 .gitattributes
@@ -17,6 +17,7 @@ data
 **/tsconfig.tsbuildinfo
 docs
 tools
+deploy
 Dockerfile
 docker-compose.yml
 *.md

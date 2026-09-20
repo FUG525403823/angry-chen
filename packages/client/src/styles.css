@@ -854,7 +854,18 @@ body {
   transition: none;
 }
 
-#hud-subtitles.subtitle-layer {
+.reduce-motion .subtitle-layer {
+  transition: none;
+}
+
+.audio-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.subtitle-layer {
   position: fixed;
   left: 50%;
   bottom: 12%;
@@ -865,6 +876,12 @@ body {
   transform: translateX(-50%);
   pointer-events: none;
   text-align: center;
+  opacity: 0;
+  transition: opacity 120ms linear;
+}
+
+.subtitle-layer-active {
+  opacity: 1;
 }
 
 .subtitle-line {

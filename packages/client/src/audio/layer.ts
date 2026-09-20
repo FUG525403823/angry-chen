@@ -64,6 +64,7 @@ export interface AudioLayer {
   notifyFire(slot: number): void;
   notifyReload(): void;
   notifyUi(): void;
+  notifyChargeWarning(position?: Vec3Like): void;
   setVolumes(masterVolume: number, sfxVolume: number): void;
   dispose(): void;
 }
@@ -133,7 +134,6 @@ export function createAudioLayer(options?: AudioLayerOptions): AudioLayer {
     if (isChargeWindup(entity.state) && record.lastState !== entity.state) {
       if (elapsedMs - record.warnedAtMs >= CHARGE_WARNING_COOLDOWN_MS) {
         record.warnedAtMs = elapsedMs;
-        play('chargeWarn', entity.pos);
         cue('chargeWarn');
       }
     }
@@ -244,6 +244,9 @@ export function createAudioLayer(options?: AudioLayerOptions): AudioLayer {
     },
     notifyUi(): void {
       play('uiClick');
+    },
+    notifyChargeWarning(position?: Vec3Like): void {
+      play('chargeWarn', position);
     },
     setVolumes(masterVolume: number, sfxVolume: number): void {
       mixer.setVolume('master', masterVolume);

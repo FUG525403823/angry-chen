@@ -148,14 +148,27 @@ export function boot(): void {
   const localWeapon = createLocalWeapon();
   const sheepVisual = createSheepVisualTracker();
   const combatHud = createCombatHud(hudRoot);
-  const fx = createEffects(scene, particles, materials, hudRoot, {
-    isReduceMotion: () => settings.get().reduceMotion,
-    onChargeWindup: () => combatHud.showChargeWarning(),
-  });
+  const audioUi = document.createElement('div');
+  audioUi.className = 'audio-ui';
+  hudRoot.append(audioUi);
   const audioLayer = createAudioLayer({
     onSubtitle: (text) => combatHud.pushSubtitle(text),
   });
-  const settingsPanel = createSettingsPanel(hudRoot, {
+  const fx = createEffects(scene, particles, materials, hudRoot, {
+    isReduceMotion: () => settings.get().reduceMotion,
+    onChargeWindup: (id) => {
+      combatHud.showChargeWarning();
+      const warnings = views.chargeWarnings;
+      for (let i = 0; i < warnings.length; i += 1) {
+        const warning = warnings[i];
+        if (warning === undefined || warning.id !== id) continue;
+        audioLayer.notifyChargeWarning({ x: warning.x, y: 0, z: warning.z });
+        return;
+      }
+      audioLayer.notifyChargeWarning();
+    },
+  });
+  const settingsPanel = createSettingsPanel(audioUi, {
     store: settings,
     accessibilityRoot: document.body,
     onUiSound: () => audioLayer.notifyUi(),
@@ -547,11 +560,22 @@ export function boot(): void {
     'click',
     () => {
       if (pointer.locked) return;
-      audioLayer.attach();
+      unlockAudio();
       pointer.request();
     },
     { signal },
   );
+
+  let audioUnlocked = false;
+  function unlockAudio(): void {
+    if (audioUnlocked) return;
+    if (!audioLayer.attach()) return;
+    audioUnlocked = true;
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  }
+  window.addEventListener('pointerdown', unlockAudio, { signal });
+  window.addEventListener('keydown', unlockAudio, { signal });
 
   window.addEventListener(
     'keydown',
@@ -564,6 +588,7 @@ export function boot(): void {
       if (event.code === 'KeyO') {
         event.preventDefault();
         settingsPanel.toggle();
+        audioLayer.notifyUi();
       }
     },
     { signal },

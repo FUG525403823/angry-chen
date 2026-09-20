@@ -1,7 +1,5 @@
 import { LIMITS, MATCH_PHASE, NEW_ROOM_CODE, createRng, type Rng } from '@ac/shared';
 
-import { LOG_EVENTS, SILENT_LOGGER, type Logger } from './log.ts';
-import { GRACE_PERIOD_MS } from './match/controller.ts';
 import type { Metrics } from './metrics.ts';
 import {
   createRoom,
@@ -12,7 +10,6 @@ import {
   roomReconnect,
   type Room,
 } from './room.ts';
-import { pickRoomCode } from './security.ts';
 import type { Session } from './session.ts';
 
 export type JoinFailure = 'room-not-found' | 'room-full' | 'match-in-progress';
@@ -24,7 +21,6 @@ export interface RoomRegistryOptions {
   readonly maxRooms: number;
   readonly maxPlayersPerRoom?: number;
   readonly seed?: number;
-  readonly log?: Logger;
 }
 
 export interface RoomRegistry {
@@ -52,12 +48,15 @@ function findGracedSession(room: Room, name: string): Session | undefined {
 export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOptions): RoomRegistry {
   const rooms = new Map<string, Room>();
   const rng: Rng = createRng(options.seed ?? Date.now() % 2147483647, 'spawn');
-  const log = options.log ?? SILENT_LOGGER;
   let roomSeed = 1;
 
   function generateCode(): string | null {
     for (let attempt = 0; attempt < LIMITS.roomCodeAttempts; attempt += 1) {
-      const code = pickRoomCode(rng);
+      let code = '';
+      for (let i = 0; i < LIMITS.roomCodeLength; i += 1) {
+        const index = Math.floor(rng() * LIMITS.roomCodeAlphabet.length);
+        code += LIMITS.roomCodeAlphabet[index] ?? 'A';
+      }
       if (code !== NEW_ROOM_CODE && !rooms.has(code)) return code;
     }
     return null;
@@ -76,10 +75,6 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
     roomSeed += 1;
     rooms.set(code, room);
     metrics.roomsCreated += 1;
-    log.info(LOG_EVENTS.roomCreate, {
-      room: room.code,
-      detail: { capacity: room.capacity, maxRooms: options.maxRooms },
-    });
     return room;
   }
 
@@ -98,18 +93,7 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
         const graced = findGracedSession(room, session.name);
         if (graced !== undefined) {
           const reconnected = roomReconnect(room, graced, session);
-          if (reconnected === 'ok') {
-            room.match.counters.graceReconnects += 1;
-            metrics.graceReconnects += 1;
-            const graceMs = graced.disconnectedAtMs === null ? 0 : nowMs - graced.disconnectedAtMs;
-            log.info(LOG_EVENTS.graceReconnect, {
-              room: room.code,
-              tick: room.world.tick,
-              pid: session.pid,
-              detail: { graceMs },
-            });
-            return { ok: true, room };
-          }
+          if (reconnected === 'ok') return { ok: true, room };
         }
         if (room.phase === MATCH_PHASE.playing) return { ok: false, reason: 'match-in-progress' };
       }
@@ -136,16 +120,7 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
         session.roomCode = null;
         return;
       }
-      if (session.disconnectedAtMs !== null) return;
       roomDisconnect(room, session, nowMs);
-      room.match.counters.graceStarts += 1;
-      metrics.graceStarts += 1;
-      log.info(LOG_EVENTS.graceStart, {
-        room: room.code,
-        tick: room.world.tick,
-        pid: session.pid,
-        detail: { graceMs: GRACE_PERIOD_MS },
-      });
     },
     roomOf(session: Session): Room | undefined {
       if (session.roomCode === null) return undefined;
@@ -169,9 +144,6 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
         reclaimed += 1;
       }
       metrics.roomsReclaimed += reclaimed;
-      if (reclaimed > 0) {
-        log.info(LOG_EVENTS.roomReclaim, { detail: { reclaimed } });
-      }
       return reclaimed;
     },
     get size(): number {

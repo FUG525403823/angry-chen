@@ -150,6 +150,7 @@ describe('音频层世界与事件驱动（P09 §4）', () => {
     layer.notifyFire(1);
     layer.notifyReload();
     layer.notifyUi();
+    layer.notifyChargeWarning({ x: 2, y: 0, z: -3 });
     layer.dispose();
   });
 
@@ -166,6 +167,7 @@ describe('音频层世界与事件驱动（P09 §4）', () => {
     layer.notifyFire(1);
     layer.notifyReload();
     layer.notifyUi();
+    layer.notifyChargeWarning();
     layer.handleEvents([simEvent('rageActivated', { subjectId: LOCAL_PID })]);
     expect(fake.stats.scheduled).toBeGreaterThan(before);
     layer.setVolumes(0.5, 0.25);

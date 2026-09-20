@@ -62,12 +62,10 @@ import {
   type MatchDeps,
   type MatchRuntime,
 } from './match/controller.ts';
-import { LOG_EVENTS } from './log.ts';
 import { recordTickJitter } from './metrics.ts';
 import type { Session } from './session.ts';
 
 export const MATCH_STATE_INTERVAL_MS = 1000;
-export const ANTICHEAT_LOG_INTERVAL_MS = 5000;
 
 export interface Room {
   readonly code: string;
@@ -89,7 +87,6 @@ export interface Room {
   emptySinceMs: number | null;
   snapshotRateX10: number;
   jitterArmed: boolean;
-  lastAnticheatLogMs: number;
   readonly capacity: number;
   readonly history: PoseHistory;
   readonly preTick: Float64Array;
@@ -129,7 +126,6 @@ export function createRoom(
     emptySinceMs: nowMs,
     snapshotRateX10: SNAPSHOT_RATE_X10,
     jitterArmed: false,
-    lastAnticheatLogMs: Number.NEGATIVE_INFINITY,
     capacity: Math.min(capacity, LIMITS.maxPlayersPerRoom),
     history: createPoseHistory(SERVER_TICK_MS),
     combat: createCombatContext(),
@@ -295,20 +291,12 @@ function connectedSessionCount(room: Room): number {
   return count;
 }
 
-function expireGraceSessions(deps: RoomDeps, room: Room, nowMs: number): void {
+function expireGraceSessions(room: Room, nowMs: number): void {
   const sessions = room.sessions;
   for (let i = sessions.length - 1; i >= 0; i -= 1) {
     const session = sessions[i];
     if (session === undefined || session.disconnectedAtMs === null) continue;
     if (nowMs - session.disconnectedAtMs < GRACE_PERIOD_MS) continue;
-    room.match.counters.graceTimeouts += 1;
-    deps.metrics.graceTimeouts += 1;
-    deps.log.warn(LOG_EVENTS.graceTimeout, {
-      room: room.code,
-      tick: room.world.tick,
-      pid: session.pid,
-      detail: { graceMs: nowMs - session.disconnectedAtMs },
-    });
     removeMember(room, session, nowMs, true);
   }
 }
@@ -352,7 +340,7 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
   if (elapsed < 0) elapsed = 0;
   room.lastUpdateMs = nowMs;
 
-  expireGraceSessions(deps, room, nowMs);
+  expireGraceSessions(room, nowMs);
 
   if (room.sessions.length === 0) {
     if (room.phase === MATCH_PHASE.playing || room.phase === MATCH_PHASE.intermission) {
@@ -377,7 +365,6 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
       const skipped = Math.floor(room.accumulatorMs / SERVER_TICK_MS);
       room.accumulatorMs -= skipped * SERVER_TICK_MS;
       deps.metrics.tickSkips += skipped;
-      room.match.counters.skipped += skipped;
       break;
     }
     room.accumulatorMs -= SERVER_TICK_MS;
@@ -425,10 +412,6 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
   room.lastTickAtMs = monotonic;
   room.jitterArmed = true;
   deps.metrics.ticks += 1;
-  const counters = room.match.counters;
-  counters.ticks += 1;
-  const connected = connectedSessionCount(room);
-  if (connected > counters.peakPlayers) counters.peakPlayers = connected;
 
   buildCommands(room);
   const checked = capturePreTick(room);
@@ -454,13 +437,7 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
   applyPoseValidation(deps, room, checked);
   if (room.phase === MATCH_PHASE.playing) {
     if (room.director.wave !== room.wave && !room.director.finished) {
-      const players = activePlayerCount(room);
-      planWave(room.director, room.wave, players);
-      deps.log.info(LOG_EVENTS.waveStart, {
-        room: room.code,
-        tick: room.world.tick,
-        detail: { wave: room.wave, players },
-      });
+      planWave(room.director, room.wave, activePlayerCount(room));
     }
     const directorTick = updateDirector(
       room.world,
@@ -486,7 +463,6 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
 
   const active = countActive(room.world);
   if (active > deps.metrics.maxEntitiesObserved) deps.metrics.maxEntitiesObserved = active;
-  if (active > counters.peakEntities) counters.peakEntities = active;
 
   const periodicFull = room.world.tick % LIMITS.fullSnapshotIntervalTicks === 0;
   const sessions = room.sessions;
@@ -521,7 +497,6 @@ function sendSnapshot(deps: RoomDeps, room: Room, session: Session, periodicFull
   session.connection.send(session.outbound.subarray(0, size));
   deps.metrics.snapshotsSent += 1;
   deps.metrics.snapshotBytes += size;
-  if (size > deps.metrics.snapshotBytesMax) deps.metrics.snapshotBytesMax = size;
   deps.metrics.snapshotRecords += room.snapshot.entities.length;
   deps.metrics.framesOut += 1;
   deps.metrics.bytesOut += size;
@@ -671,23 +646,7 @@ export function applyPoseValidation(deps: RoomDeps, room: Room, checked: number)
     validateAdvance(prevX, prevZ, entity.pos.x, entity.pos.z, entity.vel.y, SERVER_TICK_MS, check);
     check.position = !isLegalPosition(entity.pos.x, entity.pos.y, entity.pos.z, arena, radius);
     if (!check.speed && !check.vertical && !check.position) continue;
-    if (check.speed || check.vertical) {
-      deps.metrics.speedViolations += 1;
-      const nowMs = room.lastUpdateMs;
-      if (nowMs - room.lastAnticheatLogMs >= ANTICHEAT_LOG_INTERVAL_MS) {
-        room.lastAnticheatLogMs = nowMs;
-        deps.log.warn(LOG_EVENTS.anticheatSpeed, {
-          room: room.code,
-          tick: world.tick,
-          pid: entity.id,
-          detail: {
-            speed: String(check.speed),
-            vertical: String(check.vertical),
-            total: deps.metrics.speedViolations,
-          },
-        });
-      }
-    }
+    if (check.speed || check.vertical) deps.metrics.speedViolations += 1;
     deps.metrics.hardCorrectTotal += 1;
     entity.pos.x = prevX;
     entity.pos.z = prevZ;
