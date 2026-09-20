@@ -1,36 +1,41 @@
 import {
   ARENA,
+  type CombatContext,
+  type Command,
   LIMITS,
   MATCH_PHASE,
+  type MatchState,
+  type PoseHistory,
   REWIND_LIMIT_MS,
   SERVER_TICK_MS,
+  SHOT_MAX_DISTANCE_M,
   SNAPSHOT_RATE_X10,
+  type Snapshot,
+  type World,
+  activeMag,
   countActive,
+  createCombatContext,
   createCommand,
+  createPoseHistory,
+  createShotTrace,
   createSnapshot,
+  createVec3,
   createWorld,
   despawnEntity,
   encodeEventFrame,
   encodeMatchState,
   encodeSnapshot,
+  getEntity,
+  rageRatio,
+  rageSecondsLeft,
+  recordPoseHistory,
+  reloadRemainingMs,
+  reviveRatio,
   snapshotWorld,
   spawnEntity,
-  createPoseHistory,
-  createRayHit,
-  createSampledPose,
-  createVec3,
-  getEntity,
-  rayVsAabb,
-  rayVsCapsule,
-  recordPoseHistory,
-  samplePoseAgo,
-  yawPitchToDirection,
   stepWorld,
-  type Command,
-  type MatchState,
-  type PoseHistory,
-  type Snapshot,
-  type World,
+  traceRay,
+  yawPitchToDirection,
 } from '@ac/shared';
 
 import { createAdvanceCheck, isLegalPosition, validateAdvance } from './anticheat.ts';
@@ -62,6 +67,7 @@ export interface Room {
   readonly capacity: number;
   readonly history: PoseHistory;
   readonly preTick: Float64Array;
+  readonly combat: CombatContext;
 }
 
 export interface RoomDeps {
@@ -97,6 +103,7 @@ export function createRoom(
     jitterArmed: false,
     capacity: Math.min(capacity, LIMITS.maxPlayersPerRoom),
     history: createPoseHistory(SERVER_TICK_MS),
+    combat: createCombatContext(),
     preTick: new Float64Array(LIMITS.maxPlayersPerRoom * 3),
   };
 }
@@ -236,7 +243,24 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
 
   buildCommands(room);
   const checked = capturePreTick(room);
-  stepWorld(room.world, room.commands, SERVER_TICK_MS);
+  if (room.combat.history === null) {
+    room.combat.history = room.history;
+    room.combat.rewindMsFor = (pid: number) => rewindMsForPlayerId(room, pid);
+  }
+  const sessionsForWeapon = room.sessions;
+  for (let i = 0; i < sessionsForWeapon.length; i += 1) {
+    const weaponSession = sessionsForWeapon[i];
+    if (weaponSession === undefined || weaponSession.weaponApplied) continue;
+    const owner = weaponSession.pid > 0 ? room.world.entities[weaponSession.pid - 1] : undefined;
+    if (owner === undefined || !owner.active || owner.kind !== 'player') continue;
+    const slot = weaponSession.weapon === 1 ? 1 : weaponSession.weapon === 2 ? 2 : 0;
+    owner.weapon.activeSlot = slot;
+    owner.weapon.reloadEndsAtMs = 0;
+    owner.weapon.nextFireAllowedAtMs = room.world.timeMs;
+    weaponSession.weaponApplied = true;
+  }
+  room.combat.counters = deps.metrics;
+  stepWorld(room.world, room.commands, SERVER_TICK_MS, room.combat);
   applyPoseValidation(deps, room, checked);
   recordPoseHistory(room.history, room.world);
   snapshotWorld(room.world, room.snapshot);
@@ -299,15 +323,45 @@ export function broadcastMatchState(room: Room): void {
     if (session === undefined) continue;
     let entry = state.players[i];
     if (entry === undefined) {
-      entry = { pid: 0, name: '', ready: false, weapon: 0, hpRatio: 1, kills: 0 };
+      entry = {
+        pid: 0,
+        name: '',
+        ready: false,
+        weapon: 0,
+        hpRatio: 1,
+        kills: 0,
+        mag: 0,
+        reserve: 0,
+        reloadLeft10Ms: 0,
+        rage: 0,
+        rageLeft100Ms: 0,
+        downed: false,
+        reviveRatio255: 0,
+      };
       state.players[i] = entry;
     }
     entry.pid = session.pid;
     entry.name = session.name;
     entry.ready = session.ready;
-    entry.weapon = session.weapon;
+    const entity = session.pid > 0 ? room.world.entities[session.pid - 1] : undefined;
+    const alive = entity !== undefined && entity.active && entity.kind === 'player';
+    entry.weapon = alive && session.weaponApplied ? entity.weapon.activeSlot : session.weapon;
     entry.hpRatio = hpRatioOf(room, session.pid);
     entry.kills = session.kills;
+    entry.mag = alive ? activeMag(entity.weapon) : 0;
+    entry.reserve = alive ? entity.weapon.reserveAmmo : 0;
+    entry.reloadLeft10Ms = alive
+      ? Math.min(255, Math.round(reloadRemainingMs(entity.weapon, room.world.timeMs) / 10))
+      : 0;
+    entry.rage = alive ? Math.min(255, Math.round(rageRatio(entity.combat.rage) * 100)) : 0;
+    entry.rageLeft100Ms = alive
+      ? Math.min(255, Math.round(rageSecondsLeft(entity.combat.rage, room.world.timeMs) * 10))
+      : 0;
+    entry.downed = alive ? entity.combat.downed.downed : false;
+    entry.reviveRatio255 = alive
+      ? Math.min(255, Math.round(reviveRatio(entity.combat.downed) * 255))
+      : 0;
+    if (alive) session.weapon = entity.weapon.activeSlot;
   }
   state.players.length = sessions.length;
   if (sessions.length === 0) return;
@@ -319,7 +373,7 @@ export function broadcastMatchState(room: Room): void {
   }
 }
 
-export const SHOT_MAX_DISTANCE_M = 100;
+export { SHOT_MAX_DISTANCE_M };
 
 export interface ShotResult {
   hit: boolean;
@@ -336,11 +390,19 @@ export function createShotResult(): ShotResult {
 }
 
 const directionScratch = createVec3();
-const rayScratch = createRayHit();
-const targetHitScratch = createRayHit();
-const sampledPoseScratch = createSampledPose();
 const advanceCheckScratch = createAdvanceCheck();
 const shotScratch = createShotResult();
+const shotTraceScratch = createShotTrace();
+
+export function rewindMsForPlayerId(room: Room, pid: number): number {
+  if (pid === 0) return 0;
+  const sessions = room.sessions;
+  for (let i = 0; i < sessions.length; i += 1) {
+    const session = sessions[i];
+    if (session !== undefined && session.pid === pid) return rewindMsForSession(session);
+  }
+  return 0;
+}
 
 export function rewindMsForSession(session: Session): number {
   return Math.min(Math.max(session.lagTicks * SERVER_TICK_MS, 0), REWIND_LIMIT_MS);
@@ -409,78 +471,26 @@ export function resolveShot(
   const world = room.world;
   const shooter = shooterId > 0 ? world.entities[shooterId - 1] : undefined;
   if (shooter === undefined || !shooter.active || shooter.kind !== 'player') return out;
-
-  const player = world.config.player;
-  const eyeY = shooter.pos.y + player.eyeHeight;
+  const eyeY = shooter.pos.y + world.config.player.eyeHeight;
   const direction = yawPitchToDirection(directionScratch, shooter.yaw, shooter.pitch);
-  const dx = direction.x;
-  const dy = direction.y;
-  const dz = direction.z;
-  const barn = world.config.arena.barn;
-
-  rayVsAabb(
+  traceRay(
+    world,
+    room.history,
+    shooterId,
     shooter.pos.x,
     eyeY,
     shooter.pos.z,
-    dx,
-    dy,
-    dz,
-    barn.minX,
-    barn.minY,
-    barn.minZ,
-    barn.maxX,
-    barn.maxY,
-    barn.maxZ,
+    direction.x,
+    direction.y,
+    direction.z,
     SHOT_MAX_DISTANCE_M,
-    rayScratch,
+    out.rewindMs,
+    shotTraceScratch,
   );
-  let bestT = rayScratch.hit ? rayScratch.t : SHOT_MAX_DISTANCE_M;
-
-  const ids = world.activeIds;
-  for (let i = 0; i < ids.length; i += 1) {
-    const id = ids[i] ?? 0;
-    const target = getEntity(world, id);
-    if (target === undefined || !target.active || target.id === shooterId) continue;
-    if (target.kind !== 'player' && target.kind !== 'sheep') continue;
-
-    let tx = target.pos.x;
-    let ty = target.pos.y;
-    let tz = target.pos.z;
-    if (target.kind === 'player') {
-      samplePoseAgo(room.history, out.rewindMs, target.id, sampledPoseScratch);
-      if (sampledPoseScratch.found) {
-        tx = sampledPoseScratch.x;
-        ty = sampledPoseScratch.y;
-        tz = sampledPoseScratch.z;
-      }
-    }
-
-    const radius = world.config.entity.radiusByKind[target.kind];
-    const height = world.config.entity.heightByKind[target.kind];
-    rayVsCapsule(
-      shooter.pos.x,
-      eyeY,
-      shooter.pos.z,
-      dx,
-      dy,
-      dz,
-      tx,
-      ty + radius,
-      tz,
-      tx,
-      ty + height - radius,
-      tz,
-      radius,
-      SHOT_MAX_DISTANCE_M,
-      targetHitScratch,
-    );
-    if (!targetHitScratch.hit || targetHitScratch.t >= bestT) continue;
-    bestT = targetHitScratch.t;
-    out.hit = true;
-    out.targetId = target.id;
-    out.x = targetHitScratch.x;
-    out.y = targetHitScratch.y;
-    out.z = targetHitScratch.z;
-  }
+  out.hit = shotTraceScratch.hit;
+  out.targetId = shotTraceScratch.targetId;
+  out.x = shotTraceScratch.x;
+  out.y = shotTraceScratch.y;
+  out.z = shotTraceScratch.z;
   return out;
 }

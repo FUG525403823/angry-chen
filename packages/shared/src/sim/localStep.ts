@@ -23,6 +23,7 @@ export function applyCommandToState(
   input: CommandInput | undefined,
   player: PlayerConfig,
   scratch: Command,
+  speedMultiplier = 1,
 ): void {
   if (input === undefined) {
     state.vel.x = 0;
@@ -34,7 +35,9 @@ export function applyCommandToState(
   state.yaw = command.yaw;
   state.pitch = command.pitch;
 
-  const speed = (command.buttons & BUTTON.sprint) !== 0 ? player.sprintSpeed : player.moveSpeed;
+  const speed =
+    ((command.buttons & BUTTON.sprint) !== 0 ? player.sprintSpeed : player.moveSpeed) *
+    speedMultiplier;
   const forwardX = Math.sin(command.yaw);
   const forwardZ = Math.cos(command.yaw);
   const rightX = Math.cos(command.yaw);
@@ -113,8 +116,9 @@ export function stepLocalPlayer(
   config: MoveConfig,
   scratch: Command,
   dtMs: number,
+  speedMultiplier = 1,
 ): void {
-  applyCommandToState(state, input, config.player, scratch);
+  applyCommandToState(state, input, config.player, scratch, speedMultiplier);
   integrateState(state, dtMs / MS_PER_SECOND);
   collideStatic(state, config.arena, config.radius);
 }

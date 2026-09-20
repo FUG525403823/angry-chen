@@ -1,4 +1,7 @@
 import { createCommand, type Command } from './command.ts';
+import { createDownedState, resetDownedState, type DownedState } from './combat/downed.ts';
+import { createRageState, resetRageState, type RageState } from './combat/rage.ts';
+import { createWeaponState, resetWeaponState, type WeaponState } from './combat/weapon.ts';
 import { CONFIG, type WorldConfig } from './config/index.ts';
 import { createVec3, type Vec3 } from './math.ts';
 import { createRng, type Rng } from './rng.ts';
@@ -6,6 +9,22 @@ import { createRng, type Rng } from './rng.ts';
 export type EntityId = number;
 export type EntityKind = 'player' | 'sheep' | 'projectile' | 'pickup';
 export type Team = 0 | 1;
+
+export interface CombatState {
+  rage: RageState;
+  downed: DownedState;
+  interactHeld: boolean;
+}
+
+export function createCombatState(): CombatState {
+  return { rage: createRageState(), downed: createDownedState(), interactHeld: false };
+}
+
+export function resetCombatState(state: CombatState): void {
+  resetRageState(state.rage);
+  resetDownedState(state.downed);
+  state.interactHeld = false;
+}
 
 export interface Entity {
   readonly id: EntityId;
@@ -22,6 +41,8 @@ export interface Entity {
   team: Team;
   ownerId: EntityId;
   aliveMs: number;
+  weapon: WeaponState;
+  combat: CombatState;
 }
 
 export interface SimEvent {
@@ -82,6 +103,8 @@ export function createEntity(id: EntityId): Entity {
     team: 0,
     ownerId: 0,
     aliveMs: 0,
+    weapon: createWeaponState(),
+    combat: createCombatState(),
   };
 }
 
@@ -166,6 +189,8 @@ export function spawnEntity(
   entity.team = team;
   entity.ownerId = ownerId;
   entity.aliveMs = 0;
+  resetWeaponState(entity.weapon);
+  resetCombatState(entity.combat);
   insertActiveId(world, id);
   return { ok: true, id };
 }

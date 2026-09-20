@@ -36,6 +36,7 @@ export interface Session {
   roomCode: string | null;
   ready: boolean;
   weapon: number;
+  weaponApplied: boolean;
   kills: number;
   readonly command: Command;
   lastAckedCmdSeq: number;
@@ -74,6 +75,7 @@ export function createSession(connection: Connection, nowMs: number): Session {
     roomCode: null,
     ready: false,
     weapon: 0,
+    weaponApplied: false,
     kills: 0,
     command: createCommand(),
     lastAckedCmdSeq: 0,
@@ -301,6 +303,7 @@ function handleReady(deps: SessionDeps, session: Session, frame: Uint8Array): vo
   }
   session.ready = decoded.value.ready;
   session.weapon = decoded.value.weapon;
+  session.weaponApplied = false;
   broadcastMatchState(room);
 }
 

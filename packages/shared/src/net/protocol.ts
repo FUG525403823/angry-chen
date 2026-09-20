@@ -169,6 +169,13 @@ export interface MatchStatePlayer {
   weapon: number;
   hpRatio: number;
   kills: number;
+  mag: number;
+  reserve: number;
+  reloadLeft10Ms: number;
+  rage: number;
+  rageLeft100Ms: number;
+  downed: boolean;
+  reviveRatio255: number;
 }
 
 export interface MatchState {

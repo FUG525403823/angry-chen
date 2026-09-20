@@ -837,7 +837,14 @@ export function encodeMatchState(state: MatchState, out: Uint8Array): number {
     putU8(out, offset + 1, player.weapon & 0xff);
     putU8(out, offset + 2, quantizeRatio(player.hpRatio));
     putU16(out, offset + 3, clamp(Math.round(player.kills), 0, 0xffff) | 0);
-    offset += 5;
+    putU8(out, offset + 5, clamp(Math.round(player.mag), 0, 255) | 0);
+    putU16(out, offset + 6, clamp(Math.round(player.reserve), 0, 0xffff) | 0);
+    putU8(out, offset + 8, clamp(Math.round(player.reloadLeft10Ms), 0, 255) | 0);
+    putU8(out, offset + 9, clamp(Math.round(player.rage), 0, 255) | 0);
+    putU8(out, offset + 10, clamp(Math.round(player.rageLeft100Ms), 0, 255) | 0);
+    putU8(out, offset + 11, player.downed ? 1 : 0);
+    putU8(out, offset + 12, clamp(Math.round(player.reviveRatio255), 0, 255) | 0);
+    offset += 13;
     count += 1;
   }
   putU8(out, 5, count);
@@ -860,15 +867,36 @@ export function decodeMatchState(frame: Uint8Array, out?: MatchState): DecodeRes
     const pid = u16(frame, offset);
     const nameLength = u8(frame, offset + 2);
     if (nameLength > LIMITS.maxNameBytes) return fail('bad-value');
-    if (offset + 3 + nameLength + 5 > frame.length) return fail('truncated');
+    if (offset + 3 + nameLength + 13 > frame.length) return fail('truncated');
     const name = readUtf8(frame, offset + 3, nameLength);
     offset += 3 + nameLength;
     const ready = u8(frame, offset) !== 0;
     const weapon = u8(frame, offset + 1);
     const hpRatio = dequantizeRatio(u8(frame, offset + 2));
     const kills = u16(frame, offset + 3);
-    offset += 5;
-    state.players.push({ pid, name, ready, weapon, hpRatio, kills });
+    const mag = u8(frame, offset + 5);
+    const reserve = u16(frame, offset + 6);
+    const reloadLeft10Ms = u8(frame, offset + 8);
+    const rage = u8(frame, offset + 9);
+    const rageLeft100Ms = u8(frame, offset + 10);
+    const downed = u8(frame, offset + 11) !== 0;
+    const reviveRatio255 = u8(frame, offset + 12);
+    offset += 13;
+    state.players.push({
+      pid,
+      name,
+      ready,
+      weapon,
+      hpRatio,
+      kills,
+      mag,
+      reserve,
+      reloadLeft10Ms,
+      rage,
+      rageLeft100Ms,
+      downed,
+      reviveRatio255,
+    });
   }
   if (offset !== frame.length) return fail('bad-length');
   return ok(state);

@@ -5,9 +5,18 @@ import {
   collideStatic,
   integrateState,
 } from './sim/localStep.ts';
-import { getEntity, radiusOf, type World } from './world.ts';
+import { getEntity, radiusOf, type Entity, type World } from './world.ts';
+import { RAGE, REVIVE } from './config/combat.ts';
+import { isRageActive } from './combat/rage.ts';
+import { BUTTON } from './config/input.ts';
+import { hasDownedTeammateInRange, resolveCombat, type CombatContext } from './combat/resolve.ts';
 
-export function stepWorld(world: World, commands: readonly Command[], dtMs: number): void {
+export function stepWorld(
+  world: World,
+  commands: readonly Command[],
+  dtMs: number,
+  combat: CombatContext | null = null,
+): void {
   world.tick += 1;
   world.timeMs += dtMs;
   world.events.length = 0;
@@ -21,7 +30,7 @@ export function stepWorld(world: World, commands: readonly Command[], dtMs: numb
   resolveStaticCollisions(world);
   resolveEntitySeparation(world);
 
-  // 槽位 5：战斗、投射物与伤害（P06 填充）
+  resolveCombat(world, commands, dtMs, combat);
   // 槽位 6：事件由产生既成事实的槽位写入 world.events
 }
 
@@ -34,8 +43,37 @@ function applyCommands(world: World, commands: readonly Command[]): void {
 
     const raw = commands[slot];
     slot += 1;
-    applyCommandToState(entity, raw, world.config.player, world.commandScratch);
+    applyCommandToState(
+      entity,
+      raw,
+      world.config.player,
+      world.commandScratch,
+      isRageActive(entity.combat.rage, world.timeMs) ? RAGE.moveSpeedMultiplier : 1,
+    );
+    if (entity.combat.downed.downed) {
+      entity.vel.x = 0;
+      entity.vel.y = 0;
+      entity.vel.z = 0;
+      continue;
+    }
+    if (
+      raw !== undefined &&
+      (raw.buttons & BUTTON.interact) !== 0 &&
+      hasDownedTeammateInRange(world, entity, REVIVE.rangeM)
+    ) {
+      clampHorizontalSpeed(entity, REVIVE.reviverMaxSpeed);
+    }
   }
+}
+
+function clampHorizontalSpeed(entity: Entity, limit: number): void {
+  const vx = entity.vel.x;
+  const vz = entity.vel.z;
+  const speed = Math.sqrt(vx * vx + vz * vz);
+  if (speed <= limit || speed === 0) return;
+  const scale = limit / speed;
+  entity.vel.x = vx * scale;
+  entity.vel.z = vz * scale;
 }
 
 function integrate(world: World, dtSeconds: number, dtMs: number): void {

@@ -31,6 +31,9 @@ export interface Metrics {
   interactRequests: number;
   respawnRequests: number;
   maxEntitiesObserved: number;
+  shotsFired: number;
+  hits: number;
+  damage: number;
   speedViolations: number;
   hardCorrectTotal: number;
   rewindClampedCount: number;
@@ -76,6 +79,9 @@ export function createMetrics(): Metrics {
     interactRequests: 0,
     respawnRequests: 0,
     maxEntitiesObserved: 0,
+    shotsFired: 0,
+    hits: 0,
+    damage: 0,
     speedViolations: 0,
     hardCorrectTotal: 0,
     rewindClampedCount: 0,
@@ -191,6 +197,9 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     metrics.chatMessages,
   );
   push('ac_pings_total', 'ping frames answered', 'counter', metrics.pings);
+  push('ac_shots_fired_total', 'weapon fire commands resolved', 'counter', metrics.shotsFired);
+  push('ac_hits_total', 'pellets that hit an entity', 'counter', metrics.hits);
+  push('ac_damage_total', 'total damage dealt', 'counter', metrics.damage);
   push(
     'ac_speed_violations_total',
     'commands rejected by pose validation',

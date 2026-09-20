@@ -105,3 +105,89 @@ export function createHud(root: HTMLElement, banner: HTMLElement): Hud {
     },
   };
 }
+
+export interface CombatHudSample {
+  readonly mag: number;
+  readonly magSize: number;
+  readonly reserve: number;
+  readonly reloadRatio: number;
+  readonly rage: number;
+  readonly rageLeftMs: number;
+  readonly downed: boolean;
+  readonly reviveRatio: number;
+  readonly weaponName: string;
+}
+
+export interface CombatHud {
+  set(sample: CombatHudSample): void;
+  pushKill(text: string): void;
+  dispose(): void;
+}
+
+export function createCombatHud(root: HTMLElement): CombatHud {
+  const box = document.createElement('div');
+  box.style.cssText =
+    'position:absolute;left:14px;bottom:14px;font:12px/1.5 monospace;color:#e9eef5;text-shadow:0 1px 2px #000;pointer-events:none;';
+  const rage = document.createElement('div');
+  rage.style.cssText =
+    'width:180px;height:6px;margin-top:6px;background:#2a2f38;border:1px solid #4a5666;';
+  const rageFill = document.createElement('div');
+  rageFill.style.cssText = 'height:100%;width:0%;background:#ff6a4d;';
+  rage.append(rageFill);
+  const overlay = document.createElement('div');
+  overlay.style.cssText =
+    'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:rgba(120,10,10,0.28);color:#ffd9d0;font:bold 18px/1.4 monospace;text-shadow:0 2px 4px #000;pointer-events:none;';
+  const feed = document.createElement('div');
+  feed.style.cssText =
+    'position:absolute;right:12px;top:150px;display:flex;flex-direction:column;gap:4px;align-items:flex-end;font:12px/1.4 monospace;color:#cfe6ff;text-shadow:0 1px 2px #000;pointer-events:none;';
+  root.append(box, rage, overlay, feed);
+
+  let kills: string[] = [];
+  function renderKills(): void {
+    feed.textContent = kills.join(String.fromCharCode(10));
+  }
+
+  return {
+    set(sample: CombatHudSample): void {
+      const lines = [
+        sample.weaponName +
+          '  ' +
+          String(sample.mag) +
+          '/' +
+          String(sample.magSize) +
+          '  备弹 ' +
+          String(sample.reserve),
+      ];
+      if (sample.reloadRatio > 0)
+        lines.push('换弹 ' + String(Math.round(sample.reloadRatio * 100)) + '%');
+      lines.push(
+        '怒气 ' +
+          String(Math.round(sample.rage)) +
+          (sample.rageLeftMs > 0 ? '  狂暴 ' + (sample.rageLeftMs / 1000).toFixed(1) + 's' : ''),
+      );
+      box.textContent = lines.join(String.fromCharCode(10));
+      rageFill.style.width = String(Math.max(0, Math.min(100, sample.rage))) + '%';
+      overlay.style.display = sample.downed ? 'flex' : 'none';
+      if (sample.downed) {
+        overlay.textContent =
+          sample.reviveRatio > 0
+            ? '倒地中：队友正在救援 ' + String(Math.round(sample.reviveRatio * 100)) + '%'
+            : '倒地中：等待队友按 E 救援';
+      }
+    },
+    pushKill(text: string): void {
+      kills = [text, ...kills].slice(0, 5);
+      renderKills();
+      window.setTimeout(() => {
+        kills = kills.filter((line) => line !== text);
+        renderKills();
+      }, 5000);
+    },
+    dispose(): void {
+      box.remove();
+      rage.remove();
+      overlay.remove();
+      feed.remove();
+    },
+  };
+}

@@ -204,3 +204,93 @@ export {
   rayVsSphere,
 } from './combat/raycast.ts';
 export type { RayHit } from './combat/raycast.ts';
+
+export {
+  WEAPONS,
+  WEAPON_SLOT_ORDER,
+  WEAPON_SLOT_COUNT,
+  RESERVE_AMMO_INITIAL,
+  SPREAD_GROWTH_PER_SHOT_DEG,
+  SPREAD_MAX_DEG,
+  SPREAD_DECAY_DELAY_MS,
+  SPREAD_DECAY_PER_SECOND_DEG,
+  RECOIL_PITCH_PER_SHOT_DEG,
+  RECOIL_YAW_JITTER_DEG,
+  weaponDefForSlot,
+  rpmToIntervalMs,
+  unitJitter,
+  signedJitter,
+} from './config/weapons.ts';
+export type { WeaponDef, WeaponSlot } from './config/weapons.ts';
+export {
+  HIT_PART,
+  HIT_PART_NAMES,
+  BODY_PART_MULTIPLIER,
+  HEAD_MIN_HEIGHT_RATIO,
+  TORSO_MIN_HEIGHT_RATIO,
+  ARMOR_ABSORB_RATIO,
+  ARMOR_MAX,
+  HEALTH_MAX,
+  FALLOFF_MIN_MULTIPLIER,
+  FRIENDLY_FIRE,
+  RAGE,
+  REVIVE,
+  SHEEP_ELITE_STATE,
+  partForHeight,
+  partMultiplier,
+} from './config/combat.ts';
+export type { HitPart } from './config/combat.ts';
+export {
+  createWeaponState,
+  resetWeaponState,
+  activeWeaponDef,
+  activeMag,
+  isReloading,
+  reloadRemainingMs,
+  updateWeapon,
+  tryFire,
+  tryStartReload,
+  cancelReload,
+  switchSlot,
+} from './combat/weapon.ts';
+export type { WeaponState } from './combat/weapon.ts';
+export { computeDamage, damageFor, createDamageResult } from './combat/damage.ts';
+export type { DamageResult } from './combat/damage.ts';
+export {
+  createRageState,
+  resetRageState,
+  isRageActive,
+  rageRatio,
+  rageSecondsLeft,
+  noteCombat,
+  addKillRage,
+  activateRage,
+  updateRage,
+} from './combat/rage.ts';
+export type { RageState } from './combat/rage.ts';
+export {
+  REVIVE_OUTCOME,
+  createDownedState,
+  resetDownedState,
+  markDowned,
+  reviveRatio,
+  canBeRevived,
+  reviveStep,
+  reviveTo,
+} from './combat/downed.ts';
+export type { DownedState, ReviveOutcome } from './combat/downed.ts';
+export {
+  SHOT_MAX_DISTANCE_M,
+  DEG_TO_RAD,
+  PITCH_LIMIT_RAD,
+  createCombatContext,
+  createShotTrace,
+  traceRay,
+  resolveCombat,
+  reviveDownedForWaveClear,
+  hasDownedTeammateInRange,
+  reviveStateOf,
+} from './combat/resolve.ts';
+export type { CombatContext, CombatCounters, ShotTrace } from './combat/resolve.ts';
+export type { CombatState } from './world.ts';
+export { createCombatState, resetCombatState } from './world.ts';

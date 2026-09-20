@@ -1,6 +1,20 @@
+import { Vector3 } from 'three';
+
 import { formatVersionLine } from './index.ts';
 
-import { ARENA, CONFIG, type Command, createCommand } from '@ac/shared';
+import {
+  ARENA,
+  BUTTON,
+  CONFIG,
+  type Command,
+  HIT_FLAG,
+  type SimEvent,
+  WEAPONS,
+  WEAPON_SLOT_ORDER,
+  createCommand,
+} from '@ac/shared';
+import { createCombatFx } from './combat/fx.ts';
+import { createViewModel } from './combat/viewmodel.ts';
 import { createPointerInput } from './input/pointerLock.ts';
 import { createCommandBuffer } from './prediction/commandBuffer.ts';
 import { createPredictor } from './prediction/predictor.ts';
@@ -15,7 +29,7 @@ import { createRenderer } from './render/renderer.ts';
 import { applyFov, createScene, updateCamera } from './render/scene.ts';
 import { createSettingsStore, type SettingsStorage } from './settings/store.ts';
 import { createDebugPanel } from './ui/debugPanel.ts';
-import { createHud } from './ui/hud.ts';
+import { createCombatHud, createHud } from './ui/hud.ts';
 
 export const DEFAULT_SERVER_URL = 'ws://127.0.0.1:8787';
 export const DEFAULT_PLAYER_NAME = '陈sir';
@@ -82,6 +96,28 @@ export function boot(): void {
   const predictCommand: Command = createCommand();
   const renderPos = { x: 0, y: 0, z: 0 };
   let predictionReady = false;
+  const viewModel = createViewModel(camera);
+  const fx = createCombatFx(scene, app);
+  const combatHud = createCombatHud(hudRoot);
+  const MAG_SIZES = [WEAPONS.pistol.mag, WEAPONS.rifle.mag, WEAPONS.shotgun.mag];
+  const WEAPON_NAMES = ['手枪', '步枪', '霰弹枪'];
+  const combatState = {
+    mag: WEAPONS.pistol.mag,
+    magSize: WEAPONS.pistol.mag,
+    reserve: 120,
+    reloadRatio: 0,
+    rage: 0,
+    rageLeftMs: 0,
+    downed: false,
+    reviveRatio: 0,
+    weaponName: '手枪',
+  };
+  let reloadLeft10Ms = 0;
+  let weaponSlot: 0 | 1 | 2 = 0;
+  let fireHeld = false;
+  let fireSeq = 0;
+  const tracerEnd = { x: 0, y: 0, z: 0 };
+  const forwardScratch = new Vector3();
   let lastFrameMs = 0;
   const views = createEntityViews(scene, view, () => view.localPlayerId);
   const hud = createHud(hudRoot, bannerRoot);
@@ -96,11 +132,28 @@ export function boot(): void {
       predictCommand.moveY = command.moveY;
       predictCommand.yaw = command.yaw;
       predictCommand.pitch = command.pitch;
-      predictCommand.buttons = command.buttons;
+      predictCommand.buttons = command.buttons | (fireHeld && pointer.locked ? BUTTON.fire : 0);
       predictCommand.switchTo = command.switchTo;
       if (!pointer.locked || !predictionReady) return;
       commands.push(predictCommand);
       connection.sendCommand(predictCommand);
+      if ((predictCommand.buttons & BUTTON.fire) !== 0) {
+        fireSeq += 1;
+        viewModel.triggerFire(fireSeq, 4);
+        camera.getWorldDirection(forwardScratch);
+        tracerEnd.x = camera.position.x + forwardScratch.x * 30;
+        tracerEnd.y = camera.position.y + forwardScratch.y * 30;
+        tracerEnd.z = camera.position.z + forwardScratch.z * 30;
+        fx.spawnTracer(
+          camera.position.x,
+          camera.position.y,
+          camera.position.z,
+          tracerEnd.x,
+          tracerEnd.y,
+          tracerEnd.z,
+          true,
+        );
+      }
     },
     getTick: () => view.getAppliedTick(),
   });
@@ -130,9 +183,26 @@ export function boot(): void {
     },
     onMatchState: (state) => {
       hud.setPhase(PHASE_NAMES[state.phase] ?? '未知');
+      const mine = view.localPlayerId;
+      for (let i = 0; i < state.players.length; i += 1) {
+        const player = state.players[i];
+        if (player === undefined || player.pid !== mine) continue;
+        weaponSlot = player.weapon === 1 ? 1 : player.weapon === 2 ? 2 : 0;
+        combatState.mag = player.mag;
+        combatState.magSize = MAG_SIZES[weaponSlot] ?? WEAPONS.pistol.mag;
+        combatState.reserve = player.reserve;
+        combatState.rage = player.rage;
+        combatState.rageLeftMs = player.rageLeft100Ms * 100;
+        combatState.downed = player.downed;
+        combatState.reviveRatio = player.reviveRatio255 / 255;
+        combatState.weaponName = WEAPON_NAMES[weaponSlot] ?? '手枪';
+        reloadLeft10Ms = player.reloadLeft10Ms;
+        viewModel.setWeapon(weaponSlot);
+      }
     },
     onEvents: (events) => {
       hud.pushEvents(events.map((event) => event.type));
+      for (let i = 0; i < events.length; i += 1) handleCombatEvent(events[i]);
     },
     onServerError: (code, message) => {
       hud.showBanner('错误 ' + String(code) + '：' + (ERROR_MESSAGES[code] ?? message));
@@ -147,6 +217,46 @@ export function boot(): void {
       if (locked) connection.sendReady(true);
     },
   });
+
+  function handleCombatEvent(event: SimEvent | undefined): void {
+    if (event === undefined) return;
+    const mine = view.localPlayerId;
+    if (event.type === 'playerHit' && event.subjectId === mine && event.targetId !== mine) {
+      const headshot = (event.flags & HIT_FLAG.headshot) !== 0;
+      fx.showHitMarker(headshot);
+      fx.showDamageNumber(event.x, event.y, event.z, event.value, headshot);
+      fx.spawnImpact(event.x, event.y, event.z);
+      fx.spawnTracer(
+        camera.position.x,
+        camera.position.y,
+        camera.position.z,
+        event.x,
+        event.y,
+        event.z,
+        false,
+      );
+      return;
+    }
+    if (event.type === 'playerHit' && event.targetId === mine) {
+      combatHud.pushKill('你受到 ' + String(Math.round(event.value)) + ' 点伤害');
+      return;
+    }
+    if (event.type === 'sheepKilled' && event.subjectId === mine) {
+      combatHud.pushKill('击杀咩咩兵');
+      return;
+    }
+    if (event.type === 'playerDowned' && event.subjectId === mine) {
+      combatHud.pushKill('你已倒地，等待救援');
+      return;
+    }
+    if (event.type === 'reviveDone' && event.targetId === mine) {
+      combatHud.pushKill('已被救起');
+      return;
+    }
+    if (event.type === 'rageActivated' && event.subjectId === mine) {
+      combatHud.pushKill('狂暴已激活');
+    }
+  }
 
   function applySettings(): void {
     const current = settings.get();
@@ -167,6 +277,13 @@ export function boot(): void {
   }
   resize();
   window.addEventListener('resize', resize);
+
+  renderer.domElement.addEventListener('mousedown', (event) => {
+    if (event.button === 0) fireHeld = true;
+  });
+  window.addEventListener('mouseup', (event) => {
+    if (event.button === 0) fireHeld = false;
+  });
 
   renderer.domElement.addEventListener('click', () => {
     if (!pointer.locked) pointer.request();
@@ -222,6 +339,15 @@ export function boot(): void {
       updateCamera(camera, FALLBACK_CAMERA, sampler.state.yaw, sampler.state.pitch);
     } else {
       updateCamera(camera, local.pos, local.yaw, local.pitch);
+    }
+    viewModel.update(dtMs);
+    fx.update(dtMs);
+    const reloadMs = WEAPONS[WEAPON_SLOT_ORDER[weaponSlot] ?? 'pistol'].reloadMs;
+    combatState.reloadRatio = reloadLeft10Ms <= 0 ? 0 : 1 - (reloadLeft10Ms * 10) / reloadMs;
+    combatHud.set(combatState);
+    if (combatState.downed) {
+      predictCommand.moveX = 0;
+      predictCommand.moveY = 0;
     }
     renderer.draw(scene, camera, nowMs);
     const stats = renderer.getStats();
