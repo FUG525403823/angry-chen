@@ -1,0 +1,194 @@
+import { createCommand, type Command } from './command.ts';
+import { CONFIG, type WorldConfig } from './config/index.ts';
+import { createVec3, type Vec3 } from './math.ts';
+import { createRng, type Rng } from './rng.ts';
+
+export type EntityId = number;
+export type EntityKind = 'player' | 'sheep' | 'projectile' | 'pickup';
+export type Team = 0 | 1;
+
+export interface Entity {
+  readonly id: EntityId;
+  active: boolean;
+  kind: EntityKind;
+  pos: Vec3;
+  vel: Vec3;
+  yaw: number;
+  pitch: number;
+  hp: number;
+  maxHp: number;
+  armor: number;
+  state: number;
+  team: Team;
+  ownerId: EntityId;
+  aliveMs: number;
+}
+
+export interface SimEvent {
+  type: string;
+  tick: number;
+  subjectId: EntityId;
+  targetId: EntityId;
+  x: number;
+  y: number;
+  z: number;
+  value: number;
+}
+
+export type SpawnFailureReason = 'entity-pool-exhausted';
+
+const defaultTeamByKind: Record<EntityKind, Team> = {
+  player: 0,
+  sheep: 1,
+  projectile: 0,
+  pickup: 0,
+};
+
+export type SpawnResult = { ok: true; id: EntityId } | { ok: false; reason: SpawnFailureReason };
+
+export interface World {
+  readonly seed: number;
+  readonly config: WorldConfig;
+  readonly entities: Entity[];
+  readonly activeIds: EntityId[];
+  readonly freeStack: EntityId[];
+  readonly events: SimEvent[];
+  readonly scratchEntities: Entity[];
+  readonly commandScratch: Command;
+  readonly rng: Readonly<{ ai: Rng; spawn: Rng; fx: Rng }>;
+  readonly liveCount: number;
+  tick: number;
+  timeMs: number;
+}
+
+export function createEntity(id: EntityId): Entity {
+  return {
+    id,
+    active: false,
+    kind: 'player',
+    pos: createVec3(),
+    vel: createVec3(),
+    yaw: 0,
+    pitch: 0,
+    hp: 0,
+    maxHp: 0,
+    armor: 0,
+    state: 0,
+    team: 0,
+    ownerId: 0,
+    aliveMs: 0,
+  };
+}
+
+export function createWorld(seed: number, config: WorldConfig = CONFIG): World {
+  const capacity = config.entity.maxEntities;
+  const entities: Entity[] = [];
+  for (let i = 0; i < capacity; i += 1) entities.push(createEntity(i + 1));
+
+  const freeStack: EntityId[] = [];
+  for (let id = capacity; id >= 1; id -= 1) freeStack.push(id);
+
+  const activeIds: EntityId[] = [];
+
+  const world: World = {
+    seed,
+    config,
+    entities,
+    activeIds,
+    freeStack,
+    events: [],
+    scratchEntities: [],
+    commandScratch: createCommand(),
+    rng: { ai: createRng(seed, 'ai'), spawn: createRng(seed, 'spawn'), fx: createRng(seed, 'fx') },
+    get liveCount(): number {
+      return activeIds.length;
+    },
+    tick: 0,
+    timeMs: 0,
+  };
+
+  const spawnPoints = config.arena.playerSpawnPoints;
+  for (let i = 0; i < spawnPoints.length; i += 1) {
+    const point = spawnPoints[i];
+    if (point === undefined) continue;
+    spawnEntity(world, 'player', point.x, 0, point.z);
+  }
+
+  return world;
+}
+
+export function getEntity(world: World, id: EntityId): Entity | undefined {
+  if (!Number.isInteger(id) || id < 1 || id > world.entities.length) return undefined;
+  return world.entities[id - 1];
+}
+
+function insertActiveId(world: World, id: EntityId): void {
+  const ids = world.activeIds;
+  let index = ids.length;
+  while (index > 0 && (ids[index - 1] ?? 0) > id) index -= 1;
+  ids.splice(index, 0, id);
+}
+
+export function spawnEntity(
+  world: World,
+  kind: EntityKind,
+  x = 0,
+  y = 0,
+  z = 0,
+  team: Team = defaultTeamByKind[kind],
+  ownerId: EntityId = 0,
+): SpawnResult {
+  const id = world.freeStack.pop();
+  if (id === undefined) return { ok: false, reason: 'entity-pool-exhausted' };
+  const entity = world.entities[id - 1];
+  if (entity === undefined) return { ok: false, reason: 'entity-pool-exhausted' };
+
+  const stats = world.config.entity.baseStats[kind];
+  entity.active = true;
+  entity.kind = kind;
+  entity.pos.x = x;
+  entity.pos.y = y;
+  entity.pos.z = z;
+  entity.vel.x = 0;
+  entity.vel.y = 0;
+  entity.vel.z = 0;
+  entity.yaw = 0;
+  entity.pitch = 0;
+  entity.hp = stats.hp;
+  entity.maxHp = stats.hp;
+  entity.armor = stats.armor;
+  entity.state = 0;
+  entity.team = team;
+  entity.ownerId = ownerId;
+  entity.aliveMs = 0;
+  insertActiveId(world, id);
+  return { ok: true, id };
+}
+
+export function despawnEntity(world: World, id: EntityId): boolean {
+  const entity = getEntity(world, id);
+  if (entity === undefined || !entity.active) return false;
+  entity.active = false;
+  entity.hp = 0;
+  entity.armor = 0;
+  entity.ownerId = 0;
+  const index = world.activeIds.indexOf(id);
+  if (index >= 0) world.activeIds.splice(index, 1);
+  world.freeStack.push(id);
+  return true;
+}
+
+export function countActive(world: World, kind?: EntityKind): number {
+  const ids = world.activeIds;
+  if (kind === undefined) return ids.length;
+  let count = 0;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity !== undefined && entity.kind === kind) count += 1;
+  }
+  return count;
+}
+
+export function radiusOf(world: World, kind: EntityKind): number {
+  return world.config.entity.radiusByKind[kind];
+}
