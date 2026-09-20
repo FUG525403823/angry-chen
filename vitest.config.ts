@@ -1,7 +1,18 @@
 import { defineConfig } from 'vitest/config';
 
+const SHARED_LINE_COVERAGE_THRESHOLD = 80;
+
 export default defineConfig({
   test: {
+    coverage: {
+      provider: 'v8',
+      include: ['packages/shared/src/**/*.ts'],
+      exclude: ['**/*.test.ts', 'packages/shared/src/test/**'],
+      reporter: ['text'],
+      thresholds: {
+        lines: SHARED_LINE_COVERAGE_THRESHOLD,
+      },
+    },
     projects: [
       {
         test: {

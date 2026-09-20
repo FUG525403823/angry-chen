@@ -1,0 +1,61 @@
+# ============================================================================
+# systemd 守护样例（ADR-004 §1：单进程、单端口、反代终结 TLS）
+#
+# 验证状态：静态审查（本开发机是 Windows，systemd 与 Linux 用户/路径都未实测）。
+# 人类必须验证的点：
+#   1) 安装路径：本样例假设仓库在 /srv/angry-chen，且 /usr/bin/pnpm 可用
+#   2) 专用用户与目录权限（DATA_DIR 可写）：
+#        sudo useradd --system --home /srv/angry-chen --shell /usr/sbin/nologin angrychen
+#        sudo install -d -o angrychen -g angrychen -m 0750 /var/lib/angry-chen /var/log/angry-chen
+#        sudo install -o root -g angrychen -m 0640 /dev/null /etc/angry-chen.env
+#      /etc/angry-chen.env 内容参照 .env.example；systemd 的 EnvironmentFile
+#      不认 `export` 前缀，也不要带引号以外的 shell 展开
+#   3) 启动/自启：sudo systemctl daemon-reload && sudo systemctl enable --now angry-chen
+#   4) 冒烟：curl -s http://127.0.0.1:8787/health 应返回 {"status":"ok",...}
+#   5) 日志：journalctl -u angry-chen -n 50 -f
+# ============================================================================
+
+[Unit]
+Description=angry-chen 权威服务器（@ac/server：HTTP /health、/metrics、/api/* 与游戏 WebSocket）
+Documentation=file:///srv/angry-chen/docs/运维手册.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=angrychen
+Group=angrychen
+WorkingDirectory=/srv/angry-chen
+
+# 环境变量：systemd 原生加载 .env 风格文件（服务端自身不会读 .env）
+EnvironmentFile=/etc/angry-chen.env
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# DATA_DIR 必须用绝对路径：默认 ./data 会落到 WorkingDirectory 下
+Environment=DATA_DIR=/var/lib/angry-chen
+
+ExecStart=/usr/bin/pnpm --filter @ac/server run start
+
+# 重启策略：异常退出自动拉起；正常退出（SIGTERM 停机）不拉起
+Restart=on-failure
+RestartSec=3
+# 让 tsx 子进程一起收到 SIGTERM，main.ts 的优雅停机（3 秒兜底）才有机会执行
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# 日志默认进 journald：journalctl -u angry-chen -f
+# 想落文件（systemd ≥ 240）再放开下面两行，并确保 /var/log/angry-chen 属主正确：
+#StandardOutput=append:/var/log/angry-chen/server.log
+#StandardError=append:/var/log/angry-chen/server.err.log
+
+# 加固：只允许写数据目录与日志目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/angry-chen /var/log/angry-chen
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

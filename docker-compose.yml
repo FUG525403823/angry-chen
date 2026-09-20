@@ -1,0 +1,65 @@
+# ============================================================================
+# 验证状态：静态审查（构建环境缺失：本机无 docker，docker --version 失败）
+# 本文件从未执行过 `docker compose up`：镜像未构建、容器未启动、健康检查未跑过。
+# ============================================================================
+#
+# 两个服务：
+#   game  —— 由仓库根 Dockerfile 构建（单进程 HTTP + WebSocket，端口 8787）；
+#   proxy —— caddy:2-alpine，按 deploy/Caddyfile 提供客户端静态资源 + WSS 反代。
+# 之所以拆出 proxy：packages/server/src/http.ts 只处理 /health、/metrics、/api/*，
+# 静态资源必须由反代从 packages/client/dist 提供（先在本机跑 `pnpm build:client`）。
+#
+# 首次使用：cp .env.example .env（compose 会读 .env 做变量插值并注入 game 容器）。
+
+name: angry-chen
+
+services:
+  game:
+    build:
+      context: .
+      target: runtime
+    image: angry-chen:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    # 只发布到宿主回环地址，公网入口全部交给 proxy。
+    ports:
+      - '127.0.0.1:8787:8787'
+    volumes:
+      - ac-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - game
+    environment:
+      # localhost → 仅 HTTP:80（本地试跑）；换成真实域名即自动签发 TLS（需 80/443 可达）。
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      # 容器网络内直接用服务名访问 game。
+      GAME_UPSTREAM: game:8787
+      CLIENT_ROOT: /srv/client
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./packages/client/dist:/srv/client:ro
+      - ac-caddy-data:/data
+      - ac-caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+volumes:
+  ac-data:
+  ac-caddy-data:
+  ac-caddy-config:
