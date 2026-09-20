@@ -31,6 +31,9 @@ export interface Metrics {
   interactRequests: number;
   respawnRequests: number;
   maxEntitiesObserved: number;
+  speedViolations: number;
+  hardCorrectTotal: number;
+  rewindClampedCount: number;
 }
 
 export interface PrometheusGauges {
@@ -73,6 +76,9 @@ export function createMetrics(): Metrics {
     interactRequests: 0,
     respawnRequests: 0,
     maxEntitiesObserved: 0,
+    speedViolations: 0,
+    hardCorrectTotal: 0,
+    rewindClampedCount: 0,
   };
 }
 
@@ -185,6 +191,24 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     metrics.chatMessages,
   );
   push('ac_pings_total', 'ping frames answered', 'counter', metrics.pings);
+  push(
+    'ac_speed_violations_total',
+    'commands rejected by pose validation',
+    'counter',
+    metrics.speedViolations,
+  );
+  push(
+    'ac_hard_correct_total',
+    'authoritative corrections forced on clients',
+    'counter',
+    metrics.hardCorrectTotal,
+  );
+  push(
+    'ac_rewind_clamped_total',
+    'rewind requests clamped to the 200ms limit',
+    'counter',
+    metrics.rewindClampedCount,
+  );
   push('ac_joins_total', 'successful joins', 'counter', metrics.joins);
   push('ac_leaves_total', 'leaves and disconnects', 'counter', metrics.leaves);
   push('ac_rooms_created_total', 'rooms created', 'counter', metrics.roomsCreated);

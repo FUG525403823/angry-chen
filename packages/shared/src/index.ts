@@ -173,3 +173,34 @@ export type {
   SnapshotMirror,
   SnapshotRecord,
 } from './net/codec.ts';
+
+export {
+  MS_PER_SECOND,
+  applyCommandToState,
+  collideStatic,
+  integrateState,
+  stepLocalPlayer,
+} from './sim/localStep.ts';
+export type { MoveConfig, MoveState } from './sim/localStep.ts';
+
+export {
+  POSE_FLOATS_PER_ENTRY,
+  POSE_HISTORY_DEFAULT_MAX_PER_SLOT,
+  POSE_HISTORY_DEFAULT_SLOT_MS,
+  POSE_HISTORY_SLOTS,
+  REWIND_LIMIT_MS,
+  createPoseHistory,
+  createSampledPose,
+  recordPoseHistory,
+  samplePoseAgo,
+} from './sim/history.ts';
+export type { PoseHistory, SampledPose } from './sim/history.ts';
+
+export {
+  clearRayHit,
+  createRayHit,
+  rayVsAabb,
+  rayVsCapsule,
+  rayVsSphere,
+} from './combat/raycast.ts';
+export type { RayHit } from './combat/raycast.ts';

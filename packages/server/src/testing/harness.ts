@@ -51,11 +51,13 @@ export function createHarness(options?: {
   maxPlayersPerRoom?: number;
   seed?: number;
   latencyMs?: number;
+  dropRate?: number;
 }): Harness {
   const clock = { value: 1_000_000 };
   const transport = createMemoryTransport({
     maxFrameBytes: LIMITS.maxFrameBytes,
     latencyMs: options?.latencyMs ?? 0,
+    dropRate: options?.dropRate ?? 0,
     seed: 7,
   });
   const game = createGameServer(transport, {

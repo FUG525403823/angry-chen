@@ -43,9 +43,22 @@ export interface SnapshotView {
   getStats(): ViewStats;
 }
 
+export interface LocalAuthority {
+  found: boolean;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch: number;
+  lastAckedSeq: number;
+  tick: number;
+}
+
 export interface SnapshotViewInternal extends SnapshotView {
   readonly mirror: SnapshotMirror;
   setLocalPlayerId(pid: number): void;
+  setLocalPrediction(x: number, y: number, z: number, yaw: number, pitch: number): void;
+  getLocalAuthority(out: LocalAuthority): LocalAuthority;
   applyFrame(frame: Uint8Array, bytesIn: number): boolean;
   recordRtt(rttMs: number): void;
   reset(): void;
@@ -169,6 +182,37 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
     return entity;
   }
 
+  const predicted = { active: false, x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
+  const authority: LocalAuthority = {
+    found: false,
+    x: 0,
+    y: 0,
+    z: 0,
+    yaw: 0,
+    pitch: 0,
+    lastAckedSeq: 0,
+    tick: 0,
+  };
+
+  function predictedEntity(): ViewEntity {
+    const newest = frames[newestIndex];
+    const slot = newest === undefined ? -1 : (newest.slotOf[localPlayerId] ?? -1);
+    const entity = entityFor(
+      localPlayerId,
+      slot >= 0 ? (newest?.kind[slot] ?? 0) : 0,
+      slot >= 0 ? (newest?.hpRatio[slot] ?? 0) : 1,
+      slot >= 0 ? (newest?.state[slot] ?? 0) : 0,
+      slot >= 0 ? (newest?.flags[slot] ?? 0) : 0,
+    );
+    entity.pos.x = predicted.x;
+    entity.pos.y = predicted.y;
+    entity.pos.z = predicted.z;
+    const mutable = entity as { yaw: number; pitch: number };
+    mutable.yaw = predicted.yaw;
+    mutable.pitch = predicted.pitch;
+    return entity;
+  }
+
   const view: SnapshotViewInternal = {
     mirror,
     get localPlayerId(): number {
@@ -176,6 +220,37 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
     },
     setLocalPlayerId(pid: number): void {
       localPlayerId = pid;
+      predicted.active = false;
+    },
+    setLocalPrediction(x: number, y: number, z: number, yaw: number, pitch: number): void {
+      predicted.active = true;
+      predicted.x = x;
+      predicted.y = y;
+      predicted.z = z;
+      predicted.yaw = yaw;
+      predicted.pitch = pitch;
+    },
+    getLocalAuthority(out: LocalAuthority): LocalAuthority {
+      const newest = frames[newestIndex];
+      const slot =
+        newest === undefined || localPlayerId === 0 ? -1 : (newest.slotOf[localPlayerId] ?? -1);
+      out.found = slot >= 0;
+      out.lastAckedSeq = mirror.lastAckedSeq;
+      out.tick = newest === undefined ? 0 : newest.tick;
+      if (slot < 0 || newest === undefined) {
+        out.x = predicted.x;
+        out.y = predicted.y;
+        out.z = predicted.z;
+        out.yaw = predicted.yaw;
+        out.pitch = predicted.pitch;
+        return out;
+      }
+      out.x = newest.x[slot] ?? 0;
+      out.y = newest.y[slot] ?? 0;
+      out.z = newest.z[slot] ?? 0;
+      out.yaw = newest.yaw[slot] ?? 0;
+      out.pitch = newest.pitch[slot] ?? 0;
+      return out;
     },
     getServerTimeMs(): number {
       if (!hasFrame) return 0;
@@ -217,6 +292,7 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
     },
 
     getLocalPlayer(): ViewEntity | undefined {
+      if (predicted.active) return predictedEntity();
       if (!hasFrame || localPlayerId === 0) return undefined;
       const newest = frames[newestIndex];
       if (newest === undefined) return undefined;
@@ -291,6 +367,8 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
       }
     },
     reset(): void {
+      predicted.active = false;
+      authority.found = false;
       hasFrame = false;
       frameCount = 0;
       newestIndex = 0;

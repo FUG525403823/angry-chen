@@ -2,6 +2,7 @@ import {
   ARENA,
   LIMITS,
   MATCH_PHASE,
+  REWIND_LIMIT_MS,
   SERVER_TICK_MS,
   SNAPSHOT_RATE_X10,
   countActive,
@@ -14,13 +15,25 @@ import {
   encodeSnapshot,
   snapshotWorld,
   spawnEntity,
+  createPoseHistory,
+  createRayHit,
+  createSampledPose,
+  createVec3,
+  getEntity,
+  rayVsAabb,
+  rayVsCapsule,
+  recordPoseHistory,
+  samplePoseAgo,
+  yawPitchToDirection,
   stepWorld,
   type Command,
   type MatchState,
+  type PoseHistory,
   type Snapshot,
   type World,
 } from '@ac/shared';
 
+import { createAdvanceCheck, isLegalPosition, validateAdvance } from './anticheat.ts';
 import { recordTickJitter, type Metrics } from './metrics.ts';
 import type { Session } from './session.ts';
 
@@ -47,6 +60,8 @@ export interface Room {
   snapshotRateX10: number;
   jitterArmed: boolean;
   readonly capacity: number;
+  readonly history: PoseHistory;
+  readonly preTick: Float64Array;
 }
 
 export interface RoomDeps {
@@ -81,6 +96,8 @@ export function createRoom(
     snapshotRateX10: SNAPSHOT_RATE_X10,
     jitterArmed: false,
     capacity: Math.min(capacity, LIMITS.maxPlayersPerRoom),
+    history: createPoseHistory(SERVER_TICK_MS),
+    preTick: new Float64Array(LIMITS.maxPlayersPerRoom * 3),
   };
 }
 
@@ -218,7 +235,10 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
   deps.metrics.ticks += 1;
 
   buildCommands(room);
+  const checked = capturePreTick(room);
   stepWorld(room.world, room.commands, SERVER_TICK_MS);
+  applyPoseValidation(deps, room, checked);
+  recordPoseHistory(room.history, room.world);
   snapshotWorld(room.world, room.snapshot);
 
   const active = countActive(room.world);
@@ -297,4 +317,170 @@ export function broadcastMatchState(room: Room): void {
     const session = sessions[i];
     if (session !== undefined) session.connection.send(frame);
   }
+}
+
+export const SHOT_MAX_DISTANCE_M = 100;
+
+export interface ShotResult {
+  hit: boolean;
+  targetId: number;
+  rewindMs: number;
+  clamped: boolean;
+  x: number;
+  y: number;
+  z: number;
+}
+
+export function createShotResult(): ShotResult {
+  return { hit: false, targetId: 0, rewindMs: 0, clamped: false, x: 0, y: 0, z: 0 };
+}
+
+const directionScratch = createVec3();
+const rayScratch = createRayHit();
+const targetHitScratch = createRayHit();
+const sampledPoseScratch = createSampledPose();
+const advanceCheckScratch = createAdvanceCheck();
+const shotScratch = createShotResult();
+
+export function rewindMsForSession(session: Session): number {
+  return Math.min(Math.max(session.lagTicks * SERVER_TICK_MS, 0), REWIND_LIMIT_MS);
+}
+
+function capturePreTick(room: Room): number {
+  const ids = room.world.activeIds;
+  const preTick = room.preTick;
+  let count = 0;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(room.world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (count >= LIMITS.maxPlayersPerRoom) break;
+    preTick[count * 3] = entity.pos.x;
+    preTick[count * 3 + 1] = entity.pos.y;
+    preTick[count * 3 + 2] = entity.pos.z;
+    count += 1;
+  }
+  return count;
+}
+
+export function applyPoseValidation(deps: RoomDeps, room: Room, checked: number): void {
+  const world = room.world;
+  const ids = world.activeIds;
+  const preTick = room.preTick;
+  const arena = world.config.arena;
+  const radius = world.config.entity.radiusByKind.player;
+  const check = advanceCheckScratch;
+  let index = 0;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (index >= checked) break;
+    const prevX = preTick[index * 3] ?? 0;
+    const prevZ = preTick[index * 3 + 2] ?? 0;
+    index += 1;
+    validateAdvance(prevX, prevZ, entity.pos.x, entity.pos.z, entity.vel.y, SERVER_TICK_MS, check);
+    check.position = !isLegalPosition(entity.pos.x, entity.pos.y, entity.pos.z, arena, radius);
+    if (!check.speed && !check.vertical && !check.position) continue;
+    if (check.speed || check.vertical) deps.metrics.speedViolations += 1;
+    deps.metrics.hardCorrectTotal += 1;
+    entity.pos.x = prevX;
+    entity.pos.z = prevZ;
+    entity.vel.x = 0;
+    entity.vel.y = 0;
+    entity.vel.z = 0;
+  }
+}
+
+export function resolveShot(
+  room: Room,
+  deps: RoomDeps,
+  shooterId: number,
+  rewindMs: number,
+): ShotResult {
+  const out = shotScratch;
+  out.hit = false;
+  out.targetId = 0;
+  out.clamped = rewindMs > REWIND_LIMIT_MS;
+  out.rewindMs = Math.min(Math.max(rewindMs, 0), REWIND_LIMIT_MS);
+  out.x = 0;
+  out.y = 0;
+  out.z = 0;
+  if (out.clamped) deps.metrics.rewindClampedCount += 1;
+
+  const world = room.world;
+  const shooter = shooterId > 0 ? world.entities[shooterId - 1] : undefined;
+  if (shooter === undefined || !shooter.active || shooter.kind !== 'player') return out;
+
+  const player = world.config.player;
+  const eyeY = shooter.pos.y + player.eyeHeight;
+  const direction = yawPitchToDirection(directionScratch, shooter.yaw, shooter.pitch);
+  const dx = direction.x;
+  const dy = direction.y;
+  const dz = direction.z;
+  const barn = world.config.arena.barn;
+
+  rayVsAabb(
+    shooter.pos.x,
+    eyeY,
+    shooter.pos.z,
+    dx,
+    dy,
+    dz,
+    barn.minX,
+    barn.minY,
+    barn.minZ,
+    barn.maxX,
+    barn.maxY,
+    barn.maxZ,
+    SHOT_MAX_DISTANCE_M,
+    rayScratch,
+  );
+  let bestT = rayScratch.hit ? rayScratch.t : SHOT_MAX_DISTANCE_M;
+
+  const ids = world.activeIds;
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i] ?? 0;
+    const target = getEntity(world, id);
+    if (target === undefined || !target.active || target.id === shooterId) continue;
+    if (target.kind !== 'player' && target.kind !== 'sheep') continue;
+
+    let tx = target.pos.x;
+    let ty = target.pos.y;
+    let tz = target.pos.z;
+    if (target.kind === 'player') {
+      samplePoseAgo(room.history, out.rewindMs, target.id, sampledPoseScratch);
+      if (sampledPoseScratch.found) {
+        tx = sampledPoseScratch.x;
+        ty = sampledPoseScratch.y;
+        tz = sampledPoseScratch.z;
+      }
+    }
+
+    const radius = world.config.entity.radiusByKind[target.kind];
+    const height = world.config.entity.heightByKind[target.kind];
+    rayVsCapsule(
+      shooter.pos.x,
+      eyeY,
+      shooter.pos.z,
+      dx,
+      dy,
+      dz,
+      tx,
+      ty + radius,
+      tz,
+      tx,
+      ty + height - radius,
+      tz,
+      radius,
+      SHOT_MAX_DISTANCE_M,
+      targetHitScratch,
+    );
+    if (!targetHitScratch.hit || targetHitScratch.t >= bestT) continue;
+    bestT = targetHitScratch.t;
+    out.hit = true;
+    out.targetId = target.id;
+    out.x = targetHitScratch.x;
+    out.y = targetHitScratch.y;
+    out.z = targetHitScratch.z;
+  }
+  return out;
 }

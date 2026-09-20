@@ -15,6 +15,10 @@ export interface DebugSample {
   readonly status: string;
   readonly roomCode: string;
   readonly versionLine: string;
+  readonly predictionErrorM: number;
+  readonly predictionMaxErrorM: number;
+  readonly hardCorrects: number;
+  readonly pendingCommands: number;
 }
 
 export interface DebugPanel {
@@ -53,6 +57,14 @@ export function createDebugPanel(root: HTMLElement, initialVisible: boolean): De
         (pos === undefined
           ? 'n/a'
           : pos.x.toFixed(2) + ' ' + pos.y.toFixed(2) + ' ' + pos.z.toFixed(2)),
+      'pred ' +
+        sample.predictionErrorM.toFixed(3) +
+        'm  max ' +
+        sample.predictionMaxErrorM.toFixed(3) +
+        'm  hard ' +
+        String(sample.hardCorrects) +
+        '  pending ' +
+        String(sample.pendingCommands),
       'status ' + sample.status + '  room ' + sample.roomCode,
       sample.versionLine,
     ];

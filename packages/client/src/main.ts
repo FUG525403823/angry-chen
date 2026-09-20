@@ -1,7 +1,11 @@
-import { ARENA } from '@ac/shared';
-
 import { formatVersionLine } from './index.ts';
+
+import { ARENA, CONFIG, type Command, createCommand } from '@ac/shared';
 import { createPointerInput } from './input/pointerLock.ts';
+import { createCommandBuffer } from './prediction/commandBuffer.ts';
+import { createPredictor } from './prediction/predictor.ts';
+import { createLocalAuthority, createReconciler } from './prediction/reconciler.ts';
+import { createErrorSmoother } from './render/errorSmoother.ts';
 import { createInputSampler } from './input/sampler.ts';
 import { ERROR_MESSAGES, createGameConnection } from './net/connection.ts';
 import { createSnapshotView } from './net/state.ts';
@@ -65,6 +69,20 @@ export function boot(): void {
   app.replaceChildren(renderer.domElement);
 
   const view = createSnapshotView();
+  const moveConfig = {
+    player: CONFIG.player,
+    arena: CONFIG.arena,
+    radius: CONFIG.entity.radiusByKind.player,
+  };
+  const predictor = createPredictor(moveConfig);
+  const commands = createCommandBuffer();
+  const reconciler = createReconciler();
+  const smoother = createErrorSmoother();
+  const authority = createLocalAuthority();
+  const predictCommand: Command = createCommand();
+  const renderPos = { x: 0, y: 0, z: 0 };
+  let predictionReady = false;
+  let lastFrameMs = 0;
   const views = createEntityViews(scene, view, () => view.localPlayerId);
   const hud = createHud(hudRoot, bannerRoot);
   const debug = createDebugPanel(debugRoot, params.get('debug') === '1');
@@ -72,7 +90,17 @@ export function boot(): void {
   const sampler = createInputSampler({
     now: () => performance.now(),
     emit: (command) => {
-      if (pointer.locked) connection.sendCommand(command);
+      predictCommand.seq = command.seq;
+      predictCommand.tick = command.tick;
+      predictCommand.moveX = command.moveX;
+      predictCommand.moveY = command.moveY;
+      predictCommand.yaw = command.yaw;
+      predictCommand.pitch = command.pitch;
+      predictCommand.buttons = command.buttons;
+      predictCommand.switchTo = command.switchTo;
+      if (!pointer.locked || !predictionReady) return;
+      commands.push(predictCommand);
+      connection.sendCommand(predictCommand);
     },
     getTick: () => view.getAppliedTick(),
   });
@@ -89,6 +117,16 @@ export function boot(): void {
     },
     onWelcome: (welcome) => {
       hud.setRoomCode(welcome.roomCode);
+      commands.clear();
+      smoother.reset();
+      reconciler.reset();
+      predictionReady = false;
+    },
+    onSnapshotApplied: () => {
+      view.getLocalAuthority(authority);
+      if (!authority.found) return;
+      predictionReady = true;
+      reconciler.reconcile(authority, commands, predictor, smoother);
     },
     onMatchState: (state) => {
       hud.setPhase(PHASE_NAMES[state.phase] ?? '未知');
@@ -158,8 +196,29 @@ export function boot(): void {
   function frameBody(nowMs: number): void {
     sampler.update();
     views.sync();
+
+    const dtMs = lastFrameMs === 0 ? 0 : nowMs - lastFrameMs;
+    lastFrameMs = nowMs;
+    if (predictionReady) {
+      predictor.advance(dtMs, predictCommand);
+      predictor.renderPosition(renderPos);
+      view.setLocalPrediction(
+        renderPos.x,
+        renderPos.y,
+        renderPos.z,
+        sampler.state.yaw,
+        sampler.state.pitch,
+      );
+    }
+    smoother.decay(dtMs);
+
     const local = view.getLocalPlayer();
-    if (local === undefined) {
+    if (predictionReady) {
+      renderPos.x += smoother.x;
+      renderPos.y += smoother.y;
+      renderPos.z += smoother.z;
+      updateCamera(camera, renderPos, sampler.state.yaw, sampler.state.pitch);
+    } else if (local === undefined) {
       updateCamera(camera, FALLBACK_CAMERA, sampler.state.yaw, sampler.state.pitch);
     } else {
       updateCamera(camera, local.pos, local.yaw, local.pitch);
@@ -188,6 +247,10 @@ export function boot(): void {
       localPos,
       status: connection.status,
       roomCode,
+      predictionErrorM: reconciler.lastErrorM,
+      predictionMaxErrorM: reconciler.maxErrorM,
+      hardCorrects: reconciler.hardCorrectCount,
+      pendingCommands: commands.size,
       versionLine: formatVersionLine(),
     });
   }

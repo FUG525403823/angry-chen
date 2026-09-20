@@ -6,6 +6,12 @@ export const ENTITY = Object.freeze({
     projectile: 0.08,
     pickup: 0.35,
   }),
+  heightByKind: Object.freeze({
+    player: 1.7,
+    sheep: 0.9,
+    projectile: 0.16,
+    pickup: 0.7,
+  }),
   baseStats: Object.freeze({
     player: Object.freeze({ hp: 100, armor: 50 }),
     sheep: Object.freeze({ hp: 60, armor: 0 }),

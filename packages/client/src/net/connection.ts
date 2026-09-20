@@ -49,6 +49,8 @@ export interface ConnectionOptions {
   readonly autoReconnect?: boolean;
   onStatus?(status: ConnectionStatus, detail: string): void;
   onWelcome?(welcome: Welcome): void;
+  /** 快照成功应用后回调：本地预测的和解时机。 */
+  onSnapshotApplied?(bytesIn: number): void;
   onMatchState?(state: MatchState): void;
   onEvents?(events: readonly SimEvent[]): void;
   onServerError?(code: number, message: string): void;
@@ -132,7 +134,7 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
     if (frame.length === 0) return;
     const opcode = frame[0];
     if (opcode === OPCODE.snapshot) {
-      options.view.applyFrame(frame, frame.length);
+      if (options.view.applyFrame(frame, frame.length)) options.onSnapshotApplied?.(frame.length);
       return;
     }
     if (opcode === OPCODE.welcome) {

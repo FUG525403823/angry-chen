@@ -80,4 +80,39 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ['packages/client/src/**/*.ts'],
+    ignores: [
+      'packages/client/src/**/*.test.ts',
+      'packages/client/src/prediction/**',
+      'packages/client/src/render/**',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@ac/shared',
+              importNames: [
+                'countActive',
+                'createWorld',
+                'despawnEntity',
+                'snapshotWorld',
+                'spawnEntity',
+                'stepWorld',
+              ],
+              message: '客户端只能通过 prediction/** 的 stepLocalPlayer 复用移动代码（P05 §5.2）。',
+            },
+          ],
+          patterns: [
+            {
+              group: ['**/sim.ts', '**/world.ts', '**/rng.ts', '**/snapshot.ts'],
+              message: '客户端不得引用模拟内核内部（P05 §5.2）。',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );
