@@ -6,8 +6,11 @@ import {
   ARENA,
   BUTTON,
   CONFIG,
+  ERROR_CODE,
   type Command,
   HIT_FLAG,
+  MATCH_PHASE,
+  type MatchStatePlayer,
   type SimEvent,
   WEAPONS,
   WEAPON_SLOT_ORDER,
@@ -21,19 +24,23 @@ import { createPredictor } from './prediction/predictor.ts';
 import { createLocalAuthority, createReconciler } from './prediction/reconciler.ts';
 import { createErrorSmoother } from './render/errorSmoother.ts';
 import { createInputSampler } from './input/sampler.ts';
-import { ERROR_MESSAGES, createGameConnection } from './net/connection.ts';
+import { createGameConnection, readStoredCredentials } from './net/connection.ts';
 import { createSnapshotView } from './net/state.ts';
 import { createArena, disposeArena, type ArenaParams } from './render/arena.ts';
 import { COLORBLIND_PALETTE, DEFAULT_PALETTE, createEntityViews } from './render/entityViews.ts';
 import { createRenderer } from './render/renderer.ts';
 import { applyFov, createScene, updateCamera } from './render/scene.ts';
 import { createSettingsStore, type SettingsStorage } from './settings/store.ts';
+import { createChat } from './ui/chat.ts';
 import { createDebugPanel } from './ui/debugPanel.ts';
 import { createCombatHud, createHud } from './ui/hud.ts';
+import { createIntermission } from './ui/intermission.ts';
+import { createLobby, errorMessageFor, filterRoomCodeInput } from './ui/lobby.ts';
+import { createResults, type ResultsSummary } from './ui/results.ts';
 
 export const DEFAULT_SERVER_URL = 'ws://127.0.0.1:8787';
 export const DEFAULT_PLAYER_NAME = '陈sir';
-export const PHASE_NAMES: readonly string[] = ['大厅', '间歇', '战斗中', '结算'];
+export const PHASE_NAMES: readonly string[] = ['大厅', '加载中', '战斗中', '波间备战', '结算'];
 export const FALLBACK_CAMERA = { x: 0, y: 3, z: 18 };
 
 function safeLocalStorage(): SettingsStorage | undefined {
@@ -58,13 +65,18 @@ export function boot(): void {
   const bannerRoot = requireElement('banner');
   const debugRoot = requireElement('debug');
   const pauseRoot = requireElement('pause-overlay');
+  const lobbyRoot = requireElement('lobby');
+  const intermissionRoot = requireElement('intermission');
+  const resultsRoot = requireElement('results');
+  const chatRoot = requireElement('chat');
 
   const params = new URLSearchParams(window.location.search);
-  const roomCode = (params.get('room') ?? '').trim().toUpperCase();
-  const playerName = params.get('name') ?? DEFAULT_PLAYER_NAME;
   const serverUrl = params.get('server') ?? DEFAULT_SERVER_URL;
+  const storage = safeLocalStorage();
+  const stored = readStoredCredentials(storage, params.get('name') ?? DEFAULT_PLAYER_NAME);
+  const initialRoomCode = filterRoomCodeInput(params.get('room') ?? stored.roomCode);
 
-  const settings = createSettingsStore(safeLocalStorage());
+  const settings = createSettingsStore(storage);
   const { scene, camera } = createScene(settings.get().fov);
   const arenaParams: ArenaParams = {
     halfSize: ARENA.halfSize,
@@ -158,18 +170,84 @@ export function boot(): void {
     getTick: () => view.getAppliedTick(),
   });
 
+  let inRoom = false;
+  let lastPlayers: readonly MatchStatePlayer[] = [];
+  let matchEndWinnerTeam = 0;
+  let matchEndWave = 0;
+  let matchEndDurationMs = 0;
+
+  function backToLobby(message: string): void {
+    inRoom = false;
+    hud.showBanner(message);
+    lobby.open(message);
+    chat.setVisible(false);
+    intermission.close();
+    results.hide();
+  }
+
+  function publishResults(players: readonly MatchStatePlayer[]): void {
+    const rows: { name: string; kills: number }[] = [];
+    for (const player of players) {
+      if (player.pid <= 0) continue;
+      rows.push({ name: player.name, kills: player.kills });
+    }
+    const summary: ResultsSummary = {
+      winnerTeam: matchEndWinnerTeam,
+      waveReached: matchEndWave,
+      durationMs: matchEndDurationMs,
+      players: rows,
+    };
+    results.setSummary(summary);
+    results.show();
+  }
+
+  function showPhase(phase: number): void {
+    if (!inRoom) return;
+    if (phase === MATCH_PHASE.lobby) {
+      lobby.openRoom();
+      intermission.close();
+      results.hide();
+      chat.setVisible(true);
+      return;
+    }
+    if (phase === MATCH_PHASE.intermission) {
+      lobby.close();
+      intermission.open();
+      results.hide();
+      chat.setVisible(true);
+      return;
+    }
+    if (phase === MATCH_PHASE.ended) {
+      lobby.close();
+      intermission.close();
+      chat.setVisible(true);
+      results.show();
+      return;
+    }
+    lobby.close();
+    intermission.close();
+    results.hide();
+    chat.setVisible(true);
+  }
+
   const connection = createGameConnection({
     url: serverUrl,
     view,
-    name: playerName,
-    roomCode,
+    storage,
     onStatus: (status) => {
       hud.setStatus(status);
+      if (!inRoom) return;
       if (status === 'error') hud.showBanner('连接错误，正在重连…');
       else if (status === 'closed') hud.showBanner('连接断开，正在重连…');
     },
     onWelcome: (welcome) => {
       hud.setRoomCode(welcome.roomCode);
+      inRoom = true;
+      lobby.setRoom(welcome.roomCode, welcome.pid);
+      chat.clear();
+      chat.setVisible(true);
+      intermission.close();
+      results.hide();
       commands.clear();
       smoother.reset();
       reconciler.reset();
@@ -199,15 +277,78 @@ export function boot(): void {
         reloadLeft10Ms = player.reloadLeft10Ms;
         viewModel.setWeapon(weaponSlot);
       }
+      lastPlayers = state.players;
+      chat.setPlayers(state.players);
+      lobby.applyMatchState(state, mine);
+      intermission.applyMatchState(state, mine);
+      if (state.phase === MATCH_PHASE.ended) publishResults(state.players);
+      showPhase(state.phase);
     },
     onEvents: (events) => {
       hud.pushEvents(events.map((event) => event.type));
-      for (let i = 0; i < events.length; i += 1) handleCombatEvent(events[i]);
+      for (let i = 0; i < events.length; i += 1) {
+        const event = events[i];
+        if (event === undefined) continue;
+        if (event.type === 'matchEnded') {
+          matchEndWinnerTeam = event.subjectId === 1 ? 1 : 0;
+          matchEndWave = event.value;
+          matchEndDurationMs = event.flags;
+          publishResults(lastPlayers);
+        }
+        handleCombatEvent(event);
+      }
     },
+    onChat: (message) => chat.push(message.pid, message.text),
+    onReturnToLobby: (message) => backToLobby(message),
     onServerError: (code, message) => {
-      hud.showBanner('错误 ' + String(code) + '：' + (ERROR_MESSAGES[code] ?? message));
+      const text = errorMessageFor(code, message);
+      if (
+        code === ERROR_CODE.roomNotFound ||
+        code === ERROR_CODE.roomFull ||
+        code === ERROR_CODE.matchInProgress ||
+        code === ERROR_CODE.invalidName
+      ) {
+        backToLobby('错误 ' + String(code) + '：' + text);
+        return;
+      }
+      if (code === ERROR_CODE.notHost) lobby.setNotice(text);
+      hud.showBanner('错误 ' + String(code) + '：' + text);
     },
   });
+
+  const chat = createChat({ onSend: (text) => connection.sendChat(text) });
+  chatRoot.append(chat.element);
+  chat.setVisible(false);
+  const lobby = createLobby(lobbyRoot, {
+    storage,
+    initialNickname: stored.nickname,
+    initialRoomCode,
+    onJoin: (roomCode, nickname) => {
+      connection.joinRoom(roomCode, nickname);
+    },
+    onReadyChange: (ready, weapon) => connection.sendReady(ready, weapon),
+    onStartMatch: () => connection.sendStartMatch(),
+    onLeave: () => {
+      connection.leaveRoom();
+      inRoom = false;
+      chat.clear();
+      chat.setVisible(false);
+      lobby.open('已离开房间');
+    },
+  });
+  const intermission = createIntermission(intermissionRoot, {
+    onReadyChange: (ready, weapon) => connection.sendReady(ready, weapon),
+  });
+  const results = createResults(resultsRoot, {
+    onReturnToLobby: () => {
+      results.hide();
+      lobby.openRoom();
+      chat.setVisible(true);
+    },
+  });
+  lobby.open();
+  intermission.close();
+  results.hide();
 
   const pointer = createPointerInput({
     target: renderer.domElement,
@@ -372,7 +513,7 @@ export function boot(): void {
       pooledEntities: views.meshCount,
       localPos,
       status: connection.status,
-      roomCode,
+      roomCode: connection.roomCode,
       predictionErrorM: reconciler.lastErrorM,
       predictionMaxErrorM: reconciler.maxErrorM,
       hardCorrects: reconciler.hardCorrectCount,
@@ -389,6 +530,10 @@ export function boot(): void {
     views.dispose();
     hud.dispose();
     debug.dispose();
+    lobby.dispose();
+    intermission.dispose();
+    results.dispose();
+    chat.dispose();
     disposeArena(arena);
     renderer.dispose();
   });

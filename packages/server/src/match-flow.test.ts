@@ -19,7 +19,7 @@ import { createHarness, sendPing, sendSimple } from './testing/harness.ts';
 const scratch = new Uint8Array(LIMITS.maxFrameBytes);
 
 describe('对局流程', () => {
-  it('非房主 startMatch 被拒，房主触发 intermission 并在倒计时后进入 playing', async () => {
+  it('非房主 startMatch 被拒，房主经 1.5s loading 进入 playing', async () => {
     const harness = createHarness();
     const host = harness.connect();
     const guest = harness.connect();
@@ -31,11 +31,16 @@ describe('对局流程', () => {
     expect(guest.errorCodes()).toContain(ERROR_CODE.notHost);
     expect(host.matchState()?.phase).toBe(MATCH_PHASE.lobby);
 
-    sendSimple(host, OPCODE.startMatch);
-    expect(host.matchState()?.phase).toBe(MATCH_PHASE.intermission);
-    expect(host.matchState()?.intermissionMs).toBe(5000);
+    let size = encodeReady({ ready: true, weapon: 1 }, scratch);
+    host.send(scratch.subarray(0, size));
+    size = encodeReady({ ready: true, weapon: 2 }, scratch);
+    guest.send(scratch.subarray(0, size));
 
-    harness.advance(5000);
+    sendSimple(host, OPCODE.startMatch);
+    expect(host.matchState()?.phase).toBe(MATCH_PHASE.loading);
+    expect(host.matchState()?.intermissionMs).toBe(1500);
+
+    harness.advance(1500);
     expect(host.matchState()?.phase).toBe(MATCH_PHASE.playing);
     expect(host.matchState()?.wave).toBe(1);
 

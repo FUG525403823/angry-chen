@@ -115,12 +115,32 @@ export type {
   Welcome,
 } from './net/protocol.ts';
 
+export { MATCH_PHASE_NAMES, MATCH_PHASE_TRANSITIONS } from './match/phase.ts';
+export { canTransition } from './match/transition.ts';
+export type { IllegalTransition, TransitionResult } from './match/transition.ts';
+export { createMatchState, createMatchStatePlayer } from './match/state.ts';
+export {
+  accuracyOf,
+  accumulateAlive,
+  accumulateDowned,
+  createPlayerMatchStats,
+  noteDown,
+  noteHit,
+  noteKill,
+  noteRevive,
+  noteShot,
+  resetPlayerMatchStats,
+  survivalMsOf,
+} from './match/stats.ts';
+export type { PlayerMatchStats } from './match/stats.ts';
+
 export {
   EVENT_FRAME_HEADER_BYTES,
   NEW_ROOM_CODE,
   createSnapshotBaseline,
   createSnapshotMirror,
   decodeChat,
+  decodeChatMessage,
   decodeCommand,
   decodeError,
   decodeEventFrame,
@@ -138,6 +158,7 @@ export {
   dequantizePosition,
   dequantizeRatio,
   encodeChat,
+  encodeChatMessage,
   encodeCommand,
   encodeError,
   encodeEventFrame,
@@ -164,6 +185,7 @@ export {
   utf8Length,
 } from './net/codec.ts';
 export type {
+  ChatMessage,
   DecodeFailure,
   DecodeResult,
   JoinRequest,

@@ -56,6 +56,7 @@ export interface Entity {
   team: Team;
   ownerId: EntityId;
   aliveMs: number;
+  idle: boolean;
   weapon: WeaponState;
   combat: CombatState;
   ai: SheepAiState;
@@ -119,6 +120,7 @@ export function createEntity(id: EntityId): Entity {
     team: 0,
     ownerId: 0,
     aliveMs: 0,
+    idle: false,
     weapon: createWeaponState(),
     combat: createCombatState(),
     ai: createSheepAiState(),
@@ -206,6 +208,7 @@ export function spawnEntity(
   entity.team = team;
   entity.ownerId = ownerId;
   entity.aliveMs = 0;
+  entity.idle = false;
   resetWeaponState(entity.weapon);
   resetCombatState(entity.combat);
   resetSheepAiState(entity.ai);

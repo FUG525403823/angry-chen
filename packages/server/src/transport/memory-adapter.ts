@@ -12,6 +12,7 @@ export interface MemoryClient {
   readonly id: number;
   readonly closed: boolean;
   send(frame: Uint8Array): void;
+  disconnect(): void;
   onMessage(handler: FrameHandler): void;
   onClose(handler: CloseHandler): void;
   flush(): Promise<void>;
@@ -155,6 +156,16 @@ export function createMemoryTransport(options: MemoryTransportOptions): MemoryTr
         },
         send(frame: Uint8Array): void {
           toServer(link, frame);
+        },
+        disconnect(): void {
+          if (link.clientClosed) return;
+          link.clientClosed = true;
+          defer(() => {
+            const handler = link.serverCloseHandler;
+            if (handler !== undefined) handler();
+            const clientHandler = link.clientCloseHandler;
+            if (clientHandler !== undefined) clientHandler();
+          });
         },
         onMessage(handler: FrameHandler): void {
           link.clientMessageHandler = handler;

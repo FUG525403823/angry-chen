@@ -300,6 +300,28 @@ export function decodeChat(frame: Uint8Array): DecodeResult<string> {
   return ok(sanitizeChat(readUtf8(frame, 2, length)));
 }
 
+export interface ChatMessage {
+  pid: number;
+  text: string;
+}
+
+export function encodeChatMessage(message: ChatMessage, out: Uint8Array): number {
+  putU8(out, 0, OPCODE.chatMessage);
+  putU16(out, 1, message.pid & 0xffff);
+  const length = writeUtf8(out, 4, sanitizeChat(message.text), LIMITS.maxChatBytes);
+  putU8(out, 3, length);
+  return 4 + length;
+}
+
+export function decodeChatMessage(frame: Uint8Array): DecodeResult<ChatMessage> {
+  if (u8(frame, 0) !== OPCODE.chatMessage) return fail('bad-opcode');
+  if (frame.length < 4) return fail('truncated');
+  const length = u8(frame, 3);
+  if (length > LIMITS.maxChatBytes) return fail('bad-length');
+  if (frame.length !== 4 + length) return fail('bad-length');
+  return ok({ pid: u16(frame, 1), text: sanitizeChat(readUtf8(frame, 4, length)) });
+}
+
 export function encodeInteract(act: number, out: Uint8Array): number {
   putU8(out, 0, OPCODE.interact);
   putU8(out, 1, act !== 0 ? 1 : 0);
@@ -854,7 +876,13 @@ export function encodeMatchState(state: MatchState, out: Uint8Array): number {
 export function decodeMatchState(frame: Uint8Array, out?: MatchState): DecodeResult<MatchState> {
   if (u8(frame, 0) !== OPCODE.matchState) return fail('bad-opcode');
   if (frame.length < 6) return fail('truncated');
-  const state: MatchState = out ?? { phase: 0, wave: 0, intermissionMs: 0, players: [] };
+  const state: MatchState = out ?? {
+    phase: 0,
+    wave: 0,
+    intermissionMs: 0,
+    hostId: 0,
+    players: [],
+  };
   state.phase = u8(frame, 1);
   state.wave = u8(frame, 2);
   state.intermissionMs = u16(frame, 3);

@@ -55,6 +55,7 @@ function poolOf(out: Snapshot, capacity: number): SnapshotEntity[] {
 export function computeEntityFlags(entity: Entity): number {
   let flags = 0;
   if (entity.kind === 'player' && entity.hp <= 0) flags |= SNAPSHOT_FLAG.downed;
+  if (entity.kind === 'player' && entity.idle) flags |= SNAPSHOT_FLAG.idle;
   return flags;
 }
 

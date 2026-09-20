@@ -6,6 +6,7 @@ import { LIMITS } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
 import { formatLogLine } from './log.ts';
+import { createJsonMatchStore, DEFAULT_DATA_DIR } from './match/store.ts';
 import { createGameServer } from './server.ts';
 import { createWsTransport } from './transport/ws-adapter.ts';
 
@@ -33,6 +34,9 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   const host = env.HOST ?? DEFAULT_HOST;
   const maxRooms = readIntEnv('MAX_ROOMS', LIMITS.maxRooms, env);
   const maxPlayersPerRoom = readIntEnv('MAX_PLAYERS_PER_ROOM', LIMITS.maxPlayersPerRoom, env);
+  const dataDir = env.DATA_DIR ?? DEFAULT_DATA_DIR;
+  const store = createJsonMatchStore({ dir: dataDir });
+  await store.load();
   const httpServer = createServer();
   const transport = createWsTransport({
     port,
@@ -43,6 +47,7 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   const game = createGameServer(transport, {
     maxRooms,
     maxPlayersPerRoom,
+    store,
     log: (message: string): void => {
       console.log(message);
     },
@@ -59,6 +64,9 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       url: 'http://' + host + ':' + String(boundPort),
       health: '/health',
       metrics: '/metrics',
+      leaderboard: '/api/leaderboard',
+      recentMatches: '/api/matches/recent',
+      dataDir,
       maxRooms,
       maxPlayersPerRoom,
     }),

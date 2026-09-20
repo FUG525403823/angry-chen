@@ -1,5 +1,6 @@
 import { ERROR_CODE, encodeError } from '@ac/shared';
 
+import { createNullMatchStore, type MatchStore } from './match/store.ts';
 import { createMetrics, type Metrics } from './metrics.ts';
 import { updateRoom, type RoomDeps } from './room.ts';
 import { createRoomRegistry, type RoomRegistry } from './rooms.ts';
@@ -16,12 +17,14 @@ export interface GameServerOptions {
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
   readonly log?: (message: string) => void;
+  readonly store?: MatchStore;
 }
 
 export interface GameServer {
   readonly metrics: Metrics;
   readonly rooms: RoomRegistry;
   readonly transport: Transport;
+  readonly store: MatchStore;
   readonly sessionCount: number;
   step(nowMs: number): void;
   listen(): Promise<void>;
@@ -34,6 +37,7 @@ export function createGameServer(transport: Transport, options: GameServerOption
   const now = options.now ?? ((): number => Date.now());
   const monotonicNow = options.monotonicNow ?? ((): number => performance.now());
   const log = options.log ?? ((): void => undefined);
+  const store = options.store ?? createNullMatchStore();
   const rooms = createRoomRegistry(metrics, {
     maxRooms: options.maxRooms,
     ...(options.maxPlayersPerRoom === undefined
@@ -41,10 +45,11 @@ export function createGameServer(transport: Transport, options: GameServerOption
       : { maxPlayersPerRoom: options.maxPlayersPerRoom }),
     ...(options.seed === undefined ? {} : { seed: options.seed }),
   });
-  const roomDeps: RoomDeps = { metrics, monotonicNow };
+  const roomDeps: RoomDeps = { metrics, store, now, log, monotonicNow };
   const deps: SessionDeps = {
     rooms,
     metrics,
+    store,
     now,
     monotonicNow,
     log,
@@ -63,6 +68,7 @@ export function createGameServer(transport: Transport, options: GameServerOption
     metrics,
     rooms,
     transport,
+    store,
     get sessionCount(): number {
       return sessions.size;
     },

@@ -14,6 +14,7 @@ import {
   decodePing,
   decodeReady,
   decodeSimpleFrame,
+  encodeChatMessage,
   encodeError,
   encodePong,
   encodeWelcome,
@@ -23,8 +24,10 @@ import {
 } from '@ac/shared';
 
 import { formatLogLine } from './log.ts';
+import { tryStartMatch } from './match/controller.ts';
+import type { MatchStore } from './match/store.ts';
 import type { Metrics } from './metrics.ts';
-import { INTERMISSION_MS, broadcastMatchState } from './room.ts';
+import { broadcastMatchState } from './room.ts';
 import type { RoomRegistry } from './rooms.ts';
 import type { Connection } from './transport/types.ts';
 
@@ -55,11 +58,13 @@ export interface Session {
   strikes: number;
   closed: boolean;
   joinedAtMs: number;
+  disconnectedAtMs: number | null;
 }
 
 export interface SessionDeps {
   readonly rooms: RoomRegistry;
   readonly metrics: Metrics;
+  readonly store: MatchStore;
   now(): number;
   monotonicNow(): number;
   log(message: string): void;
@@ -94,6 +99,7 @@ export function createSession(connection: Connection, nowMs: number): Session {
     strikes: 0,
     closed: false,
     joinedAtMs: nowMs,
+    disconnectedAtMs: null,
   };
 }
 
@@ -190,6 +196,7 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     sendError(deps, session, ERROR_CODE.invalidName, 'invalid name');
     return;
   }
+  session.name = name;
   const outcome = deps.rooms.join(decoded.value.roomCode, session, nowMs);
   if (!outcome.ok) {
     if (outcome.reason === 'room-not-found')
@@ -199,7 +206,6 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     else sendError(deps, session, ERROR_CODE.roomFull, 'room full');
     return;
   }
-  session.name = name;
   deps.metrics.joins += 1;
   const size = encodeWelcome(
     {
@@ -297,7 +303,7 @@ function handleReady(deps: SessionDeps, session: Session, frame: Uint8Array): vo
   }
   const room = deps.rooms.roomOf(session);
   if (room === undefined) return;
-  if (room.phase !== 0 && room.phase !== 1) {
+  if (room.phase !== MATCH_PHASE.lobby && room.phase !== MATCH_PHASE.intermission) {
     deps.metrics.droppedFrames += 1;
     return;
   }
@@ -322,6 +328,15 @@ function handleChat(deps: SessionDeps, session: Session, frame: Uint8Array): voi
       ' text=' +
       decoded.value,
   );
+  const room = deps.rooms.roomOf(session);
+  if (room === undefined) return;
+  const size = encodeChatMessage({ pid: session.pid, text: decoded.value }, room.broadcastBuffer);
+  const chatFrame = room.broadcastBuffer.subarray(0, size);
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const target = room.sessions[i];
+    if (target === undefined || target.disconnectedAtMs !== null) continue;
+    target.connection.send(chatFrame);
+  }
 }
 
 function handleInteract(deps: SessionDeps, session: Session, frame: Uint8Array): void {
@@ -357,16 +372,15 @@ function handleSimple(
   deps.metrics.startMatchRequests += 1;
   const room = deps.rooms.roomOf(session);
   if (room === undefined) return;
-  if (room.sessions[0] !== session) {
+  const outcome = tryStartMatch(room, deps, session);
+  if (outcome === 'not-host') {
     sendError(deps, session, ERROR_CODE.notHost, 'only the host can start the match');
     return;
   }
-  if (room.phase !== 0) {
+  if (outcome !== 'ok') {
     deps.metrics.droppedFrames += 1;
     return;
   }
-  room.phase = MATCH_PHASE.intermission;
-  room.intermissionMs = INTERMISSION_MS;
   broadcastMatchState(room);
 }
 
@@ -429,7 +443,7 @@ export function attachSession(deps: SessionDeps, session: Session): void {
   session.connection.onClose(() => {
     if (session.closed) return;
     session.closed = true;
-    deps.rooms.leave(session, deps.now());
+    deps.rooms.disconnect(session, deps.now());
     deps.metrics.leaves += 1;
     if (deps.onSessionEnd !== undefined) deps.onSessionEnd(session);
   });

@@ -100,6 +100,7 @@ export function collectPlayerIds(world: World): EntityId[] {
   for (let i = 0; i < ids.length; i += 1) {
     const entity = getEntity(world, ids[i] ?? 0);
     if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (entity.idle) continue;
     playerIdScratch.push(entity.id);
   }
   return playerIdScratch;

@@ -4,7 +4,6 @@ import {
   type Command,
   LIMITS,
   MATCH_PHASE,
-  WAVE_INTERMISSION_MS,
   aliveSheepCount,
   createDirectorState,
   planWave,
@@ -22,6 +21,7 @@ import {
   countActive,
   createCombatContext,
   createCommand,
+  createMatchState,
   createPoseHistory,
   createShotTrace,
   createSnapshot,
@@ -36,6 +36,7 @@ import {
   rageSecondsLeft,
   recordPoseHistory,
   reloadRemainingMs,
+  resetDownedState,
   reviveRatio,
   snapshotWorld,
   spawnEntity,
@@ -45,11 +46,26 @@ import {
 } from '@ac/shared';
 
 import { createAdvanceCheck, isLegalPosition, validateAdvance } from './anticheat.ts';
-import { recordTickJitter, type Metrics } from './metrics.ts';
+import {
+  GRACE_PERIOD_MS,
+  RECONNECT_MIN_HP_RATIO,
+  accumulateMatchEvents,
+  accumulateMatchTime,
+  applyShotDeltas,
+  captureShotBaseline,
+  checkMatchEnd,
+  createMatchRuntime,
+  endMatch,
+  handleWaveCleared,
+  joinMatchRecord,
+  updateMatch,
+  type MatchDeps,
+  type MatchRuntime,
+} from './match/controller.ts';
+import { recordTickJitter } from './metrics.ts';
 import type { Session } from './session.ts';
 
 export const MATCH_STATE_INTERVAL_MS = 1000;
-export const INTERMISSION_MS = 5000;
 
 export interface Room {
   readonly code: string;
@@ -75,10 +91,10 @@ export interface Room {
   readonly history: PoseHistory;
   readonly preTick: Float64Array;
   readonly combat: CombatContext;
+  readonly match: MatchRuntime;
 }
 
-export interface RoomDeps {
-  readonly metrics: Metrics;
+export interface RoomDeps extends MatchDeps {
   monotonicNow(): number;
 }
 
@@ -96,9 +112,10 @@ export function createRoom(
     commands: [],
     idleCommand: createCommand(),
     snapshot: createSnapshot(),
-    matchState: { phase: MATCH_PHASE.lobby, wave: 0, intermissionMs: 0, players: [] },
+    matchState: createMatchState(),
     broadcastBuffer: new Uint8Array(LIMITS.maxFrameBytes),
     phase: MATCH_PHASE.lobby,
+    match: createMatchRuntime(),
     wave: 0,
     intermissionMs: 0,
     director: createDirectorState(),
@@ -139,22 +156,89 @@ export function roomJoin(room: Room, session: Session, nowMs: number): 'ok' | 'f
   session.ready = false;
   session.weapon = 0;
   session.kills = 0;
+  session.disconnectedAtMs = null;
   session.joinedAtMs = nowMs;
   room.sessions.push(session);
+  if (room.match.hostId === 0) room.match.hostId = session.pid;
+  joinMatchRecord(room, session.pid, session.name);
   room.emptySinceMs = null;
   room.jitterArmed = false;
   broadcastMatchState(room);
   return 'ok';
 }
 
-export function roomLeave(room: Room, session: Session, nowMs: number): boolean {
+export function roomReconnect(
+  room: Room,
+  existing: Session,
+  incoming: Session,
+): 'ok' | 'not-found' {
+  const index = room.sessions.indexOf(existing);
+  if (index < 0) return 'not-found';
+  incoming.pid = existing.pid;
+  incoming.name = existing.name;
+  incoming.ready = existing.ready;
+  incoming.weapon = existing.weapon;
+  incoming.weaponApplied = existing.weaponApplied;
+  incoming.kills = existing.kills;
+  incoming.roomCode = room.code;
+  incoming.disconnectedAtMs = null;
+  incoming.joinedAtMs = existing.joinedAtMs;
+  room.sessions[index] = incoming;
+  existing.pid = 0;
+  existing.roomCode = null;
+  const entity = incoming.pid > 0 ? room.world.entities[incoming.pid - 1] : undefined;
+  if (entity !== undefined && entity.active && entity.kind === 'player') {
+    entity.idle = false;
+    entity.vel.x = 0;
+    entity.vel.y = 0;
+    entity.vel.z = 0;
+    const minHp = entity.maxHp * RECONNECT_MIN_HP_RATIO;
+    if (entity.combat.downed.downed) resetDownedState(entity.combat.downed);
+    if (entity.hp < minHp) entity.hp = minHp;
+  }
+  room.emptySinceMs = null;
+  broadcastMatchState(room);
+  return 'ok';
+}
+
+export function roomDisconnect(room: Room, session: Session, nowMs: number): void {
+  if (session.disconnectedAtMs !== null) return;
+  session.disconnectedAtMs = nowMs;
+  const entity = session.pid > 0 ? room.world.entities[session.pid - 1] : undefined;
+  if (entity !== undefined && entity.active && entity.kind === 'player') {
+    entity.idle = true;
+    entity.vel.x = 0;
+    entity.vel.y = 0;
+    entity.vel.z = 0;
+  }
+  session.command.moveX = 0;
+  session.command.moveY = 0;
+  session.command.buttons = 0;
+  session.command.switchTo = 0;
+  if (roomIsIdle(room) && room.emptySinceMs === null) room.emptySinceMs = nowMs;
+  broadcastMatchState(room);
+}
+
+export function removeMember(
+  room: Room,
+  session: Session,
+  nowMs: number,
+  leftMidMatch: boolean,
+): boolean {
   const index = room.sessions.indexOf(session);
   if (index < 0) return false;
   room.sessions.splice(index, 1);
-  if (session.pid > 0) despawnEntity(room.world, session.pid);
+  if (session.pid > 0) {
+    const record = room.match.records.get(session.pid);
+    if (record !== undefined) record.leftMidMatch = true;
+    despawnEntity(room.world, session.pid);
+  }
   session.pid = 0;
   session.roomCode = null;
   session.ready = false;
+  session.disconnectedAtMs = null;
+  void leftMidMatch;
+  reassignHost(room);
   if (room.sessions.length === 0) {
     room.emptySinceMs = nowMs;
     room.accumulatorMs = 0;
@@ -162,6 +246,59 @@ export function roomLeave(room: Room, session: Session, nowMs: number): boolean 
   }
   broadcastMatchState(room);
   return true;
+}
+
+export function roomLeave(room: Room, session: Session, nowMs: number): boolean {
+  return removeMember(room, session, nowMs, true);
+}
+
+function reassignHost(room: Room): void {
+  let hostStillPresent = false;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session !== undefined && session.pid === room.match.hostId) {
+      hostStillPresent = true;
+      break;
+    }
+  }
+  if (hostStillPresent) return;
+  let nextHost = 0;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session === undefined || session.pid <= 0) continue;
+    const entity = room.world.entities[session.pid - 1];
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (nextHost === 0 || session.pid < nextHost) nextHost = session.pid;
+  }
+  room.match.hostId = nextHost;
+}
+
+export function roomIsIdle(room: Room): boolean {
+  if (room.sessions.length === 0) return true;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session !== undefined && session.disconnectedAtMs === null) return false;
+  }
+  return true;
+}
+
+function connectedSessionCount(room: Room): number {
+  let count = 0;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session !== undefined && session.disconnectedAtMs === null) count += 1;
+  }
+  return count;
+}
+
+function expireGraceSessions(room: Room, nowMs: number): void {
+  const sessions = room.sessions;
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    const session = sessions[i];
+    if (session === undefined || session.disconnectedAtMs === null) continue;
+    if (nowMs - session.disconnectedAtMs < GRACE_PERIOD_MS) continue;
+    removeMember(room, session, nowMs, true);
+  }
 }
 
 function buildCommands(room: Room): void {
@@ -203,10 +340,21 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
   if (elapsed < 0) elapsed = 0;
   room.lastUpdateMs = nowMs;
 
+  expireGraceSessions(room, nowMs);
+
   if (room.sessions.length === 0) {
+    if (room.phase === MATCH_PHASE.playing || room.phase === MATCH_PHASE.intermission) {
+      endMatch(room, deps, nowMs, 1);
+      broadcastMatchState(room);
+    }
     room.accumulatorMs = 0;
     room.jitterArmed = false;
     room.matchStateTimerMs = 0;
+    return;
+  }
+  if (connectedSessionCount(room) === 0) {
+    room.accumulatorMs = 0;
+    room.jitterArmed = false;
     return;
   }
 
@@ -224,15 +372,7 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
     steps += 1;
   }
 
-  if (room.phase === MATCH_PHASE.intermission) {
-    room.intermissionMs -= elapsed;
-    if (room.intermissionMs <= 0) {
-      room.intermissionMs = 0;
-      room.phase = MATCH_PHASE.playing;
-      room.wave += 1;
-      broadcastMatchState(room);
-    }
-  }
+  if (updateMatch(room, deps, nowMs, elapsed)) broadcastMatchState(room);
 
   room.matchStateTimerMs += elapsed;
   while (room.matchStateTimerMs >= MATCH_STATE_INTERVAL_MS) {
@@ -245,7 +385,7 @@ function activePlayerCount(room: Room): number {
   let count = 0;
   for (let i = 0; i < room.sessions.length; i += 1) {
     const session = room.sessions[i];
-    if (session !== undefined && session.pid > 0) count += 1;
+    if (session !== undefined && session.pid > 0 && session.disconnectedAtMs === null) count += 1;
   }
   return count > 0 ? count : 1;
 }
@@ -256,9 +396,9 @@ function collectDirectorPlayerIds(room: Room): number[] {
   directorPlayerIdScratch.length = 0;
   for (let i = 0; i < room.sessions.length; i += 1) {
     const session = room.sessions[i];
-    if (session === undefined || session.pid <= 0) continue;
+    if (session === undefined || session.pid <= 0 || session.disconnectedAtMs !== null) continue;
     const entity = room.world.entities[session.pid - 1];
-    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (entity === undefined || !entity.active || entity.kind !== 'player' || entity.idle) continue;
     directorPlayerIdScratch.push(entity.id);
   }
   directorPlayerIdScratch.sort((a, b) => a - b);
@@ -292,6 +432,7 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
     weaponSession.weaponApplied = true;
   }
   room.combat.counters = deps.metrics;
+  captureShotBaseline(room);
   stepWorld(room.world, room.commands, SERVER_TICK_MS, room.combat);
   applyPoseValidation(deps, room, checked);
   if (room.phase === MATCH_PHASE.playing) {
@@ -307,11 +448,14 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
     );
     deps.metrics.spawns += directorTick.spawned;
     if (directorTick.waveCleared) {
-      room.phase = MATCH_PHASE.intermission;
-      room.intermissionMs = WAVE_INTERMISSION_MS;
-      broadcastMatchState(room);
+      handleWaveCleared(room, deps, deps.now());
+    } else {
+      checkMatchEnd(room, deps, deps.now());
     }
   }
+  accumulateMatchEvents(room);
+  applyShotDeltas(room);
+  accumulateMatchTime(room, SERVER_TICK_MS);
   deps.metrics.sheepAlive = aliveSheepCount(room.world);
   deps.metrics.waveCurrent = room.wave;
   recordPoseHistory(room.history, room.world);
@@ -324,7 +468,8 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
   const sessions = room.sessions;
   for (let i = 0; i < sessions.length; i += 1) {
     const session = sessions[i];
-    if (session !== undefined) sendSnapshot(deps, room, session, periodicFull);
+    if (session === undefined || session.disconnectedAtMs !== null) continue;
+    sendSnapshot(deps, room, session, periodicFull);
   }
 
   const events = room.world.events;
@@ -333,7 +478,8 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
     const frame = room.broadcastBuffer.subarray(0, size);
     for (let i = 0; i < sessions.length; i += 1) {
       const session = sessions[i];
-      if (session !== undefined) session.connection.send(frame);
+      if (session === undefined || session.disconnectedAtMs !== null) continue;
+      session.connection.send(frame);
     }
     deps.metrics.eventsSent += events.length;
   }
@@ -367,8 +513,13 @@ export function broadcastMatchState(room: Room): void {
   const state = room.matchState;
   state.phase = room.phase;
   state.wave = room.wave;
+  state.hostId = room.match.hostId;
   state.intermissionMs =
-    room.intermissionMs > 0 ? Math.min(65535, Math.round(room.intermissionMs)) : 0;
+    room.phase === MATCH_PHASE.loading
+      ? Math.min(65535, Math.max(0, Math.round(room.match.loadingMs)))
+      : room.intermissionMs > 0
+        ? Math.min(65535, Math.round(room.intermissionMs))
+        : 0;
   const sessions = room.sessions;
   for (let i = 0; i < sessions.length; i += 1) {
     const session = sessions[i];
@@ -421,7 +572,8 @@ export function broadcastMatchState(room: Room): void {
   const frame = room.broadcastBuffer.subarray(0, size);
   for (let i = 0; i < sessions.length; i += 1) {
     const session = sessions[i];
-    if (session !== undefined) session.connection.send(frame);
+    if (session === undefined || session.disconnectedAtMs !== null) continue;
+    session.connection.send(frame);
   }
 }
 

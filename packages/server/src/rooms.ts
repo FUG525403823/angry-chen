@@ -1,7 +1,15 @@
 import { LIMITS, MATCH_PHASE, NEW_ROOM_CODE, createRng, type Rng } from '@ac/shared';
 
 import type { Metrics } from './metrics.ts';
-import { createRoom, roomJoin, roomLeave, type Room } from './room.ts';
+import {
+  createRoom,
+  roomDisconnect,
+  roomIsIdle,
+  roomJoin,
+  roomLeave,
+  roomReconnect,
+  type Room,
+} from './room.ts';
 import type { Session } from './session.ts';
 
 export type JoinFailure = 'room-not-found' | 'room-full' | 'match-in-progress';
@@ -20,9 +28,21 @@ export interface RoomRegistry {
   create(nowMs: number): Room | null;
   join(code: string, session: Session, nowMs: number): JoinOutcome;
   leave(session: Session, nowMs: number): void;
+  disconnect(session: Session, nowMs: number): void;
   roomOf(session: Session): Room | undefined;
   reclaimIdle(nowMs: number): number;
   readonly size: number;
+}
+
+function findGracedSession(room: Room, name: string): Session | undefined {
+  if (name.length === 0) return undefined;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session !== undefined && session.disconnectedAtMs !== null && session.name === name) {
+      return session;
+    }
+  }
+  return undefined;
 }
 
 export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOptions): RoomRegistry {
@@ -70,6 +90,11 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
       } else {
         room = rooms.get(code);
         if (room === undefined) return { ok: false, reason: 'room-not-found' };
+        const graced = findGracedSession(room, session.name);
+        if (graced !== undefined) {
+          const reconnected = roomReconnect(room, graced, session);
+          if (reconnected === 'ok') return { ok: true, room };
+        }
         if (room.phase === MATCH_PHASE.playing) return { ok: false, reason: 'match-in-progress' };
       }
       const result = roomJoin(room, session, nowMs);
@@ -88,6 +113,15 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
       }
       roomLeave(room, session, nowMs);
     },
+    disconnect(session: Session, nowMs: number): void {
+      if (session.roomCode === null) return;
+      const room = rooms.get(session.roomCode);
+      if (room === undefined) {
+        session.roomCode = null;
+        return;
+      }
+      roomDisconnect(room, session, nowMs);
+    },
     roomOf(session: Session): Room | undefined {
       if (session.roomCode === null) return undefined;
       return rooms.get(session.roomCode);
@@ -95,9 +129,17 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
     reclaimIdle(nowMs: number): number {
       let reclaimed = 0;
       for (const [code, room] of rooms) {
-        if (room.sessions.length > 0) continue;
+        if (!roomIsIdle(room)) continue;
         const since = room.emptySinceMs ?? nowMs;
         if (nowMs - since < LIMITS.emptyRoomReclaimMs) continue;
+        for (let i = 0; i < room.sessions.length; i += 1) {
+          const session = room.sessions[i];
+          if (session === undefined) continue;
+          session.pid = 0;
+          session.roomCode = null;
+          session.disconnectedAtMs = null;
+        }
+        room.sessions.length = 0;
         rooms.delete(code);
         reclaimed += 1;
       }

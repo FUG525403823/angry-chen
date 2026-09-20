@@ -91,6 +91,7 @@ describe('对局状态编解码', () => {
     phase: 1,
     wave: 4,
     intermissionMs: 5000,
+    hostId: 1,
     players: [
       {
         pid: 1,
@@ -182,7 +183,7 @@ describe('对局状态编解码', () => {
 
   it('复用外部 MatchState 对象', () => {
     const size = encodeMatchState(state, buffer);
-    const out: MatchState = { phase: 0, wave: 0, intermissionMs: 0, players: [] };
+    const out: MatchState = { phase: 0, wave: 0, intermissionMs: 0, hostId: 0, players: [] };
     const decoded = decodeMatchState(buffer.subarray(0, size), out);
     if (!decoded.ok) throw new Error('decode failed');
     expect(decoded.value).toBe(out);

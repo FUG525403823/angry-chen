@@ -13,6 +13,7 @@ import {
 } from '@ac/shared';
 import type { MatchState, Pong, SnapshotMirror, Welcome } from '@ac/shared';
 
+import type { MatchStore } from '../match/store.ts';
 import { createGameServer, type GameServer } from '../server.ts';
 import {
   createMemoryTransport,
@@ -26,6 +27,7 @@ export interface TestClient {
   readonly frames: Uint8Array[];
   readonly mirror: SnapshotMirror;
   send(frame: Uint8Array): void;
+  disconnect(): void;
   join(name: string, roomCode: string, protocolVersion?: number): void;
   framesOf(opcode: number): Uint8Array[];
   errorCodes(): number[];
@@ -52,6 +54,7 @@ export function createHarness(options?: {
   seed?: number;
   latencyMs?: number;
   dropRate?: number;
+  store?: MatchStore;
 }): Harness {
   const clock = { value: 1_000_000 };
   const transport = createMemoryTransport({
@@ -68,6 +71,7 @@ export function createHarness(options?: {
     now: (): number => clock.value,
     monotonicNow: (): number => clock.value,
     ...(options?.seed === undefined ? {} : { seed: options.seed }),
+    ...(options?.store === undefined ? {} : { store: options.store }),
   });
   void game.listen();
   const outbound = new Uint8Array(LIMITS.maxFrameBytes);
@@ -87,6 +91,9 @@ export function createHarness(options?: {
       mirror,
       send(frame: Uint8Array): void {
         client.send(frame);
+      },
+      disconnect(): void {
+        client.disconnect();
       },
       join(name: string, roomCode: string, protocolVersion = 1): void {
         const size = encodeJoin({ protocolVersion, name, roomCode }, outbound);

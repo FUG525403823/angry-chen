@@ -40,6 +40,8 @@ export interface Metrics {
   spawns: number;
   hardCorrectTotal: number;
   rewindClampedCount: number;
+  matchesFinished: number;
+  corruptLines: number;
 }
 
 export interface PrometheusGauges {
@@ -49,6 +51,7 @@ export interface PrometheusGauges {
   readonly uptimeSeconds: number;
   readonly oversizedFrames: number;
   readonly clientLagTicksAvg: number;
+  readonly graceActive: number;
 }
 
 export function createMetrics(): Metrics {
@@ -91,6 +94,8 @@ export function createMetrics(): Metrics {
     spawns: 0,
     hardCorrectTotal: 0,
     rewindClampedCount: 0,
+    matchesFinished: 0,
+    corruptLines: 0,
   };
 }
 
@@ -251,6 +256,24 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     'average client acknowledged-tick lag',
     'gauge',
     Number(gauges.clientLagTicksAvg.toFixed(2)),
+  );
+  push(
+    'ac_grace_active',
+    'sessions inside the disconnect grace period',
+    'gauge',
+    gauges.graceActive,
+  );
+  push(
+    'ac_matches_finished_total',
+    'matches that reached the ended phase',
+    'counter',
+    metrics.matchesFinished,
+  );
+  push(
+    'ac_corrupt_lines_total',
+    'NDJSON match lines skipped as corrupt',
+    'counter',
+    metrics.corruptLines,
   );
   push('ac_rooms', 'live rooms', 'gauge', gauges.rooms);
   push('ac_connections', 'open connections', 'gauge', gauges.connections);

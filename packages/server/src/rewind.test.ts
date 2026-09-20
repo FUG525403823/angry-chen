@@ -7,6 +7,7 @@ import {
   type Entity,
 } from '@ac/shared';
 import { describe, expect, it } from 'vitest';
+import { createNullMatchStore } from './match/store.ts';
 import { createMetrics } from './metrics.ts';
 import {
   applyPoseValidation,
@@ -45,7 +46,13 @@ interface Fixture {
 function fixture(): Fixture {
   const now = 1_000_000;
   const room = createRoom('RW01', 5, now, LIMITS.maxPlayersPerRoom);
-  const deps: RoomDeps = { metrics: createMetrics(), monotonicNow: (): number => clock };
+  const deps: RoomDeps = {
+    metrics: createMetrics(),
+    store: createNullMatchStore(),
+    now: (): number => clock,
+    log: (): void => undefined,
+    monotonicNow: (): number => clock,
+  };
   let clock = now;
   const shooter = createSession(stubConnection(1), now);
   const target = createSession(stubConnection(2), now);

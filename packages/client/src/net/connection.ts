@@ -1,8 +1,10 @@
 import {
   ERROR_CODE,
   LIMITS,
+  NEW_ROOM_CODE,
   OPCODE,
   PROTOCOL_VERSION,
+  decodeChatMessage,
   decodeError,
   decodeEventFrame,
   decodeMatchState,
@@ -14,6 +16,12 @@ import {
   encodeJoin,
   encodePing,
   encodeReady,
+  encodeSimpleFrame,
+  isValidRoomCode,
+  sanitizeChat,
+  sanitizeName,
+  utf8Length,
+  type ChatMessage,
   type Command,
   type MatchState,
   type SimEvent,
@@ -26,6 +34,9 @@ export const PING_INTERVAL_MS = 1000;
 export const RECONNECT_BASE_MS = 2000;
 export const RECONNECT_MAX_MS = 15000;
 export const MAX_MATCH_STATE_PLAYERS = LIMITS.maxPlayersPerRoom;
+export const MAX_CHAT_BYTES = LIMITS.maxChatBytes;
+export const NICKNAME_STORAGE_KEY = 'ac.nickname.v1';
+export const LAST_ROOM_CODE_STORAGE_KEY = 'ac.lastRoomCode.v1';
 
 export const ERROR_MESSAGES: Record<number, string> = Object.freeze({
   [ERROR_CODE.protocolMismatch]: '协议版本不一致，请刷新页面',
@@ -41,11 +52,78 @@ export const ERROR_MESSAGES: Record<number, string> = Object.freeze({
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'online' | 'closed' | 'error';
 
+export interface ClientCredentialStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export interface StoredCredentials {
+  nickname: string;
+  roomCode: string;
+}
+
+export function normalizeRoomCode(raw: string): string {
+  const code = raw.trim().toUpperCase();
+  return isValidRoomCode(code) ? code : '';
+}
+
+function readKey(storage: ClientCredentialStorage | undefined, key: string): string | null {
+  if (storage === undefined) return null;
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function readStoredCredentials(
+  storage: ClientCredentialStorage | undefined,
+  fallbackNickname: string,
+): StoredCredentials {
+  const saved = sanitizeName(readKey(storage, NICKNAME_STORAGE_KEY) ?? '');
+  const storedCode = normalizeRoomCode(readKey(storage, LAST_ROOM_CODE_STORAGE_KEY) ?? '');
+  return {
+    nickname: saved ?? fallbackNickname,
+    roomCode: storedCode === NEW_ROOM_CODE ? '' : storedCode,
+  };
+}
+
+export function storeCredentials(
+  storage: ClientCredentialStorage | undefined,
+  credentials: StoredCredentials,
+): void {
+  if (storage === undefined) return;
+  try {
+    storage.setItem(NICKNAME_STORAGE_KEY, credentials.nickname);
+    storage.setItem(LAST_ROOM_CODE_STORAGE_KEY, credentials.roomCode);
+  } catch {
+    return;
+  }
+}
+
+export function clearStoredRoomCode(storage: ClientCredentialStorage | undefined): void {
+  if (storage === undefined) return;
+  try {
+    storage.setItem(LAST_ROOM_CODE_STORAGE_KEY, '');
+  } catch {
+    return;
+  }
+}
+
+export function validateChatText(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  if (utf8Length(trimmed) > MAX_CHAT_BYTES) return null;
+  const cleaned = sanitizeChat(trimmed).trim();
+  return cleaned.length === 0 ? null : cleaned;
+}
+
 export interface ConnectionOptions {
   readonly url: string;
   readonly view: SnapshotViewInternal;
-  readonly name: string;
-  readonly roomCode: string;
+  readonly name?: string;
+  readonly roomCode?: string;
+  readonly storage?: ClientCredentialStorage | undefined;
   readonly autoReconnect?: boolean;
   onStatus?(status: ConnectionStatus, detail: string): void;
   onWelcome?(welcome: Welcome): void;
@@ -53,14 +131,21 @@ export interface ConnectionOptions {
   onSnapshotApplied?(bytesIn: number): void;
   onMatchState?(state: MatchState): void;
   onEvents?(events: readonly SimEvent[]): void;
+  onChat?(message: ChatMessage): void;
+  /** 错误码 7：房间已开局且宽限期不可用，客户端必须退回大厅。 */
+  onReturnToLobby?(message: string): void;
   onServerError?(code: number, message: string): void;
 }
 
 export interface GameConnection {
   readonly status: ConnectionStatus;
   readonly lastServerSnapshotRateX10: number;
-  sendReady(ready: boolean): void;
-  sendChat(text: string): void;
+  readonly roomCode: string;
+  joinRoom(roomCode: string, nickname: string): boolean;
+  leaveRoom(): void;
+  sendReady(ready: boolean, weapon?: number): void;
+  sendStartMatch(): void;
+  sendChat(text: string): boolean;
   sendInteract(): void;
   sendCommand(command: Command): void;
   dispose(): void;
@@ -71,7 +156,7 @@ export function clientClockMs(): number {
 }
 
 export function elapsedMs(startMs: number, endMs: number): number {
-  return ((endMs - startMs) >>> 0) as number;
+  return (endMs - startMs) >>> 0;
 }
 
 export function createGameConnection(options: ConnectionOptions): GameConnection {
@@ -84,16 +169,48 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
   let disposed = false;
   let snapshotRateX10 = 0;
   let reconnectAttempts = 0;
-  let activeRoomCode = options.roomCode;
+  let resuming = false;
+  let autoJoinSuppressed = false;
+  let lastWeapon = 0;
+  let credentials: StoredCredentials = {
+    nickname: sanitizeName(options.name ?? '') ?? '',
+    roomCode: normalizeRoomCode(options.roomCode ?? ''),
+  };
+  let activeRoomCode = credentials.roomCode;
 
   function setStatus(next: ConnectionStatus, detail = ''): void {
     status = next;
     options.onStatus?.(next, detail);
   }
 
-  function send(bytes: Uint8Array, size: number): void {
-    if (socket === undefined || socket.readyState !== WebSocket.OPEN) return;
+  function send(bytes: Uint8Array, size: number): boolean {
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(bytes.subarray(0, size));
+    return true;
+  }
+
+  function joinTarget(): StoredCredentials | undefined {
+    if (autoJoinSuppressed) return undefined;
+    if (credentials.nickname === '' || credentials.roomCode === '') return undefined;
+    return credentials;
+  }
+
+  function sendJoin(target: StoredCredentials): void {
+    send(
+      out,
+      encodeJoin(
+        { protocolVersion: PROTOCOL_VERSION, name: target.nickname, roomCode: target.roomCode },
+        out,
+      ),
+    );
+  }
+
+  function resumeCredentials(): void {
+    const stored = readStoredCredentials(options.storage, credentials.nickname);
+    credentials = {
+      nickname: stored.nickname !== '' ? stored.nickname : credentials.nickname,
+      roomCode: stored.roomCode !== '' ? stored.roomCode : credentials.roomCode,
+    };
   }
 
   function handleWelcome(frame: Uint8Array): void {
@@ -105,28 +222,29 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       activeRoomCode = decoded.value.roomCode;
       options.view.reset();
     }
+    credentials = { nickname: credentials.nickname, roomCode: decoded.value.roomCode };
+    storeCredentials(options.storage, credentials);
     options.view.setLocalPlayerId(decoded.value.pid);
     options.onWelcome?.(decoded.value);
   }
 
-  function handleMatchState(frame: Uint8Array): void {
-    const decoded = decodeMatchState(frame);
+  function handleErrorFrame(frame: Uint8Array): void {
+    const decoded = decodeError(frame);
     if (!decoded.ok) return;
-    options.onMatchState?.(decoded.value);
-  }
-
-  function handleEvents(frame: Uint8Array): void {
-    events.length = 0;
-    const decoded = decodeEventFrame(frame, events);
-    if (!decoded.ok) return;
-    options.onEvents?.(decoded.value);
-  }
-
-  function handlePong(frame: Uint8Array): void {
-    const decoded = decodePong(frame);
-    if (!decoded.ok) return;
-    snapshotRateX10 = decoded.value.snapshotRateX10;
-    options.view.recordRtt(elapsedMs(decoded.value.clientTimeMs, clientClockMs()));
+    const { code, message } = decoded.value;
+    options.onServerError?.(code, message);
+    if (code === ERROR_CODE.matchInProgress) {
+      autoJoinSuppressed = true;
+      credentials = { nickname: credentials.nickname, roomCode: '' };
+      clearStoredRoomCode(options.storage);
+      options.onReturnToLobby?.(ERROR_MESSAGES[ERROR_CODE.matchInProgress] ?? message);
+      return;
+    }
+    if (code === ERROR_CODE.roomNotFound || code === ERROR_CODE.roomFull) {
+      autoJoinSuppressed = true;
+      credentials = { nickname: credentials.nickname, roomCode: '' };
+      clearStoredRoomCode(options.storage);
+    }
   }
 
   function handleFrame(data: ArrayBuffer): void {
@@ -142,39 +260,56 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       return;
     }
     if (opcode === OPCODE.matchState) {
-      handleMatchState(frame);
+      const decoded = decodeMatchState(frame);
+      if (decoded.ok) options.onMatchState?.(decoded.value);
       return;
     }
     if (opcode === OPCODE.event) {
-      handleEvents(frame);
+      events.length = 0;
+      const decoded = decodeEventFrame(frame, events);
+      if (decoded.ok) options.onEvents?.(decoded.value);
+      return;
+    }
+    if (opcode === OPCODE.chatMessage) {
+      const decoded = decodeChatMessage(frame);
+      if (decoded.ok) options.onChat?.(decoded.value);
       return;
     }
     if (opcode === OPCODE.pong) {
-      handlePong(frame);
+      const decoded = decodePong(frame);
+      if (decoded.ok) {
+        snapshotRateX10 = decoded.value.snapshotRateX10;
+        options.view.recordRtt(elapsedMs(decoded.value.clientTimeMs, clientClockMs()));
+      }
       return;
     }
-    if (opcode === OPCODE.error) {
-      const decoded = decodeError(frame);
-      if (decoded.ok) options.onServerError?.(decoded.value.code, decoded.value.message);
-    }
+    if (opcode === OPCODE.error) handleErrorFrame(frame);
   }
 
   function openSocket(): void {
     if (disposed) return;
+    if (socket !== undefined) {
+      const state = socket.readyState;
+      if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
+    }
+    if (reconnectTimer !== undefined) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    }
     setStatus('connecting');
     const next = new WebSocket(options.url);
     next.binaryType = 'arraybuffer';
     socket = next;
     next.addEventListener('open', () => {
+      if (socket !== next || disposed) return;
       setStatus('online');
       reconnectAttempts = 0;
-      send(
-        out,
-        encodeJoin(
-          { protocolVersion: PROTOCOL_VERSION, name: options.name, roomCode: activeRoomCode },
-          out,
-        ),
-      );
+      if (resuming) {
+        resuming = false;
+        resumeCredentials();
+      }
+      const target = joinTarget();
+      if (target !== undefined) sendJoin(target);
       if (pingTimer !== undefined) clearInterval(pingTimer);
       pingTimer = setInterval(() => {
         send(
@@ -187,24 +322,30 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       }, PING_INTERVAL_MS);
     });
     next.addEventListener('message', (event) => {
+      if (socket !== next || disposed) return;
       const data = event.data;
       if (data instanceof ArrayBuffer) handleFrame(data);
     });
-    next.addEventListener('error', () => setStatus('error'));
+    next.addEventListener('error', () => {
+      if (socket !== next || disposed) return;
+      setStatus('error');
+    });
     next.addEventListener('close', () => {
+      if (socket !== next || disposed) return;
+      socket = undefined;
       if (pingTimer !== undefined) {
         clearInterval(pingTimer);
         pingTimer = undefined;
       }
       setStatus('closed');
-      if (!disposed && options.autoReconnect !== false) {
-        reconnectAttempts += 1;
-        const delayMs = Math.min(
-          RECONNECT_MAX_MS,
-          RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1),
-        );
-        reconnectTimer = setTimeout(openSocket, delayMs);
-      }
+      if (autoJoinSuppressed || options.autoReconnect === false) return;
+      resuming = true;
+      reconnectAttempts += 1;
+      const delayMs = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = undefined;
+        openSocket();
+      }, delayMs);
     });
   }
 
@@ -217,11 +358,54 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
     get lastServerSnapshotRateX10(): number {
       return snapshotRateX10;
     },
-    sendReady(ready: boolean): void {
-      send(out, encodeReady({ ready, weapon: 0 }, out));
+    get roomCode(): string {
+      return credentials.roomCode;
     },
-    sendChat(text: string): void {
-      send(out, encodeChat(text, out));
+    joinRoom(roomCode: string, nickname: string): boolean {
+      const name = sanitizeName(nickname);
+      const code = normalizeRoomCode(roomCode);
+      if (name === null || code === '') return false;
+      autoJoinSuppressed = false;
+      resuming = false;
+      credentials = { nickname: name, roomCode: code };
+      storeCredentials(options.storage, credentials);
+      activeRoomCode = code;
+      if (socket !== undefined && socket.readyState === WebSocket.OPEN) {
+        setStatus('online');
+        sendJoin(credentials);
+        return true;
+      }
+      reconnectAttempts = 0;
+      openSocket();
+      return true;
+    },
+    leaveRoom(): void {
+      autoJoinSuppressed = true;
+      resuming = false;
+      credentials = { nickname: credentials.nickname, roomCode: '' };
+      clearStoredRoomCode(options.storage);
+      if (pingTimer !== undefined) {
+        clearInterval(pingTimer);
+        pingTimer = undefined;
+      }
+      const current = socket;
+      socket = undefined;
+      if (current !== undefined && current.readyState === WebSocket.OPEN) {
+        current.send(out.subarray(0, encodeSimpleFrame(OPCODE.leave, out)));
+      }
+      setStatus('idle');
+    },
+    sendReady(ready: boolean, weapon?: number): void {
+      if (weapon !== undefined) lastWeapon = weapon === 1 ? 1 : weapon === 2 ? 2 : 0;
+      send(out, encodeReady({ ready, weapon: lastWeapon }, out));
+    },
+    sendStartMatch(): void {
+      send(out, encodeSimpleFrame(OPCODE.startMatch, out));
+    },
+    sendChat(text: string): boolean {
+      const cleaned = validateChatText(text);
+      if (cleaned === null) return false;
+      return send(out, encodeChat(cleaned, out));
     },
     sendInteract(): void {
       send(out, encodeInteract(1, out));
@@ -235,8 +419,9 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       pingTimer = undefined;
       reconnectTimer = undefined;
-      socket?.close();
+      const current = socket;
       socket = undefined;
+      current?.close();
     },
   };
 }

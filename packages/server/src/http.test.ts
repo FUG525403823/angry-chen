@@ -1,10 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { PROTOCOL_VERSION } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
+import { createJsonMatchStore } from './match/store.ts';
 import { createHarness } from './testing/harness.ts';
 
 async function startHttp(
@@ -71,6 +75,52 @@ describe('运维端点', () => {
 
     await http.close();
     await harness.close();
+  });
+
+  it('/api/leaderboard 与 /api/matches/recent 返回 store 记录', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-http-'));
+    const store = createJsonMatchStore({ dir });
+    await store.load();
+    await store.appendMatchResult({
+      matchId: 'X-1',
+      startedAtMs: 10,
+      durationMs: 1000,
+      waveReached: 4,
+      winnerTeam: 0,
+      playerCount: 1,
+      players: [
+        {
+          name: 'alice',
+          kills: 6,
+          headshots: 2,
+          shotsFired: 20,
+          hits: 12,
+          revives: 1,
+          downs: 0,
+          aliveMs: 900,
+          leftMidMatch: false,
+        },
+      ],
+    });
+    await store.flush();
+
+    const harness = createHarness({ store });
+    const http = await startHttp(harness);
+    const base = 'http://127.0.0.1:' + String(http.port);
+
+    const leaderboard = await fetch(base + '/api/leaderboard?limit=20');
+    expect(leaderboard.status).toBe(200);
+    const boardBody: unknown = await leaderboard.json();
+    expect(boardBody).toMatchObject({ ok: true });
+
+    const recent = await fetch(base + '/api/matches/recent?limit=10');
+    expect(recent.status).toBe(200);
+    const recentBody: unknown = await recent.json();
+    expect(recentBody).toMatchObject({ ok: true, entries: [{ matchId: 'X-1' }] });
+
+    await http.close();
+    await harness.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   it('未知路径返回 404', async () => {

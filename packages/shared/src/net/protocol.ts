@@ -1,5 +1,9 @@
 import { NET } from '../config/index.ts';
 
+export { MATCH_PHASE } from '../match/phase.ts';
+export type { MatchPhase } from '../match/phase.ts';
+export type { MatchState, MatchStatePlayer } from '../match/state.ts';
+
 export const OPCODE = Object.freeze({
   join: 0x01,
   inputCmd: 0x02,
@@ -16,6 +20,7 @@ export const OPCODE = Object.freeze({
   matchState: 0x84,
   pong: 0x85,
   error: 0x86,
+  chatMessage: 0x87,
 } as const);
 
 export type Opcode = (typeof OPCODE)[keyof typeof OPCODE];
@@ -39,6 +44,7 @@ export const SERVER_OPCODE_LIST: readonly number[] = Object.freeze([
   OPCODE.matchState,
   OPCODE.pong,
   OPCODE.error,
+  OPCODE.chatMessage,
 ]);
 
 export const ERROR_CODE = Object.freeze({
@@ -92,15 +98,6 @@ export const ENTITY_KIND_CODE = Object.freeze({
 
 export const ENTITY_KIND_NAMES: readonly ('player' | 'sheep' | 'projectile' | 'pickup')[] =
   Object.freeze(['player', 'sheep', 'projectile', 'pickup']);
-
-export const MATCH_PHASE = Object.freeze({
-  lobby: 0,
-  intermission: 1,
-  playing: 2,
-  ended: 3,
-} as const);
-
-export type MatchPhase = (typeof MATCH_PHASE)[keyof typeof MATCH_PHASE];
 
 export const QUANT = Object.freeze({
   centimeterPerMeter: 100,
@@ -160,27 +157,4 @@ export interface Pong {
 export interface ErrorFrame {
   code: number;
   message: string;
-}
-
-export interface MatchStatePlayer {
-  pid: number;
-  name: string;
-  ready: boolean;
-  weapon: number;
-  hpRatio: number;
-  kills: number;
-  mag: number;
-  reserve: number;
-  reloadLeft10Ms: number;
-  rage: number;
-  rageLeft100Ms: number;
-  downed: boolean;
-  reviveRatio255: number;
-}
-
-export interface MatchState {
-  phase: number;
-  wave: number;
-  intermissionMs: number;
-  players: MatchStatePlayer[];
 }

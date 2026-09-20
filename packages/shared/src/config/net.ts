@@ -4,6 +4,7 @@ export const SNAPSHOT_FLAG = Object.freeze({
   reloading: 4,
   charging: 8,
   fading: 16,
+  idle: 32,
 } as const);
 
 export const NET = Object.freeze({
