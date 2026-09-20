@@ -25,8 +25,15 @@ import {
   type PlayerMatchStats,
 } from '@ac/shared';
 
-import { formatLogLine } from '../log.ts';
+import { LOG_EVENTS, emit, type LogSink } from '../log.ts';
 import type { Metrics } from '../metrics.ts';
+import {
+  buildMatchDiagnostics,
+  createMatchCounters,
+  resetMatchCounters,
+  writeMatchReport,
+  type MatchCounters,
+} from '../report.ts';
 import type { Room } from '../room.ts';
 import type { Session } from '../session.ts';
 import type { MatchResultRecord, MatchStore } from './store.ts';
@@ -41,8 +48,9 @@ export const RECONNECT_MIN_HP_RATIO = 0.5;
 export interface MatchDeps {
   readonly metrics: Metrics;
   readonly store: MatchStore;
+  readonly dataDir?: string;
   now(): number;
-  log(message: string): void;
+  log: LogSink;
 }
 
 export interface MatchPlayerRecord {
@@ -59,6 +67,7 @@ export interface MatchRuntime {
   endedAtMs: number;
   loadingMs: number;
   records: Map<number, MatchPlayerRecord>;
+  readonly counters: MatchCounters;
   readonly shotMagBefore: Int32Array;
   readonly shotSlotBefore: Int32Array;
 }
@@ -71,6 +80,7 @@ export function createMatchRuntime(): MatchRuntime {
     endedAtMs: 0,
     loadingMs: 0,
     records: new Map<number, MatchPlayerRecord>(),
+    counters: createMatchCounters(),
     shotMagBefore: new Int32Array(LIMITS.maxPlayersPerRoom),
     shotSlotBefore: new Int32Array(LIMITS.maxPlayersPerRoom),
   };
@@ -96,13 +106,11 @@ export function applyMatchTransition(room: Room, deps: MatchDeps, next: MatchPha
   if (room.phase === next) return true;
   const result = canTransition(room.phase as MatchPhase, next);
   if (!result.ok) {
-    deps.log(
-      formatLogLine('warn', 'illegal-transition', {
-        room: room.code,
-        current: room.phase,
-        requested: next,
-      }),
-    );
+    emit(deps.log, 'warn', LOG_EVENTS.matchTransitionDenied, {
+      room: room.code,
+      tick: room.world.tick,
+      detail: { current: room.phase, requested: next },
+    });
     return false;
   }
   room.phase = next;
@@ -129,6 +137,7 @@ export function tryStartMatch(room: Room, deps: MatchDeps, session: Session): St
   if (!allPlayersReady(room)) return 'not-ready';
   if (!applyMatchTransition(room, deps, MATCH_PHASE.loading)) return 'wrong-phase';
   room.match.loadingMs = LOADING_MS;
+  resetMatchCounters(room.match.counters);
   return 'ok';
 }
 
@@ -171,6 +180,11 @@ export function updateMatch(
       room.wave = 1;
       room.match.startedAtMs = nowMs;
       refillPlayers(room);
+      emit(deps.log, 'info', LOG_EVENTS.matchStart, {
+        room: room.code,
+        tick: room.world.tick,
+        detail: { wave: room.wave, players: room.sessions.length },
+      });
       return true;
     }
     return false;
@@ -192,6 +206,11 @@ export function updateMatch(
 
 export function handleWaveCleared(room: Room, deps: MatchDeps, nowMs: number): boolean {
   if (room.phase !== MATCH_PHASE.playing) return false;
+  emit(deps.log, 'info', LOG_EVENTS.waveClear, {
+    room: room.code,
+    tick: room.world.tick,
+    detail: { wave: room.wave },
+  });
   reviveDownedForWaveClear(room.world);
   if (room.wave >= WAVE_MAX) {
     endMatch(room, deps, nowMs, 0);
@@ -258,9 +277,34 @@ export function endMatch(room: Room, deps: MatchDeps, nowMs: number, winnerTeam:
   }
   deps.metrics.matchesFinished += 1;
   const record = buildMatchResult(room);
-  void deps.store
-    .appendMatchResult(record)
-    .catch((error: unknown) => deps.log('match store append failed: ' + String(error)));
+  emit(deps.log, 'info', LOG_EVENTS.matchEnd, {
+    room: room.code,
+    tick: room.world.tick,
+    detail: { durationMs, wave: room.wave, winnerTeam },
+  });
+  void deps.store.appendMatchResult(record).catch((error: unknown) => {
+    emit(deps.log, 'error', LOG_EVENTS.storeError, {
+      room: room.code,
+      tick: room.world.tick,
+      detail: { error: String(error) },
+    });
+  });
+  if (deps.dataDir !== undefined) {
+    const diagnostics = buildMatchDiagnostics({
+      matchId: record.matchId,
+      startedAtMs: room.match.startedAtMs,
+      endedAtMs: room.match.endedAtMs,
+      counters: room.match.counters,
+      metrics: deps.metrics,
+    });
+    void writeMatchReport(deps.dataDir, diagnostics).catch((error: unknown) => {
+      emit(deps.log, 'error', LOG_EVENTS.reportWriteFailed, {
+        room: room.code,
+        tick: room.world.tick,
+        detail: { error: String(error) },
+      });
+    });
+  }
 }
 
 export function buildMatchResult(room: Room): MatchResultRecord {

@@ -11,6 +11,7 @@ export interface Metrics {
   tickJitterCursor: number;
   snapshotsSent: number;
   snapshotBytes: number;
+  snapshotBytesMax: number;
   snapshotRecords: number;
   eventsSent: number;
   framesIn: number;
@@ -42,6 +43,9 @@ export interface Metrics {
   rewindClampedCount: number;
   matchesFinished: number;
   corruptLines: number;
+  graceStarts: number;
+  graceReconnects: number;
+  graceTimeouts: number;
 }
 
 export interface PrometheusGauges {
@@ -65,6 +69,7 @@ export function createMetrics(): Metrics {
     tickJitterCursor: 0,
     snapshotsSent: 0,
     snapshotBytes: 0,
+    snapshotBytesMax: 0,
     snapshotRecords: 0,
     eventsSent: 0,
     framesIn: 0,
@@ -96,6 +101,9 @@ export function createMetrics(): Metrics {
     rewindClampedCount: 0,
     matchesFinished: 0,
     corruptLines: 0,
+    graceStarts: 0,
+    graceReconnects: 0,
+    graceTimeouts: 0,
   };
 }
 
@@ -108,12 +116,26 @@ export function recordTickJitter(metrics: Metrics, deltaMs: number): void {
   metrics.tickJitterCursor = (metrics.tickJitterCursor + 1) % jitterRingSize;
 }
 
-export function tickJitterP95(metrics: Metrics): number {
+export function percentileFromSorted(sorted: readonly number[], percentile: number): number {
+  if (sorted.length === 0) return 0;
+  const clamped = Math.min(Math.max(percentile, 0), 1);
+  const index = Math.min(sorted.length - 1, Math.floor(sorted.length * clamped));
+  return sorted[index] ?? 0;
+}
+
+export function tickJitterPercentile(metrics: Metrics, percentile: number): number {
   const filled = Math.min(metrics.tickJitterSamples, jitterRingSize);
   if (filled === 0) return 0;
   const sorted = Array.from(metrics.tickJitterRing.subarray(0, filled)).sort((a, b) => a - b);
-  const index = Math.min(filled - 1, Math.floor(filled * 0.95));
-  return sorted[index] ?? 0;
+  return percentileFromSorted(sorted, percentile);
+}
+
+export function tickJitterP50(metrics: Metrics): number {
+  return tickJitterPercentile(metrics, 0.5);
+}
+
+export function tickJitterP95(metrics: Metrics): number {
+  return tickJitterPercentile(metrics, 0.95);
 }
 
 export function tickJitterAvg(metrics: Metrics): number {
@@ -145,6 +167,12 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     Number(tickJitterP95(metrics).toFixed(3)),
   );
   push(
+    'ac_tick_jitter_ms_p50',
+    'simulation tick jitter p50 in ms',
+    'gauge',
+    Number(tickJitterP50(metrics).toFixed(3)),
+  );
+  push(
     'ac_tick_jitter_ms_avg',
     'simulation tick jitter average in ms',
     'gauge',
@@ -161,6 +189,12 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     'average snapshot frame size in bytes',
     'gauge',
     Number(snapshotBytesAvg(metrics).toFixed(2)),
+  );
+  push(
+    'ac_snapshot_bytes_max',
+    'largest snapshot frame size in bytes',
+    'gauge',
+    metrics.snapshotBytesMax,
   );
   push(
     'ac_snapshot_records_avg',
@@ -274,6 +308,24 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     'NDJSON match lines skipped as corrupt',
     'counter',
     metrics.corruptLines,
+  );
+  push(
+    'ac_grace_starts_total',
+    'sessions that entered the disconnect grace period',
+    'counter',
+    metrics.graceStarts,
+  );
+  push(
+    'ac_grace_reconnects_total',
+    'sessions that reconnected inside the grace period',
+    'counter',
+    metrics.graceReconnects,
+  );
+  push(
+    'ac_grace_timeouts_total',
+    'sessions removed after the grace period expired',
+    'counter',
+    metrics.graceTimeouts,
   );
   push('ac_rooms', 'live rooms', 'gauge', gauges.rooms);
   push('ac_connections', 'open connections', 'gauge', gauges.connections);

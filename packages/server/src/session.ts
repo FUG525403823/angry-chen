@@ -18,17 +18,27 @@ import {
   encodeError,
   encodePong,
   encodeWelcome,
-  sanitizeName,
   type Command,
   type SnapshotBaseline,
 } from '@ac/shared';
 
-import { formatLogLine } from './log.ts';
+import { LOG_EVENTS, emit, type LogSink } from './log.ts';
 import { tryStartMatch } from './match/controller.ts';
 import type { MatchStore } from './match/store.ts';
 import type { Metrics } from './metrics.ts';
 import { broadcastMatchState } from './room.ts';
 import type { RoomRegistry } from './rooms.ts';
+import {
+  checkRateLimit,
+  createJoinThrottle,
+  createRateLimitState,
+  isAllowedClientOpcode,
+  isFrameWithinLimit,
+  sanitizeCommandFields,
+  sanitizeNickname,
+  type JoinThrottle,
+  type RateLimitState,
+} from './security.ts';
 import type { Connection } from './transport/types.ts';
 
 export interface Session {
@@ -50,12 +60,11 @@ export interface Session {
   interactAct: number;
   readonly baseline: SnapshotBaseline;
   readonly outbound: Uint8Array;
-  readonly frameTimes: Float64Array;
-  frameTimeCount: number;
+  readonly rateLimit: RateLimitState;
+  readonly joinThrottle: JoinThrottle;
   readonly queue: Command[];
   queueCount: number;
   readonly incoming: Command;
-  strikes: number;
   closed: boolean;
   joinedAtMs: number;
   disconnectedAtMs: number | null;
@@ -67,7 +76,7 @@ export interface SessionDeps {
   readonly store: MatchStore;
   now(): number;
   monotonicNow(): number;
-  log(message: string): void;
+  log: LogSink;
   onSessionEnd?(session: Session): void;
 }
 
@@ -91,12 +100,11 @@ export function createSession(connection: Connection, nowMs: number): Session {
     interactAct: 0,
     baseline: createSnapshotBaseline(),
     outbound: new Uint8Array(LIMITS.maxFrameBytes),
-    frameTimes: new Float64Array(LIMITS.maxMessagesPerSecond + 1),
-    frameTimeCount: 0,
+    rateLimit: createRateLimitState(),
+    joinThrottle: createJoinThrottle(),
     queue: [createCommand(), createCommand(), createCommand()],
     queueCount: 0,
     incoming: createCommand(),
-    strikes: 0,
     closed: false,
     joinedAtMs: nowMs,
     disconnectedAtMs: null,
@@ -122,13 +130,10 @@ function logMalformed(deps: SessionDeps, session: Session, reason: string): void
   const nowMs = deps.now();
   if (nowMs - session.malformedLogAtMs < malformedLogIntervalMs) return;
   session.malformedLogAtMs = nowMs;
-  deps.log(
-    formatLogLine('warn', 'malformedFrame', {
-      count: deps.metrics.malformedFrames,
-      session: session.id,
-      reason,
-    }),
-  );
+  emit(deps.log, 'warn', LOG_EVENTS.frameMalformed, {
+    pid: session.id,
+    detail: { count: deps.metrics.malformedFrames, reason },
+  });
 }
 
 function dropFrame(deps: SessionDeps, session: Session, reason: string): void {
@@ -151,29 +156,14 @@ export function closeSession(
 }
 
 function withinRateLimit(deps: SessionDeps, session: Session, nowMs: number): boolean {
-  const times = session.frameTimes;
-  let kept = 0;
-  for (let i = 0; i < session.frameTimeCount; i += 1) {
-    const at = times[i];
-    if (at !== undefined && nowMs - at < LIMITS.rateWindowMs) {
-      times[kept] = at;
-      kept += 1;
-    }
+  const verdict = checkRateLimit(session.rateLimit, nowMs);
+  if (verdict === 'ok') return true;
+  deps.metrics.rateLimitedFrames += 1;
+  if (verdict === 'disconnect') {
+    sendError(deps, session, ERROR_CODE.rateLimited, 'rate limit exceeded');
+    closeSession(deps, session, 1008, 'rate limited');
   }
-  session.frameTimeCount = kept;
-  if (kept >= LIMITS.maxMessagesPerSecond) {
-    deps.metrics.rateLimitedFrames += 1;
-    session.strikes += 1;
-    if (session.strikes >= LIMITS.rateStrikesBeforeDisconnect) {
-      sendError(deps, session, ERROR_CODE.rateLimited, 'rate limit exceeded');
-      closeSession(deps, session, 1008, 'rate limited');
-    }
-    return false;
-  }
-  if (session.strikes > 0 && kept === 0) session.strikes = 0;
-  times[kept] = nowMs;
-  session.frameTimeCount = kept + 1;
-  return true;
+  return false;
 }
 
 function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowMs: number): void {
@@ -191,7 +181,7 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     closeSession(deps, session, 1002, 'protocol mismatch');
     return;
   }
-  const name = sanitizeName(decoded.value.name);
+  const name = sanitizeNickname(decoded.value.name);
   if (name === null) {
     sendError(deps, session, ERROR_CODE.invalidName, 'invalid name');
     return;
@@ -199,14 +189,31 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
   session.name = name;
   const outcome = deps.rooms.join(decoded.value.roomCode, session, nowMs);
   if (!outcome.ok) {
-    if (outcome.reason === 'room-not-found')
+    if (outcome.reason === 'room-not-found') {
       sendError(deps, session, ERROR_CODE.roomNotFound, 'room not found');
-    else if (outcome.reason === 'match-in-progress')
+      if (session.joinThrottle.registerFailure(nowMs)) {
+        emit(deps.log, 'warn', LOG_EVENTS.sessionJoinThrottled, {
+          pid: session.id,
+          detail: { failures: session.joinThrottle.failures },
+        });
+        sendError(deps, session, ERROR_CODE.rateLimited, 'too many failed joins');
+        closeSession(deps, session, 1008, 'join throttled');
+      }
+      return;
+    }
+    if (outcome.reason === 'match-in-progress')
       sendError(deps, session, ERROR_CODE.matchInProgress, 'match in progress');
     else sendError(deps, session, ERROR_CODE.roomFull, 'room full');
     return;
   }
+  session.joinThrottle.reset();
   deps.metrics.joins += 1;
+  emit(deps.log, 'info', LOG_EVENTS.sessionJoin, {
+    room: outcome.room.code,
+    tick: outcome.room.world.tick,
+    pid: session.pid,
+    detail: { name },
+  });
   const size = encodeWelcome(
     {
       pid: session.pid,
@@ -290,6 +297,7 @@ function handleInput(deps: SessionDeps, session: Session, frame: Uint8Array): vo
     dropFrame(deps, session, 'input ' + decoded.reason);
     return;
   }
+  sanitizeCommandFields(session.incoming, session.incoming);
   enqueueCommand(session, session.incoming);
   if (seqIsNewer(decoded.value.seq, session.lastAckedCmdSeq))
     session.lastAckedCmdSeq = decoded.value.seq;
@@ -320,14 +328,11 @@ function handleChat(deps: SessionDeps, session: Session, frame: Uint8Array): voi
     return;
   }
   deps.metrics.chatMessages += 1;
-  deps.log(
-    'chat session=' +
-      String(session.id) +
-      ' room=' +
-      String(session.roomCode) +
-      ' text=' +
-      decoded.value,
-  );
+  emit(deps.log, 'info', LOG_EVENTS.chatMessage, {
+    ...(session.roomCode === null ? {} : { room: session.roomCode }),
+    pid: session.id,
+    detail: { length: decoded.value.length },
+  });
   const room = deps.rooms.roomOf(session);
   if (room === undefined) return;
   const size = encodeChatMessage({ pid: session.pid, text: decoded.value }, room.broadcastBuffer);
@@ -392,7 +397,7 @@ export function handleSessionFrame(deps: SessionDeps, session: Session, frame: U
     dropFrame(deps, session, 'empty frame');
     return;
   }
-  if (frame.length > LIMITS.maxFrameBytes) {
+  if (!isFrameWithinLimit(frame.length)) {
     deps.metrics.malformedFrames += 1;
     logMalformed(deps, session, 'frame too large: ' + String(frame.length));
     closeSession(deps, session, 1009, 'frame too large');
@@ -401,6 +406,10 @@ export function handleSessionFrame(deps: SessionDeps, session: Session, frame: U
   const nowMs = deps.now();
   if (!withinRateLimit(deps, session, nowMs)) return;
   const opcode = frame[0] ?? -1;
+  if (!isAllowedClientOpcode(opcode)) {
+    dropFrame(deps, session, 'unknown opcode ' + String(opcode));
+    return;
+  }
   switch (opcode) {
     case OPCODE.join:
       handleJoin(deps, session, frame, nowMs);
@@ -426,7 +435,7 @@ export function handleSessionFrame(deps: SessionDeps, session: Session, frame: U
       handleSimple(deps, session, frame, opcode);
       break;
     default:
-      dropFrame(deps, session, 'unknown opcode ' + String(opcode));
+      dropFrame(deps, session, 'unsupported opcode ' + String(opcode));
       break;
   }
 }
@@ -437,7 +446,10 @@ export function attachSession(deps: SessionDeps, session: Session): void {
       handleSessionFrame(deps, session, frame);
     } catch (error) {
       deps.metrics.malformedFrames += 1;
-      deps.log('frame handler threw: ' + String(error));
+      emit(deps.log, 'error', LOG_EVENTS.frameHandlerError, {
+        pid: session.id,
+        detail: { error: String(error) },
+      });
     }
   });
   session.connection.onClose(() => {

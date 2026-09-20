@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { LIMITS } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
-import { formatLogLine } from './log.ts';
+import { LOG_EVENTS, createStdoutLogger, type Logger } from './log.ts';
 import { createJsonMatchStore, DEFAULT_DATA_DIR } from './match/store.ts';
+import { createOriginGuard, parseAllowedOrigins } from './security.ts';
 import { createGameServer } from './server.ts';
 import { createWsTransport } from './transport/ws-adapter.ts';
 
@@ -29,7 +30,15 @@ export function readIntEnv(
   return value;
 }
 
-export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise<StartedServer> {
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.stack ?? error.message;
+  return String(error);
+}
+
+export async function startServer(
+  env: NodeJS.ProcessEnv = process.env,
+  logger: Logger = createStdoutLogger(env),
+): Promise<StartedServer> {
   const port = readIntEnv('PORT', DEFAULT_PORT, env);
   const host = env.HOST ?? DEFAULT_HOST;
   const maxRooms = readIntEnv('MAX_ROOMS', LIMITS.maxRooms, env);
@@ -38,6 +47,11 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   const store = createJsonMatchStore({ dir: dataDir });
   await store.load();
   const httpServer = createServer();
+  const originPolicy = parseAllowedOrigins(env.ALLOWED_ORIGINS);
+  const guardOrigin = createOriginGuard(originPolicy, (origin?: string) => {
+    logger.warn(LOG_EVENTS.securityOriginRejected, { detail: { origin: origin ?? '' } });
+  });
+  httpServer.on('upgrade', guardOrigin);
   const transport = createWsTransport({
     port,
     host,
@@ -48,9 +62,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
     maxRooms,
     maxPlayersPerRoom,
     store,
-    log: (message: string): void => {
-      console.log(message);
-    },
+    log: logger,
+    dataDir,
   });
   httpServer.on('request', createHttpHandler(game, Date.now()));
   await new Promise<void>((resolveListen) => {
@@ -59,8 +72,8 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
   await game.listen();
   const address = httpServer.address();
   const boundPort = address !== null && typeof address !== 'string' ? address.port : port;
-  console.log(
-    formatLogLine('info', 'listening', {
+  logger.info(LOG_EVENTS.listening, {
+    detail: {
       url: 'http://' + host + ':' + String(boundPort),
       health: '/health',
       metrics: '/metrics',
@@ -69,8 +82,9 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
       dataDir,
       maxRooms,
       maxPlayersPerRoom,
-    }),
-  );
+      allowedOrigins: originPolicy.mode,
+    },
+  });
   return {
     port: boundPort,
     async close(): Promise<void> {
@@ -83,16 +97,23 @@ export async function startServer(env: NodeJS.ProcessEnv = process.env): Promise
 }
 
 async function main(): Promise<void> {
-  const server = await startServer();
+  const logger = createStdoutLogger();
+  process.on('uncaughtException', (error: unknown) => {
+    logger.error(LOG_EVENTS.errorUncaught, { detail: { error: describeError(error) } });
+  });
+  process.on('unhandledRejection', (reason: unknown) => {
+    logger.error(LOG_EVENTS.errorUnhandledRejection, { detail: { reason: describeError(reason) } });
+  });
+  const server = await startServer(process.env, logger);
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(formatLogLine('info', 'shutdownRequested', { signal }));
+    logger.info(LOG_EVENTS.shutdownRequested, { detail: { signal } });
     const forced = setTimeout(() => process.exit(1), 3000);
     forced.unref();
     void server.close().then(() => {
-      console.log(formatLogLine('info', 'shutdownComplete', {}));
+      logger.info(LOG_EVENTS.shutdownComplete, {});
       process.exit(0);
     });
   };
@@ -103,7 +124,7 @@ async function main(): Promise<void> {
 const entry = process.argv[1];
 if (entry !== undefined && resolve(entry) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    console.error(formatLogLine('error', 'startFailed', { error: String(error) }));
+    createStdoutLogger().error(LOG_EVENTS.startFailed, { detail: { error: describeError(error) } });
     process.exit(1);
   });
 }

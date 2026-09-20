@@ -1,5 +1,6 @@
 import { ERROR_CODE, encodeError } from '@ac/shared';
 
+import { SILENT_LOGGER, type LogSink } from './log.ts';
 import { createNullMatchStore, type MatchStore } from './match/store.ts';
 import { createMetrics, type Metrics } from './metrics.ts';
 import { updateRoom, type RoomDeps } from './room.ts';
@@ -16,8 +17,9 @@ export interface GameServerOptions {
   readonly seed?: number;
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
-  readonly log?: (message: string) => void;
+  readonly log?: LogSink;
   readonly store?: MatchStore;
+  readonly dataDir?: string;
 }
 
 export interface GameServer {
@@ -36,7 +38,7 @@ export function createGameServer(transport: Transport, options: GameServerOption
   const sessions = new Set<Session>();
   const now = options.now ?? ((): number => Date.now());
   const monotonicNow = options.monotonicNow ?? ((): number => performance.now());
-  const log = options.log ?? ((): void => undefined);
+  const log = options.log ?? SILENT_LOGGER;
   const store = options.store ?? createNullMatchStore();
   const rooms = createRoomRegistry(metrics, {
     maxRooms: options.maxRooms,
@@ -44,8 +46,16 @@ export function createGameServer(transport: Transport, options: GameServerOption
       ? {}
       : { maxPlayersPerRoom: options.maxPlayersPerRoom }),
     ...(options.seed === undefined ? {} : { seed: options.seed }),
+    log,
   });
-  const roomDeps: RoomDeps = { metrics, store, now, log, monotonicNow };
+  const roomDeps: RoomDeps = {
+    metrics,
+    store,
+    now,
+    log,
+    monotonicNow,
+    ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
+  };
   const deps: SessionDeps = {
     rooms,
     metrics,
