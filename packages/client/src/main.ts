@@ -3,7 +3,7 @@ import { ARENA } from '@ac/shared';
 import { formatVersionLine } from './index.ts';
 import { createPointerInput } from './input/pointerLock.ts';
 import { createInputSampler } from './input/sampler.ts';
-import { createGameConnection } from './net/connection.ts';
+import { ERROR_MESSAGES, createGameConnection } from './net/connection.ts';
 import { createSnapshotView } from './net/state.ts';
 import { createArena, disposeArena, type ArenaParams } from './render/arena.ts';
 import { COLORBLIND_PALETTE, DEFAULT_PALETTE, createEntityViews } from './render/entityViews.ts';
@@ -71,7 +71,9 @@ export function boot(): void {
 
   const sampler = createInputSampler({
     now: () => performance.now(),
-    emit: (command) => connection.sendCommand(command),
+    emit: (command) => {
+      if (pointer.locked) connection.sendCommand(command);
+    },
     getTick: () => view.getAppliedTick(),
   });
 
@@ -82,10 +84,8 @@ export function boot(): void {
     roomCode,
     onStatus: (status) => {
       hud.setStatus(status);
-      if (status === 'error' || status === 'closed') {
-        pauseRoot.classList.remove('hidden');
-        hud.pushEvents([status === 'error' ? '连接错误' : '连接断开，重连中…']);
-      }
+      if (status === 'error') hud.showBanner('连接错误，正在重连…');
+      else if (status === 'closed') hud.showBanner('连接断开，正在重连…');
     },
     onWelcome: (welcome) => {
       hud.setRoomCode(welcome.roomCode);
@@ -97,8 +97,7 @@ export function boot(): void {
       hud.pushEvents(events.map((event) => event.type));
     },
     onServerError: (code, message) => {
-      bannerRoot.textContent = '错误 ' + String(code) + ': ' + message;
-      bannerRoot.classList.add('banner-visible');
+      hud.showBanner('错误 ' + String(code) + '：' + (ERROR_MESSAGES[code] ?? message));
     },
   });
 
@@ -145,7 +144,18 @@ export function boot(): void {
   pauseRoot.classList.remove('hidden');
   pauseRoot.textContent = '点击画面锁定鼠标（F3 调试面板）';
 
+  let frameErrors = 0;
   function frame(nowMs: number): void {
+    try {
+      frameBody(nowMs);
+    } catch (error) {
+      frameErrors += 1;
+      if (frameErrors === 1) hud.showBanner('渲染异常：' + String(error));
+    }
+    window.requestAnimationFrame(frame);
+  }
+
+  function frameBody(nowMs: number): void {
     sampler.update();
     views.sync();
     const local = view.getLocalPlayer();
@@ -180,7 +190,6 @@ export function boot(): void {
       roomCode,
       versionLine: formatVersionLine(),
     });
-    window.requestAnimationFrame(frame);
   }
   window.requestAnimationFrame(frame);
 

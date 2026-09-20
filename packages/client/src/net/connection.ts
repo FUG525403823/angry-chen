@@ -1,4 +1,5 @@
 import {
+  ERROR_CODE,
   LIMITS,
   OPCODE,
   PROTOCOL_VERSION,
@@ -25,6 +26,18 @@ export const PING_INTERVAL_MS = 1000;
 export const RECONNECT_BASE_MS = 2000;
 export const RECONNECT_MAX_MS = 15000;
 export const MAX_MATCH_STATE_PLAYERS = LIMITS.maxPlayersPerRoom;
+
+export const ERROR_MESSAGES: Record<number, string> = Object.freeze({
+  [ERROR_CODE.protocolMismatch]: '协议版本不一致，请刷新页面',
+  [ERROR_CODE.roomNotFound]: '房间不存在或已结束',
+  [ERROR_CODE.roomFull]: '房间已满（最多 4 人）',
+  [ERROR_CODE.rateLimited]: '发送过于频繁，已被限流',
+  [ERROR_CODE.malformedFrame]: '客户端帧格式错误',
+  [ERROR_CODE.invalidName]: '昵称不合法（1–12 字节）',
+  [ERROR_CODE.matchInProgress]: '对局已开始，无法加入',
+  [ERROR_CODE.serverShutdown]: '服务器正在关闭',
+  [ERROR_CODE.notHost]: '只有房主可以开始对局',
+});
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'online' | 'closed' | 'error';
 
@@ -69,6 +82,7 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
   let disposed = false;
   let snapshotRateX10 = 0;
   let reconnectAttempts = 0;
+  let activeRoomCode = options.roomCode;
 
   function setStatus(next: ConnectionStatus, detail = ''): void {
     status = next;
@@ -83,6 +97,12 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
   function handleWelcome(frame: Uint8Array): void {
     const decoded = decodeWelcome(frame);
     if (!decoded.ok) return;
+    if (decoded.value.roomCode !== activeRoomCode) {
+      // 换房间（含断线后重新入新房）时 tick 会从头开始，必须清空关键帧缓冲，
+      // 否则单调丢弃规则会让画面永久冻结（P04 评审 SPEC-2）。
+      activeRoomCode = decoded.value.roomCode;
+      options.view.reset();
+    }
     options.view.setLocalPlayerId(decoded.value.pid);
     options.onWelcome?.(decoded.value);
   }
@@ -149,7 +169,7 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       send(
         out,
         encodeJoin(
-          { protocolVersion: PROTOCOL_VERSION, name: options.name, roomCode: options.roomCode },
+          { protocolVersion: PROTOCOL_VERSION, name: options.name, roomCode: activeRoomCode },
           out,
         ),
       );

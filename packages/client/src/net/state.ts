@@ -48,6 +48,7 @@ export interface SnapshotViewInternal extends SnapshotView {
   setLocalPlayerId(pid: number): void;
   applyFrame(frame: Uint8Array, bytesIn: number): boolean;
   recordRtt(rttMs: number): void;
+  reset(): void;
 }
 
 interface Keyframe {
@@ -265,24 +266,49 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
           newest.flags[i] ?? 0,
         );
         const mutable = entity as { yaw: number; pitch: number };
-        const olderSlot = older === newest ? -1 : (older.slotOf[id] ?? -1);
-        if (olderSlot >= 0) {
-          entity.pos.x = lerp(older.x[olderSlot] ?? 0, newest.x[i] ?? 0, alpha);
-          entity.pos.y = lerp(older.y[olderSlot] ?? 0, newest.y[i] ?? 0, alpha);
-          entity.pos.z = lerp(older.z[olderSlot] ?? 0, newest.z[i] ?? 0, alpha);
-          mutable.yaw = lerpAngle(older.yaw[olderSlot] ?? 0, newest.yaw[i] ?? 0, alpha);
-          mutable.pitch = lerpAngle(older.pitch[olderSlot] ?? 0, newest.pitch[i] ?? 0, alpha);
+        const newerSlot = newer.slotOf[id] ?? -1;
+        const olderSlot = older === newer ? newerSlot : (older.slotOf[id] ?? -1);
+        const endFrame = newerSlot >= 0 ? newer : newest;
+        const endSlot = newerSlot >= 0 ? newerSlot : i;
+        if (older !== newer && olderSlot >= 0 && endSlot >= 0) {
+          entity.pos.x = lerp(older.x[olderSlot] ?? 0, endFrame.x[endSlot] ?? 0, alpha);
+          entity.pos.y = lerp(older.y[olderSlot] ?? 0, endFrame.y[endSlot] ?? 0, alpha);
+          entity.pos.z = lerp(older.z[olderSlot] ?? 0, endFrame.z[endSlot] ?? 0, alpha);
+          mutable.yaw = lerpAngle(older.yaw[olderSlot] ?? 0, endFrame.yaw[endSlot] ?? 0, alpha);
+          mutable.pitch = lerpAngle(
+            older.pitch[olderSlot] ?? 0,
+            endFrame.pitch[endSlot] ?? 0,
+            alpha,
+          );
         } else {
-          entity.pos.x = newest.x[i] ?? 0;
-          entity.pos.y = newest.y[i] ?? 0;
-          entity.pos.z = newest.z[i] ?? 0;
-          mutable.yaw = newest.yaw[i] ?? 0;
-          mutable.pitch = newest.pitch[i] ?? 0;
+          entity.pos.x = endFrame.x[endSlot] ?? 0;
+          entity.pos.y = endFrame.y[endSlot] ?? 0;
+          entity.pos.z = endFrame.z[endSlot] ?? 0;
+          mutable.yaw = endFrame.yaw[endSlot] ?? 0;
+          mutable.pitch = endFrame.pitch[endSlot] ?? 0;
         }
         cb(entity);
       }
     },
+    reset(): void {
+      hasFrame = false;
+      frameCount = 0;
+      newestIndex = 0;
+      latestServerTimeMs = 0;
+      latestRecvAtMs = 0;
+      windowSnapshots = 0;
+      windowBytes = 0;
+      windowStartMs = now();
+      stats.snapshotsPerSec = 0;
+      stats.inboundBytesPerSec = 0;
+      for (const frame of frames) frame.count = 0;
+      pool.clear();
+    },
     getStats(): ViewStats {
+      if (hasFrame && now() - latestRecvAtMs > STATS_WINDOW_MS * 1.5) {
+        stats.snapshotsPerSec = 0;
+        stats.inboundBytesPerSec = 0;
+      }
       return stats;
     },
   };

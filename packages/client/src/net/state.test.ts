@@ -135,4 +135,49 @@ describe('SnapshotView', () => {
     expect(local?.id).toBe(1);
     expect(local?.kind).toBe(0);
   });
+
+  it('多帧区间内采样单调不减：插值终点必须落在相邻两帧之间', () => {
+    const world = createWorld(7);
+    const sheepId = spawnSheep(world, 0);
+    advanceTo(world, 400);
+    const sheep = getEntity(world, sheepId);
+    expect(sheep).toBeDefined();
+    if (sheep === undefined) return;
+
+    const frames: Uint8Array[] = [];
+    const sizes: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      sheep.pos.x = 1 + i;
+      const out = new Uint8Array(LIMITS.maxFrameBytes);
+      sizes.push(encodeFull(world, out, createSnapshotBaseline()));
+      frames.push(out);
+      stepWorld(world, [], 50);
+    }
+
+    let clockMs = 0;
+    const view = createSnapshotView({ now: () => clockMs });
+    for (let i = 0; i < frames.length; i += 1) {
+      const frame = frames[i];
+      const size = sizes[i] ?? 0;
+      if (frame === undefined) continue;
+      expect(view.applyFrame(frame.subarray(0, size), size)).toBe(true);
+    }
+
+    const samples: number[] = [];
+    for (let clock = 0; clock <= 260; clock += 10) {
+      clockMs = clock;
+      samples.push(sampleX(view, sheepId));
+    }
+    let backtracks = 0;
+    let maxJump = 0;
+    for (let i = 1; i < samples.length; i += 1) {
+      const previous = samples[i - 1] ?? 0;
+      const current = samples[i] ?? 0;
+      if (current < previous - 0.01) backtracks += 1;
+      maxJump = Math.max(maxJump, Math.abs(current - previous));
+    }
+    expect(backtracks).toBe(0);
+    expect(maxJump).toBeLessThan(0.25);
+    expect(samples[samples.length - 1] ?? 0).toBeGreaterThan(samples[0] ?? 0);
+  });
 });

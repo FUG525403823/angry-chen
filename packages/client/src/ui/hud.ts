@@ -2,6 +2,7 @@ import type { ViewEntity, ViewStats } from '../net/state.ts';
 
 export const BANNER_TIMEOUT_MS = 4500;
 export const MAX_BANNER_EVENTS = 3;
+export const STATS_REFRESH_MS = 250;
 
 export interface HudUpdate {
   readonly local: ViewEntity | undefined;
@@ -16,6 +17,7 @@ export interface Hud {
   setRoomCode(code: string): void;
   setPhase(text: string): void;
   pushEvents(names: readonly string[]): void;
+  showBanner(text: string): void;
   update(data: HudUpdate): void;
   dispose(): void;
 }
@@ -30,10 +32,22 @@ export function createHud(root: HTMLElement, banner: HTMLElement): Hud {
   let bannerTimer: ReturnType<typeof setTimeout> | undefined;
   let lastLine = '';
   let lastStats = '';
+  let lastStatsAtMs = 0;
   let status = 'idle';
   let roomCode = '----';
   let phase = '大厅';
   let hp = 0;
+
+  function showBanner(text: string): void {
+    if (text === '') return;
+    banner.textContent = text;
+    banner.classList.add('banner-visible');
+    if (bannerTimer !== undefined) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => {
+      banner.textContent = '';
+      banner.classList.remove('banner-visible');
+    }, BANNER_TIMEOUT_MS);
+  }
 
   function renderLine(): void {
     const text = roomCode + ' · ' + phase + ' · ' + status + ' · HP ' + String(Math.round(hp));
@@ -56,17 +70,17 @@ export function createHud(root: HTMLElement, banner: HTMLElement): Hud {
       renderLine();
     },
     pushEvents(names: readonly string[]): void {
-      if (names.length === 0) return;
-      banner.textContent = names.slice(0, MAX_BANNER_EVENTS).join(' · ');
-      banner.classList.add('banner-visible');
-      if (bannerTimer !== undefined) clearTimeout(bannerTimer);
-      bannerTimer = setTimeout(() => {
-        banner.textContent = '';
-        banner.classList.remove('banner-visible');
-      }, BANNER_TIMEOUT_MS);
+      showBanner(names.slice(0, MAX_BANNER_EVENTS).join(' · '));
     },
+    showBanner,
     update(data: HudUpdate): void {
       hp = data.local === undefined ? 0 : data.local.hpRatio * 100;
+      const statsAtMs = performance.now();
+      if (statsAtMs - lastStatsAtMs < STATS_REFRESH_MS) {
+        renderLine();
+        return;
+      }
+      lastStatsAtMs = statsAtMs;
       const pos = data.localPos;
       const text =
         'FPS ' +

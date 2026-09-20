@@ -44,6 +44,7 @@ export interface EntityViews {
 }
 
 interface ViewNode {
+  readonly id: number;
   readonly root: THREE.Group;
   readonly body: THREE.Mesh;
   readonly bodyMaterial: THREE.MeshLambertMaterial;
@@ -109,6 +110,7 @@ export function createEntityViews(
 
     scene.add(root);
     return {
+      id: entity.id,
       root,
       body: root.children[0] as THREE.Mesh,
       bodyMaterial,
@@ -120,11 +122,11 @@ export function createEntityViews(
     };
   }
 
-  function colorFor(entity: ViewEntity, node: ViewNode): number {
-    if (entity.kind === 1) return node.rage ? palette.sheepRage : palette.sheep;
-    if (entity.kind === 2) return palette.projectile;
-    if (entity.kind === 3) return palette.pickup;
-    return entity.id === localPlayerId() ? palette.localPlayer : palette.remotePlayer;
+  function bodyColor(kind: number, rage: boolean, id: number): number {
+    if (kind === 1) return rage ? palette.sheepRage : palette.sheep;
+    if (kind === 2) return palette.projectile;
+    if (kind === 3) return palette.pickup;
+    return id === localPlayerId() ? palette.localPlayer : palette.remotePlayer;
   }
 
   return {
@@ -142,7 +144,7 @@ export function createEntityViews(
           node.rage = rage;
           node.kind = entity.kind;
         }
-        const color = colorFor(entity, node);
+        const color = bodyColor(node.kind, node.rage, entity.id);
         if (node.bodyMaterial.color.getHex() !== color) node.bodyMaterial.color.setHex(color);
         node.root.visible = !(entity.kind === 0 && entity.id === localPlayerId());
       });
@@ -161,11 +163,29 @@ export function createEntityViews(
     setPalette(next: RenderPalette): void {
       palette = next;
       for (const node of pool.values()) {
-        node.bodyMaterial.color.setHex(node.rage ? palette.sheepRage : palette.remotePlayer);
+        node.bodyMaterial.color.setHex(bodyColor(node.kind, node.rage, -1));
+        if (node.mark === undefined) continue;
+        const markMaterial = node.mark.material as THREE.MeshLambertMaterial;
+        markMaterial.color.setHex(palette.emblem);
+        for (const child of node.mark.children) {
+          const childMaterial = (child as THREE.Mesh).material as THREE.MeshLambertMaterial;
+          childMaterial.color.setHex(palette.emblemCore);
+          childMaterial.emissive.setHex(palette.emblemCore);
+        }
       }
     },
     dispose(): void {
-      for (const node of pool.values()) scene.remove(node.root);
+      for (const node of pool.values()) {
+        scene.remove(node.root);
+        node.root.traverse((object) => {
+          const material = (object as THREE.Mesh).material;
+          if (Array.isArray(material)) {
+            for (const entry of material) entry.dispose();
+          } else if (material !== undefined) {
+            material.dispose();
+          }
+        });
+      }
       pool.clear();
       bodyGeometry.dispose();
       headGeometry.dispose();
