@@ -27,6 +27,7 @@ export interface Entity {
 export interface SimEvent {
   type: string;
   tick: number;
+  flags: number;
   subjectId: EntityId;
   targetId: EntityId;
   x: number;
@@ -59,6 +60,10 @@ export interface World {
   readonly liveCount: number;
   tick: number;
   timeMs: number;
+}
+
+export function createSimEvent(): SimEvent {
+  return { type: '', tick: 0, flags: 0, subjectId: 0, targetId: 0, x: 0, y: 0, z: 0, value: 0 };
 }
 
 export function createEntity(id: EntityId): Entity {

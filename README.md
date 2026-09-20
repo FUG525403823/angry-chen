@@ -73,3 +73,15 @@ docs/              全部文档
 
 - 不做 PVP、账号系统、云排行、多张地图、掉落经济、观战回放、移动端与手柄（理由见 [需求分析第 8 节](docs/02-需求分析.md)）。
 - 「问界」额标为**原创风格化标识**，不使用真实商标素材（见 [ADR-003](docs/00-共识/ADR/ADR-003-美术素材与问界标识策略.md)）。
+
+## 运维端点与协议探针
+
+```bash
+pnpm dev:server                       # 默认 8787（PORT/HOST/MAX_ROOMS 可覆盖）
+curl -s localhost:8787/health         # JSON：协议版本、房间数、连接数、玩家数、tick 数
+curl -s localhost:8787/metrics        # Prometheus 文本：tick 抖动 P95、快照字节均值、非法帧、限流等
+node tools/probe.mjs --clients 2 --duration 10           # 两个脚本客户端进同一房间，打印快照速率/带宽/RTT
+node tools/probe.mjs --clients 1 --duration 3 --flood     # 洪泛：预期被 Error(4) 断开
+node tools/probe.mjs --clients 2 --duration 3 --bad-frame # 恶意帧：未知 opcode/截断帧/9KB 帧
+node tools/probe.mjs --clients 1 --duration 5 --room ABCD # 指定房间码并发观察
+```
