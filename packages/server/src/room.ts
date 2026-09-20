@@ -4,6 +4,12 @@ import {
   type Command,
   LIMITS,
   MATCH_PHASE,
+  WAVE_INTERMISSION_MS,
+  aliveSheepCount,
+  createDirectorState,
+  planWave,
+  updateDirector,
+  type DirectorState,
   type MatchState,
   type PoseHistory,
   REWIND_LIMIT_MS,
@@ -57,6 +63,7 @@ export interface Room {
   phase: number;
   wave: number;
   intermissionMs: number;
+  director: DirectorState;
   lastUpdateMs: number;
   lastTickAtMs: number;
   accumulatorMs: number;
@@ -94,6 +101,7 @@ export function createRoom(
     phase: MATCH_PHASE.lobby,
     wave: 0,
     intermissionMs: 0,
+    director: createDirectorState(),
     lastUpdateMs: nowMs,
     lastTickAtMs: nowMs,
     accumulatorMs: 0,
@@ -221,7 +229,7 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
     if (room.intermissionMs <= 0) {
       room.intermissionMs = 0;
       room.phase = MATCH_PHASE.playing;
-      room.wave = 1;
+      room.wave += 1;
       broadcastMatchState(room);
     }
   }
@@ -231,6 +239,30 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
     room.matchStateTimerMs -= MATCH_STATE_INTERVAL_MS;
     broadcastMatchState(room);
   }
+}
+
+function activePlayerCount(room: Room): number {
+  let count = 0;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session !== undefined && session.pid > 0) count += 1;
+  }
+  return count > 0 ? count : 1;
+}
+
+const directorPlayerIdScratch: number[] = [];
+
+function collectDirectorPlayerIds(room: Room): number[] {
+  directorPlayerIdScratch.length = 0;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session === undefined || session.pid <= 0) continue;
+    const entity = room.world.entities[session.pid - 1];
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    directorPlayerIdScratch.push(entity.id);
+  }
+  directorPlayerIdScratch.sort((a, b) => a - b);
+  return directorPlayerIdScratch;
 }
 
 function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
@@ -262,6 +294,26 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
   room.combat.counters = deps.metrics;
   stepWorld(room.world, room.commands, SERVER_TICK_MS, room.combat);
   applyPoseValidation(deps, room, checked);
+  if (room.phase === MATCH_PHASE.playing) {
+    if (room.director.wave !== room.wave && !room.director.finished) {
+      planWave(room.director, room.wave, activePlayerCount(room));
+    }
+    const directorTick = updateDirector(
+      room.world,
+      room.director,
+      activePlayerCount(room),
+      room.world.rng.spawn,
+      collectDirectorPlayerIds(room),
+    );
+    deps.metrics.spawns += directorTick.spawned;
+    if (directorTick.waveCleared) {
+      room.phase = MATCH_PHASE.intermission;
+      room.intermissionMs = WAVE_INTERMISSION_MS;
+      broadcastMatchState(room);
+    }
+  }
+  deps.metrics.sheepAlive = aliveSheepCount(room.world);
+  deps.metrics.waveCurrent = room.wave;
   recordPoseHistory(room.history, room.world);
   snapshotWorld(room.world, room.snapshot);
 

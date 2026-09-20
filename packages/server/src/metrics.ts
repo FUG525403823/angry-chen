@@ -35,6 +35,9 @@ export interface Metrics {
   hits: number;
   damage: number;
   speedViolations: number;
+  sheepAlive: number;
+  waveCurrent: number;
+  spawns: number;
   hardCorrectTotal: number;
   rewindClampedCount: number;
 }
@@ -83,6 +86,9 @@ export function createMetrics(): Metrics {
     hits: 0,
     damage: 0,
     speedViolations: 0,
+    sheepAlive: 0,
+    waveCurrent: 0,
+    spawns: 0,
     hardCorrectTotal: 0,
     rewindClampedCount: 0,
   };
@@ -200,6 +206,9 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
   push('ac_shots_fired_total', 'weapon fire commands resolved', 'counter', metrics.shotsFired);
   push('ac_hits_total', 'pellets that hit an entity', 'counter', metrics.hits);
   push('ac_damage_total', 'total damage dealt', 'counter', metrics.damage);
+  push('ac_sheep_alive', 'living sheep entities', 'gauge', metrics.sheepAlive);
+  push('ac_wave_current', 'current wave number', 'gauge', metrics.waveCurrent);
+  push('ac_spawns_total', 'sheep spawns by the director', 'counter', metrics.spawns);
   push(
     'ac_speed_violations_total',
     'commands rejected by pose validation',

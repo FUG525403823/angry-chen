@@ -14,17 +14,32 @@ export interface CombatState {
   rage: RageState;
   downed: DownedState;
   interactHeld: boolean;
+  knockMs: number;
+  knockVx: number;
+  knockVz: number;
 }
 
 export function createCombatState(): CombatState {
-  return { rage: createRageState(), downed: createDownedState(), interactHeld: false };
+  return {
+    rage: createRageState(),
+    downed: createDownedState(),
+    interactHeld: false,
+    knockMs: 0,
+    knockVx: 0,
+    knockVz: 0,
+  };
 }
 
 export function resetCombatState(state: CombatState): void {
+  state.knockMs = 0;
+  state.knockVx = 0;
+  state.knockVz = 0;
   resetRageState(state.rage);
   resetDownedState(state.downed);
   state.interactHeld = false;
 }
+
+import { createSheepAiState, resetSheepAiState, type SheepAiState } from './ai/sheepBrain.ts';
 
 export interface Entity {
   readonly id: EntityId;
@@ -43,6 +58,7 @@ export interface Entity {
   aliveMs: number;
   weapon: WeaponState;
   combat: CombatState;
+  ai: SheepAiState;
 }
 
 export interface SimEvent {
@@ -105,6 +121,7 @@ export function createEntity(id: EntityId): Entity {
     aliveMs: 0,
     weapon: createWeaponState(),
     combat: createCombatState(),
+    ai: createSheepAiState(),
   };
 }
 
@@ -191,6 +208,7 @@ export function spawnEntity(
   entity.aliveMs = 0;
   resetWeaponState(entity.weapon);
   resetCombatState(entity.combat);
+  resetSheepAiState(entity.ai);
   insertActiveId(world, id);
   return { ok: true, id };
 }

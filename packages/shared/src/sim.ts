@@ -5,9 +5,31 @@ import {
   collideStatic,
   integrateState,
 } from './sim/localStep.ts';
-import { getEntity, radiusOf, type Entity, type World } from './world.ts';
+import {
+  despawnEntity,
+  getEntity,
+  radiusOf,
+  type Entity,
+  type EntityId,
+  type World,
+} from './world.ts';
 import { RAGE, REVIVE } from './config/combat.ts';
 import { isRageActive } from './combat/rage.ts';
+import { SHEEP_AI, SHEEP_STATE } from './config/sheep.ts';
+import { sheepSpeedMultiplier } from './config/waves.ts';
+import { gatherNeighbors } from './ai/flocking.ts';
+import {
+  SHEEP_KIND_CODE,
+  createSheepIntent,
+  updateSheepIntent,
+  type SheepIntent,
+} from './ai/sheepBrain.ts';
+import { advanceProjectiles, resolveEliteFire, resolveSheepAttacks } from './ai/sheepAttack.ts';
+import { updateKing } from './ai/kingPhases.ts';
+
+const playerIdScratch: EntityId[] = [];
+const intentIds: EntityId[] = [];
+const intentPool: SheepIntent[] = [];
 import { BUTTON } from './config/input.ts';
 import { hasDownedTeammateInRange, resolveCombat, type CombatContext } from './combat/resolve.ts';
 
@@ -23,7 +45,10 @@ export function stepWorld(
 
   applyCommands(world, commands);
 
-  // 槽位 2：AI 与羊群意图求解（P07 填充）
+  const playerIds = collectPlayerIds(world);
+  updateAiIntents(world, dtMs, playerIds);
+  applyAiIntents(world);
+  applyKnockback(world, dtMs);
 
   integrate(world, dtMs / MS_PER_SECOND, dtMs);
 
@@ -31,7 +56,10 @@ export function stepWorld(
   resolveEntitySeparation(world);
 
   resolveCombat(world, commands, dtMs, combat);
-  // 槽位 6：事件由产生既成事实的槽位写入 world.events
+  resolveSheepAttacks(world, playerIds);
+  resolveEliteFire(world, playerIds);
+  advanceProjectiles(world, dtMs, playerIds);
+  updateKings(world, dtMs);
 }
 
 function applyCommands(world: World, commands: readonly Command[]): void {
@@ -64,6 +92,88 @@ function applyCommands(world: World, commands: readonly Command[]): void {
       clampHorizontalSpeed(entity, REVIVE.reviverMaxSpeed);
     }
   }
+}
+
+export function collectPlayerIds(world: World): EntityId[] {
+  playerIdScratch.length = 0;
+  const ids = world.activeIds;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    playerIdScratch.push(entity.id);
+  }
+  return playerIdScratch;
+}
+
+function intentAt(index: number): SheepIntent {
+  while (intentPool.length <= index) intentPool.push(createSheepIntent());
+  return intentPool[index] as SheepIntent;
+}
+
+export function updateAiIntents(world: World, dtMs: number, playerIds: readonly EntityId[]): void {
+  const speedMultiplier = sheepSpeedMultiplier(playerIds.length);
+  intentIds.length = 0;
+  let count = 0;
+  const ids = world.activeIds;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'sheep') continue;
+    if (entity.state === SHEEP_STATE.dead) {
+      entity.ai.timerMs += dtMs;
+      continue;
+    }
+    gatherNeighbors(entity.ai.flock, world, entity);
+    const intent = intentAt(count);
+    updateSheepIntent(world, entity, playerIds, speedMultiplier, dtMs, intent);
+    intentIds.push(entity.id);
+    count += 1;
+  }
+}
+
+export function applyAiIntents(world: World): void {
+  for (let i = 0; i < intentIds.length; i += 1) {
+    const entity = getEntity(world, intentIds[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'sheep') continue;
+    if (entity.state === SHEEP_STATE.dead) {
+      entity.vel.x = 0;
+      entity.vel.y = 0;
+      entity.vel.z = 0;
+      if (entity.ai.timerMs >= SHEEP_AI.deadFadeMs) despawnEntity(world, entity.id);
+      continue;
+    }
+    const intent = intentPool[i];
+    if (intent === undefined) continue;
+    entity.vel.x = intent.x;
+    entity.vel.z = intent.z;
+    entity.vel.y = 0;
+    entity.yaw = intent.yaw;
+  }
+}
+
+export function applyKnockback(world: World, dtMs: number): void {
+  const ids = world.activeIds;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
+    if (entity.combat.knockMs <= 0) continue;
+    entity.combat.knockMs = Math.max(0, entity.combat.knockMs - dtMs);
+    if (entity.combat.downed.downed) continue;
+    entity.vel.x = entity.combat.knockVx;
+    entity.vel.z = entity.combat.knockVz;
+    entity.vel.y = 0;
+  }
+}
+
+export function updateKings(world: World, dtMs: number): number {
+  let spawned = 0;
+  const ids = world.activeIds;
+  for (let i = 0; i < ids.length; i += 1) {
+    const entity = getEntity(world, ids[i] ?? 0);
+    if (entity === undefined || !entity.active || entity.kind !== 'sheep') continue;
+    if (entity.ai.sheepKind !== SHEEP_KIND_CODE.king) continue;
+    spawned += updateKing(world, entity, dtMs);
+  }
+  return spawned;
 }
 
 function clampHorizontalSpeed(entity: Entity, limit: number): void {

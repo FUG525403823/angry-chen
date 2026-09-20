@@ -294,3 +294,13 @@ export {
 export type { CombatContext, CombatCounters, ShotTrace } from './combat/resolve.ts';
 export type { CombatState } from './world.ts';
 export { createCombatState, resetCombatState } from './world.ts';
+
+export * from './ai/director.ts';
+export * from './ai/flocking.ts';
+export * from './ai/kingPhases.ts';
+export * from './ai/sheepAttack.ts';
+export * from './ai/sheepBrain.ts';
+export * from './ai/steering.ts';
+export * from './ai/targeting.ts';
+export * from './config/sheep.ts';
+export * from './config/waves.ts';
