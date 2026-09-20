@@ -1,0 +1,32 @@
+{
+  "name": "angry-chen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @ac/server --filter @ac/client run dev",
+    "dev:server": "pnpm --filter @ac/server run dev",
+    "dev:client": "pnpm --filter @ac/client run dev",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm check:docs",
+    "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p packages/server && tsc --noEmit -p packages/client",
+    "lint": "eslint . && prettier --check .",
+    "test": "vitest run",
+    "check:docs": "node tools/check-docs.mjs",
+    "build:client": "pnpm --filter @ac/client run build",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "@vitest/coverage-v8": "5.0.1",
+    "eslint": "10.11.0",
+    "prettier": "3.9.8",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
+  }
+}

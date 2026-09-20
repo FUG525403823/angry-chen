@@ -201,7 +201,9 @@ console.log('=== check-docs ===');
 for (const n of notes) console.log(`  · ${n}`);
 for (const w of warnings) console.log(`  ! ${w}`);
 if (errors.length === 0) {
-  console.log(`\nOK：${plans.length} 份计划文档 + ${REQUIRED_DOCS.length} 份前置文档，线性链与链接校验通过。`);
+  console.log(
+    `\nOK：${plans.length} 份计划文档 + ${REQUIRED_DOCS.length} 份前置文档，线性链与链接校验通过。`,
+  );
   process.exit(0);
 }
 console.log('');
