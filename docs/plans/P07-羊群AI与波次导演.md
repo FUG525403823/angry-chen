@@ -114,7 +114,7 @@ export const SHEEP = {
 | 5 | Edge 手动：打到第 5 波 | 出现 1 只羊王与问界羊；冲撞羊蓄力时地面出现红环 | 生成规则或预警表现缺失 |
 | 6 | `pnpm --filter @ac/server test` | 波次推进集成测试通过（含人数缩放） | 服务器侧导演未接入 |
 | 7 | 手动：4 人局与 1 人局的第 5 波预算对比 | 4 人局羊明显更多（预算 ≈ 2.05 倍） | 人数缩放未生效（FR-08） |
-| 8 | `curl -s localhost:8080/metrics` | 含 `ac_sheep_alive`、`ac_wave_current`、`ac_spawns_total` | 缺乏可观测性 |
+| 8 | `curl -s localhost:8787/metrics` | 含 `ac_sheep_alive`、`ac_wave_current`、`ac_spawns_total` | 缺乏可观测性 |
 
 ## 7. DoD（验收标准）
 
