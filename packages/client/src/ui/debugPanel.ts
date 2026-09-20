@@ -1,4 +1,9 @@
 export const DEBUG_REFRESH_MS = 250;
+export const DRAW_CALL_BUDGET = 120;
+export const TRIANGLE_BUDGET = 180000;
+export const PARTICLE_BUDGET = 256;
+export const MATERIAL_BUDGET = 24;
+export const FRAME_TIME_BUDGET_MS = 20;
 
 export interface DebugSample {
   readonly fps: number;
@@ -19,6 +24,10 @@ export interface DebugSample {
   readonly predictionMaxErrorM: number;
   readonly hardCorrects: number;
   readonly pendingCommands: number;
+  readonly drawCalls: number;
+  readonly triangles: number;
+  readonly particles: number;
+  readonly materialCount: number;
 }
 
 export interface DebugPanel {
@@ -28,48 +37,86 @@ export interface DebugPanel {
   dispose(): void;
 }
 
+function budgetMark(actual: number, budget: number): string {
+  return actual > budget ? ' !' : '';
+}
+
+export function withinBudget(sample: DebugSample): boolean {
+  return (
+    sample.p95IntervalMs <= FRAME_TIME_BUDGET_MS &&
+    sample.drawCalls <= DRAW_CALL_BUDGET &&
+    sample.triangles <= TRIANGLE_BUDGET &&
+    sample.particles <= PARTICLE_BUDGET &&
+    sample.materialCount <= MATERIAL_BUDGET
+  );
+}
+
+export function debugLines(sample: DebugSample): readonly string[] {
+  const pos = sample.localPos;
+  return [
+    'fps ' +
+      sample.fps.toFixed(1) +
+      '  p95 ' +
+      sample.p95IntervalMs.toFixed(1) +
+      '/' +
+      String(FRAME_TIME_BUDGET_MS) +
+      'ms' +
+      budgetMark(sample.p95IntervalMs, FRAME_TIME_BUDGET_MS) +
+      '  work ' +
+      sample.p95WorkMs.toFixed(1) +
+      'ms',
+    'tick ' +
+      String(sample.tick) +
+      '  snap ' +
+      sample.snapshotsPerSec.toFixed(1) +
+      '/s  in ' +
+      sample.inboundBytesPerSec.toFixed(0) +
+      ' B/s',
+    'rtt ' + sample.rttMs.toFixed(1) + 'ms  srv ' + (sample.serverRateX10 / 10).toFixed(1) + '/s',
+    'entities ' + String(sample.liveEntities) + '/' + String(sample.pooledEntities),
+    'draw ' +
+      String(sample.drawCalls) +
+      '/' +
+      String(DRAW_CALL_BUDGET) +
+      budgetMark(sample.drawCalls, DRAW_CALL_BUDGET) +
+      '  tri ' +
+      String(sample.triangles) +
+      '/' +
+      String(TRIANGLE_BUDGET) +
+      budgetMark(sample.triangles, TRIANGLE_BUDGET),
+    'particles ' +
+      String(sample.particles) +
+      '/' +
+      String(PARTICLE_BUDGET) +
+      budgetMark(sample.particles, PARTICLE_BUDGET) +
+      '  mats ' +
+      String(sample.materialCount) +
+      '/' +
+      String(MATERIAL_BUDGET) +
+      budgetMark(sample.materialCount, MATERIAL_BUDGET),
+    'local ' +
+      (pos === undefined
+        ? 'n/a'
+        : pos.x.toFixed(2) + ' ' + pos.y.toFixed(2) + ' ' + pos.z.toFixed(2)),
+    'pred ' +
+      sample.predictionErrorM.toFixed(3) +
+      'm  max ' +
+      sample.predictionMaxErrorM.toFixed(3) +
+      'm  hard ' +
+      String(sample.hardCorrects) +
+      '  pending ' +
+      String(sample.pendingCommands),
+    'status ' + sample.status + '  room ' + sample.roomCode,
+    sample.versionLine,
+    'budget ' + (withinBudget(sample) ? 'OK' : 'OVER'),
+  ];
+}
+
 export function createDebugPanel(root: HTMLElement, initialVisible: boolean): DebugPanel {
   let visible = initialVisible;
   let lastAtMs = 0;
   let lastText = '';
   root.classList.toggle('debug-hidden', !visible);
-
-  function format(sample: DebugSample): string {
-    const pos = sample.localPos;
-    const lines = [
-      'fps ' +
-        sample.fps.toFixed(1) +
-        '  p95 ' +
-        sample.p95IntervalMs.toFixed(1) +
-        'ms  work ' +
-        sample.p95WorkMs.toFixed(1) +
-        'ms',
-      'tick ' +
-        String(sample.tick) +
-        '  snap ' +
-        sample.snapshotsPerSec.toFixed(1) +
-        '/s  in ' +
-        sample.inboundBytesPerSec.toFixed(0) +
-        ' B/s',
-      'rtt ' + sample.rttMs.toFixed(1) + 'ms  srv ' + (sample.serverRateX10 / 10).toFixed(1) + '/s',
-      'entities ' + String(sample.liveEntities) + '/' + String(sample.pooledEntities),
-      'local ' +
-        (pos === undefined
-          ? 'n/a'
-          : pos.x.toFixed(2) + ' ' + pos.y.toFixed(2) + ' ' + pos.z.toFixed(2)),
-      'pred ' +
-        sample.predictionErrorM.toFixed(3) +
-        'm  max ' +
-        sample.predictionMaxErrorM.toFixed(3) +
-        'm  hard ' +
-        String(sample.hardCorrects) +
-        '  pending ' +
-        String(sample.pendingCommands),
-      'status ' + sample.status + '  room ' + sample.roomCode,
-      sample.versionLine,
-    ];
-    return lines.join('\n');
-  }
 
   return {
     update(sample: DebugSample): void {
@@ -77,7 +124,7 @@ export function createDebugPanel(root: HTMLElement, initialVisible: boolean): De
       const atMs = performance.now();
       if (atMs - lastAtMs < DEBUG_REFRESH_MS) return;
       lastAtMs = atMs;
-      const text = format(sample);
+      const text = debugLines(sample).join('\n');
       if (text === lastText) return;
       lastText = text;
       root.textContent = text;

@@ -12,11 +12,21 @@ export interface FrameStats {
   frameCount: number;
 }
 
+export interface RenderStats {
+  drawCalls: number;
+  triangles: number;
+  lines: number;
+  points: number;
+  programs: number;
+}
+
 export interface ClientRenderer {
   readonly domElement: HTMLCanvasElement;
   setSize(width: number, height: number): void;
   draw(scene: THREE.Scene, camera: THREE.Camera, nowMs: number): void;
+  drawOverlay(scene: THREE.Scene, camera: THREE.Camera): void;
   getStats(): FrameStats;
+  getRenderStats(): RenderStats;
   dispose(): void;
 }
 
@@ -26,6 +36,9 @@ export function createRenderer(options?: { pixelRatioCap?: number }): ClientRend
   const deviceRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
   webgl.setPixelRatio(Math.min(deviceRatio, cap));
   webgl.shadowMap.enabled = false;
+  webgl.autoClear = false;
+  webgl.info.autoReset = false;
+  const renderStats: RenderStats = { drawCalls: 0, triangles: 0, lines: 0, points: 0, programs: 0 };
 
   const intervals = new Float32Array(FRAME_SAMPLE_COUNT);
   const works = new Float32Array(FRAME_SAMPLE_COUNT);
@@ -60,7 +73,14 @@ export function createRenderer(options?: { pixelRatioCap?: number }): ClientRend
     },
     draw(scene: THREE.Scene, camera: THREE.Camera, nowMs: number): void {
       const workStartMs = performance.now();
+      webgl.info.reset();
+      webgl.clear(true, true, true);
       webgl.render(scene, camera);
+      renderStats.drawCalls = webgl.info.render.calls;
+      renderStats.triangles = webgl.info.render.triangles;
+      renderStats.lines = webgl.info.render.lines;
+      renderStats.points = webgl.info.render.points;
+      renderStats.programs = webgl.info.programs === null ? 0 : webgl.info.programs.length;
       const workMs = performance.now() - workStartMs;
       const intervalMs = lastNowMs === 0 ? 0 : nowMs - lastNowMs;
       lastNowMs = nowMs;
@@ -83,8 +103,20 @@ export function createRenderer(options?: { pixelRatioCap?: number }): ClientRend
         stats.p95WorkMs = percentile(works, filled, 0.95);
       }
     },
+    drawOverlay(scene: THREE.Scene, camera: THREE.Camera): void {
+      webgl.clearDepth();
+      webgl.render(scene, camera);
+      renderStats.drawCalls += webgl.info.render.calls;
+      renderStats.triangles += webgl.info.render.triangles;
+      renderStats.lines += webgl.info.render.lines;
+      renderStats.points += webgl.info.render.points;
+      renderStats.programs = webgl.info.programs === null ? 0 : webgl.info.programs.length;
+    },
     getStats(): FrameStats {
       return stats;
+    },
+    getRenderStats(): RenderStats {
+      return renderStats;
     },
     dispose(): void {
       webgl.dispose();

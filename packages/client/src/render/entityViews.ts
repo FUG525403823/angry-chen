@@ -1,199 +1,225 @@
-import * as THREE from 'three';
+import {
+  BoxGeometry,
+  type BufferGeometry,
+  BufferAttribute,
+  Color,
+  Group,
+  InstancedMesh,
+  Matrix4,
+  Mesh,
+  Quaternion,
+  type Scene,
+  SphereGeometry,
+  Vector3,
+} from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 import type { ViewEntity } from '../net/state.ts';
+import { ELITE_BOLT_ENTITY_KIND } from './effects.ts';
+import type { ArtPalette, RenderMaterials } from './materials.ts';
+import { type ChargeWarning, type SheepFlock, createSheepFlock } from './sheepModel.ts';
 
-export interface RenderPalette {
-  readonly localPlayer: number;
-  readonly remotePlayer: number;
-  readonly sheep: number;
-  readonly sheepRage: number;
-  readonly emblem: number;
-  readonly emblemCore: number;
-  readonly projectile: number;
-  readonly pickup: number;
+export const SMALL_ENTITY_CAPACITY = 160;
+export const PROJECTILE_SIZE_M = 0.16;
+export const PICKUP_SIZE_M = 0.4;
+export const PLAYER_BODY_HEIGHT_M = 0.95;
+export const PLAYER_HEAD_HEIGHT_M = 1.55;
+export const DOWNED_TILT_RAD = 1.35;
+export const SNAPSHOT_FLAG_DOWNED = 1;
+
+export interface SheepVisual {
+  readonly form: number;
+  readonly windup: boolean;
 }
 
-export const DEFAULT_PALETTE: RenderPalette = Object.freeze({
-  localPlayer: 0x4fc3f7,
-  remotePlayer: 0xff8a65,
-  sheep: 0xf1ece0,
-  sheepRage: 0xd2402f,
-  emblem: 0x14161c,
-  emblemCore: 0xe8f4ff,
-  projectile: 0xffe066,
-  pickup: 0x9be36f,
-});
-
-export const COLORBLIND_PALETTE: RenderPalette = Object.freeze({
-  localPlayer: 0x56b4e9,
-  remotePlayer: 0xe69f00,
-  sheep: 0xf0f0f0,
-  sheepRage: 0x0072b2,
-  emblem: 0x101216,
-  emblemCore: 0xffffff,
-  projectile: 0xf0e442,
-  pickup: 0x009e73,
-});
-
 export interface EntityViews {
-  sync(): void;
+  sync(sheepVisual: (id: number, state: number) => SheepVisual, dtMs: number): void;
   readonly meshCount: number;
   readonly liveCount: number;
-  setPalette(palette: RenderPalette): void;
+  readonly bossHpRatio: number | undefined;
+  readonly chargeWarnings: readonly ChargeWarning[];
+  flashHit(id: number): void;
+  setPalette(palette: ArtPalette): void;
   dispose(): void;
 }
 
-interface ViewNode {
-  readonly id: number;
-  readonly root: THREE.Group;
-  readonly body: THREE.Mesh;
-  readonly bodyMaterial: THREE.MeshLambertMaterial;
-  readonly head: THREE.Mesh | undefined;
-  readonly mark: THREE.Mesh | undefined;
-  kind: number;
-  rage: boolean;
+interface PlayerNode {
+  readonly root: Group;
+  readonly parts: readonly Mesh[];
+  isLocal: boolean;
   seenFrame: number;
 }
 
+function mergeParts(parts: readonly BufferGeometry[]): BufferGeometry {
+  const merged = mergeGeometries(parts.slice());
+  for (const part of parts) part.dispose();
+  return merged ?? new BoxGeometry(0.1, 0.1, 0.1);
+}
+
+function withShade(geometry: BufferGeometry, shade: number): BufferGeometry {
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  colors.fill(shade);
+  geometry.setAttribute('color', new BufferAttribute(colors, 3));
+  return geometry;
+}
+
+function createPlayerGeometry(): BufferGeometry {
+  const torso = new BoxGeometry(0.6, 0.86, 0.36);
+  torso.translate(0, PLAYER_BODY_HEIGHT_M, 0);
+  const head = new SphereGeometry(0.2, 12, 8);
+  head.translate(0, PLAYER_HEAD_HEIGHT_M, 0.02);
+  const legLeft = new BoxGeometry(0.18, 0.72, 0.18);
+  legLeft.translate(0.16, 0.36, 0);
+  const legRight = new BoxGeometry(0.18, 0.72, 0.18);
+  legRight.translate(-0.16, 0.36, 0);
+  const gun = new BoxGeometry(0.12, 0.14, 0.5);
+  gun.translate(0.24, 1.12, 0.28);
+  return mergeParts([
+    withShade(torso, 1),
+    withShade(head, 0.92),
+    withShade(legLeft, 0.6),
+    withShade(legRight, 0.6),
+    withShade(gun, 0.45),
+  ]);
+}
+
 export function createEntityViews(
-  scene: THREE.Scene,
+  scene: Scene,
   view: { forEachVisible(cb: (entity: ViewEntity) => void): void },
   localPlayerId: () => number,
-  initialPalette: RenderPalette = DEFAULT_PALETTE,
+  materials: RenderMaterials,
+  palette: ArtPalette,
 ): EntityViews {
-  let palette = initialPalette;
-  const pool = new Map<number, ViewNode>();
+  let currentPalette = palette;
+  let liveCount = 0;
   let frame = 0;
-
-  const bodyGeometry = new THREE.BoxGeometry(0.6, 1.4, 0.36);
-  const headGeometry = new THREE.SphereGeometry(0.22, 12, 8);
-  const sheepBodyGeometry = new THREE.BoxGeometry(1.1, 0.72, 0.72);
-  const sheepHeadGeometry = new THREE.BoxGeometry(0.44, 0.44, 0.5);
-  const markGeometry = new THREE.BoxGeometry(0.24, 0.24, 0.05);
-  const coreGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.07);
-  const smallGeometry = new THREE.BoxGeometry(0.16, 0.16, 0.16);
-
-  function createNode(entity: ViewEntity): ViewNode {
-    const root = new THREE.Group();
-    root.name = 'entity:' + String(entity.id);
-    const bodyMaterial = new THREE.MeshLambertMaterial({ color: palette.remotePlayer });
-    let head: THREE.Mesh | undefined;
-    let mark: THREE.Mesh | undefined;
-
-    if (entity.kind === 1) {
-      const body = new THREE.Mesh(sheepBodyGeometry, bodyMaterial);
-      body.position.y = 0.55;
-      root.add(body);
-      head = new THREE.Mesh(sheepHeadGeometry, bodyMaterial);
-      head.position.set(0, 0.62, 0.62);
-      root.add(head);
-      mark = new THREE.Mesh(markGeometry, new THREE.MeshLambertMaterial({ color: palette.emblem }));
-      mark.position.set(0, 0.02, 0.26);
-      const core = new THREE.Mesh(
-        coreGeometry,
-        new THREE.MeshLambertMaterial({ color: palette.emblemCore, emissive: palette.emblemCore }),
-      );
-      core.position.z = 0.03;
-      mark.add(core);
-      head.add(mark);
-    } else if (entity.kind === 2) {
-      const body = new THREE.Mesh(smallGeometry, bodyMaterial);
-      root.add(body);
-    } else {
-      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      body.position.y = 0.7;
-      root.add(body);
-      head = new THREE.Mesh(headGeometry, bodyMaterial);
-      head.position.y = 1.62;
-      root.add(head);
-    }
-
-    scene.add(root);
-    return {
-      id: entity.id,
-      root,
-      body: root.children[0] as THREE.Mesh,
-      bodyMaterial,
-      head,
-      mark,
-      kind: entity.kind,
-      rage: false,
-      seenFrame: 0,
-    };
+  const flock: SheepFlock = createSheepFlock(scene, materials);
+  const playerGeometryShared = createPlayerGeometry();
+  const smallGeometry = withShade(
+    new BoxGeometry(PROJECTILE_SIZE_M, PROJECTILE_SIZE_M, PROJECTILE_SIZE_M),
+    1,
+  );
+  const playerPool = new Map<number, PlayerNode>();
+  const scratchColor = new Color();
+  const smallMatrix = new Matrix4();
+  const smallPosition = new Vector3();
+  const smallScale = new Vector3();
+  const upAxis = new Vector3(0, 1, 0);
+  const yawQuaternion = new Quaternion();
+  const zeroMatrix = new Matrix4().makeScale(0, 0, 0);
+  const smallMesh = new InstancedMesh(smallGeometry, materials.projectile, SMALL_ENTITY_CAPACITY);
+  smallMesh.name = 'small-entities';
+  smallMesh.frustumCulled = false;
+  for (let i = 0; i < SMALL_ENTITY_CAPACITY; i += 1) {
+    smallMesh.setMatrixAt(i, zeroMatrix);
+    smallMesh.setColorAt(i, scratchColor.setHex(palette.projectile));
   }
+  smallMesh.count = 0;
+  scene.add(smallMesh);
 
-  function bodyColor(kind: number, rage: boolean, id: number): number {
-    if (kind === 1) return rage ? palette.sheepRage : palette.sheep;
-    if (kind === 2) return palette.projectile;
-    if (kind === 3) return palette.pickup;
-    return id === localPlayerId() ? palette.localPlayer : palette.remotePlayer;
+  function createPlayerNode(id: number, isLocal: boolean): PlayerNode {
+    const root = new Group();
+    root.name = 'player:' + String(id);
+    const material = isLocal ? materials.playerLocal : materials.playerRemote;
+    const body = new Mesh(playerGeometryShared, material);
+    root.add(body);
+    scene.add(root);
+    return { root, parts: [body], isLocal, seenFrame: 0 };
   }
 
   return {
-    sync(): void {
+    sync(sheepVisual, dtMs): void {
       frame += 1;
+      liveCount = 0;
+      flock.begin();
+      let smallCount = 0;
+      const mine = localPlayerId();
       view.forEachVisible((entity) => {
-        const node = pool.get(entity.id) ?? createNode(entity);
-        if (!pool.has(entity.id)) pool.set(entity.id, node);
-        node.seenFrame = frame;
-        node.root.position.set(entity.pos.x, entity.pos.y, entity.pos.z);
-        node.root.rotation.y = entity.yaw;
-        if (node.head !== undefined) node.head.rotation.x = entity.pitch;
-        const rage = (entity.state & 1) === 1;
-        if (rage !== node.rage || node.kind !== entity.kind) {
-          node.rage = rage;
-          node.kind = entity.kind;
+        liveCount += 1;
+        if (entity.kind === 1) {
+          const visual = sheepVisual(entity.id, entity.state);
+          flock.push({
+            id: entity.id,
+            form: visual.form,
+            x: entity.pos.x,
+            y: entity.pos.y,
+            z: entity.pos.z,
+            yaw: entity.yaw,
+            hpRatio: entity.hpRatio,
+            windup: visual.windup,
+            state: entity.state,
+          });
+          return;
         }
-        const color = bodyColor(node.kind, node.rage, entity.id);
-        if (node.bodyMaterial.color.getHex() !== color) node.bodyMaterial.color.setHex(color);
-        node.root.visible = !(entity.kind === 0 && entity.id === localPlayerId());
+        if (entity.kind === 0) {
+          const isLocal = entity.id === mine;
+          let node = playerPool.get(entity.id);
+          if (node === undefined) {
+            node = createPlayerNode(entity.id, isLocal);
+            playerPool.set(entity.id, node);
+          } else if (node.isLocal !== isLocal) {
+            node.isLocal = isLocal;
+            const material = isLocal ? materials.playerLocal : materials.playerRemote;
+            for (const part of node.parts) part.material = material;
+          }
+          node.seenFrame = frame;
+          node.root.position.set(entity.pos.x, entity.pos.y, entity.pos.z);
+          node.root.rotation.set(0, entity.yaw, 0);
+          node.root.rotation.z = (entity.flags & SNAPSHOT_FLAG_DOWNED) !== 0 ? DOWNED_TILT_RAD : 0;
+          node.root.visible = !isLocal;
+          return;
+        }
+        if (entity.kind === ELITE_BOLT_ENTITY_KIND) return;
+        if (smallCount >= SMALL_ENTITY_CAPACITY) return;
+        smallPosition.set(entity.pos.x, entity.pos.y, entity.pos.z);
+        smallScale.setScalar(PICKUP_SIZE_M);
+        yawQuaternion.setFromAxisAngle(upAxis, entity.yaw);
+        smallMatrix.compose(smallPosition, yawQuaternion, smallScale);
+        smallMesh.setMatrixAt(smallCount, smallMatrix);
+        smallMesh.setColorAt(smallCount, scratchColor.setHex(currentPalette.pickup));
+        smallCount += 1;
       });
-      for (const node of pool.values()) {
+      for (const node of playerPool.values()) {
         if (node.seenFrame !== frame) node.root.visible = false;
       }
+      flock.end(dtMs);
+      smallMesh.count = smallCount;
+      smallMesh.instanceMatrix.needsUpdate = true;
+      if (smallMesh.instanceColor !== null) smallMesh.instanceColor.needsUpdate = true;
     },
     get meshCount(): number {
-      return pool.size;
+      return playerPool.size;
     },
     get liveCount(): number {
-      let live = 0;
-      for (const node of pool.values()) if (node.seenFrame === frame) live += 1;
-      return live;
+      return liveCount;
     },
-    setPalette(next: RenderPalette): void {
-      palette = next;
-      for (const node of pool.values()) {
-        node.bodyMaterial.color.setHex(bodyColor(node.kind, node.rage, -1));
-        if (node.mark === undefined) continue;
-        const markMaterial = node.mark.material as THREE.MeshLambertMaterial;
-        markMaterial.color.setHex(palette.emblem);
-        for (const child of node.mark.children) {
-          const childMaterial = (child as THREE.Mesh).material as THREE.MeshLambertMaterial;
-          childMaterial.color.setHex(palette.emblemCore);
-          childMaterial.emissive.setHex(palette.emblemCore);
-        }
+    get bossHpRatio(): number | undefined {
+      return flock.bossHpRatio;
+    },
+    get chargeWarnings(): readonly ChargeWarning[] {
+      return flock.chargeWarnings;
+    },
+    flashHit(id: number): void {
+      flock.flash(id);
+    },
+    setPalette(next: ArtPalette): void {
+      currentPalette = next;
+      for (const node of playerPool.values()) {
+        const material = node.isLocal ? materials.playerLocal : materials.playerRemote;
+        for (const part of node.parts) part.material = material;
       }
     },
     dispose(): void {
-      for (const node of pool.values()) {
+      for (const node of playerPool.values()) {
         scene.remove(node.root);
-        node.root.traverse((object) => {
-          const material = (object as THREE.Mesh).material;
-          if (Array.isArray(material)) {
-            for (const entry of material) entry.dispose();
-          } else if (material !== undefined) {
-            material.dispose();
-          }
-        });
       }
-      pool.clear();
-      bodyGeometry.dispose();
-      headGeometry.dispose();
-      sheepBodyGeometry.dispose();
-      sheepHeadGeometry.dispose();
-      markGeometry.dispose();
-      coreGeometry.dispose();
+      playerPool.clear();
+      playerGeometryShared.dispose();
       smallGeometry.dispose();
+      smallMesh.dispose();
+      scene.remove(smallMesh);
+      flock.dispose();
     },
   };
 }

@@ -2,6 +2,7 @@ export interface Settings {
   sensitivity: number;
   fov: number;
   masterVolume: number;
+  sfxVolume: number;
   colorblindSafe: boolean;
   reduceMotion: boolean;
 }
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   sensitivity: 1,
   fov: 75,
   masterVolume: 0.8,
+  sfxVolume: 0.8,
   colorblindSafe: false,
   reduceMotion: false,
 });
@@ -58,6 +60,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     ),
     fov: asNumber(source.fov, SETTINGS_LIMITS.fovMin, SETTINGS_LIMITS.fovMax, DEFAULT_SETTINGS.fov),
     masterVolume: asNumber(source.masterVolume, 0, 1, DEFAULT_SETTINGS.masterVolume),
+    sfxVolume: asNumber(source.sfxVolume, 0, 1, DEFAULT_SETTINGS.sfxVolume),
     colorblindSafe: asBoolean(source.colorblindSafe, DEFAULT_SETTINGS.colorblindSafe),
     reduceMotion: asBoolean(source.reduceMotion, DEFAULT_SETTINGS.reduceMotion),
   };

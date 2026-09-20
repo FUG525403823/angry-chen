@@ -46,6 +46,7 @@ describe('设置存储', () => {
       'masterVolume',
       'reduceMotion',
       'sensitivity',
+      'sfxVolume',
     ]);
   });
 
