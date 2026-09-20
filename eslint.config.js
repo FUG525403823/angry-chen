@@ -52,4 +52,32 @@ export default tseslint.config(
     files: ['packages/shared/src/**/*.ts'],
     rules: purityRules,
   },
+  {
+    files: ['packages/client/src/render/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@ac/shared',
+              message: '渲染层只允许接收 SnapshotView、Settings 与本地输入状态（P04 §5.1）。',
+            },
+          ],
+          patterns: [
+            {
+              group: [
+                '**/sim.ts',
+                '**/world.ts',
+                '**/rng.ts',
+                '**/snapshot.ts',
+                '**/net/connection.ts',
+              ],
+              message: '渲染层不得引用模拟内核与网络协议内部（P04 §5.1）。',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

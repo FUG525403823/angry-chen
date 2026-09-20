@@ -22,8 +22,9 @@ export default defineConfig({
           name: 'client',
           environment: 'node',
           include: ['packages/client/src/**/*.test.ts'],
-          // P04 起客户端才有可单测的渲染/输入逻辑，届时补上 jsdom 环境与真实用例。
-          passWithNoTests: true,
+          // 客户端单测只覆盖纯逻辑（设置/采样/插值/视图状态），不引入 jsdom：
+          // DOM 相关行为通过无头 Edge 冒烟与注入式 Storage 覆盖（P04 §5.5）。
+          passWithNoTests: false,
         },
       },
     ],
