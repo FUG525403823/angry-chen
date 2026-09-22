@@ -23,6 +23,7 @@ import {
   emblemSmoothingStep,
 } from './emblem.ts';
 import type { RenderMaterials } from './materials.ts';
+import { createChargeWarningPool } from './sheepInstancePool.ts';
 
 export const SHEEP_FORM = Object.freeze({ grunt: 0, ram: 1, elite: 2, king: 3 } as const);
 export const SHEEP_FORM_COUNT = 4;
@@ -34,6 +35,8 @@ export const KING_BODY_SCALE = 1.6;
 export const SHEEP_FORM_SCALE: readonly number[] = Object.freeze([1, 1.06, 1.12, KING_BODY_SCALE]);
 export const SHEEP_HORN_FORMS: readonly number[] = Object.freeze([SHEEP_FORM.ram, SHEEP_FORM.king]);
 export const CHARGE_WARNING_RADIUS_M = 1.1;
+/** O06：蓄力警告对象池容量（与可见羊上限一致）。 */
+export const CHARGE_WARNING_CAPACITY = 256;
 export const FLASH_DECAY_PER_SECOND = 9;
 export const SHEEP_DEAD_STATE = 8;
 export const CORPSE_FADE_MS = 1500;
@@ -49,23 +52,24 @@ export const EMBLEM_LOCAL_SCALE: readonly number[] = Object.freeze(
   ),
 );
 
+/** O06：字段可变，以便从环形池复用（详见 sheepInstancePool.ts）。 */
 export interface SheepInstance {
-  readonly id: number;
-  readonly form: number;
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-  readonly yaw: number;
-  readonly hpRatio: number;
-  readonly windup: boolean;
-  readonly state?: number;
+  id: number;
+  form: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  hpRatio: number;
+  windup: boolean;
+  state?: number;
 }
 
 export interface ChargeWarning {
-  readonly id: number;
-  readonly x: number;
-  readonly z: number;
-  readonly radiusM: number;
+  id: number;
+  x: number;
+  z: number;
+  radiusM: number;
 }
 
 export interface SheepFlock {
@@ -272,6 +276,7 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
   const slotFlash = new Float32Array(SHEEP_TOTAL_CAPACITY);
   const pendingFlash = new Map<number, number>();
   const warnings: ChargeWarning[] = [];
+  const warningPool = createChargeWarningPool(CHARGE_WARNING_CAPACITY);
   const sheepMatrix = new Matrix4();
   const localMatrix = new Matrix4();
   const position = new Vector3();
@@ -293,6 +298,7 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
     begin(): void {
       counts.fill(0);
       warnings.length = 0;
+      warningPool.reset();
       bossHp = undefined;
       visible = 0;
       emblemSlots = 0;
@@ -374,12 +380,12 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
         emblemMesh.setMatrixAt(slot, localMatrix);
         if (slot + 1 > emblemSlots) emblemSlots = slot + 1;
         if (instance.windup && fade === 0) {
-          warnings.push({
-            id: instance.id,
-            x: instance.x,
-            z: instance.z,
-            radiusM: CHARGE_WARNING_RADIUS_M * formScale,
-          });
+          const warning = warningPool.acquire(warnings.length);
+          warning.id = instance.id;
+          warning.x = instance.x;
+          warning.z = instance.z;
+          warning.radiusM = CHARGE_WARNING_RADIUS_M * formScale;
+          warnings.push(warning);
         }
         if (form === SHEEP_FORM.king) {
           bossHp = bossHp === undefined ? instance.hpRatio : Math.min(bossHp, instance.hpRatio);

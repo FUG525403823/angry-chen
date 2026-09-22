@@ -14,6 +14,7 @@ import {
   afterimageStep,
   ammoState,
   createCombatHud,
+  createHud,
   crosshairSpreadPx,
   feedOpacity,
   transitionCue,
@@ -323,6 +324,141 @@ describe('HUD 战斗层渲染（P09 §5.2）', () => {
       expect(collect(root, FEED_ICON_CLASS).length).toBe(1);
       hud.dispose();
       expect(collect(root, 'hud-feed-entry').length).toBe(0);
+    } finally {
+      uninstall();
+    }
+  });
+});
+
+function countWrites(target: FakeNode, property: string): { reads: () => number } {
+  let count = 0;
+  let value = '';
+  Object.defineProperty(target, property, {
+    configurable: true,
+    get: () => value,
+    set: (next: string) => {
+      count += 1;
+      value = next;
+    },
+  });
+  return { reads: () => count };
+}
+
+function countStyleWrites(target: FakeNode, property: string): { reads: () => number } {
+  let count = 0;
+  let value = '';
+  Object.defineProperty(target.style, property, {
+    configurable: true,
+    get: () => value,
+    set: (next: string) => {
+      count += 1;
+      value = next;
+    },
+  });
+  return { reads: () => count };
+}
+
+describe('O06 HUD 脏检查（同值不触达 DOM）', () => {
+  it('同值两次 set() 只写一次 style.width / textContent，值变化时必须写', () => {
+    const uninstall = installDomStub();
+    try {
+      const root = document.createElement('div');
+      const hud = createCombatHud(root);
+      const fill = collect(root, 'hud-health-fill')[0] as unknown as FakeNode;
+      const text = collect(root, 'hud-health-text')[0] as unknown as FakeNode;
+      const width = countStyleWrites(fill, 'width');
+      const label = countWrites(text, 'textContent');
+      const same = sample();
+
+      hud.set(same);
+      expect(width.reads()).toBe(1);
+      expect(label.reads()).toBe(1);
+      expect(fill.style.width).toBe('100.0%');
+      expect(text.textContent).toBe('100');
+
+      hud.set(same);
+      expect(width.reads()).toBe(1);
+      expect(label.reads()).toBe(1);
+
+      const changed = sample();
+      changed.hpRatio = 0.4;
+      hud.set(changed);
+      expect(width.reads()).toBe(2);
+      expect(fill.style.width).toBe('40.0%');
+      expect(label.reads()).toBe(2);
+      expect(text.textContent).toBe('40');
+      hud.dispose();
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('护甲/弹药/怒气同值不重写，变化后按显示精度写一次', () => {
+    const uninstall = installDomStub();
+    try {
+      const root = document.createElement('div');
+      const hud = createCombatHud(root);
+      const armor = collect(root, 'hud-armor-fill')[0] as unknown as FakeNode;
+      const magText = collect(root, 'hud-ammo-text')[0] as unknown as FakeNode;
+      const rage = collect(root, 'hud-rage-fill')[0] as unknown as FakeNode;
+      const armorWidth = countStyleWrites(armor, 'width');
+      const armorDisplay = countStyleWrites(armor, 'display');
+      const magWrites = countWrites(magText, 'textContent');
+      const rageWidth = countStyleWrites(rage, 'width');
+
+      const first = sample();
+      first.armorRatio = 0.5;
+      first.mag = 7;
+      first.rage = 50;
+      hud.set(first);
+      expect(armorDisplay.reads()).toBe(1);
+      expect(armorWidth.reads()).toBe(1);
+      expect(magWrites.reads()).toBe(1);
+      expect(rageWidth.reads()).toBe(1);
+
+      hud.set(first);
+      expect(armorDisplay.reads()).toBe(1);
+      expect(armorWidth.reads()).toBe(1);
+      expect(magWrites.reads()).toBe(1);
+      expect(rageWidth.reads()).toBe(1);
+
+      first.mag = 6;
+      hud.set(first);
+      expect(magWrites.reads()).toBe(2);
+      expect(armorWidth.reads()).toBe(1);
+      hud.dispose();
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('状态行：血量与状态都没变时不再拼接/写 textContent，状态变化必须写', () => {
+    const uninstall = installDomStub();
+    try {
+      const root = document.createElement('div');
+      const banner = document.createElement('div');
+      const hud = createHud(root, banner);
+      const line = collect(root, 'hud-line')[0] as unknown as FakeNode;
+      const writes = countWrites(line, 'textContent');
+      const update = {
+        local: undefined,
+        stats: { snapshotsPerSec: 19.9, inboundBytesPerSec: 100, rttMs: 40 },
+        fps: 60,
+        liveEntities: 3,
+        localPos: undefined,
+      };
+
+      hud.update(update as unknown as Parameters<typeof hud.update>[0]);
+      expect(writes.reads()).toBe(1);
+      expect(line.textContent).toContain('HP 0');
+
+      hud.update(update as unknown as Parameters<typeof hud.update>[0]);
+      expect(writes.reads()).toBe(1);
+
+      hud.setStatus('playing');
+      expect(writes.reads()).toBe(2);
+      expect(line.textContent).toContain('playing');
+      hud.dispose();
     } finally {
       uninstall();
     }

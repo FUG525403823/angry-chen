@@ -30,6 +30,26 @@ export interface ClientRenderer {
   dispose(): void;
 }
 
+/**
+ * O06：原地插入排序取分位（不拷贝、不分配）。同一 `source` 会被排序，
+ * 调用方需接受环形缓冲的槽位顺序被打乱（值域仍是同一批样本）。
+ */
+export function percentileOf(source: Float32Array, count: number, ratio: number): number {
+  if (count <= 0) return 0;
+  const end = Math.min(count, source.length);
+  for (let i = 1; i < end; i += 1) {
+    const value = source[i] ?? 0;
+    let j = i - 1;
+    while (j >= 0 && (source[j] ?? 0) > value) {
+      source[j + 1] = source[j] ?? 0;
+      j -= 1;
+    }
+    source[j + 1] = value;
+  }
+  const index = Math.min(end - 1, Math.max(0, Math.ceil(ratio * end) - 1));
+  return Number((source[index] ?? 0).toFixed(2));
+}
+
 export function createRenderer(options?: { pixelRatioCap?: number }): ClientRenderer {
   const cap = options?.pixelRatioCap ?? MAX_PIXEL_RATIO;
   const webgl = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -42,7 +62,6 @@ export function createRenderer(options?: { pixelRatioCap?: number }): ClientRend
 
   const intervals = new Float32Array(FRAME_SAMPLE_COUNT);
   const works = new Float32Array(FRAME_SAMPLE_COUNT);
-  const scratch = new Float32Array(FRAME_SAMPLE_COUNT);
   const stats: FrameStats = {
     fps: 0,
     p95IntervalMs: 0,
@@ -58,12 +77,7 @@ export function createRenderer(options?: { pixelRatioCap?: number }): ClientRend
   let fps = 0;
 
   function percentile(source: Float32Array, count: number, ratio: number): number {
-    if (count === 0) return 0;
-    for (let i = 0; i < count; i += 1) scratch[i] = source[i] ?? 0;
-    const view = scratch.subarray(0, count);
-    view.sort();
-    const index = Math.min(count - 1, Math.max(0, Math.ceil(ratio * count) - 1));
-    return Number((view[index] ?? 0).toFixed(2));
+    return percentileOf(source, count, ratio);
   }
 
   return {

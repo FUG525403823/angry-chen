@@ -121,7 +121,9 @@ export function createHud(root: HTMLElement, banner: HTMLElement): Hud {
   const stats = addElement(root, 'hud-stats');
 
   let bannerTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastLine = '';
+  /** O06：脏检查——先比较（按 UI 精度取整）再拼字符串。 */
+  let lastHpRounded = Number.NaN;
+  let lineDirty = false;
   let lastStats = '';
   let lastStatsAtMs = 0;
   let status = 'idle';
@@ -141,27 +143,38 @@ export function createHud(root: HTMLElement, banner: HTMLElement): Hud {
   }
 
   function renderLine(): void {
-    const text = roomCode + ' · ' + phase + ' · ' + status + ' · HP ' + String(Math.round(hp));
-    if (text === lastLine) return;
-    lastLine = text;
-    line.textContent = text;
+    const hpRounded = Math.round(hp);
+    if (!lineDirty && hpRounded === lastHpRounded) return;
+    lineDirty = false;
+    lastHpRounded = hpRounded;
+    line.textContent = roomCode + ' · ' + phase + ' · ' + status + ' · HP ' + String(hpRounded);
   }
 
   return {
     setStatus(text: string): void {
       status = text;
+      lineDirty = true;
       renderLine();
     },
     setRoomCode(code: string): void {
       roomCode = code;
+      lineDirty = true;
       renderLine();
     },
     setPhase(text: string): void {
       phase = text;
+      lineDirty = true;
       renderLine();
     },
     pushEvents(names: readonly string[]): void {
-      showBanner(names.slice(0, MAX_BANNER_EVENTS).join(' · '));
+      const count = names.length < MAX_BANNER_EVENTS ? names.length : MAX_BANNER_EVENTS;
+      let text = '';
+      for (let i = 0; i < count; i += 1) {
+        const name = names[i];
+        if (name === undefined) continue;
+        text = text === '' ? name : text + ' · ' + name;
+      }
+      showBanner(text);
     },
     showBanner,
     update(data: HudUpdate): void {
@@ -320,6 +333,30 @@ export function createCombatHud(root: HTMLElement): CombatHud {
   let chargeLeftMs = 0;
   let lastWave = -1;
   let lastDowned = false;
+  // O06：DOM 脏检查缓存（数值按 UI 显示精度取整后比较，布尔/字符串按变更比较）。
+  let healthWidthPct = Number.NaN;
+  let afterWidthPct = Number.NaN;
+  let healthTextPct = Number.NaN;
+  let armorVisible: boolean | undefined;
+  let armorWidthPct = Number.NaN;
+  let ammoMag = Number.NaN;
+  let ammoReserveCount = Number.NaN;
+  let rageWidthPct = Number.NaN;
+  let rageTextKey = '';
+  let reloadVisible: boolean | undefined;
+  let reloadTurnDeg = Number.NaN;
+  let crosshairPx = Number.NaN;
+  let bossVisible: boolean | undefined;
+  let bossWidthPct = Number.NaN;
+  let bossHpAttr = Number.NaN;
+  let downedTextShown = false;
+  let reviveVisible: boolean | undefined;
+  let reviveTurnDeg = Number.NaN;
+  let reviveTextPct = Number.NaN;
+
+  function round1(value: number): number {
+    return Math.round(value * 10) / 10;
+  }
 
   function renderSubtitles(): void {
     const lines = subtitleLog.lines;
@@ -364,41 +401,92 @@ export function createCombatHud(root: HTMLElement): CombatHud {
       if (cue !== undefined) pushSubtitle(subtitleTextFor(cue.cue, cue.wave));
       const hpRatio = clamp01(sample.hpRatio);
       afterRatio = Math.max(hpRatio, afterimageStep(afterRatio, hpRatio, dtMs));
-      healthFill.style.width = (hpRatio * 100).toFixed(1) + '%';
-      healthAfter.style.width = (afterRatio * 100).toFixed(1) + '%';
-      healthText.textContent = String(Math.round(hpRatio * 100));
-      if (sample.armorRatio === undefined) {
-        armorFill.style.display = 'none';
-      } else {
-        armorFill.style.display = 'block';
-        armorFill.style.width = (clamp01(sample.armorRatio) * 100).toFixed(1) + '%';
+      const healthPct = round1(hpRatio * 100);
+      if (healthPct !== healthWidthPct) {
+        healthWidthPct = healthPct;
+        healthFill.style.width = healthPct.toFixed(1) + '%';
+      }
+      const afterPct = round1(afterRatio * 100);
+      if (afterPct !== afterWidthPct) {
+        afterWidthPct = afterPct;
+        healthAfter.style.width = afterPct.toFixed(1) + '%';
+      }
+      const healthTextValue = Math.round(hpRatio * 100);
+      if (healthTextValue !== healthTextPct) {
+        healthTextPct = healthTextValue;
+        healthText.textContent = String(healthTextValue);
+      }
+      const armorOn = sample.armorRatio !== undefined;
+      if (armorOn !== armorVisible) {
+        armorVisible = armorOn;
+        armorFill.style.display = armorOn ? 'block' : 'none';
+      }
+      if (armorOn) {
+        const armorPct = round1(clamp01(sample.armorRatio ?? 0) * 100);
+        if (armorPct !== armorWidthPct) {
+          armorWidthPct = armorPct;
+          armorFill.style.width = armorPct.toFixed(1) + '%';
+        }
       }
 
       const state = ammoState(sample.mag, sample.magSize);
       if (weaponName.textContent !== sample.weaponName) {
         weaponName.textContent = sample.weaponName;
       }
-      ammoText.textContent = String(Math.max(0, Math.round(sample.mag)));
-      ammoReserve.textContent = '备弹 ' + String(Math.max(0, Math.round(sample.reserve)));
+      const magValue = Math.max(0, Math.round(sample.mag));
+      if (magValue !== ammoMag) {
+        ammoMag = magValue;
+        ammoText.textContent = String(magValue);
+      }
+      const reserveValue = Math.max(0, Math.round(sample.reserve));
+      if (reserveValue !== ammoReserveCount) {
+        ammoReserveCount = reserveValue;
+        ammoReserve.textContent = '备弹 ' + String(reserveValue);
+      }
       ammoBox.classList.toggle('hud-ammo-low', state === 'low');
       ammoBox.classList.toggle('hud-ammo-empty', state === 'empty');
 
       const rage = sample.rage < 0 ? 0 : sample.rage > RAGE_FULL ? RAGE_FULL : sample.rage;
-      rageFill.style.width = ((rage / RAGE_FULL) * 100).toFixed(1) + '%';
+      const ragePct = round1((rage / RAGE_FULL) * 100);
+      if (ragePct !== rageWidthPct) {
+        rageWidthPct = ragePct;
+        rageFill.style.width = ragePct.toFixed(1) + '%';
+      }
       const berserk = sample.rageLeftMs > 0;
       rageBox.classList.toggle('hud-rage-full', rage >= RAGE_FULL);
       rageBox.classList.toggle('hud-rage-berserk', berserk);
-      rageText.textContent = berserk
-        ? '狂暴 ' + (sample.rageLeftMs / 1000).toFixed(1) + 's'
+      const rageRounded = Math.round(rage);
+      const rageKey = berserk
+        ? 'b' + (sample.rageLeftMs / 1000).toFixed(1)
         : rage >= RAGE_FULL
-          ? '按 F 释放狂暴'
-          : '怒气 ' + String(Math.round(rage));
+          ? 'f'
+          : 'r' + String(rageRounded);
+      if (rageKey !== rageTextKey) {
+        rageTextKey = rageKey;
+        rageText.textContent = berserk
+          ? '狂暴 ' + (sample.rageLeftMs / 1000).toFixed(1) + 's'
+          : rage >= RAGE_FULL
+            ? '按 F 释放狂暴'
+            : '怒气 ' + String(rageRounded);
+      }
 
       const reload = clamp01(sample.reloadRatio);
-      reloadRing.style.opacity = reload > 0 ? '1' : '0';
-      reloadRing.style.setProperty('--reload-turn', (reload * 360).toFixed(0) + 'deg');
+      const reloadOn = reload > 0;
+      if (reloadOn !== reloadVisible) {
+        reloadVisible = reloadOn;
+        reloadRing.style.opacity = reloadOn ? '1' : '0';
+      }
+      const reloadDeg = Math.round(reload * 360);
+      if (reloadDeg !== reloadTurnDeg) {
+        reloadTurnDeg = reloadDeg;
+        reloadRing.style.setProperty('--reload-turn', String(reloadDeg) + 'deg');
+      }
 
-      crosshair.style.setProperty('--spread-px', crosshairSpreadPx(sample.spreadDeg).toFixed(1));
+      const spreadPx = round1(crosshairSpreadPx(sample.spreadDeg));
+      if (spreadPx !== crosshairPx) {
+        crosshairPx = spreadPx;
+        crosshair.style.setProperty('--spread-px', spreadPx.toFixed(1));
+      }
 
       if (sample.wave !== lastWave) {
         lastWave = sample.wave;
@@ -409,23 +497,48 @@ export function createCombatHud(root: HTMLElement): CombatHud {
         }
       }
 
-      if (sample.bossHpRatio === undefined) {
-        bossBox.classList.remove('hud-boss-visible');
-      } else {
-        bossBox.classList.add('hud-boss-visible');
-        bossFill.style.width = (clamp01(sample.bossHpRatio) * 100).toFixed(1) + '%';
-        bossBar.setAttribute('data-hp', String(Math.round(clamp01(sample.bossHpRatio) * 100)));
+      const bossOn = sample.bossHpRatio !== undefined;
+      if (bossOn !== bossVisible) {
+        bossVisible = bossOn;
+        if (bossOn) bossBox.classList.add('hud-boss-visible');
+        else bossBox.classList.remove('hud-boss-visible');
+      }
+      if (bossOn) {
+        const bossPct = round1(clamp01(sample.bossHpRatio ?? 0) * 100);
+        if (bossPct !== bossWidthPct) {
+          bossWidthPct = bossPct;
+          bossFill.style.width = bossPct.toFixed(1) + '%';
+        }
+        const bossHp = Math.round(clamp01(sample.bossHpRatio ?? 0) * 100);
+        if (bossHp !== bossHpAttr) {
+          bossHpAttr = bossHp;
+          bossBar.setAttribute('data-hp', String(bossHp));
+        }
       }
 
       downedOverlay.classList.toggle('hud-downed-visible', sample.downed);
-      if (sample.downed) downedText.textContent = '倒地中：等待队友按 E 救援';
+      if (sample.downed && !downedTextShown) {
+        downedTextShown = true;
+        downedText.textContent = '倒地中：等待队友按 E 救援';
+      }
       const reviving = sample.reviveRatio !== undefined;
-      reviveRing.style.display = reviving ? 'block' : 'none';
-      reviveLabel.style.display = reviving ? 'block' : 'none';
+      if (reviving !== reviveVisible) {
+        reviveVisible = reviving;
+        reviveRing.style.display = reviving ? 'block' : 'none';
+        reviveLabel.style.display = reviving ? 'block' : 'none';
+      }
       if (reviving) {
         const ratio = clamp01(sample.reviveRatio ?? 0);
-        reviveRing.style.setProperty('--revive-turn', (ratio * 360).toFixed(0) + 'deg');
-        reviveLabel.textContent = '救援 ' + Math.round(ratio * 100) + '%';
+        const reviveDeg = Math.round(ratio * 360);
+        if (reviveDeg !== reviveTurnDeg) {
+          reviveTurnDeg = reviveDeg;
+          reviveRing.style.setProperty('--revive-turn', String(reviveDeg) + 'deg');
+        }
+        const revivePct = Math.round(ratio * 100);
+        if (revivePct !== reviveTextPct) {
+          reviveTextPct = revivePct;
+          reviveLabel.textContent = '救援 ' + String(revivePct) + '%';
+        }
       }
 
       if (chargeLeftMs > 0) {

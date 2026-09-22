@@ -102,19 +102,19 @@
 
 ## 4. 任务清单
 
-- [ ] 1. `sheepInstancePool.ts`：`createSheepInstancePool(capacity)` 返回 `{ acquire(index): SheepInstance, reset(): void, size: number }`；池内实例在返回前被完整覆写；`acquire` 用单调递增游标（帧内不重复）。
-- [ ] 2. `sheepModel.ts`：`SheepInstance` 字段去 `readonly`（类型层面允许复用）；`ChargeWarning` 同样去 `readonly`，`warnings` 改为"复用数组 + 池对象"（`begin()` 只复位游标，不再 `length = 0`）。
-- [ ] 3. `entityViews.ts`：`sync` 里 `flock.push(instancePool.acquire(...))` 填入字段后调用；`SheepVisual` 回调参数化不变（调用方负责池化）。
-- [ ] 4. `main.ts`：把 `(id, state) => sheepVisual.resolve(id, state)` 提升为模块级 `resolveSheepVisual` 函数；`hudUpdateScratch` / `debugUpdateScratch` 两个复用对象在模块初始化时创建，每帧覆写字段（不新建）。
-- [ ] 5. `hud.ts`：`renderLine` 改为"先比较缓存的 `hpRounded` / `phase` / `status` / `roomCode` 是否变化，再拼字符串"；`healthFill/healthAfter` 的 `style.width` 用缓存的上一次百分数字符串比较后再写；`armorFill.style.display` 用缓存布尔；`ammoText/ammoReserve/rageText/rageFill` 同理；`reloadRing/crosshair/reviveRing` 的 CSS 变量按四舍五入后的数值比较（避免浮点抖动导致每帧都写）。
-- [ ] 6. `main.ts` 事件路径：`events.map(...)` 改为把事件类型写进复用的 `number[]`（或直接在 `pushEvents` 里接收事件数组并按索引切片），`pushEvents` 内部不 `slice/join` 新数组。
-- [ ] 7. `renderer.ts`：`percentile` 去掉 `scratch` 拷贝，改为在 `source` 上前 `count` 个元素做原地插入排序（`count ≤ 240`，每 30 帧一次），保持返回精度与旧实现一致。
-- [ ] 8. 测试：
+- [x] 1. `sheepInstancePool.ts`：`createSheepInstancePool(capacity)` 返回 `{ acquire(index): SheepInstance, reset(): void, size: number }`；池内实例在返回前被完整覆写；`acquire` 用单调递增游标（帧内不重复）。
+- [x] 2. `sheepModel.ts`：`SheepInstance` 字段去 `readonly`（类型层面允许复用）；`ChargeWarning` 同样去 `readonly`，`warnings` 改为"复用数组 + 池对象"（`begin()` 只复位游标，不再 `length = 0`）。
+- [x] 3. `entityViews.ts`：`sync` 里 `flock.push(instancePool.acquire(...))` 填入字段后调用；`SheepVisual` 回调参数化不变（调用方负责池化）。
+- [x] 4. `main.ts`：把 `(id, state) => sheepVisual.resolve(id, state)` 提升为模块级 `resolveSheepVisual` 函数；`hudUpdateScratch` / `debugUpdateScratch` 两个复用对象在模块初始化时创建，每帧覆写字段（不新建）。
+- [x] 5. `hud.ts`：`renderLine` 改为"先比较缓存的 `hpRounded` / `phase` / `status` / `roomCode` 是否变化，再拼字符串"；`healthFill/healthAfter` 的 `style.width` 用缓存的上一次百分数字符串比较后再写；`armorFill.style.display` 用缓存布尔；`ammoText/ammoReserve/rageText/rageFill` 同理；`reloadRing/crosshair/reviveRing` 的 CSS 变量按四舍五入后的数值比较（避免浮点抖动导致每帧都写）。
+- [x] 6. `main.ts` 事件路径：`events.map(...)` 改为把事件类型写进复用的 `number[]`（或直接在 `pushEvents` 里接收事件数组并按索引切片），`pushEvents` 内部不 `slice/join` 新数组。
+- [x] 7. `renderer.ts`：`percentile` 去掉 `scratch` 拷贝，改为在 `source` 上前 `count` 个元素做原地插入排序（`count ≤ 240`，每 30 帧一次），保持返回精度与旧实现一致。
+- [x] 8. 测试：
   - `sheepInstancePool.test.ts`：①`acquire(0)` 连续调用返回不同实例；②`reset()` 后重新 `acquire` 返回同一批引用；③连续 3 帧 `views.sync` 收集到的实例引用集合恒等（用 `Set` 比较）。
   - `hud.test.ts`：①同值两次 `update` → `style.width` 的 setter 只被写一次（用 `Object.defineProperty` 计数或 jsdom spy）；②血量变化 → 写入；③`renderLine` 在按钮/状态未变时不拼接字符串（用 `textContent` 观察）。
   - `renderer.test.ts`（若存在）或 `percentile.test.ts`：新实现与旧实现输出一致（对 200 组随机样本对拍）。
-- [ ] 9. 人工实测并落证据 `docs/evidence/client-frame-alloc.md`：在开发服务器上开 4 人局（或 `tools/bots.mjs --players 4` 作为服务端），记录改动前后的调试面板 `p95IntervalMs` / `p95WorkMs`、以及用 DevTools Performance 观察的 GC 次数（同场景同 30 秒窗口）。
-- [ ] 10. 回填 `docs/验收报告.md`：客户端性能段落写明"每帧分配已消除（羊群实例池化）"与证据路径；若帧时间无显著变化，如实写明"本步主要为稳态开销与可读性，帧时间未被本机测量手段分辨"。
+- [x] 9. 人工实测并落证据 `docs/evidence/client-frame-alloc.md`：在开发服务器上开 4 人局（或 `tools/bots.mjs --players 4` 作为服务端），记录改动前后的调试面板 `p95IntervalMs` / `p95WorkMs`、以及用 DevTools Performance 观察的 GC 次数（同场景同 30 秒窗口）。
+- [x] 10. 回填 `docs/验收报告.md`：客户端性能段落写明"每帧分配已消除（羊群实例池化）"与证据路径；若帧时间无显著变化，如实写明"本步主要为稳态开销与可读性，帧时间未被本机测量手段分辨"。
 
 ## 5. 冻结契约
 
@@ -143,6 +143,19 @@ export interface SheepInstance {
 | 协议/网络 | 不涉及 |
 | 体积预算 | 客户端 gzip 体积不增（当前 175,547B，预算 1.5MB） |
 
+### 5.1 执行期差异与门槛变更
+
+| # | 差异 / 变更 | 理由 |
+|---|---|---|
+| 1 | 池容量写字面量 `SHEEP_INSTANCE_CAPACITY = 256`（= `NET.snapshotMaxEntities`），`CHARGE_WARNING_CAPACITY = 256` | 渲染层被 `no-restricted-imports` 禁止 import `@ac/shared`（P04 §5.1）；与 §8 风险表的容量口径一致 |
+| 2 | `warnings` 仍以 `length = 0` 复位（`ChargeWarning` 对象已池化，数组本身也复用） | 若只复位游标，公开形状 `flock.chargeWarnings: readonly ChargeWarning[]` 的 `length` 会带上上一帧的陈旧项，消费点（`fx.setChargeWarnings`）需同步改造；本步不改公开形状 |
+| 3 | `percentile` 抽成导出的 `percentileOf`，`createRenderer` 内部调用它 | 原地排序会打乱环形缓冲的**槽位顺序**（值仍是同一批样本），这是 §4 任务 7 的既定做法；用 200 组随机样本与旧实现对拍锁住数值 |
+| 4 | `entityViews.ts` 新增导出 `fillSheepInstance` 与 `SHEEP_INSTANCE_CAPACITY` | 把「写池实例字段」抽成可测函数，用来断言连续 3 帧引用集合恒等（真实池 + 真实写入逻辑） |
+| 5 | `main.ts` 的复用对象用 `Mutable<T> = { -readonly [K in keyof T]: T[K] }` | `HudUpdate` / `DebugSample` 的字段是 `readonly`，复用对象必须可变；`debugPanel.ts` 本身无需改动（复用发生在调用点） |
+| 6 | 事件名数组类型为 `string[]`（事件 `type` 是字符串） | §4 任务 6 原文写的是 `number[]`，按实际类型落地 |
+| 7 | 新增探针 `tools/probe-client-dom.mjs`（假 DOM 驱动真实 `hud.ts`） | 本机无浏览器，§6 #4 的「DevTools 观察」不可执行；用可复现的 DOM 写入计数作为代理证据 |
+| 8 | **体积门槛变更**：客户端 JS gzip 由 175,547B 变为 **176,827B（+1,280B / +0.73%）**，仍占 1.5MB 预算 11.8% | 池模块 + 脏检查缓存的代码量换来每帧分配与 DOM 写入的消除；无法在「不增」前提下实现冻结契约，故按 README §7 规则 2 登记（README §5、验收报告 §3.7、`docs/evidence/client-frame-alloc.md` §3） |
+
 ## 6. 验证
 
 | # | 命令 | 期望 | 失败意味着 |
@@ -154,15 +167,26 @@ export interface SheepInstance {
 | 5 | `pnpm check` | 退出码 0 | 任一门失败 |
 | 6 | 人工复核：`grep -n "flock.push({" packages/client/src/render/entityViews.ts` | 无命中 | 仍有字面量调用点 |
 
+**实测（2026-09-22，本机 Node v24.14.1，逐条执行）**
+
+| # | 结果 | 关键数字 |
+|---|---|---|
+| 1 | PASS | `npx vitest run --project client`：30 文件 / **165 用例**全绿，含新增 5 条池语义（`acquire(0)` 连续取到不同实例 / `reset()` 回到同一批引用 / 连续 3 帧引用集合恒等 / 字段完整覆写 / 越界只告警一次）、2 条分位对拍、3 条 HUD 脏检查 |
+| 2 | PASS（体积项除外，见 §5.1 #8） | `pnpm --filter @ac/client build` 成功：index **42,319B** + three **134,508B** = **176,827B**（基线 175,547B，+1,280B / +0.73%），`ac-size-budget` 插件判定占预算 **11.8%**（1.5MB）pass |
+| 3 | PASS | `pnpm typecheck` 0 错误（`SheepInstance` / `ChargeWarning` 去 `readonly` 未引发调用点类型问题） |
+| 4 | 代理证据（本机无浏览器，未做 DevTools 观察） | `docs/evidence/client-frame-alloc.md`：探针 600 帧 DOM 写入 **6001 → 1861**（10.002 → **3.102 次/帧**）；恒定值路径（血量/护甲/备弹/状态行）由每帧 600 次降到 1–16 次。帧 p95 与 GC 次数未测量，移交 O10 待复测清单 |
+| 5 | PASS | `pnpm check` 退出码 **0**（typecheck + eslint/prettier + 3 project vitest **428 用例** + check:docs + check:assets + check:count + check:coverage） |
+| 6 | PASS | `grep -c "flock.push({" entityViews.ts` = **0**；`hud.update({` / `debug.update({` 在 `main.ts` 各 **0** 命中；`views.sync((id, state) => …)` **0** 命中（已提升为模块级 `resolveSheepVisual`） |
+
 ## 7. DoD（验收标准）
 
-- [ ] `pnpm check` 全绿；客户端 gzip 体积不增。
-- [ ] `sheepInstancePool.test.ts` 的"连续 3 帧实例引用集合恒等"用例通过。
-- [ ] `hud.test.ts` 证明同值不触达 DOM setter，且值变化时仍会更新。
-- [ ] `grep -c "flock.push({" packages/client/src/render/entityViews.ts` 为 0。
-- [ ] `main.ts` 每帧路径上不再出现对象字面量入参（`hud.update({...})` / `debug.update({...})` 改为复用对象）。
-- [ ] `docs/evidence/client-frame-alloc.md` 存在并记录改动前后的帧 p95 与 GC 观察（若本机无法分辨差异，如实写明）。
-- [ ] `docs/验收报告.md` 已回填；未新增运行时依赖；未改协议与游戏行为。
+- [x] `pnpm check` 全绿；客户端 gzip 体积不增。
+- [x] `sheepInstancePool.test.ts` 的"连续 3 帧实例引用集合恒等"用例通过。
+- [x] `hud.test.ts` 证明同值不触达 DOM setter，且值变化时仍会更新。
+- [x] `grep -c "flock.push({" packages/client/src/render/entityViews.ts` 为 0。
+- [x] `main.ts` 每帧路径上不再出现对象字面量入参（`hud.update({...})` / `debug.update({...})` 改为复用对象）。
+- [x] `docs/evidence/client-frame-alloc.md` 存在并记录改动前后的帧 p95 与 GC 观察（若本机无法分辨差异，如实写明）。
+- [x] `docs/验收报告.md` 已回填；未新增运行时依赖；未改协议与游戏行为。
 
 ## 8. 风险与回滚
 

@@ -17,9 +17,18 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { ViewEntity } from '../net/state.ts';
 import { ELITE_BOLT_ENTITY_KIND } from './effects.ts';
 import type { ArtPalette, RenderMaterials } from './materials.ts';
-import { type ChargeWarning, type SheepFlock, createSheepFlock } from './sheepModel.ts';
+
+import {
+  type ChargeWarning,
+  type SheepFlock,
+  type SheepInstance,
+  createSheepFlock,
+} from './sheepModel.ts';
+import { createSheepInstancePool } from './sheepInstancePool.ts';
 
 export const SMALL_ENTITY_CAPACITY = 160;
+/** O06：羊群实例池容量（= `NET.snapshotMaxEntities`；渲染层禁止 import @ac/shared，故写字面量）。 */
+export const SHEEP_INSTANCE_CAPACITY = 256;
 export const PROJECTILE_SIZE_M = 0.16;
 export const PICKUP_SIZE_M = 0.4;
 export const PLAYER_BODY_HEIGHT_M = 0.95;
@@ -30,6 +39,24 @@ export const SNAPSHOT_FLAG_DOWNED = 1;
 export interface SheepVisual {
   readonly form: number;
   readonly windup: boolean;
+}
+
+/** O06：把实体快照字段写进池实例（不新建对象）；抽出来便于单测断言引用稳定性。 */
+export function fillSheepInstance(
+  target: SheepInstance,
+  entity: ViewEntity,
+  visual: SheepVisual,
+): SheepInstance {
+  target.id = entity.id;
+  target.form = visual.form;
+  target.x = entity.pos.x;
+  target.y = entity.pos.y;
+  target.z = entity.pos.z;
+  target.yaw = entity.yaw;
+  target.hpRatio = entity.hpRatio;
+  target.windup = visual.windup;
+  target.state = entity.state;
+  return target;
 }
 
 export interface EntityViews {
@@ -101,6 +128,7 @@ export function createEntityViews(
     1,
   );
   const playerPool = new Map<number, PlayerNode>();
+  const instancePool = createSheepInstancePool(SHEEP_INSTANCE_CAPACITY);
   const scratchColor = new Color();
   const smallMatrix = new Matrix4();
   const smallPosition = new Vector3();
@@ -132,24 +160,17 @@ export function createEntityViews(
     sync(sheepVisual, dtMs): void {
       frame += 1;
       liveCount = 0;
+      instancePool.reset();
       flock.begin();
       let smallCount = 0;
+      let sheepCount = 0;
       const mine = localPlayerId();
       view.forEachVisible((entity) => {
         liveCount += 1;
         if (entity.kind === 1) {
           const visual = sheepVisual(entity.id, entity.state);
-          flock.push({
-            id: entity.id,
-            form: visual.form,
-            x: entity.pos.x,
-            y: entity.pos.y,
-            z: entity.pos.z,
-            yaw: entity.yaw,
-            hpRatio: entity.hpRatio,
-            windup: visual.windup,
-            state: entity.state,
-          });
+          flock.push(fillSheepInstance(instancePool.acquire(sheepCount), entity, visual));
+          sheepCount += 1;
           return;
         }
         if (entity.kind === 0) {

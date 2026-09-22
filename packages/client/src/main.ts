@@ -30,7 +30,7 @@ import { createSnapshotView } from './net/state.ts';
 import { createSheepVisualTracker } from './net/sheepVisual.ts';
 import { type ArenaArtParams, createArenaArt } from './render/arenaArt.ts';
 import { createEffects } from './render/effects.ts';
-import { createEntityViews } from './render/entityViews.ts';
+import { type SheepVisual, createEntityViews } from './render/entityViews.ts';
 import {
   type ArtPalette,
   COLORBLIND_PALETTE,
@@ -45,8 +45,8 @@ import { applyFov, createScene, updateCamera } from './render/scene.ts';
 import { createViewModelModel } from './render/viewmodelModel.ts';
 import { createSettingsStore, type SettingsStorage } from './settings/store.ts';
 import { createChat } from './ui/chat.ts';
-import { createDebugPanel } from './ui/debugPanel.ts';
-import { createCombatHud, createHud } from './ui/hud.ts';
+import { type DebugSample, createDebugPanel } from './ui/debugPanel.ts';
+import { type HudUpdate, createCombatHud, createHud } from './ui/hud.ts';
 import { createIntermission } from './ui/intermission.ts';
 import { createLobby, errorMessageFor, filterRoomCodeInput } from './ui/lobby.ts';
 import { createResults, type ResultsSummary } from './ui/results.ts';
@@ -147,6 +147,11 @@ export function boot(): void {
   const viewModel = createViewModelModel(materials);
   const localWeapon = createLocalWeapon();
   const sheepVisual = createSheepVisualTracker();
+
+  /** O06：提升为模块级函数，避免每帧新建闭包。 */
+  function resolveSheepVisual(id: number, state: number): SheepVisual {
+    return sheepVisual.resolve(id, state);
+  }
   const combatHud = createCombatHud(hudRoot);
   const audioUi = document.createElement('div');
   audioUi.className = 'audio-ui';
@@ -317,6 +322,9 @@ export function boot(): void {
     chat.setVisible(true);
   }
 
+  /** O06：每帧复用的事件名数组（避免 `events.map(...)` 每次新建）。 */
+  const eventNames: string[] = [];
+
   const connection = createGameConnection({
     url: serverUrl,
     view,
@@ -377,7 +385,12 @@ export function boot(): void {
       showPhase(state.phase);
     },
     onEvents: (events) => {
-      hud.pushEvents(events.map((event) => event.type));
+      eventNames.length = 0;
+      for (let i = 0; i < events.length; i += 1) {
+        const event = events[i];
+        if (event !== undefined) eventNames.push(event.type);
+      }
+      hud.pushEvents(eventNames);
       audioLayer.handleEvents(events);
       for (let i = 0; i < events.length; i += 1) {
         const event = events[i];
@@ -597,6 +610,41 @@ export function boot(): void {
   pauseRoot.classList.remove('hidden');
   pauseRoot.textContent = '点击画面锁定鼠标（F3 调试面板）';
 
+  type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+  /** O06：每帧复用入参对象（字段逐个覆写，不再新建字面量）。 */
+  const hudUpdateScratch: Mutable<HudUpdate> = {
+    local: undefined,
+    stats: view.getStats(),
+    fps: 0,
+    liveEntities: 0,
+    localPos: undefined,
+  };
+  const debugUpdateScratch: Mutable<DebugSample> = {
+    fps: 0,
+    p95IntervalMs: 0,
+    p95WorkMs: 0,
+    tick: 0,
+    snapshotsPerSec: 0,
+    inboundBytesPerSec: 0,
+    rttMs: 0,
+    serverRateX10: 0,
+    liveEntities: 0,
+    pooledEntities: 0,
+    localPos: undefined,
+    status: '',
+    roomCode: '',
+    versionLine: '',
+    predictionErrorM: 0,
+    predictionMaxErrorM: 0,
+    hardCorrects: 0,
+    pendingCommands: 0,
+    drawCalls: 0,
+    triangles: 0,
+    particles: 0,
+    materialCount: 0,
+  };
+
   let frameErrors = 0;
   function frame(nowMs: number): void {
     try {
@@ -614,7 +662,7 @@ export function boot(): void {
     const dtMs = lastFrameMs === 0 ? 0 : nowMs - lastFrameMs;
     lastFrameMs = nowMs;
     localWeapon.update(nowMs, dtMs);
-    views.sync((id, state) => sheepVisual.resolve(id, state), dtMs);
+    views.sync(resolveSheepVisual, dtMs);
     fx.syncEliteBolts(view);
     if (predictionReady) {
       predictor.advance(dtMs, predictCommand);
@@ -682,38 +730,37 @@ export function boot(): void {
     renderer.drawOverlay(viewModel.scene, viewModel.camera);
     const stats = renderer.getStats();
     const renderStats = renderer.getRenderStats();
+    const viewStats = view.getStats();
     const localPos = local === undefined ? undefined : local.pos;
-    hud.update({
-      local,
-      stats: view.getStats(),
-      fps: stats.fps,
-      liveEntities: views.liveCount,
-      localPos,
-    });
-    debug.update({
-      fps: stats.fps,
-      p95IntervalMs: stats.p95IntervalMs,
-      p95WorkMs: stats.p95WorkMs,
-      tick: view.getAppliedTick(),
-      snapshotsPerSec: view.getStats().snapshotsPerSec,
-      inboundBytesPerSec: view.getStats().inboundBytesPerSec,
-      rttMs: view.getStats().rttMs,
-      serverRateX10: connection.lastServerSnapshotRateX10,
-      liveEntities: views.liveCount,
-      pooledEntities: views.meshCount,
-      localPos,
-      status: connection.status,
-      roomCode: connection.roomCode,
-      predictionErrorM: reconciler.lastErrorM,
-      predictionMaxErrorM: reconciler.maxErrorM,
-      hardCorrects: reconciler.hardCorrectCount,
-      pendingCommands: commands.size,
-      drawCalls: renderStats.drawCalls,
-      triangles: renderStats.triangles,
-      particles: particles.activeCount,
-      materialCount: materials.count,
-      versionLine: formatVersionLine(),
-    });
+    hudUpdateScratch.local = local;
+    hudUpdateScratch.stats = viewStats;
+    hudUpdateScratch.fps = stats.fps;
+    hudUpdateScratch.liveEntities = views.liveCount;
+    hudUpdateScratch.localPos = localPos;
+    hud.update(hudUpdateScratch);
+    debugUpdateScratch.fps = stats.fps;
+    debugUpdateScratch.p95IntervalMs = stats.p95IntervalMs;
+    debugUpdateScratch.p95WorkMs = stats.p95WorkMs;
+    debugUpdateScratch.tick = view.getAppliedTick();
+    debugUpdateScratch.snapshotsPerSec = viewStats.snapshotsPerSec;
+    debugUpdateScratch.inboundBytesPerSec = viewStats.inboundBytesPerSec;
+    debugUpdateScratch.rttMs = viewStats.rttMs;
+    debugUpdateScratch.serverRateX10 = connection.lastServerSnapshotRateX10;
+    debugUpdateScratch.liveEntities = views.liveCount;
+    debugUpdateScratch.pooledEntities = views.meshCount;
+    debugUpdateScratch.localPos = localPos;
+    debugUpdateScratch.status = connection.status;
+    debugUpdateScratch.roomCode = connection.roomCode;
+    debugUpdateScratch.predictionErrorM = reconciler.lastErrorM;
+    debugUpdateScratch.predictionMaxErrorM = reconciler.maxErrorM;
+    debugUpdateScratch.hardCorrects = reconciler.hardCorrectCount;
+    debugUpdateScratch.pendingCommands = commands.size;
+    debugUpdateScratch.drawCalls = renderStats.drawCalls;
+    debugUpdateScratch.triangles = renderStats.triangles;
+    debugUpdateScratch.particles = particles.activeCount;
+    debugUpdateScratch.materialCount = materials.count;
+    debugUpdateScratch.versionLine = formatVersionLine();
+    debug.update(debugUpdateScratch);
   }
   window.requestAnimationFrame(frame);
 
