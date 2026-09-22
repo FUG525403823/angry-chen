@@ -1,6 +1,9 @@
 import type { Server as HttpServer } from 'node:http';
 
+import { LIMITS } from '@ac/shared';
 import { WebSocket, WebSocketServer } from 'ws';
+
+import { createSendQueue, type SendQueue } from './send-queue.ts';
 
 import type {
   CloseHandler,
@@ -31,8 +34,10 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
   });
   let nextId = 1;
   let oversizedFrames = 0;
+  let slowClientDrops = 0;
   let listener: ((connection: Connection) => void) | undefined;
   const connections = new Set<Connection>();
+  const queues = new Map<Connection, SendQueue>();
 
   wss.on('connection', (socket: WebSocket, request) => {
     const id = nextId;
@@ -40,6 +45,9 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
     let messageHandler: FrameHandler | undefined;
     let closeHandler: CloseHandler | undefined;
     let closed = false;
+    // O03：拷贝语义的唯一实现处。帧在 send 返回前进队列的自有缓冲，写完成后归还。
+    const queue = createSendQueue(LIMITS.maxBufferedBytes, options.maxFrameBytes);
+    let reportedDrops = 0;
 
     const connection: Connection = {
       id,
@@ -47,9 +55,25 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
       get closed(): boolean {
         return closed || socket.readyState === WebSocket.CLOSED;
       },
+      get bufferedAmount(): number {
+        return queue.queuedBytes + socket.bufferedAmount;
+      },
       send(frame: Uint8Array): void {
         if (socket.readyState !== WebSocket.OPEN) return;
-        socket.send(frame, { binary: true });
+        queue.send(frame, (chunk, done) => {
+          socket.send(chunk, { binary: true }, () => done());
+        });
+        if (queue.drops > reportedDrops) {
+          slowClientDrops += queue.drops - reportedDrops;
+          reportedDrops = queue.drops;
+        }
+        // 慢客户端高水位（O03 §4 任务 3；判据调整见 §5 与验收报告）：
+        // `bufferedAmount = 队列 Q + node 写缓冲`，而写缓冲装的就是同一批未 flush 的字节，故 `bufferedAmount ≈ 2Q`、
+        // 上界恰好是 `2 × maxBufferedBytes`（`Q ≤ maxBufferedBytes`）——§5 原文的「`> 2 ×`」**取不到**。
+        // 可达且语义等价的做法：已经开始丢帧（说明队列顶到预算）且积压仍在预算上限之上 ⇒ 判定为慢客户端。
+        if (reportedDrops > 0 && connection.bufferedAmount >= LIMITS.maxBufferedBytes) {
+          connection.close(1013, 'slow client');
+        }
       },
       close(code?: number, reason?: string): void {
         if (closed) return;
@@ -64,6 +88,7 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
     };
 
     connections.add(connection);
+    queues.set(connection, queue);
     socket.binaryType = 'nodebuffer';
     socket.on('message', (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       if (!isBinary) {
@@ -82,6 +107,9 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
     });
     socket.on('close', (code: number) => {
       if (code === 1009) oversizedFrames += 1;
+      // 在途回调可能在关闭后才触发，clear() 让它们变成空操作并把池还空（防池泄漏）。
+      queue.clear();
+      queues.delete(connection);
       if (closed) return;
       closed = true;
       connections.delete(connection);
@@ -126,6 +154,14 @@ export function createWsTransport(options: WsTransportOptions): WsTransport {
     },
     get oversizedFrames(): number {
       return oversizedFrames;
+    },
+    get slowClientDrops(): number {
+      return slowClientDrops;
+    },
+    get sendQueueBytes(): number {
+      let total = 0;
+      for (const queue of queues.values()) total += queue.queuedBytes;
+      return total;
     },
   };
 }

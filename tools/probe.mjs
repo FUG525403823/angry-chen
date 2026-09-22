@@ -43,9 +43,33 @@ const durationSec = Number(args.get('duration') ?? 5);
 const flood = args.has('flood');
 const badFrame = args.has('bad-frame');
 const chatty = args.has('chat');
+const chatRate = Number(args.get('chat-rate') ?? 0);
+const chatLen = Math.max(0, Number(args.get('chat-len') ?? 0));
 const forcedRoom = args.get('room');
+const slow = args.has('slow');
+const drainSec = Math.max(1, Number(args.get('drain-sec') ?? 8));
+// O03：--slow 需要读服务器 /metrics（积压与丢弃计数），默认由 --url 推导。
+const metricsUrl =
+  args.get('metrics-url') ?? url.replace(/^ws/, 'http').replace(/\/+$/, '') + '/metrics';
 const stepMs = 33;
 const scratch = new Uint8Array(LIMITS.maxFrameBytes);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readMetrics() {
+  const response = await fetch(metricsUrl);
+  const text = await response.text();
+  const values = new Map();
+  for (const line of text.split('\n')) {
+    if (line === '' || line.startsWith('#')) continue;
+    const space = line.lastIndexOf(' ');
+    if (space <= 0) continue;
+    values.set(line.slice(0, space), Number(line.slice(space + 1)));
+  }
+  return values;
+}
 
 function createState(index) {
   return {
@@ -72,6 +96,7 @@ function createState(index) {
     pongs: 0,
     malformedSent: 0,
     floodSent: 0,
+    decodeFailures: 0,
   };
 }
 
@@ -152,6 +177,7 @@ function connect(state, code) {
       try {
         handleFrame(state, new Uint8Array(data));
       } catch (error) {
+        state.decodeFailures += 1;
         console.error('client ' + state.name + ' frame handling failed: ' + String(error));
         process.exitCode = 1;
       }
@@ -231,8 +257,13 @@ const timer = setInterval(() => {
     command.pitch = Math.sin(t * 0.5) * 0.3;
     const size = encodeCommand(command, scratch);
     state.socket.send(scratch.subarray(0, size));
-    if (chatty && Math.random() < 0.02) {
-      const chatSize = encodeChat('hello from ' + state.name, scratch);
+    // 聊天是**广播**（session.ts 遍历同房间连接发同一块 broadcastBuffer），
+    // 所以 --chat-rate 能让同房间的慢客户端在不改服务端的前提下承受持续出站压力。
+    const chatChance = chatRate > 0 ? chatRate / 30 : chatty ? 0.02 : 0;
+    if (chatChance > 0 && Math.random() < chatChance) {
+      const base = 'hello from ' + state.name;
+      const text = chatLen > base.length ? base + '.'.repeat(chatLen - base.length) : base;
+      const chatSize = encodeChat(text.slice(0, 64), scratch);
       state.socket.send(scratch.subarray(0, chatSize));
     }
   }
@@ -242,7 +273,69 @@ const timer = setInterval(() => {
   }
 }, stepMs);
 
-await new Promise((resolve) => setTimeout(resolve, durationSec * 1000));
+/**
+ * O03 --slow：暂停读取 socket（真实背压），轮询 /metrics 等到服务端开始丢帧，
+ * 再恢复读取把积压排空——排空的每一帧都要能解码，这才是「拷贝语义」的端到端证据。
+ */
+async function runSlowPhase() {
+  const before = await readMetrics();
+  const dropsBefore = before.get('ac_slow_client_drops_total') ?? 0;
+  let queueBytesMax = before.get('ac_send_queue_bytes') ?? 0;
+  for (const state of states) state.socket?.pause();
+  const pausedAt = Date.now();
+  let dropsAtSec = null;
+  while (Date.now() - pausedAt < durationSec * 1000) {
+    await sleep(1000);
+    let snapshot;
+    try {
+      snapshot = await readMetrics();
+    } catch (error) {
+      console.error('probe: metrics read failed: ' + String(error));
+      continue;
+    }
+    queueBytesMax = Math.max(queueBytesMax, snapshot.get('ac_send_queue_bytes') ?? 0);
+    if ((snapshot.get('ac_slow_client_drops_total') ?? 0) > dropsBefore) {
+      dropsAtSec = (Date.now() - pausedAt) / 1000;
+      break;
+    }
+  }
+  const pausedSec = (Date.now() - pausedAt) / 1000;
+  const framesBefore = states.reduce(
+    (sum, state) => sum + state.snapshots + state.events + state.matchStates + state.pongs,
+    0,
+  );
+  for (const state of states) state.socket?.resume();
+  await sleep(drainSec * 1000);
+  const framesAfter = states.reduce(
+    (sum, state) => sum + state.snapshots + state.events + state.matchStates + state.pongs,
+    0,
+  );
+  let after = new Map();
+  try {
+    after = await readMetrics();
+  } catch (error) {
+    console.error('probe: metrics read failed: ' + String(error));
+  }
+  return {
+    metricsUrl,
+    pausedSec: Number(pausedSec.toFixed(1)),
+    dropsBefore,
+    dropsAfter: after.get('ac_slow_client_drops_total') ?? 0,
+    dropsAtSec: dropsAtSec === null ? null : Number(dropsAtSec.toFixed(1)),
+    queueBytesMax,
+    drainedFrames: framesAfter - framesBefore,
+    decodeFailures: states.reduce((sum, state) => sum + state.decodeFailures, 0),
+    closeCodes: [...new Set(states.map((state) => state.closeCode))],
+    connections: states.map((state) => ({
+      name: state.name,
+      closed: state.closed,
+      closeCode: state.closeCode,
+    })),
+  };
+}
+
+const slowReport = slow ? await runSlowPhase() : null;
+if (!slow) await new Promise((resolve) => setTimeout(resolve, durationSec * 1000));
 const elapsedSec = (Date.now() - startedAt) / 1000;
 clearInterval(timer);
 await new Promise((resolve) => setTimeout(resolve, 250));
@@ -283,13 +376,14 @@ const clientReports = states.map((state) => {
     closed: state.closed,
     closeCode: state.closeCode,
     mirrorBytes: state.mirror.bytes.length,
+    decodeFailures: state.decodeFailures,
   };
 });
 
 const summary = {
   url,
   room: roomCode,
-  mode: flood ? 'flood' : badFrame ? 'bad-frame' : 'normal',
+  mode: flood ? 'flood' : badFrame ? 'bad-frame' : slow ? 'slow' : 'normal',
   durationSec,
   elapsedSec: Number(elapsedSec.toFixed(2)),
   clients: clientReports,
@@ -298,7 +392,9 @@ const summary = {
     avgBytes: Number((totals.bytes / Math.max(1, totals.snapshots)).toFixed(1)),
     avgRecords: Number((totals.records / Math.max(1, totals.snapshots)).toFixed(2)),
     errorFrames: totals.errors,
+    decodeFailures: clientReports.reduce((sum, report) => sum + report.decodeFailures, 0),
   },
+  slow: slowReport,
 };
 console.log(JSON.stringify(summary, null, 2));
 for (const report of clientReports) {
@@ -337,6 +433,7 @@ for (const report of clientReports) {
       failures.push(report.name + ': no snapshot received after malformed frames');
     continue;
   }
+  if (slow) continue; // --slow 的判据在下面单独给出（快照速率/延迟都不适用）
   if (report.snapshots === 0) failures.push(report.name + ': no snapshots received');
   if (report.snapshots > 0 && (report.snapshotRate < 19 || report.snapshotRate > 21))
     failures.push(report.name + ': snapshot rate out of 19-21/s: ' + String(report.snapshotRate));
@@ -345,6 +442,15 @@ for (const report of clientReports) {
   if (report.entities < 1) failures.push(report.name + ': snapshot mirror is empty');
   if (report.rttP95Ms > 250)
     failures.push(report.name + ': rtt p95 too high ' + String(report.rttP95Ms));
+}
+if (slow && slowReport !== null) {
+  if (slowReport.dropsAfter <= slowReport.dropsBefore)
+    failures.push('slow: ac_slow_client_drops_total 没有增长（积压未触及 maxBufferedBytes）');
+  if (!slowReport.closeCodes.includes(1013))
+    failures.push('slow: 未观察到 1013 断开，实际=' + JSON.stringify(slowReport.closeCodes));
+  if (slowReport.decodeFailures > 0)
+    failures.push('slow: 排空阶段有 ' + String(slowReport.decodeFailures) + ' 帧无法解码');
+  if (slowReport.drainedFrames === 0) failures.push('slow: 恢复读取后没有收到任何帧');
 }
 if (failures.length > 0) {
   console.error('probe FAILED:');

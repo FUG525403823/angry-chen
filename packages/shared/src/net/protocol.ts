@@ -111,6 +111,8 @@ export const QUANT = Object.freeze({
 
 export const LIMITS = Object.freeze({
   maxFrameBytes: 8192,
+  /** 单连接出站积压上限（字节）：队列持有未写完成的帧拷贝超过它即开始计 drops，超过 2 倍按 1013 断开。 */
+  maxBufferedBytes: 262144,
   maxMessagesPerSecond: 60,
   rateWindowMs: 1000,
   rateStrikesBeforeDisconnect: 3,

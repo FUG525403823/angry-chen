@@ -47,7 +47,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 |---|---|---|---|---|
 | O01 | ✅ 已完成 | ✅ 已完成（含执行期并入的任务 11 = 谷仓边界，见上方结论） | `docs/evidence/bots-pose-validation.json`（原始基线 + 10507 中间态 + 最终 0/0/0 + 边界探针） | `O01` |
 | O02 | ✅ 已完成 | ✅ 已完成（`S5.2-4` 走替代判据 pass；200ms 变体 verdict=pass、退出码 0） | `docs/evidence/bots-schedule.json`、`bots-schedule-latency200.json`、`soak-5min-o02.json`、`report-o02.md` | `O02` |
-| O03 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/probe-slow-client.md` | `O03` |
+| O03 | ✅ 已完成 | ✅ 已完成（慢客户端 123.3s 顶到预算：丢帧计数 + 两个连接 `1013`，排空 5627 帧 `decodeFailures=0`；健康场景 soak RSS 0.278 MB/分钟） | `docs/evidence/probe-slow-client.md`、`soak-5min-o03.json/.md` | `O03` |
 | O04 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bench-sim-60sheep.json` | `O04` |
 | O05 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o05.json` | `O05` |
 | O06 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/client-frame-alloc.md` | `O06` |
@@ -55,6 +55,13 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O08 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/` 下的重连验证记录（待生成） | `O08` |
 | O09 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/store-load-100k.md` | `O09` |
 | O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
+
+**O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
+复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
+慢客户端在 256KiB 预算处开始丢帧并收到 `1013`，断开前排空的 **5627** 帧 `decodeFailures = 0`。
+执行期发现 §5 的断开判据 `> 2 × maxBufferedBytes` 在数学上取不到（`bufferedAmount = 队列 + node 写缓冲 ≈ 2Q`，上界恰为 `2 ×`），
+按本文件 §7 规则 2 收紧为 `drops > 0 && bufferedAmount >= maxBufferedBytes`，并同步 §5 门槛登记表；另确认 §4 任务 4 无需改动（内存适配器本就是 `slice()` 语义）。
+为复现端到端触发，`tools/probe.mjs` 新增 `--chat-rate` / `--chat-len`（利用聊天广播给同房间慢客户端加压）。细节见 `docs/优化/O03-出站帧所有权与背压.md` §6 与 `docs/验收报告.md` §3.6。
 
 **O02 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿。三个新指标（调度误差 / 模拟漂移 / 单 tick 工作量）与
 `LIMITS.roomTickBudgetMs = 8` 的让出语义都已接线并有单测；4 人 5 分钟压测 `S5.2-4` 走替代判据 pass（粒度 15.51ms、前后 1/3 差 0.48ms、
@@ -87,7 +94,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | `ac_tick_schedule_error_ms_p95` | ≤ 8ms（粒度 >8ms 时用替代判据） | O02 | 与理想时刻 `首 tick + n×50ms` 的偏差 |
 | `ac_sim_drift_ms` | 绝对值 ≤ 50ms | O02 | 模拟时间与真实时间之差不累积 |
 | `S5.2-4` 替代判据（仅当定时器粒度 >8ms） | 前 1/3 与后 1/3 的 schedule error p95 差 ≤2ms **且** `|ac_sim_drift_ms|` ≤50ms | O02 | 粒度受限的环境判「误差是否累积」，三件套（粒度、前后段、漂移）缺一即视为验证失败 |
-| `LIMITS.maxBufferedBytes` | 262144 | O03 | 单连接出站积压上限；超过 2 倍按 `1013` 断开 |
+| `LIMITS.maxBufferedBytes` | 262144 | O03 | 单连接出站积压上限；`队列顶到该值且已丢帧`（`bufferedAmount ≥ 该值`）⇒ 按 `1013` 断开（§5 调整记录：原判据 `> 2 ×` 取不到） |
 | `LIMITS.eventPoolSize` | 256 | O04 | 事件对象池容量（超出计 `eventsDropped`） |
 | bench SLO（4 人 60 羊） | p95 ≤ 8ms、p99 ≤ 12ms | O04 | 与 `roomTickBudgetMs` 对齐的单 tick 工作量 |
 | `LIMITS.snapshotRateLevels` | [200, 150, 100] | O05 | 自适应快照率离散档位（默认 200） |

@@ -23,11 +23,25 @@ const gauges = {
   players: 0,
   uptimeSeconds: 0,
   oversizedFrames: 0,
+  slowClientDrops: 0,
+  sendQueueBytes: 0,
   clientLagTicksAvg: 0,
   graceActive: 0,
 };
 
 describe('调度 / 漂移 / 工作量指标', () => {
+  it('O03 背压指标随 gauges 渲染', () => {
+    const text = renderPrometheus(createMetrics(), {
+      ...gauges,
+      slowClientDrops: 7,
+      sendQueueBytes: 4096,
+    });
+    expect(text).toContain('ac_slow_client_drops_total 7');
+    expect(text).toContain('ac_send_queue_bytes 4096');
+    expect(text).toContain('# TYPE ac_slow_client_drops_total counter');
+    expect(text).toContain('# TYPE ac_send_queue_bytes gauge');
+  });
+
   it('空指标返回 0 而不是 NaN', () => {
     const metrics = createMetrics();
     expect(tickScheduleErrorP95(metrics)).toBe(0);

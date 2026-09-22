@@ -19,6 +19,7 @@ function stubConnection(id: number): Connection {
     id,
     remote: 'test',
     closed: false,
+    bufferedAmount: 0,
     send: (): void => undefined,
     close: (): void => undefined,
     onMessage: (): void => undefined,

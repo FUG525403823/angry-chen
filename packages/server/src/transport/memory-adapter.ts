@@ -76,6 +76,7 @@ export function createMemoryTransport(options: MemoryTransportOptions): MemoryTr
 
   function toClient(link: Link, frame: Uint8Array): void {
     if (link.serverClosed || link.clientClosed) return;
+    // O03：与 ws 适配器同一契约——交给客户端的是独立拷贝，发送方随即可改写源数组。
     const copy = frame.slice();
     defer(() => {
       const handler = link.clientMessageHandler;
@@ -112,6 +113,10 @@ export function createMemoryTransport(options: MemoryTransportOptions): MemoryTr
       remote: 'memory:' + String(id),
       get closed(): boolean {
         return link.serverClosed;
+      },
+      get bufferedAmount(): number {
+        // 内存适配器同步投递、无真实背压，故积压恒为 0（契约仍要求该字段存在）。
+        return 0;
       },
       send(frame: Uint8Array): void {
         toClient(link, frame);
@@ -186,6 +191,12 @@ export function createMemoryTransport(options: MemoryTransportOptions): MemoryTr
     },
     get oversizedFrames(): number {
       return oversizedFrames;
+    },
+    get slowClientDrops(): number {
+      return 0;
+    },
+    get sendQueueBytes(): number {
+      return 0;
     },
   };
 }

@@ -72,6 +72,10 @@ export interface PrometheusGauges {
   readonly players: number;
   readonly uptimeSeconds: number;
   readonly oversizedFrames: number;
+  /** O03：因出站积压未入队而丢弃的帧数（累计）。 */
+  readonly slowClientDrops: number;
+  /** O03：所有连接当前持有的未写完成字节数之和。 */
+  readonly sendQueueBytes: number;
   readonly clientLagTicksAvg: number;
   readonly graceActive: number;
 }
@@ -407,6 +411,18 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     'frames larger than the frame limit',
     'counter',
     gauges.oversizedFrames,
+  );
+  push(
+    'ac_slow_client_drops_total',
+    'frames dropped because the connection outbound backlog exceeded the limit',
+    'counter',
+    gauges.slowClientDrops,
+  );
+  push(
+    'ac_send_queue_bytes',
+    'bytes copied into send queues and not yet written, summed over connections',
+    'gauge',
+    gauges.sendQueueBytes,
   );
   push(
     'ac_rate_limited_frames_total',

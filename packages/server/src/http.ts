@@ -68,6 +68,8 @@ export function createHttpHandler(
         players: playerCount(game),
         uptimeSeconds: (Date.now() - startedAtMs) / 1000,
         oversizedFrames: game.transport.oversizedFrames ?? 0,
+        slowClientDrops: game.transport.slowClientDrops ?? 0,
+        sendQueueBytes: game.transport.sendQueueBytes ?? 0,
         clientLagTicksAvg: clientLagTicksAvg(game),
         graceActive: graceActive(game),
       });
