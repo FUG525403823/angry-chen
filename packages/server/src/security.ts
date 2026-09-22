@@ -232,7 +232,7 @@ export function securityChecklist(): readonly SecurityChecklistItem[] {
       id: 8,
       item:
         '房间码熵：' +
-        String(LIMITS.roomCodeAlphabet.length) +
+        String(ROOM_CODE_ALPHABET.length) +
         ' 字符表 4 位 + 失败重试节流（文案由常量生成，O10）',
       location: 'security.pickRoomCode/ROOM_CODE_SPACE/createJoinThrottle + rooms.generateCode',
       enforcedInSecurity: true,

@@ -48,7 +48,7 @@ export interface Session {
   readonly connection: Connection;
   pid: number;
   name: string;
-  /** O08：重连身份令牌（16 个小写十六进制字符；空串 = 尚未分配）。 */
+  /** O08：重连身份令牌（8 个小写十六进制字符；空串 = 尚未分配）。 */
   token: string;
   roomCode: string | null;
   ready: boolean;

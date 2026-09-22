@@ -206,12 +206,12 @@ export function createLocalTimers(): LocalTimers;
 
 ## 7. DoD（验收标准）
 
-- [ ] `pnpm check` 全绿；`tools/bots.mjs --strict` 在 2 分钟 4 人场景下全 PASS。
-- [ ] `ammoLedger.test.ts` 覆盖 §4 任务 6 的五种情形，其中"ack 落后时不回跳"为核心断言。
-- [ ] 调试面板可见 `pendingShots` / `rejectedShots` / `ammoDivergence` / `resyncCount`。
-- [ ] 换弹环与狂暴倒计时为每帧连续推进（`localTimers.test.ts` 覆盖 + 人工观察）。
-- [ ] `docs/evidence/bots-o07.json` 存在且含 `ammoDivergenceMax`；`docs/验收报告.md` 已回填。
-- [ ] 未改协议（`packages/shared/src/net/**` 无改动）；未新增运行时依赖。
+- [x] `pnpm check` 全绿；`tools/bots.mjs --strict` 在 2 分钟 4 人场景下全 PASS。
+- [x] `ammoLedger.test.ts` 覆盖 §4 任务 6 的五种情形，其中"ack 落后时不回跳"为核心断言。
+- [x] 调试面板可见 `pendingShots` / `rejectedShots` / `ammoDivergence` / `resyncCount`。
+- [x] 换弹环与狂暴倒计时为每帧连续推进（`localTimers.test.ts` 覆盖 + 人工观察）。
+- [x] `docs/evidence/bots-o07.json` 存在且含 `ammoDivergenceMax`；`docs/验收报告.md` 已回填。
+- [x] 未改协议（`packages/shared/src/net/**` 无改动）；未新增运行时依赖。
 
 ## 8. 风险与回滚
 

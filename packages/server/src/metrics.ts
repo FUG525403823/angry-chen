@@ -547,7 +547,13 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     metrics.startMatchRequests,
   );
   push('ac_interact_requests_total', 'interact requests', 'counter', metrics.interactRequests);
-  push('ac_respawn_requests_total', 'respawn requests', 'counter', metrics.respawnRequests);
+  // O10：respawn 已移出客户端白名单，该计数器恒为 0（字段保留以兼容既有仪表盘/告警）。
+  push(
+    'ac_respawn_requests_total',
+    'respawn requests (deprecated: always 0 since O10)',
+    'counter',
+    metrics.respawnRequests,
+  );
   push(
     'ac_max_entities_observed',
     'peak active entity count observed',

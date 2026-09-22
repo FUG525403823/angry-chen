@@ -46,10 +46,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: 打印运行环境（阈值抖动时便于对照）
         run: node -v && nproc && uname -a
-      - run: pnpm check:perf
-      - name: 保留压测报告（失败时也上传）
+      - name: 压测（4 人 2 分钟 --strict）
+        run: |
+          mkdir -p artifacts
+          set -o pipefail
+          pnpm check:perf 2>&1 | tee artifacts/bots-perf.log
+      - name: 保留压测日志（失败时也上传）
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          path: artifacts/
-          if-no-files-found: ignore
+          name: bots-perf-log
+          path: artifacts/bots-perf.log
+          if-no-files-found: warn

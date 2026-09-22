@@ -103,6 +103,8 @@ HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于
 五个卫生项收敛：三个 `tsconfig.tsbuildinfo` 取消跟踪并进 `.gitignore`；`.env.example` 的 `TICK_MS` 注释化标注「未实现」；`securityChecklist()` 第 8 项文案由 `LIMITS.roomCodeAlphabet.length` 生成；`OPCODE.respawn` 移出 `CLIENT_OPCODE_LIST`（数值保留，`metrics.respawnRequests` 标 `@deprecated` 恒 0，帧按非法帧丢弃）；`removeMember` 的 `leftMidMatch` 按 `room.phase` 计算（playing / intermission = 局中）。
 **门禁自检（本步最重要的产物）**：四个「故意破坏 → 必须变红」实验全部变红，记录在 `docs/evidence/gate-selfcheck.md`（体积预算 1000 B → build 失败；`REUSE_RAW_LIMIT=0` → alloc FAIL；`MIN_TESTS=10000` → count 退出码 1；强制一个门槛 `status='fail'` → `check:perf` 退出码 1）。
 
+**O10 复查轮（两轴审查后修正，tag `O10.1`）**：修掉 6 处自查缺陷——`## 6` 标题重复、CI `perf` job 上传空目录（改为 `tee` 真实日志）、`check:build` 与 `build:client` 重复定义、`securityChecklist` 未用同文件 `ROOM_CODE_ALPHABET`、`ac_respawn_requests_total` 的 HELP 未标废弃、O02/O08 遗留注释自相矛盾（令牌「16 个字符」实为 8、`maxBufferedBytes`「超过 2 倍」实为「≥ 且已丢帧」）；`MIN_TESTS` 门槛同步补到 `docs/验收报告.md` 的残留引用，README §5 的 9 行重复登记与 1 行过期值清除；O07 §7 六条 DoD 补勾；O08「波间仍可入房」与 Standards 轴的技术债正式记入 O10 §9 与验收报告 §6。
+
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
 慢客户端在 256KiB 预算处开始丢帧并收到 `1013`，断开前排空的 **5627** 帧 `decodeFailures = 0`。
@@ -145,7 +147,7 @@ HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于
 | `LIMITS.eventPoolSize` | 256 | O04 | 事件对象池容量（超出计 `eventsDropped`） |
 | bench SLO（4 人 60 羊） | p95 ≤ 8ms、p99 ≤ 12ms | O04 | 与 `roomTickBudgetMs` 对齐的单 tick 工作量（实测 p95 0.074 / p99 0.143 ms） |
 | `ac_events_dropped_total` | counter（告警阈值待定） | O04 | 事件池溢出而丢弃的事件数；阈值记入 O10 |
-| `check-alloc` 门槛 | `rawPerTick ≤ 8`、`retainedPerTick ≤ 16`（探针已有，接入 `pnpm check` 由 O10 负责） | O04 | **本机当前状态下基线即为 42.5–42.8 B/tick，绝对门槛不可达**（O04 后 22.5–22.9，-47%；`retained` 两侧 ≈ 0）→ O10 需先复核探针口径再定阈值 |
+| `check-alloc` 门槛 | `rawPerTick ≤ 25`、`retainedPerTick ≤ 16`（O10 接入 `pnpm check`；原 8 不可达，理由见本表 O10 行与 `docs/evidence/gate-selfcheck.md` §5） | O04 | **本机当前状态下基线即为 42.5–42.8 B/tick，绝对门槛不可达**（O04 后 22.5–22.9，-47%；`retained` 两侧 ≈ 0）→ O10 需先复核探针口径再定阈值 |
 | `LIMITS.snapshotRateLevels` | [200, 150, 100] | O05 | 自适应快照率离散档位（默认 200；150 = 每 3 tick 发 2 次，100 = 每 2 tick 发 1 次） |
 | `LIMITS.snapshotRateDownshiftMs` | 3000 | O05 | 连续无拥塞多久升一档；降档条件是每 1000ms 评估一次的拥塞（慢客户端积压 / `tickSkips` 增长 / 房间预算超出） |
 | 客户端插值延迟 | `clamp(2 × 中位到达间隔, 100, 250)` ms | O05 | 60 样本滑窗中位数自适应；样本不足时用 `snapshotRateX10` 推算（默认 200 → 100ms） |
@@ -169,15 +171,6 @@ HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于
 | 覆盖率门槛 | shared lines 80 / branches 65；server lines 85；client lines 65（均 ≤ 实测基线 88.91 / 69.65 / 88.56 / 69.39） | O10 | 规则＝基线向下取整到 5 的倍数；门槛不得高于基线 |
 | 测试数地板 | `MIN_TESTS = 300`（实测 458） | O10 | 地板不是目标，只拦「批量丢测试」 |
 | 分配探针上限 | `REUSE_RAW_LIMIT = 25`（原 8）；`REUSE_RETAINED_LIMIT = 16` | O10 | **门槛变更**：原值在接入门禁时已不可达（实测 raw 22.5 B/tick 稳定，retained ≈ 0，对照组 29×）；上限型门槛取基线向上取整到 5 的倍数 |
-| `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
-| `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
-| `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |
-| `DEFAULT_REPORT_RETENTION` | 200（`REPORT_RETENTION`，0 = 不清理） | O09 | 诊断报告保留份数 |
-| 读接口限流 | 30 次/分钟/IP，超限 `429` + `retry-after: 60` | O09 | `/api/leaderboard`、`/api/matches/recent` |
-| HTTP 缓存 TTL | 60s | O09 | 键 = `path:limit`，写入新对局即失效 |
-| `MIN_TESTS` | 300 | O10 | 测试数地板（地板不是目标） |
-| `pnpm check` 步骤数 | 9 | O10 | 新增 `check:build`、`check:alloc` |
-| 覆盖率门槛 | shared lines 80 / shared branches 及 server、client 行门槛 = 基线向下取整到 5 的倍数 | O10 | 门槛不得高于实测基线 |
 
 ## 6. 与既有文档体系的关系（为什么放在这里）
 

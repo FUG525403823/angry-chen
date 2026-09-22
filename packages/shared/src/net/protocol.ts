@@ -111,14 +111,14 @@ export const QUANT = Object.freeze({
 
 export const LIMITS = Object.freeze({
   maxFrameBytes: 8192,
-  /** 单连接出站积压上限（字节）：队列持有未写完成的帧拷贝超过它即开始计 drops，超过 2 倍按 1013 断开。 */
+  /** 单连接出站积压上限（字节）：已达到该值且已丢帧即按 1013 断开（原「超过 2 倍」判据取不到，见 O03 §5 调整记录）。 */
   maxBufferedBytes: 262144,
   maxMessagesPerSecond: 60,
   rateWindowMs: 1000,
   rateStrikesBeforeDisconnect: 3,
   minNameBytes: 1,
   maxNameBytes: 12,
-  /** O08：会话令牌字节数（线上 8 字节 ASCII 十六进制 = 16 个字符）。 */
+  /** O08：会话令牌字节数（线上 8 字节定长 ASCII；8 个小写十六进制字符 = 32 位熵）。 */
   tokenBytes: 8,
   maxChatBytes: 64,
   maxCommandsPerSession: 3,
