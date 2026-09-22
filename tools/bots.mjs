@@ -1271,19 +1271,33 @@ try {
   }
   summaryLines.push('verdict=' + report.verdict);
   summaryLines.push(
-    'strict=' + String(options.strict) + '（未加 --strict 时阈值失败只记录在报告里，退出码仍为 0）',
+    'strict=' + String(options.strict),
+    '退出码语义：默认总是 0（阈值失败只写进报告）；加 --strict 后任一门槛 FAIL → 退出码 1',
   );
   process.stderr.write(summaryLines.join('\n') + '\n');
 
   shutdown();
+  // O10：退出码只看 status==='fail' —— `not-measured`（例如未注入 RTT 时的 S5.2-9b）不是 FAIL，
+  // 否则 4 人 2 分钟的 `pnpm check:perf` 永远红，门槛就失去意义。
+  const failedThresholds = thresholds.filter((threshold) => threshold.status === 'fail');
   if (report.verdict !== 'pass') {
     process.stderr.write('bots: §5.2 阈值失败：\n');
     for (const threshold of thresholds) {
       if (threshold.status !== 'pass') {
-        process.stderr.write('  FAIL ' + threshold.id + ' ' + threshold.label + '\n');
+        const tag = threshold.status === 'fail' ? 'FAIL' : 'NOT-MEASURED';
+        process.stderr.write(
+          '  ' +
+            tag +
+            ' ' +
+            threshold.id +
+            ' ' +
+            threshold.label +
+            (tag === 'FAIL' ? '' : '（不拦人）') +
+            '\n',
+        );
       }
     }
-    if (options.strict) exitCode = 1;
+    if (options.strict && failedThresholds.length > 0) exitCode = 1;
   }
   if (server !== null) await server.close();
   server = null;

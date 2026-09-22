@@ -54,7 +54,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O07 | ✅ 已完成 | ✅ 已完成（弹药账本按 ack 水位对账：显示值 = 权威值 − 未确认开火；换弹/狂暴倒计时本地推进；调试面板新增 4 字段） | `docs/evidence/bots-o07.json` | `O07` |
 | O08 | ✅ 已完成 | ✅ 已完成（重连只认令牌 + `PROTOCOL_VERSION = 2`；`welcome` 24 字节 / `join` +8 字节；ADR-006；`pnpm check` 447 用例） | `docs/evidence/reconnect-token.md`、`docs/evidence/bots-o08.json` | `O08` |
 | O09 | ✅ 已完成 | ✅ 已完成（流式加载 + `maxRecords` 淘汰 + 排序缓存 + 读接口 429/TTL + 报告保留；实测 heapUsed 132.2 MB→6.9 MB、查询 49.46 ms→0.001 ms） | `docs/evidence/store-load-100k.md`、`docs/evidence/http-limit-o09.md` | `O09` |
-| O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
+| O10 | ✅ 已完成 | ✅ 已完成（`pnpm check` 九步含体积与分配；`pnpm check:perf` 退出码 0；覆盖率覆盖三包 + 分支下限；四个反向实验证明门禁会红；五个卫生项收敛；CI 两 job） | `docs/evidence/gate-selfcheck.md` | `O10` |
 
 **O04 执行结论（2026-09-22）**：§4 的 15 条任务全部落地，§7 DoD 除「`check-alloc` 绝对门槛」外全绿（`pnpm check` 退出码 0；shared 146 / server 111 用例）。
 分离与邻居聚集统一走同一张均匀网格（cell 边长 = `SHEEP_AI.neighborRadiusM = 3m`，两趟计数排序建表，零稳态分配），事件对象池化（`LIMITS.eventPoolSize = 256`，溢出计
@@ -96,6 +96,12 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于**缓存判定）与 60s TTL 缓存（键 `path:limit`，`store.version` 变化即失效）；`reports/` 按 mtime 保留最近 `REPORT_RETENTION`（默认 200，`0` = 不清理），清理失败不抛。
 实测（`docs/evidence/store-load-100k.md`、`docs/evidence/http-limit-o09.md`）：10 万行 665 B/行 → `heapUsed` 增量 **132.2 MB → 6.9 MB**、常驻 **100 000 → 10 000** 条、`listTopScores(20)` **49.46 ms → 0.001 ms**；**代价如实记录**：加载 445 ms → 711 ms（×1.6）。真实服务器 `curl` 第 31 次 `429` 且带 `retry-after: 60`，`/metrics` 三条新指标有值。
 **未决项（移交 O10）**：反代后的真实客户端 IP（`X-Forwarded-For`）与限流阈值调优；NDJSON 文件本身的轮转/归档与完整历史榜单的离线分析工具。
+
+**O10 执行结论（2026-09-22，O 系列收尾）**：§4 的 11 条任务与 §7 的 8 条 DoD 落地。
+门禁从七步扩到**九步**（新增 `check:build` 体积预算与 `check:alloc` 稳态分配），新增 `check:perf`（4 人 2 分钟 `--strict`）；新增最小 CI（`.github/workflows/ci.yml`，`quality` + `perf` 两个 job，Node 24 + pnpm 11.22.0）。
+覆盖率门槛从「只有 shared 行覆盖」扩到**三包**（shared lines 80 / branches 65、server lines 85、client lines 65，均 ≤ 当次实测基线 88.91 / 69.65 / 88.56 / 69.39）；测试数地板 120 → **300**。
+五个卫生项收敛：三个 `tsconfig.tsbuildinfo` 取消跟踪并进 `.gitignore`；`.env.example` 的 `TICK_MS` 注释化标注「未实现」；`securityChecklist()` 第 8 项文案由 `LIMITS.roomCodeAlphabet.length` 生成；`OPCODE.respawn` 移出 `CLIENT_OPCODE_LIST`（数值保留，`metrics.respawnRequests` 标 `@deprecated` 恒 0，帧按非法帧丢弃）；`removeMember` 的 `leftMidMatch` 按 `room.phase` 计算（playing / intermission = 局中）。
+**门禁自检（本步最重要的产物）**：四个「故意破坏 → 必须变红」实验全部变红，记录在 `docs/evidence/gate-selfcheck.md`（体积预算 1000 B → build 失败；`REUSE_RAW_LIMIT=0` → alloc FAIL；`MIN_TESTS=10000` → count 退出码 1；强制一个门槛 `status='fail'` → `check:perf` 退出码 1）。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -158,6 +164,11 @@ HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于
 | 读接口限流 | 30 次/分钟/IP → `429` + `retry-after: 60` | O09 | 按 `req.socket.remoteAddress`；反代后的真实 IP 未处理（O10 未决项） |
 | 读接口缓存 | TTL 60s，键 = `path:limit`，`store.version` 变化即失效 | O09 | 命中计 `ac_http_cache_hits_total`；限流先于缓存判定 |
 | 报告保留 | `DEFAULT_REPORT_RETENTION = 200`（`REPORT_RETENTION`；`0` = 不清理） | O09 | `retainReports` 失败不抛，不影响对局结束路径 |
+| 质量门步数 | `pnpm check` = **9 步**（+`check:build` 体积、+`check:alloc` 分配）；`pnpm check:perf` = 4 人 2 分钟 `--strict` | O10 | `check:perf` **不**并入 `check`（耗时）；CI 的 `perf` job 承担 |
+| `--strict` 语义 | 默认退出码 0；`--strict` 时**只有 `status === 'fail'`** 置 1（`not-measured` 不拦） | O10 | 否则 4 人 2 分钟场景因 `S5.2-9b` 恒红，门槛失效 |
+| 覆盖率门槛 | shared lines 80 / branches 65；server lines 85；client lines 65（均 ≤ 实测基线 88.91 / 69.65 / 88.56 / 69.39） | O10 | 规则＝基线向下取整到 5 的倍数；门槛不得高于基线 |
+| 测试数地板 | `MIN_TESTS = 300`（实测 458） | O10 | 地板不是目标，只拦「批量丢测试」 |
+| 分配探针上限 | `REUSE_RAW_LIMIT = 25`（原 8）；`REUSE_RETAINED_LIMIT = 16` | O10 | **门槛变更**：原值在接入门禁时已不可达（实测 raw 22.5 B/tick 稳定，retained ≈ 0，对照组 29×）；上限型门槛取基线向上取整到 5 的倍数 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
 | `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
 | `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |

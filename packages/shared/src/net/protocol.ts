@@ -32,7 +32,7 @@ export const CLIENT_OPCODE_LIST: readonly number[] = Object.freeze([
   OPCODE.chat,
   OPCODE.interact,
   OPCODE.ping,
-  OPCODE.respawn,
+  // O10：respawn 数值保留（0x07 不重号），但客户端从不发送，移出白名单。
   OPCODE.leave,
   OPCODE.startMatch,
 ]);

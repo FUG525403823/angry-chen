@@ -78,7 +78,7 @@ describe('对局流程', () => {
     await harness.close();
   });
 
-  it('chat 净化计数、interact 与 respawn 计入指标', async () => {
+  it('chat 净化计数、interact 计入指标；respawn 已移出白名单被丢弃', async () => {
     const harness = createHarness();
     const alice = harness.connect();
     alice.join('alice', NEW_ROOM_CODE);
@@ -87,11 +87,63 @@ describe('对局流程', () => {
     alice.send(scratch.subarray(0, size));
     size = encodeInteract(1, scratch);
     alice.send(scratch.subarray(0, size));
+
+    const malformedBefore = harness.game.metrics.malformedFrames;
     sendSimple(alice, OPCODE.respawn);
 
     expect(harness.game.metrics.chatMessages).toBe(1);
     expect(harness.game.metrics.interactRequests).toBe(1);
-    expect(harness.game.metrics.respawnRequests).toBe(1);
+    // O10：respawn 从 CLIENT_OPCODE_LIST 移除后按非法帧丢弃（malformedFrame），废弃字段恒为 0。
+    expect(harness.game.metrics.respawnRequests).toBe(0);
+    expect(harness.game.metrics.malformedFrames).toBe(malformedBefore + 1);
+    expect(alice.errorCodes()).toContain(ERROR_CODE.malformedFrame);
+    await harness.close();
+  });
+
+  it('leftMidMatch：局中离场为 true、波间离场为 false', async () => {
+    const harness = createHarness();
+
+    const host = harness.connect();
+    const guest = harness.connect();
+    host.join('host', NEW_ROOM_CODE);
+    const code = host.welcome()?.roomCode ?? '';
+    guest.join('guest', code);
+    const room = harness.game.rooms.rooms.get(code);
+    if (room === undefined) throw new Error('room missing');
+
+    let size = encodeReady({ ready: true, weapon: 1 }, scratch);
+    host.send(scratch.subarray(0, size));
+    size = encodeReady({ ready: true, weapon: 2 }, scratch);
+    guest.send(scratch.subarray(0, size));
+    sendSimple(host, OPCODE.startMatch);
+    harness.advance(1600);
+    expect(room.phase).toBe(MATCH_PHASE.playing);
+    expect(room.match.records.get(2)?.leftMidMatch).toBe(false);
+
+    sendSimple(guest, OPCODE.leave);
+    expect(room.match.records.get(2)?.leftMidMatch).toBe(true);
+
+    const host2 = harness.connect();
+    const guest2 = harness.connect();
+    host2.join('host2', NEW_ROOM_CODE);
+    const code2 = host2.welcome()?.roomCode ?? '';
+    guest2.join('guest2', code2);
+    const room2 = harness.game.rooms.rooms.get(code2);
+    if (room2 === undefined) throw new Error('room 2 missing');
+
+    size = encodeReady({ ready: true, weapon: 1 }, scratch);
+    host2.send(scratch.subarray(0, size));
+    size = encodeReady({ ready: true, weapon: 2 }, scratch);
+    guest2.send(scratch.subarray(0, size));
+    sendSimple(host2, OPCODE.startMatch);
+    harness.advance(1600);
+    expect(room2.phase).toBe(MATCH_PHASE.playing);
+
+    // §5 冻结定义把 intermission 也算「局中」，因此「非局中」用例取 loading（赛前）。
+    room2.phase = MATCH_PHASE.loading;
+    sendSimple(guest2, OPCODE.leave);
+    expect(room2.match.records.get(2)?.leftMidMatch).toBe(false);
+
     await harness.close();
   });
 

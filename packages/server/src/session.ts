@@ -393,10 +393,7 @@ function handleSimple(
     dropFrame(deps, session, 'simple ' + decoded.reason);
     return;
   }
-  if (opcode === OPCODE.respawn) {
-    deps.metrics.respawnRequests += 1;
-    return;
-  }
+  // O10：respawn 已移出 CLIENT_OPCODE_LIST，走 default 分支被丢弃（数值保留以免重号）。
   if (opcode === OPCODE.leave) {
     deps.metrics.leaves += 1;
     closeSession(deps, session, 1000, 'left');
@@ -457,7 +454,6 @@ export function handleSessionFrame(deps: SessionDeps, session: Session, frame: U
     case OPCODE.ping:
       handlePing(deps, session, frame, nowMs);
       break;
-    case OPCODE.respawn:
     case OPCODE.leave:
     case OPCODE.startMatch:
       handleSimple(deps, session, frame, opcode);

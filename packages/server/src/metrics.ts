@@ -48,6 +48,7 @@ export interface Metrics {
   errorsSent: number;
   startMatchRequests: number;
   interactRequests: number;
+  /** @deprecated O10：respawn 已移出客户端白名单，恒为 0（保留字段以兼容 /metrics 与报告消费者）。 */
   respawnRequests: number;
   maxEntitiesObserved: number;
   shotsFired: number;

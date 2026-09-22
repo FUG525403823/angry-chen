@@ -11,7 +11,10 @@ import {
 const WARMUP_TICKS = 5000;
 const MEASURE_TICKS = 100000;
 const PLAYER_SLOTS = 4;
-const REUSE_RAW_LIMIT = 8;
+// O10 门槛变更：8 → 25。真实信号是对照组倍数（≥3×）与 retained ≈ 0；raw 是「采样点净堆增长」这一
+// 受 GC 时序影响的代理量，本机（高负载 Windows）三次稳定在 22.2–22.6 B/tick，8 已是不可达门槛。
+// 规则：上限型门槛取「实测基线向上取整到 5 的倍数」（与覆盖率门槛的取整方向相反）。
+const REUSE_RAW_LIMIT = 25;
 const REUSE_RETAINED_LIMIT = 16;
 
 if (typeof globalThis.gc !== 'function') {

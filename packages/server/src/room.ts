@@ -279,6 +279,11 @@ export function roomDisconnect(room: Room, session: Session, nowMs: number): voi
   broadcastMatchState(room);
 }
 
+/** O10：`leftMidMatch` 定义＝离场时刻处于「对局进行中」（playing / intermission）。 */
+function isMidMatchPhase(room: Room): boolean {
+  return room.phase === MATCH_PHASE.playing || room.phase === MATCH_PHASE.intermission;
+}
+
 export function removeMember(
   room: Room,
   session: Session,
@@ -291,14 +296,14 @@ export function removeMember(
   if (session.pid > 0) room.sessionsByPid.delete(session.pid);
   if (session.pid > 0) {
     const record = room.match.records.get(session.pid);
-    if (record !== undefined) record.leftMidMatch = true;
+    // O10：按离场时机写真实值（此前无条件写 true）。
+    if (record !== undefined) record.leftMidMatch = leftMidMatch;
     despawnEntity(room.world, session.pid);
   }
   session.pid = 0;
   session.roomCode = null;
   session.ready = false;
   session.disconnectedAtMs = null;
-  void leftMidMatch;
   reassignHost(room);
   if (room.sessions.length === 0) {
     room.emptySinceMs = nowMs;
@@ -310,7 +315,7 @@ export function removeMember(
 }
 
 export function roomLeave(room: Room, session: Session, nowMs: number): boolean {
-  return removeMember(room, session, nowMs, true);
+  return removeMember(room, session, nowMs, isMidMatchPhase(room));
 }
 
 function reassignHost(room: Room): void {
@@ -367,7 +372,7 @@ function expireGraceSessions(deps: RoomDeps, room: Room, nowMs: number): void {
       pid: session.pid,
       detail: { graceMs },
     });
-    removeMember(room, session, nowMs, true);
+    removeMember(room, session, nowMs, isMidMatchPhase(room));
   }
 }
 

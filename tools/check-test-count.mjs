@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
-const MIN_TESTS = 120;
+// O10：地板不是目标——当前 457 例，地板取 300 只保证「批量丢测试」能变红。
+const MIN_TESTS = 300;
 const RESULTS = 'coverage/test-results.json';
 
 function countFromFile(path) {

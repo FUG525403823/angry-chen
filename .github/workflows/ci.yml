@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    name: quality（pnpm check 九步）
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: 保留测试结果（失败时也上传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-test-results
+          path: coverage/test-results.json
+          if-no-files-found: warn
+
+  perf:
+    name: perf（pnpm check:perf：4 人 2 分钟 --strict）
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 打印运行环境（阈值抖动时便于对照）
+        run: node -v && nproc && uname -a
+      - run: pnpm check:perf
+      - name: 保留压测报告（失败时也上传）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          path: artifacts/
+          if-no-files-found: ignore
