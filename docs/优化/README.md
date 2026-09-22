@@ -51,7 +51,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O04 | ✅ 已完成 | ✅ 已完成（60 羊基准 单 tick p95 0.074ms / p99 0.143ms ≤ 8/12ms，约 2.4× 提速；稳态 raw 分配 1002→296 B/tick；4 人 5 分钟压测 11 项门槛全 pass；`check-alloc` 绝对门槛见 §5 登记） | `docs/evidence/bench-sim-60sheep.json`、`docs/evidence/bots-after-o04.json` | `O04` |
 | O05 | ✅ 已完成 | ✅ 已完成（默认仍 20Hz：`S5.2-1/2/3/8` pass、`S5.2-4` 走替代判据 pass；编码段 p95 0.046ms、单 tick 合计 p95 0.094ms；新指标已在 `/metrics` 可见） | `docs/evidence/bots-o05.json`、`bench-sim-60sheep.json`（`runs.after-o05`） | `O05` |
 | O06 | ✅ 已完成 | ✅ 已完成（羊群实例池化 + HUD 全量脏检查：600 帧 DOM 写入 6001→1861；`pnpm check` 428 用例；体积 +1,280B / +0.73%，门槛变更见 §5） | `docs/evidence/client-frame-alloc.md` | `O06` |
-| O07 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o07.json` | `O07` |
+| O07 | ✅ 已完成 | ✅ 已完成（弹药账本按 ack 水位对账：显示值 = 权威值 − 未确认开火；换弹/狂暴倒计时本地推进；调试面板新增 4 字段） | `docs/evidence/bots-o07.json` | `O07` |
 | O08 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/` 下的重连验证记录（待生成） | `O08` |
 | O09 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/store-load-100k.md` | `O09` |
 | O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
@@ -77,6 +77,12 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」，12 处无条件 DOM 写入全部带上脏检查（探针 600 帧 6001 → 1861 次，恒定值路径 600 → 1–16 次）；`hud.update` / `debug.update` 入参改为复用对象（`Mutable<T>`），`views.sync` 回调提升为模块级 `resolveSheepVisual`，事件名数组复用，`percentile` 改原地插入排序（200 组随机样本与旧实现逐值一致）。
 本机**无浏览器**，O06 §6 #4 的 DevTools/帧 p95 人工观察无法执行 → 用探针 + 单测作为代理证据（`docs/evidence/client-frame-alloc.md`），并把浏览器复测移交 O10。
 门槛变更 1 项（README §7 规则 2 登记）：客户端 JS gzip 体积由 175,547B 增到 **176,827B（+1,280B / +0.73%）**，仍占 1.5MB 预算 11.8% —— 池模块与脏检查缓存的代码量换来了每帧分配与 DOM 写入的消除，见 O06 §5.1 #8。
+
+**O07 执行结论（2026-09-22）**：§4 的 11 条任务与 §7 的 6 条 DoD 落地（`pnpm check` 退出码 0；客户端 32 文件 / 176 用例全绿）。
+新增 `packages/client/src/prediction/ammoLedger.ts`：按快照帧头 `lastAckedSeq` 对账，显示值 `mag = clamp(serverMag − pending, 0, magSize)`，`actualDrop < expectedDrop` 的差额计入 `rejected` 并本帧钳到权威值（被服务器拒绝的本地开火不再静默丢失）；acked 水位只在 seq 严格增大时推进，重连/换房与 `reconciler.reset()` 同点 `reset()`。
+新增 `packages/client/src/combat/localTimers.ts`：换弹/狂暴倒计时每帧本地推进，权威值到达时取 `min(本地, 权威 + SERVER_TICK_MS)`，本地归零后采用新一轮权威值（下限 0、迟到帧不变大）。
+`main.ts` 每帧 `applyAmmo()` + `advance(dtMs)`；调试面板新增 `pendingShots` / `rejectedShots` / `ammoDivergence` / `resyncCount` 一行。压测 `docs/evidence/bots-o07.json`：`S5.2-1/2/3/4/8/9` + 新 `S5.2-10` 全 `pass`，`ammoDivergenceMax = 2`（阈值 ≤ 2），`verdict=fail` 仅来自既有的 `S5.2-9b` 未测。
+**未改协议**（`packages/shared/src/net/**` 无改动、无新增运行时依赖）；本机无浏览器 → 「按住开火弹药不回跳 / 换弹环与狂暴倒计时连续」的人工观察移交 O10。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -128,6 +134,10 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 | HUD 脏检查口径 | 数值四舍五入到 UI 显示精度后比较（宽度 1 位小数、CSS 角度 0 位、计数 0 位），布尔/字符串按变更比较 | O06 | 保证不因浮点抖动每帧写 DOM；`STATS_REFRESH_MS = 250` 节流不变 |
 | 羊群实例池容量 | 256（= `NET.snapshotMaxEntities`，渲染层写字面量） | O06 | 一帧内有效；越界回退池内最后一个并只 `console.warn` 一次 |
 | 客户端 JS gzip 体积 | 原「不增」（基线 175,547B）→ **176,827B（+1,280B / +0.73%）**，预算 1.5MB 不变 | O06 | 池化与脏检查的代码量；预算门仍 pass（11.8%），变更已登记验收报告 §3.7 |
+| 弹药显示值公式 | `mag = clamp(serverMag − pending, 0, magSize)`；`reserve = serverReserve` | O07 | `pending` = 已本地开火未被 `lastAckedSeq` 覆盖的命令数（未改协议） |
+| 弹药对账水位 | 快照帧头 `lastAckedSeq`，只在 seq 严格增大时推进 | O07 | ack 回退忽略；重连/换房与 `reconciler.reset()` 同点 `reset()` |
+| `ammoDivergenceMax` | ≤ 2（2 分钟 4 人压测，`S5.2-10`） | O07 | 本地预测与权威值之差；超限说明账本与服务器行为不一致 |
+| 倒计时对齐 | `min(本地, 权威 + SERVER_TICK_MS)`；本地 ≤ 0 时采用权威值；下限 0 | O07 | 换弹/狂暴每帧推进；迟到帧不得让剩余变大 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
 | `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
 | `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |

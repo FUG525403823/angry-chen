@@ -19,6 +19,8 @@ import {
 import { createAudioLayer, outcomeCueForWinnerTeam } from './audio/layer.ts';
 import type { ListenerPose } from './audio/mixer.ts';
 import { createLocalWeapon } from './combat/localWeapon.ts';
+import { createLocalTimers } from './combat/localTimers.ts';
+import { createAmmoLedger } from './prediction/ammoLedger.ts';
 import { createPointerInput } from './input/pointerLock.ts';
 import { createCommandBuffer } from './prediction/commandBuffer.ts';
 import { createPredictor } from './prediction/predictor.ts';
@@ -197,6 +199,13 @@ export function boot(): void {
     bossHpRatio: undefined as number | undefined,
   };
   let reloadLeft10Ms = 0;
+  const ammoLedger = createAmmoLedger();
+  const localTimers = createLocalTimers();
+  let authorityMag = -1;
+  let authorityReserve = 0;
+  let ammoPendingShots = 0;
+  let ammoDivergence = 0;
+  let ammoResyncCount = 0;
   let meshFlashLeftMs = 0;
   let weaponSlot: 0 | 1 | 2 = 0;
   let fireHeld = false;
@@ -232,6 +241,7 @@ export function boot(): void {
       if ((predictCommand.buttons & BUTTON.fire) !== 0) {
         camera.getWorldDirection(forwardScratch);
         if (localWeapon.onFire(performance.now())) {
+          ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot);
           viewModel.triggerFire();
           audioLayer.notifyFire(weaponSlot);
           fireOriginScratch.copy(camera.position).addScaledVector(forwardScratch, 0.45);
@@ -346,6 +356,8 @@ export function boot(): void {
       commands.clear();
       smoother.reset();
       reconciler.reset();
+      ammoLedger.reset();
+      authorityMag = -1;
       predictionReady = false;
     },
     onSnapshotApplied: () => {
@@ -353,6 +365,7 @@ export function boot(): void {
       if (!authority.found) return;
       predictionReady = true;
       reconciler.reconcile(authority, commands, predictor, smoother);
+      ammoLedger.noteServerAck(authority.lastAckedSeq);
     },
     onMatchState: (state) => {
       hud.setPhase(PHASE_NAMES[state.phase] ?? '未知');
@@ -363,9 +376,7 @@ export function boot(): void {
         if (player === undefined || player.pid !== mine) continue;
         weaponSlot = player.weapon === 1 ? 1 : player.weapon === 2 ? 2 : 0;
         combatState.hpRatio = player.hpRatio;
-        combatState.mag = player.mag;
         combatState.magSize = MAG_SIZES[weaponSlot] ?? WEAPONS.pistol.mag;
-        combatState.reserve = player.reserve;
         combatState.rage = player.rage;
         combatState.rageLeftMs = player.rageLeft100Ms * 100;
         combatState.downed = player.downed;
@@ -373,8 +384,16 @@ export function boot(): void {
         const wasReloading = reloadLeft10Ms > 0;
         reloadLeft10Ms = player.reloadLeft10Ms;
         if (!wasReloading && reloadLeft10Ms > 0) audioLayer.notifyReload();
+        authorityMag = player.mag;
+        authorityReserve = player.reserve;
+        localTimers.resyncReload(
+          player.reloadLeft10Ms,
+          WEAPONS[WEAPON_SLOT_ORDER[weaponSlot] ?? 'pistol'].reloadMs,
+        );
+        localTimers.resyncRage(player.rageLeft100Ms);
+        ammoResyncCount += 1;
+        applyAmmo();
         localWeapon.setSlot(weaponSlot, performance.now());
-        localWeapon.syncMag(weaponSlot, player.mag, player.reserve);
         viewModel.setWeapon(weaponSlot);
       }
       lastPlayers = state.players;
@@ -621,6 +640,10 @@ export function boot(): void {
     localPos: undefined,
   };
   const debugUpdateScratch: Mutable<DebugSample> = {
+    pendingShots: 0,
+    rejectedShots: 0,
+    ammoDivergence: 0,
+    resyncCount: 0,
     fps: 0,
     p95IntervalMs: 0,
     p95WorkMs: 0,
@@ -644,6 +667,17 @@ export function boot(): void {
     particles: 0,
     materialCount: 0,
   };
+
+  /** O07：用账本裁决结果刷新本地弹药显示（每帧调用，ack 到达后立刻反映）。 */
+  function applyAmmo(): void {
+    if (authorityMag < 0) return;
+    const view = ammoLedger.reconcile(authorityMag, authorityReserve, weaponSlot);
+    localWeapon.reconcileAmmo(weaponSlot, authorityMag, authorityReserve, view);
+    combatState.mag = view.mag < combatState.magSize ? view.mag : combatState.magSize;
+    combatState.reserve = view.reserve;
+    ammoPendingShots = view.pending;
+    ammoDivergence = view.mag - authorityMag;
+  }
 
   let frameErrors = 0;
   function frame(nowMs: number): void {
@@ -695,8 +729,11 @@ export function boot(): void {
     } else {
       updateCamera(camera, local.pos, local.yaw, local.pitch, fx.shakeX, fx.shakeY);
     }
+    const timers = localTimers.advance(dtMs);
     const reloadMs = WEAPONS[WEAPON_SLOT_ORDER[weaponSlot] ?? 'pistol'].reloadMs;
-    combatState.reloadRatio = reloadLeft10Ms <= 0 ? 0 : 1 - (reloadLeft10Ms * 10) / reloadMs;
+    combatState.reloadRatio = timers.reloadLeftMs <= 0 ? 0 : 1 - timers.reloadLeftMs / reloadMs;
+    combatState.rageLeftMs = timers.rageLeftMs;
+    applyAmmo();
     combatState.spreadDeg = localWeapon.spreadDeg;
     combatState.bossHpRatio = views.bossHpRatio;
     viewModel.setMoveAmount(
@@ -760,6 +797,10 @@ export function boot(): void {
     debugUpdateScratch.particles = particles.activeCount;
     debugUpdateScratch.materialCount = materials.count;
     debugUpdateScratch.versionLine = formatVersionLine();
+    debugUpdateScratch.pendingShots = ammoPendingShots;
+    debugUpdateScratch.rejectedShots = ammoLedger.rejectedTotal;
+    debugUpdateScratch.ammoDivergence = ammoDivergence;
+    debugUpdateScratch.resyncCount = ammoResyncCount;
     debug.update(debugUpdateScratch);
   }
   window.requestAnimationFrame(frame);

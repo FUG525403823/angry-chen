@@ -50,6 +50,7 @@ const {
   tryStartReload,
   updateWeapon,
 } = await import('../packages/shared/src/index.ts');
+const { createAmmoLedger } = await import('../packages/client/src/prediction/ammoLedger.ts');
 
 const PUMP_INTERVAL_MS = 5;
 const PING_INTERVAL_MS = 500;
@@ -184,6 +185,9 @@ function createBot(index) {
       pitch: 0,
     },
     weapon,
+    // O07 §4 任务 9：每个 bot 一份弹药账本，度量「本地预测值 − 权威值」。
+    ammoLedger: createAmmoLedger(),
+    ammoDivergenceMax: 0,
     rng: createRng(options.seed + index * 7919, 'fx'),
     outQueue: [],
     inQueue: [],
@@ -410,6 +414,8 @@ function handleFrame(bot, frame) {
       bot.validation.decodeFailures += 1;
       return;
     }
+    // O07 §4 任务 9：先推进 ack 水位，再统计快照。
+    bot.ammoLedger.noteServerAck(bot.mirror.lastAckedSeq);
     onSnapshot(bot, frame.length);
     return;
   }
@@ -557,6 +563,13 @@ function decide(bot, cmd, myPos, localNowMs) {
   cmd.moveY = Math.sin(localNowMs / 700 + bot.index * 1.1) * 0.35;
   if (flat > 25) cmd.moveX = 1;
 
+  // O07 §4 任务 9：用权威弹药值对账，累计预测值与权威值的最大偏差。
+  if (me !== null) {
+    const slot = bot.weapon.activeSlot;
+    const view = bot.ammoLedger.reconcile(me.mag, me.reserve, slot);
+    bot.ammoDivergenceMax = Math.max(bot.ammoDivergenceMax, Math.abs(view.mag - me.mag));
+  }
+
   const mag = activeMag(bot.weapon);
   const needsReload = mag <= 0 || (me !== null && me.mag === 0 && !isReloading(bot.weapon));
   if (needsReload) {
@@ -599,7 +612,10 @@ function tickBot(bot, nowMs, runStartMs) {
   }
   if ((cmd.buttons & BUTTON.fire) !== 0) {
     bot.fireCommandsSent += 1;
-    if (tryFire(bot.weapon, localNowMs)) bot.shotsSent += 1;
+    if (tryFire(bot.weapon, localNowMs)) {
+      bot.shotsSent += 1;
+      bot.ammoLedger.noteLocalShot(cmd.seq, bot.weapon.activeSlot);
+    }
   }
   if ((cmd.buttons & BUTTON.reload) !== 0) tryStartReload(bot.weapon, localNowMs);
   const size = encodeCommand(cmd, bot.outScratch);
@@ -804,6 +820,8 @@ try {
     bot.damageTaken = 0;
     bot.reviveActions = 0;
     bot.hitTargets.clear();
+    bot.ammoLedger.reset();
+    bot.ammoDivergenceMax = 0;
     bot.started = true;
   }
   metricsStart = await fetchMetrics();
@@ -861,6 +879,7 @@ try {
       commandsSent: bot.commandsSent,
       commandsDropped: bot.commandsDropped,
       shotsSent: bot.shotsSent,
+      ammoDivergenceMax: bot.ammoDivergenceMax,
       hits: bot.hits,
       kills: bot.kills,
       damageTaken: round(bot.damageTaken, 0),
@@ -968,6 +987,8 @@ try {
   const serverBytesAvg =
     serverSnapshots === 0 ? 0 : serverSnapshotBytesAvg / Math.max(1, serverSnapshots);
 
+  const ammoDivergenceMax = bots.reduce((max, bot) => Math.max(max, bot.ammoDivergenceMax), 0);
+
   const thresholds = [
     {
       id: 'S5.2-1',
@@ -1043,6 +1064,15 @@ try {
         options.latencyMs >= 200
           ? '100% 回合内（--latency 200 --jitter 20 --loss 0.01）'
           : '需以 --latency 200 运行；本次为 ' + String(options.latencyMs) + 'ms',
+    },
+    {
+      id: 'S5.2-10',
+      label: '本地弹药账本预测值与权威值之差 ≤ 2',
+      measured: ammoDivergenceMax,
+      limit: 2,
+      unit: '发',
+      status: ammoDivergenceMax <= 2 ? 'pass' : 'fail',
+      note: '逐帧 |账本 reconcile 显示值 − matchState 权威 mag| 的最大值',
     },
     {
       id: 'AUTH-1',
@@ -1131,6 +1161,7 @@ try {
       tickWorkP99Ms: round(tickWorkP99, 3),
       roomBudgetExceededTotal,
       serverSnapshotBytesAvg: round(serverBytesAvg, 1),
+      ammoDivergenceMax,
       shotsFiredLocal: bots.reduce((sum, bot) => sum + bot.shotsSent, 0),
       hitsTotal: clientReports.reduce((sum, r) => sum + r.hits, 0),
       killsTotal: clientReports.reduce((sum, r) => sum + r.kills, 0),

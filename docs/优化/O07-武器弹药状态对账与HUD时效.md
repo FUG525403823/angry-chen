@@ -93,39 +93,43 @@
 
 ## 4. 任务清单
 
-- [ ] 1. `ammoLedger.ts`：`createAmmoLedger(weaponSlotCount)` 维护
+- [x] 1. `ammoLedger.ts`：`createAmmoLedger(weaponSlotCount)` 维护
       `pending: { seq: number, slot: number }[]`（容量 = `CommandBuffer.capacity`，环形）、`ackedSeq`（由快照更新）、
       以及上一帧权威值 `lastServerMag` / `lastServerReserve`。
-- [ ] 2. `ammoLedger.ts` API：
+- [x] 2. `ammoLedger.ts` API：
       - `noteLocalShot(seq, slot): void`（本地开火成功时调用）；
       - `noteServerAck(seq): void`（每次快照后调用，推进水位并结算已被 ack 的开火）；
       - `reconcile(serverMag, serverReserve, slot): AmmoView`，其中 `AmmoView = { mag, reserve, pending, rejected, diverged }`；
       - 结算规则（冻结，见 §5）：`actualDrop = lastServerMag − serverMag`，`expectedDrop = 本轮确认数`；
         若 `actualDrop < expectedDrop` → `rejected += expectedDrop − actualDrop` 且把显示值钳到 `serverMag`；
         若 `serverMag > lastServerMag`（换弹/拾取完成）→ 清空已确认项、重置累加器、显示值 = 权威值。
-- [ ] 3. `localWeapon.ts`：`syncMag` 保留但改为调用 `reconcileAmmo`；新增
+- [x] 3. `localWeapon.ts`：`syncMag` 保留但改为调用 `reconcileAmmo`；新增
       `reconcileAmmo(slot, serverMag, serverReserve, view: AmmoView): void`，写入 `state.magInSlot[slot] = view.mag`。
-- [ ] 4. `localTimers.ts`：`createLocalTimers()` 提供
+- [x] 4. `localTimers.ts`：`createLocalTimers()` 提供
       `resyncReload(reloadLeft10Ms, reloadMs)`、`resyncRage(rageLeft100Ms)`、`advance(dtMs): { reloadLeftMs, rageLeftMs }`；
       规则：本地按 `dtMs` 递减，权威值到达时**取"更紧急"的一方**（`min(本地, 权威 + 单帧容差)`），下限 0；既不允许负值也不允许倒退增长超过权威值。
-- [ ] 5. `main.ts` 接线：
+- [x] 5. `main.ts` 接线：
       - `emit` 内 `onFire` 成功后调 `ledger.noteLocalShot(predictCommand.seq, weaponSlot)`；
       - `onSnapshotApplied` 里在 `reconciler.reconcile` 之后调 `ledger.noteServerAck(authority.lastAckedSeq)`；
       - `onMatchState` 里把 `localWeapon.syncMag(...)` 换成 `ledger.reconcile(player.mag, player.reserve, weaponSlot)` 并应用；
       - 每帧把 `reloadLeftMs` / `rageLeftMs` 用 `localTimers.advance(dtMs)` 推进后写入 `combatState`（替换现在的"只在 matchState 赋值"）。
-- [ ] 6. 测试 `ammoLedger.test.ts`（矩阵）：
+- [x] 6. 测试 `ammoLedger.test.ts`（矩阵）：
       ①本地打 3 发、ack 未追上 → 显示值 = 服务器值 − 3（不回跳）；
       ②ack 追上且服务器弹药同步下降 → `pending === 0`、`rejected === 0`；
       ③ack 追上但服务器弹药只降了 1 → `rejected === 2` 且显示值 = 权威值；
       ④换弹完成（服务器弹药上升）→ `pending` 清空、显示值 = 权威值；
       ⑤命令缓冲溢出（`pending` 环形覆盖）→ 计数并钳到权威值，不出现负弹药。
-- [ ] 7. 测试 `localTimers.test.ts`：①推进 16ms × 60 → 剩余减少 960ms；②权威值更紧急 → 立即采用；
+- [x] 7. 测试 `localTimers.test.ts`：①推进 16ms × 60 → 剩余减少 960ms；②权威值更紧急 → 立即采用；
       ③权威值倒退（迟到帧）→ 不增加本地剩余；④下限 0，不出现负值；⑤狂暴/换弹独立。
-- [ ] 8. `debugPanel.ts` + `main.ts`：新增字段 `pendingShots`、`rejectedShots`、`ammoDivergence`（本地未 ack 数与权威变化之差）、`resyncCount`（含换弹/狂暴各自计数）。
-- [ ] 9. `tools/bots.mjs`：报告新增 `ammoDivergenceMax`——用与客户端相同的"ack 水位 + pending"算法在 bot 侧复算（bot 已有 `commands` 与 `lastAckedSeq`），并断言其 ≤ 0 的绝对值容差 2；写入 S5.2 新门槛（阈值与登记见 O10）。
-- [ ] 10. 复跑并落证据：`node tools/bots.mjs --players 4 --minutes 2 --strict --out docs/evidence/bots-o07.json`；
+- [x] 8. `debugPanel.ts` + `main.ts`：新增字段 `pendingShots`、`rejectedShots`、`ammoDivergence`（本地未 ack 数与权威变化之差）、`resyncCount`（含换弹/狂暴各自计数）。
+- [x] 9. `tools/bots.mjs`：报告新增 `ammoDivergenceMax`——用与客户端相同的"ack 水位 + pending"算法在 bot 侧复算（bot 已有 `commands` 与 `lastAckedSeq`），并断言其 ≤ 0 的绝对值容差 2；写入 S5.2 新门槛（阈值与登记见 O10）。
+- [x] 10. 复跑并落证据：`node tools/bots.mjs --players 4 --minutes 2 --strict --out docs/evidence/bots-o07.json`；
       确认 S5.2-9（`shotCountMismatch`）与其它门槛仍 PASS，且新字段有值。
-- [ ] 11. 回填 `docs/验收报告.md`：新增/更新两条结论——"本地弹药按 ack 水位对账，不再回跳"与"HUD 换弹/狂暴倒计时本地推进"，附证据路径与人工观察步骤。
+- [x] 11. 回填 `docs/验收报告.md`：新增/更新两条结论——"本地弹药按 ack 水位对账，不再回跳"与"HUD 换弹/狂暴倒计时本地推进"，附证据路径与人工观察步骤。
+
+### 4.1 执行期差异（详细）
+
+见 §5.1；任务 1–9 与 11 已落地，任务 10（压测证据）在提交前复跑生成。
 
 ## 5. 冻结契约
 
@@ -164,6 +168,20 @@ export function createLocalTimers(): LocalTimers;
 | 协议/服务器 | 不涉及（服务器不感知账本；不需要新的上行/下行字段） |
 | 时钟差异（记录不修） | 本地开火门限用 `performance.now()`、服务器用 `world.timeMs`；二者差值表现为"本地打得出、服务器没打"的 `rejected`，本步把它变成**可观测数字**，对齐时钟另立任务 |
 
+### 5.1 执行期差异与门槛变更
+
+| # | 差异 / 变更 | 理由 |
+|---|---|---|
+| 1 | `createAmmoLedger(capacity = COMMAND_BUFFER_CAPACITY)`（可选参数，默认 128） | §4 任务 1 写的是 `(weaponSlotCount)`、§5 冻结态写的是无参 `createAmmoLedger()`，两处不一致；取"可选容量"同时满足两者，容量口径见任务 1 的"= `CommandBuffer.capacity`" |
+| 2 | `AmmoLedger` **加性**新增 `reset()` | §5 冻结接口未列，但 §8 风险表要求"ack 回退时重置账本（与 `reconciler.reset()` 同一时机）"；`main.ts` 在入房/重连路径与 `reconciler.reset()` 一起调用 |
+| 3 | `syncMag` 保留为"无账本退化路径"，内部**调用** `reconcileAmmo`（与 §4 任务 3 表述方向一致） | 保持公开方法可用（单测与旧调用点不破坏），`main.ts` 已不再调用它；§6 #6 的 `grep -rn syncMag packages/client/src` 只命中 `localWeapon.ts`（接口 + 实现） |
+| 4 | 显示值的 **上钳 `magSize`** 放在调用点（`main.ts` 的 `applyAmmo`） | §5 公式含 `clamp(…, 0, magSize)`，但冻结签名 `reconcile(serverMag, serverReserve, slot)` 不传 `magSize`；下钳 0 在账本内完成 |
+| 5 | 倒计时对齐补一条：**本地 ≤ 0 时直接采用权威值** | 否则"新一轮换弹/狂暴"（权威从 0 跳到大值）会被 `min` 规则永久压住、倒计时永远不开始；活跃倒计时期间仍严格 `min(本地, 权威 + 单帧容差)`，不允许因迟到帧变大 |
+| 6 | `advance(0)` 被用作"只读取不复位"的读值手段 | 返回的是内部复用对象（O06 的零分配口径）；`advance(0)` 对状态无副作用 |
+| 7 | `AmmoView.rejected` 是**本次调用**的拒绝数，`rejectedTotal` 才是累计；账本溢出（环形覆盖）也计入 `rejected` | §4 任务 2 的差值口径只描述"本轮"，任务 6 的用例 ③ 断言 `rejected === 2`（本轮）；溢出属于"本地开火丢失"，同类计入并有 `overridden` 标记 |
+| 8 | 调试面板 `resyncCount` 是换弹 + 狂暴的**合计**重同步次数（未拆两个字段） | §4 任务 8 写"含换弹/狂暴各自计数"，但 §3/§5 的字段清单只要求单一 `resyncCount`；两个倒计时的实时值本身已在 HUD 上可见 |
+| 9 | `tools/bots.mjs` 直接 `import { createAmmoLedger }`（复用客户端同一份算法），而不是在 bot 侧重写一遍 | §4 任务 9 的目标是"用同一算法在 bot 侧复算"；直接复用模块能保证两边口径永远一致，且无需维护第二份实现 |
+
 ## 6. 验证
 
 | # | 命令 | 期望 | 失败意味着 |
@@ -174,6 +192,17 @@ export function createLocalTimers(): LocalTimers;
 | 4 | 人工：4 人局按住开火 10 秒，观察弹药数字 | 不回跳；换弹环连续转动；狂暴倒计时连续递减 | 接线的每帧推进未生效（仍在 1Hz 阶梯） |
 | 5 | `pnpm check` | 退出码 0 | 任一门失败 |
 | 6 | 人工复核：`grep -rn "syncMag" packages/client/src` | 只在 `localWeapon.ts` 内部（由 `reconcileAmmo` 调用） | 仍有绕过账本的直写路径 |
+
+**实测（2026-09-22，本机 Node v24.14.1，逐条执行）**
+
+| # | 结果 | 关键数字 |
+|---|---|---|
+| 1 | PASS | `npx vitest run --project client`：32 文件 / **176 用例**全绿，含 `ammoLedger.test.ts`（五组矩阵 + 1 组附加：ack 回退忽略、跨槽位不污染）与 `localTimers.test.ts`（五组） |
+| 2 | PASS | `pnpm typecheck` 0 错误（新增 `AmmoView` 参数未破坏既有调用点） |
+| 3 | PASS（`verdict=fail` 仅来自既有的 `S5.2-9b` not-measured） | `docs/evidence/bots-o07.json`：`S5.2-1/2/3/4/8/9` + 新增 **`S5.2-10`** 全 `pass`；`aggregate.ammoDivergenceMax = 2`（各客户端 1/2/1/1，阈值 ≤ 2）；`S5.2-9`（`shotCountMismatch`）未受影响 |
+| 4 | 未执行（本机无浏览器），移交 O10 | 人工观察「按住开火 10 秒弹药不回跳 / 换弹环连续转动 / 狂暴倒计时连续递减」；已给出 `pnpm dev` + `?debug=1` + F3 的步骤与调试行 `ammo pending … rejected … div … resync …` |
+| 5 | PASS | `pnpm check` 退出码 **0**（typecheck + eslint/prettier + 3 project vitest **439 用例**（客户端 176）+ check:docs + check:assets + check:count + check:coverage） |
+| 6 | PASS | `grep -rn "syncMag" packages/client/src` 仅命中 `packages/client/src/combat/localWeapon.ts:8,33`（接口 + 实现），`main.ts` 已无直写路径 |
 
 ## 7. DoD（验收标准）
 

@@ -28,6 +28,14 @@ export interface DebugSample {
   readonly triangles: number;
   readonly particles: number;
   readonly materialCount: number;
+  /** O07：账本未确认的本地开火数。 */
+  readonly pendingShots: number;
+  /** O07：累计被服务器拒绝的本地开火数。 */
+  readonly rejectedShots: number;
+  /** O07：本地预测显示值与权威值之差（正常为 `-pendingShots`）。 */
+  readonly ammoDivergence: number;
+  /** O07：权威值与本地倒计时的重同步次数（换弹 + 狂暴）。 */
+  readonly resyncCount: number;
 }
 
 export interface DebugPanel {
@@ -106,6 +114,14 @@ export function debugLines(sample: DebugSample): readonly string[] {
       String(sample.hardCorrects) +
       '  pending ' +
       String(sample.pendingCommands),
+    'ammo pending ' +
+      String(sample.pendingShots) +
+      '  rejected ' +
+      String(sample.rejectedShots) +
+      '  div ' +
+      sample.ammoDivergence.toFixed(1) +
+      '  resync ' +
+      String(sample.resyncCount),
     'status ' + sample.status + '  room ' + sample.roomCode,
     sample.versionLine,
     'budget ' + (withinBudget(sample) ? 'OK' : 'OVER'),
