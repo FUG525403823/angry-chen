@@ -114,6 +114,9 @@ Linux:   'C:/repo/packages/client/dist'     → 相对路径，resolve(root, ...
 
 这正是「同一份测试在两个平台都要跑」的价值：服务端代码没问题，**测试里的平台假设**有问题。
 
+修复推送后（`f0a0b57`）CI 三个 job 全绿：`quality`（九步门禁，ubuntu 上真实跑 72 文件 / 481 用例与 vite build）、
+`smoke`（§7.3 的单进程冒烟）、`perf`（4 人 2 分钟 `--strict`）。
+
 ### 7.2 顺带修掉的第二个平台隐患（超时抖动）
 
 该文件里 `GET / 返回 index.html（no-cache）` 一例本机耗时 **4045ms**（vitest 默认单例超时 5000ms，CI 慢机上必红）：
@@ -148,7 +151,7 @@ OK：单进程联机冒烟全部通过（win32 x64，Node v24.14.1）
 | 平台 | 跑过什么 | 结果 |
 |---|---|---|
 | Windows（本机开发机） | `pnpm check` 九步、`pnpm smoke`、`pnpm serve` + curl/probe（§1–§3） | 全绿 |
-| Linux（CI ubuntu-latest） | `pnpm check` 九步（含真实 in-process HTTP/静态/WS 测试、vite build、覆盖率、分配探针）、`pnpm smoke`、`pnpm check:perf` | 见 Actions；§7.1 的红即来自这里 |
+| Linux（CI ubuntu-latest） | `pnpm check` 九步（含真实 in-process HTTP/静态/WS 测试、vite build、覆盖率、分配探针）、`pnpm smoke`、`pnpm check:perf` | **全绿**：`f0a0b57` 的 `quality` / `smoke` / `perf` 三个 job 全部 success（§7.1 的红即来自这里） |
 | macOS | 无 | **未跑过**（无机器；代码无 `darwin` 分支，风险仅剩未验证） |
 
 平台相关的已知边界（都不影响服务端本体）：
