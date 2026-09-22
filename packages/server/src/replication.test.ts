@@ -17,13 +17,13 @@ import {
 
 import { createHarness, sendPing } from './testing/harness.ts';
 import type { TestClient } from './testing/harness.ts';
-import type { Room } from './room.ts';
+import { shouldSendSnapshot, type Room } from './room.ts';
 
 const record = new Uint8Array(SNAPSHOT_RECORD_BYTES);
 
 function expectMirrorMatchesServer(mirror: SnapshotMirror, room: Room): void {
   const ids = room.snapshot.entities.map((entity) => entity.id);
-  expect(mirror.ids).toEqual(ids);
+  expect(Array.from(mirror.ids.subarray(0, mirror.idCount))).toEqual(ids);
   for (const entity of room.snapshot.entities) {
     quantizeSnapshotEntity(entity, record, 0);
     const base = entity.id * SNAPSHOT_RECORD_BYTES;
@@ -59,7 +59,9 @@ describe('快照差分复制', () => {
     expect(b.applySnapshots()).toBe(30);
 
     expect(a.client.snapshotTicks()).toEqual(b.snapshotTicks());
-    expect(a.client.mirror.ids).toEqual(b.mirror.ids);
+    expect(Array.from(a.client.mirror.ids.subarray(0, a.client.mirror.idCount))).toEqual(
+      Array.from(b.mirror.ids.subarray(0, b.mirror.idCount)),
+    );
     expect(a.client.mirror.bytes).toEqual(b.mirror.bytes);
     expectMirrorMatchesServer(a.client.mirror, a.room);
     expectMirrorMatchesServer(b.mirror, a.room);
@@ -87,7 +89,7 @@ describe('快照差分复制', () => {
       expectMirrorMatchesServer(a.client.mirror, a.room);
     }
     expect(a.client.mirror.bytes.length).toBe(zeroBytes);
-    expect(a.client.mirror.ids.length).toBeGreaterThanOrEqual(1);
+    expect(a.client.mirror.idCount).toBeGreaterThanOrEqual(1);
     await harness.close();
   });
 
@@ -121,7 +123,7 @@ describe('快照差分复制', () => {
     expect(a.room.snapshot.entities.length).toBe(LIMITS.snapshotMaxEntities);
 
     a.client.applySnapshots();
-    expect(a.client.mirror.ids.length).toBeLessThanOrEqual(LIMITS.snapshotMaxEntities);
+    expect(a.client.mirror.idCount).toBeLessThanOrEqual(LIMITS.snapshotMaxEntities);
     harness.tick(1);
     a.client.applySnapshots();
     expectMirrorMatchesServer(a.client.mirror, a.room);
@@ -252,6 +254,56 @@ describe('滥用防护', () => {
     expect(harness.game.metrics.malformedFrames).toBeGreaterThanOrEqual(1);
     const before = harness.game.sessionCount;
     expect(before).toBe(1);
+    await harness.close();
+  });
+});
+
+describe('自适应快照率（O05）', () => {
+  it('离散节拍：200 = 每 tick、150 = 每 3 tick 发 2 次、100 = 每 2 tick 发 1 次', () => {
+    const pattern = (rate: number, ticks: number): boolean[] => {
+      const out: boolean[] = [];
+      for (let tick = 0; tick < ticks; tick += 1) out.push(shouldSendSnapshot(rate, tick));
+      return out;
+    };
+    expect(pattern(200, 6)).toEqual([true, true, true, true, true, true]);
+    expect(pattern(150, 6)).toEqual([true, true, false, true, true, false]);
+    expect(pattern(100, 6)).toEqual([true, false, true, false, true, false]);
+  });
+
+  it('tickSkips 增长即降一档（最低 100，不重复计数），连续 3 秒无拥塞再逐档升回 200', async () => {
+    const harness = createHarness();
+    const a = joinRoom(harness, 'alice');
+    const tickUntil = (rate: number): void => {
+      for (let i = 0; i < 400 && a.room.snapshotRateX10 !== rate; i += 1) harness.tick(1);
+      expect(a.room.snapshotRateX10).toBe(rate);
+    };
+
+    expect(a.room.snapshotRateX10).toBe(200);
+    harness.tick(30);
+
+    harness.game.metrics.tickSkips += 5;
+    tickUntil(150);
+    expect(harness.game.metrics.snapshotRateDownshifts).toBe(1);
+
+    harness.game.metrics.tickSkips += 5;
+    tickUntil(100);
+    expect(harness.game.metrics.snapshotRateDownshifts).toBe(2);
+
+    // 最低档：再拥塞也不降、不重复计数
+    harness.game.metrics.tickSkips += 5;
+    harness.tick(25);
+    expect(a.room.snapshotRateX10).toBe(100);
+    expect(harness.game.metrics.snapshotRateDownshifts).toBe(2);
+
+    // 降档期的节拍：100 → 每 2 tick 一条快照
+    const before = harness.game.metrics.snapshotsSent;
+    harness.tick(40);
+    expect(harness.game.metrics.snapshotsSent - before).toBe(20);
+    expect(a.room.snapshotRateX10).toBe(100);
+
+    // 无拥塞：每 3 秒升一档，最终回到默认 200
+    tickUntil(150);
+    tickUntil(200);
     await harness.close();
   });
 });

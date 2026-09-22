@@ -8,11 +8,14 @@ import { dirname } from 'node:path';
 import {
   ARENA,
   BUTTON,
+  LIMITS,
   countActive,
   createCommand,
   createRng,
   createSnapshot,
+  createSnapshotBaseline,
   createWorld,
+  encodeSnapshot,
   getEntity,
   snapshotWorld,
   spawnEntity,
@@ -130,6 +133,13 @@ for (let i = 0; i < warmupTicks; i += 1) {
   stabilize();
 }
 
+// O05：编码段 —— 与房间一样按会话各持一份 baseline，每 tick 编 4 条差分帧（periodicFull 同房间策略）。
+const encodeSessions = 4;
+const encodeBuffer = new Uint8Array(LIMITS.maxFrameBytes);
+const encodeBaselines = [];
+for (let i = 0; i < encodeSessions; i += 1) encodeBaselines.push(createSnapshotBaseline());
+const encodeMs = new Float64Array(measureTicks);
+
 const hasGc = typeof globalThis.gc === 'function';
 
 for (let i = 0; i < measureTicks; i += 1) {
@@ -142,6 +152,13 @@ for (let i = 0; i < measureTicks; i += 1) {
   stepMs[i] = Number(stepped - started) / 1e6;
   snapMs[i] = Number(realized - stepped) / 1e6;
   totalMs[i] = Number(realized - started) / 1e6;
+  const periodicFull = world.tick % LIMITS.fullSnapshotIntervalTicks === 0;
+  const encodeStart = process.hrtime.bigint();
+  for (const baseline of encodeBaselines) {
+    encodeSnapshot(out, baseline, 0, encodeBuffer, baseline.tick === 0 || periodicFull);
+  }
+  const encodeEnd = process.hrtime.bigint();
+  encodeMs[i] = Number(encodeEnd - encodeStart) / 1e6;
   stabilize();
 }
 
@@ -184,6 +201,7 @@ function stats(values) {
 
 const step = stats(stepMs);
 const snapshot = stats(snapMs);
+const encode = stats(encodeMs);
 const total = stats(totalMs);
 const run = {
   label,
@@ -204,6 +222,7 @@ const run = {
   },
   step,
   snapshot,
+  encode,
   total,
   alloc: {
     // rawPerTick：多窗口最小值（B/tick）；retainedPerTick：全部窗口 gc 后的净增长。
@@ -244,6 +263,17 @@ console.log(
     step.p99Ms.toFixed(3) +
     ' / max ' +
     step.maxMs.toFixed(3) +
+    ' ms',
+);
+console.log(
+  '  encodeSnapshot（4 会话）：p50 ' +
+    encode.p50Ms.toFixed(3) +
+    ' / p95 ' +
+    encode.p95Ms.toFixed(3) +
+    ' / p99 ' +
+    encode.p99Ms.toFixed(3) +
+    ' / max ' +
+    encode.maxMs.toFixed(3) +
     ' ms',
 );
 console.log(

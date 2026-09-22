@@ -1,4 +1,4 @@
-import { SNAPSHOT_FLAG } from './config/index.ts';
+import { NET, SNAPSHOT_FLAG } from './config/index.ts';
 import { clamp01 } from './math.ts';
 import { getEntity, type Entity, type EntityId, type EntityKind, type World } from './world.ts';
 
@@ -78,7 +78,10 @@ function distanceSqTo(x: number, z: number, entity: Entity): number {
   return dx * dx + dz * dz;
 }
 
-function playersCentroid(world: World): { x: number; z: number } {
+/** 玩家质心写进模块级 scratch：每帧复用同一对象，不再返回新的字面量。 */
+const centroidScratch = { x: 0, z: 0 };
+
+function updatePlayersCentroid(world: World): void {
   const ids = world.activeIds;
   let sumX = 0;
   let sumZ = 0;
@@ -90,27 +93,101 @@ function playersCentroid(world: World): { x: number; z: number } {
     sumZ += entity.pos.z;
     count += 1;
   }
-  if (count === 0) return { x: 0, z: 0 };
-  return { x: sumX / count, z: sumZ / count };
+  centroidScratch.x = count === 0 ? 0 : sumX / count;
+  centroidScratch.z = count === 0 ? 0 : sumZ / count;
+}
+
+/**
+ * 截断路径的有界最大堆：根 = 当前最差（距离最远，同距离时 id 最大）。
+ * 逐实体与根比较，只保留「距离升序、id 升序」意义下最好的 capacity 个，
+ * 选完后只对这 capacity 个元素按 id 排一次（旧实现是两次全量排序 + 全量 push）。
+ */
+const nearEntities: Entity[] = [];
+const nearDist = new Float64Array(NET.snapshotMaxEntities);
+const nearIds = new Int32Array(NET.snapshotMaxEntities);
+let nearCount = 0;
+
+/** 堆元素 i 是否比 (dist, id) 更差（更差 = 距离更大；同距离时 id 更大）。 */
+function nearWorse(i: number, dist: number, id: number): boolean {
+  const di = nearDist[i] ?? 0;
+  if (di !== dist) return di > dist;
+  return (nearIds[i] ?? 0) > id;
+}
+
+function nearSwap(a: number, b: number): void {
+  const ea = nearEntities[a];
+  nearEntities[a] = nearEntities[b] as Entity;
+  nearEntities[b] = ea as Entity;
+  const da = nearDist[a] ?? 0;
+  nearDist[a] = nearDist[b] ?? 0;
+  nearDist[b] = da;
+  const ia = nearIds[a] ?? 0;
+  nearIds[a] = nearIds[b] ?? 0;
+  nearIds[b] = ia;
+}
+
+function nearSiftUp(index: number): void {
+  let i = index;
+  while (i > 0) {
+    const parent = (i - 1) >> 1;
+    if (!nearWorse(i, nearDist[parent] ?? 0, nearIds[parent] ?? 0)) break;
+    nearSwap(i, parent);
+    i = parent;
+  }
+}
+
+function nearSiftDown(index: number): void {
+  let i = index;
+  for (;;) {
+    const left = i * 2 + 1;
+    const right = left + 1;
+    let worst = i;
+    if (left < nearCount && nearWorse(left, nearDist[worst] ?? 0, nearIds[worst] ?? 0)) {
+      worst = left;
+    }
+    if (right < nearCount && nearWorse(right, nearDist[worst] ?? 0, nearIds[worst] ?? 0)) {
+      worst = right;
+    }
+    if (worst === i) return;
+    nearSwap(i, worst);
+    i = worst;
+  }
 }
 
 function collectNearest(world: World, capacity: number): void {
-  const anchor = playersCentroid(world);
+  updatePlayersCentroid(world);
+  const anchorX = centroidScratch.x;
+  const anchorZ = centroidScratch.z;
   const ids = world.activeIds;
-  const scratch = world.scratchEntities;
-  scratch.length = 0;
+  const limit = Math.min(capacity, nearDist.length);
+  nearCount = 0;
   for (let i = 0; i < ids.length; i += 1) {
     const entity = getEntity(world, ids[i] ?? 0);
     if (entity === undefined || !entity.active) continue;
+    const dist = distanceSqTo(anchorX, anchorZ, entity);
+    const id = entity.id;
+    if (nearCount < limit) {
+      nearEntities[nearCount] = entity;
+      nearDist[nearCount] = dist;
+      nearIds[nearCount] = id;
+      nearCount += 1;
+      nearSiftUp(nearCount - 1);
+      continue;
+    }
+    if (limit === 0) break;
+    if (!nearWorse(0, dist, id)) continue;
+    nearEntities[0] = entity;
+    nearDist[0] = dist;
+    nearIds[0] = id;
+    nearSiftDown(0);
+  }
+  const scratch = world.scratchEntities;
+  scratch.length = 0;
+  for (let i = 0; i < nearCount; i += 1) {
+    const entity = nearEntities[i];
+    if (entity === undefined) continue;
     scratch.push(entity);
   }
-  scratch.sort((a, b) => {
-    const da = distanceSqTo(anchor.x, anchor.z, a);
-    const db = distanceSqTo(anchor.x, anchor.z, b);
-    if (da !== db) return da - db;
-    return a.id - b.id;
-  });
-  scratch.length = Math.min(scratch.length, capacity);
   scratch.sort((a, b) => a.id - b.id);
 }
 

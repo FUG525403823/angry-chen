@@ -117,4 +117,55 @@ describe('快照缓冲所有权', () => {
     expect(b.tick).toBe(1);
     expect(a.entities[0]).toBe(entityA);
   });
+
+  it('O05：截断路径选出的集合与「按距离升序、id 决胜取前 N」的旧行为一致', () => {
+    const world = createWorld(34);
+    const player = getEntity(world, 1);
+    if (player === undefined) throw new Error('missing player');
+    player.pos.x = 0;
+    player.pos.z = 0;
+    const capacity = world.config.net.snapshotMaxEntities;
+    for (let i = 0; i < capacity + 20; i += 1) {
+      const result = spawnEntity(world, 'sheep', (i % 25) - 12 + 0.07 * (i % 3), 0, 20 + i * 0.05);
+      expect(result.ok).toBe(true);
+    }
+
+    const out = createSnapshot();
+    snapshotWorld(world, out);
+    expect(out.truncated).toBe(true);
+    expect(out.entities.length).toBe(capacity);
+
+    // 参考实现（旧的两次全排序口径）：全部活动实体按（距离, id）升序取前 capacity 个，再按 id 升序。
+    const active: ReturnType<typeof getEntity>[] = [];
+    for (const id of world.activeIds) {
+      const entity = getEntity(world, id);
+      if (entity !== undefined && entity.active) active.push(entity);
+    }
+    const players = active.filter((entity) => entity !== undefined && entity.kind === 'player');
+    let sumX = 0;
+    let sumZ = 0;
+    for (const entity of players) {
+      sumX += entity?.pos.x ?? 0;
+      sumZ += entity?.pos.z ?? 0;
+    }
+    const centroidX = players.length === 0 ? 0 : sumX / players.length;
+    const centroidZ = players.length === 0 ? 0 : sumZ / players.length;
+    const distanceSq = (entity: NonNullable<ReturnType<typeof getEntity>>): number => {
+      const dx = entity.pos.x - centroidX;
+      const dz = entity.pos.z - centroidZ;
+      return dx * dx + dz * dz;
+    };
+    const expected = active
+      .filter((entity) => entity !== undefined)
+      .sort((a, b) => {
+        const da = distanceSq(a);
+        const db = distanceSq(b);
+        if (da !== db) return da - db;
+        return a.id - b.id;
+      })
+      .slice(0, capacity)
+      .sort((a, b) => a.id - b.id)
+      .map((entity) => entity.id);
+    expect(out.entities.map((entity) => entity.id)).toEqual(expected);
+  });
 });

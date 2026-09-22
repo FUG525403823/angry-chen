@@ -1,6 +1,7 @@
 import {
   ENTITY_KIND_CODE,
   MAX_ENTITIES,
+  SNAPSHOT_RATE_X10,
   SNAPSHOT_RECORD_BYTES,
   createSnapshotMirror,
   decodeSnapshot,
@@ -14,6 +15,9 @@ import {
 import { findBracket, interpolationAlpha, lerp, lerpAngle } from '../render/interpolation.ts';
 
 export const INTERPOLATION_DELAY_MS = 100;
+/** O05：插值延迟上限与「到达间隔」滑动窗口（§5 冻结：clamp(2 × 中位间隔, 100, 250)）。 */
+export const INTERPOLATION_DELAY_MAX_MS = 250;
+export const SNAPSHOT_INTERVAL_SAMPLES = 60;
 export const SNAPSHOT_HISTORY = 6;
 export const STATS_WINDOW_MS = 1000;
 
@@ -61,6 +65,9 @@ export interface SnapshotViewInternal extends SnapshotView {
   getLocalAuthority(out: LocalAuthority): LocalAuthority;
   applyFrame(frame: Uint8Array, bytesIn: number): boolean;
   recordRtt(rttMs: number): void;
+  /** O05：服务器 pong 下发的档位，作为窗口未填满时的兜底。 */
+  setSnapshotRateX10(rateX10: number): void;
+  getInterpolationDelayMs(): number;
   reset(): void;
 }
 
@@ -120,13 +127,63 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
   const bracketTimes: number[] = [];
   const ordered: Keyframe[] = [];
 
+  // O05：插值延迟动态化 —— 快照到达间隔的滑动窗口中位数 × 2，钳制在 [100, 250]ms。
+  const intervalSamples = new Float64Array(SNAPSHOT_INTERVAL_SAMPLES);
+  const medianScratch = new Float64Array(SNAPSHOT_INTERVAL_SAMPLES);
+  let intervalCount = 0;
+  let intervalCursor = 0;
+  let lastSnapshotAtMs = 0;
+  let serverRateX10 = SNAPSHOT_RATE_X10;
+  let interpolationDelayMs = INTERPOLATION_DELAY_MS;
+
+  /** 窗口未填满时的兜底：用服务器档位推算单帧间隔（1/10 Hz → ms）。 */
+  function fallbackIntervalMs(): number {
+    return serverRateX10 > 0 ? 10000 / serverRateX10 : INTERPOLATION_DELAY_MS;
+  }
+
+  /** 窗口内样本的中位数（不分配：复用 medianScratch，未用槽位填 +∞）。 */
+  function medianIntervalMs(): number {
+    const count = intervalCount;
+    if (count === 0) return fallbackIntervalMs();
+    for (let i = 0; i < SNAPSHOT_INTERVAL_SAMPLES; i += 1) {
+      medianScratch[i] = i < count ? (intervalSamples[i] ?? 0) : Number.POSITIVE_INFINITY;
+    }
+    medianScratch.sort();
+    const mid = count >> 1;
+    if (count % 2 === 1) return medianScratch[mid] ?? 0;
+    return ((medianScratch[mid - 1] ?? 0) + (medianScratch[mid] ?? 0)) / 2;
+  }
+
+  function recomputeInterpolationDelay(): void {
+    const base =
+      intervalCount >= SNAPSHOT_INTERVAL_SAMPLES ? medianIntervalMs() : fallbackIntervalMs();
+    interpolationDelayMs = Math.min(
+      INTERPOLATION_DELAY_MAX_MS,
+      Math.max(INTERPOLATION_DELAY_MS, base * 2),
+    );
+  }
+
+  /** 每收到一帧：采样到达间隔并重算插值延迟。 */
+  function noteSnapshotArrival(atMs: number): void {
+    if (lastSnapshotAtMs > 0) {
+      const interval = atMs - lastSnapshotAtMs;
+      if (interval > 0 && interval <= 1000) {
+        intervalSamples[intervalCursor] = interval;
+        intervalCursor = (intervalCursor + 1) % SNAPSHOT_INTERVAL_SAMPLES;
+        if (intervalCount < SNAPSHOT_INTERVAL_SAMPLES) intervalCount += 1;
+      }
+    }
+    lastSnapshotAtMs = atMs;
+    recomputeInterpolationDelay();
+  }
+
   function capture(target: Keyframe, tick: number, serverTimeMs: number): void {
     target.tick = tick;
     target.serverTimeMs = serverTimeMs;
     target.slotOf.fill(-1);
     let count = 0;
     const ids = mirror.ids;
-    for (let i = 0; i < ids.length; i += 1) {
+    for (let i = 0; i < mirror.idCount; i += 1) {
       const id = ids[i];
       if (id === undefined || id > MAX_ENTITIES) continue;
       if (mirror.present[id] !== 1) continue;
@@ -263,6 +320,13 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
       if (Number.isFinite(value) && value >= 0) rttMs = value;
       stats.rttMs = Number(rttMs.toFixed(2));
     },
+    setSnapshotRateX10(rateX10: number): void {
+      if (Number.isFinite(rateX10) && rateX10 > 0) serverRateX10 = rateX10;
+      recomputeInterpolationDelay();
+    },
+    getInterpolationDelayMs(): number {
+      return interpolationDelayMs;
+    },
     applyFrame(frame: Uint8Array, bytesIn: number): boolean {
       const previousTick = view.getAppliedTick();
       const decoded = decodeSnapshot(frame, mirror);
@@ -277,6 +341,7 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
       capture(target, mirror.tick, mirror.serverTimeMs);
       latestServerTimeMs = mirror.serverTimeMs;
       latestRecvAtMs = atMs;
+      noteSnapshotArrival(atMs);
       hasFrame = true;
       windowSnapshots += 1;
       windowBytes += bytesIn;
@@ -326,7 +391,7 @@ export function createSnapshotView(options?: { now?: () => number }): SnapshotVi
         ordered.push(frame);
         bracketTimes.push(frame.serverTimeMs);
       }
-      const renderTimeMs = view.getServerTimeMs() - INTERPOLATION_DELAY_MS;
+      const renderTimeMs = view.getServerTimeMs() - interpolationDelayMs;
       const bracket = findBracket(bracketTimes, ordered.length, renderTimeMs);
       const older = ordered[bracket] ?? newest;
       const newer = ordered[bracket + 1] ?? newest;

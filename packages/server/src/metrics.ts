@@ -58,6 +58,8 @@ export interface Metrics {
   poseRejected: number;
   sheepAlive: number;
   waveCurrent: number;
+  /** O05：自适应快照率降档次数（counter）。 */
+  snapshotRateDownshifts: number;
   spawns: number;
   hardCorrectTotal: number;
   rewindClampedCount: number;
@@ -80,6 +82,8 @@ export interface PrometheusGauges {
   readonly sendQueueBytes: number;
   readonly clientLagTicksAvg: number;
   readonly graceActive: number;
+  /** O05：各房间自适应快照率的最小值（1/10 Hz）；无房间时等于默认档位。 */
+  readonly snapshotRateX10: number;
 }
 
 export function createMetrics(): Metrics {
@@ -138,6 +142,7 @@ export function createMetrics(): Metrics {
     poseSuspects: 0,
     poseRejected: 0,
     sheepAlive: 0,
+    snapshotRateDownshifts: 0,
     waveCurrent: 0,
     spawns: 0,
     hardCorrectTotal: 0,
@@ -465,6 +470,18 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
   push('ac_hits_total', 'pellets that hit an entity', 'counter', metrics.hits);
   push('ac_damage_total', 'total damage dealt', 'counter', metrics.damage);
   push('ac_sheep_alive', 'living sheep entities', 'gauge', metrics.sheepAlive);
+  push(
+    'ac_snapshot_rate_x10',
+    'adaptive snapshot rate in 1/10 Hz (min across rooms)',
+    'gauge',
+    gauges.snapshotRateX10,
+  );
+  push(
+    'ac_snapshot_rate_downshifts_total',
+    'adaptive snapshot rate downshifts',
+    'counter',
+    metrics.snapshotRateDownshifts,
+  );
   push('ac_wave_current', 'current wave number', 'gauge', metrics.waveCurrent);
   push('ac_spawns_total', 'sheep spawns by the director', 'counter', metrics.spawns);
   push(

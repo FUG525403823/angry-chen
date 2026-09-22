@@ -132,6 +132,10 @@ export const LIMITS = Object.freeze({
   fullSnapshotIntervalTicks: 40,
   /** 事件对象池容量：每 tick 复用同批对象，超出容量的事件被丢弃并计入 world.stats.eventsDropped。 */
   eventPoolSize: 256,
+  /** 自适应快照率的离散档位（1/10 Hz，降序）：200 = 每 tick，150 = 每 3 tick 发 2 次，100 = 每 2 tick 发 1 次。 */
+  snapshotRateLevels: [200, 150, 100],
+  /** 无拥塞（无慢客户端积压 / 无 tick 跳过 / 无预算超出）持续这么久（毫秒）即升一档。 */
+  snapshotRateDownshiftMs: 3000,
   emptyRoomReclaimMs: 60000,
   roomCodeLength: 4,
   roomCodeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ23456789',

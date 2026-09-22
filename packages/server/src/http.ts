@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { PROTOCOL_VERSION } from '@ac/shared';
+import { PROTOCOL_VERSION, SNAPSHOT_RATE_X10 } from '@ac/shared';
 
 import { renderPrometheus } from './metrics.ts';
 import type { GameServer } from './server.ts';
@@ -72,6 +72,7 @@ export function createHttpHandler(
         sendQueueBytes: game.transport.sendQueueBytes ?? 0,
         clientLagTicksAvg: clientLagTicksAvg(game),
         graceActive: graceActive(game),
+        snapshotRateX10: minSnapshotRateX10(game),
       });
       res.writeHead(200, {
         'content-type': 'text/plain; version=0.0.4; charset=utf-8',
@@ -83,6 +84,17 @@ export function createHttpHandler(
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'not-found', path }));
   };
+}
+
+/** O05：各房间自适应快照率的最小值（1/10 Hz）；无房间时给默认档位。 */
+export function minSnapshotRateX10(game: GameServer): number {
+  let min = SNAPSHOT_RATE_X10;
+  let seen = false;
+  for (const room of game.rooms.rooms.values()) {
+    min = seen ? Math.min(min, room.snapshotRateX10) : room.snapshotRateX10;
+    seen = true;
+  }
+  return min;
 }
 
 export function clientLagTicksAvg(game: GameServer): number {

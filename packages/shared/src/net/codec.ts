@@ -438,6 +438,15 @@ export interface SnapshotBaseline {
   tick: number;
   readonly present: Uint8Array;
   readonly nextPresent: Uint8Array;
+  /**
+   * 上一 tick 已发布实体 id 的升序紧凑列表（前 presentCount 项有效）。
+   * 删除列表只遍历它，把 O(MAX_ENTITIES) 全扫降到 O(本帧增删数)。
+   */
+  readonly presentIds: Uint16Array;
+  presentCount: number;
+  /** 本帧正在构建的下一份紧凑列表（编码结束时整体换到 presentIds）。 */
+  readonly nextPresentIds: Uint16Array;
+  nextPresentCount: number;
   readonly bytes: Uint8Array;
   readonly record: Uint8Array;
 }
@@ -451,8 +460,55 @@ export interface SnapshotMirror {
   removedCount: number;
   readonly present: Uint8Array;
   readonly bytes: Uint8Array;
-  readonly ids: number[];
+  /** 当前存在实体 id 的升序紧凑列表（前 idCount 项有效；每帧只按增删维护）。 */
+  readonly ids: Uint16Array;
+  idCount: number;
   readonly record: SnapshotRecord;
+}
+
+/** 升序紧凑列表插入（保持升序、去重）；返回新计数。 */
+function addIdAscending(list: Uint16Array, count: number, id: number): number {
+  let lo = 0;
+  let hi = count;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((list[mid] ?? 0) < id) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo < count && list[lo] === id) return count;
+  if (count < list.length) list.copyWithin(lo + 1, lo, count);
+  list[lo] = id;
+  return count + 1;
+}
+
+/** 升序紧凑列表移除（不存在则原样返回）；返回新计数。 */
+function removeIdAscending(list: Uint16Array, count: number, id: number): number {
+  let lo = 0;
+  let hi = count;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if ((list[mid] ?? 0) < id) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo >= count || list[lo] !== id) return count;
+  list.copyWithin(lo, lo + 1, count);
+  return count - 1;
+}
+
+/** 仅供测试断言不变量：presentIds[0, presentCount) 是否严格升序。 */
+export function baselinePresentIdsSorted(baseline: SnapshotBaseline): boolean {
+  for (let i = 1; i < baseline.presentCount; i += 1) {
+    if ((baseline.presentIds[i - 1] ?? 0) >= (baseline.presentIds[i] ?? 0)) return false;
+  }
+  return true;
+}
+
+/** 仅供测试断言不变量：mirror.ids[0, idCount) 是否严格升序。 */
+export function mirrorIdsSorted(mirror: SnapshotMirror): boolean {
+  for (let i = 1; i < mirror.idCount; i += 1) {
+    if ((mirror.ids[i - 1] ?? 0) >= (mirror.ids[i] ?? 0)) return false;
+  }
+  return true;
 }
 
 function createRecord(): SnapshotRecord {
@@ -476,6 +532,10 @@ export function createSnapshotBaseline(): SnapshotBaseline {
     tick: 0,
     present: new Uint8Array(size),
     nextPresent: new Uint8Array(size),
+    presentIds: new Uint16Array(size),
+    presentCount: 0,
+    nextPresentIds: new Uint16Array(size),
+    nextPresentCount: 0,
     bytes: new Uint8Array(size * SNAPSHOT_RECORD_BYTES),
     record: new Uint8Array(SNAPSHOT_RECORD_BYTES),
   };
@@ -492,7 +552,8 @@ export function createSnapshotMirror(): SnapshotMirror {
     removedCount: 0,
     present: new Uint8Array(size),
     bytes: new Uint8Array(size * SNAPSHOT_RECORD_BYTES),
-    ids: [],
+    ids: new Uint16Array(size),
+    idCount: 0,
     record: createRecord(),
   };
 }
@@ -586,6 +647,11 @@ export function encodeSnapshot(
       !recordDiffers(baseline.bytes, base, baseline.record)
     ) {
       baseline.nextPresent[id] = 1;
+      baseline.nextPresentCount = addIdAscending(
+        baseline.nextPresentIds,
+        baseline.nextPresentCount,
+        id,
+      );
       continue;
     }
     if (count >= LIMITS.maxSnapshotRecordsPerFrame) break;
@@ -594,15 +660,27 @@ export function encodeSnapshot(
     offset += SNAPSHOT_RECORD_BYTES;
     count += 1;
     baseline.nextPresent[id] = 1;
+    baseline.nextPresentCount = addIdAscending(
+      baseline.nextPresentIds,
+      baseline.nextPresentCount,
+      id,
+    );
   }
 
   const removedOffset = offset;
   offset += 1;
   let removed = 0;
-  for (let id = 1; id <= MAX_ENTITIES; id += 1) {
-    if (baseline.present[id] !== 1 || baseline.nextPresent[id] === 1) continue;
+  // 只遍历上一帧的紧凑 id 列表（升序）：输出顺序与全扫版本逐字节一致。
+  for (let i = 0; i < baseline.presentCount; i += 1) {
+    const id = baseline.presentIds[i] ?? 0;
+    if (baseline.nextPresent[id] === 1) continue;
     if (removed >= LIMITS.maxRemovedPerFrame) {
       baseline.nextPresent[id] = 1;
+      baseline.nextPresentCount = addIdAscending(
+        baseline.nextPresentIds,
+        baseline.nextPresentCount,
+        id,
+      );
       continue;
     }
     putU16(out, offset, id);
@@ -614,6 +692,12 @@ export function encodeSnapshot(
   putU8(out, removedOffset, removed);
   baseline.present.set(baseline.nextPresent);
   baseline.nextPresent.fill(0);
+  const nextCount = baseline.nextPresentCount;
+  for (let i = 0; i < nextCount; i += 1) {
+    baseline.presentIds[i] = baseline.nextPresentIds[i] ?? 0;
+  }
+  baseline.presentCount = nextCount;
+  baseline.nextPresentCount = 0;
   baseline.tick = snapshot.tick >>> 0;
   return offset;
 }
@@ -639,7 +723,7 @@ export function decodeSnapshot(
   if (mirror.tick !== 0 && tick < mirror.tick) return ok(mirror);
   if (baselineTick === 0) {
     mirror.present.fill(0);
-    mirror.ids.length = 0;
+    mirror.idCount = 0;
   }
   for (let i = 0; i < count; i += 1) {
     const recordOffset = offset;
@@ -648,7 +732,10 @@ export function decodeSnapshot(
     const id = mirror.record.id;
     if (id < 1 || id > MAX_ENTITIES) return fail('bad-value');
     copyBytes(mirror.bytes, id * SNAPSHOT_RECORD_BYTES, frame, recordOffset, SNAPSHOT_RECORD_BYTES);
-    mirror.present[id] = 1;
+    if (mirror.present[id] !== 1) {
+      mirror.present[id] = 1;
+      mirror.idCount = addIdAscending(mirror.ids, mirror.idCount, id);
+    }
   }
   const removedCount = u8(frame, offset);
   offset += 1;
@@ -657,11 +744,10 @@ export function decodeSnapshot(
     const id = u16(frame, offset);
     offset += 2;
     if (id < 1 || id > MAX_ENTITIES) return fail('bad-value');
-    mirror.present[id] = 0;
-  }
-  mirror.ids.length = 0;
-  for (let id = 1; id <= MAX_ENTITIES; id += 1) {
-    if (mirror.present[id] === 1) mirror.ids.push(id);
+    if (mirror.present[id] === 1) {
+      mirror.present[id] = 0;
+      mirror.idCount = removeIdAscending(mirror.ids, mirror.idCount, id);
+    }
   }
   mirror.tick = tick;
   mirror.serverTimeMs = serverTimeMs;

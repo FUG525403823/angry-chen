@@ -27,6 +27,7 @@ const gauges = {
   sendQueueBytes: 0,
   clientLagTicksAvg: 0,
   graceActive: 0,
+  snapshotRateX10: 200,
 };
 
 describe('调度 / 漂移 / 工作量指标', () => {

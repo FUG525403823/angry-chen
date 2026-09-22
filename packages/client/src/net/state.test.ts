@@ -180,4 +180,39 @@ describe('SnapshotView', () => {
     expect(maxJump).toBeLessThan(0.25);
     expect(samples[samples.length - 1] ?? 0).toBeGreaterThan(samples[0] ?? 0);
   });
+
+  it('O05：插值延迟 = 2 × 到达间隔中位数，钳制在 [100, 250]ms', () => {
+    const world = createWorld(41);
+    spawnSheep(world, 0);
+    advanceTo(world, 100);
+    const frame = new Uint8Array(LIMITS.maxFrameBytes);
+    let clockMs = 0;
+    const view = createSnapshotView({ now: () => clockMs });
+    const feed = (count: number, stepMs: number): void => {
+      for (let i = 0; i < count; i += 1) {
+        stepWorld(world, [], 50);
+        const size = encodeFull(world, frame, createSnapshotBaseline());
+        clockMs += stepMs;
+        expect(view.applyFrame(frame.subarray(0, size), size)).toBe(true);
+      }
+    };
+
+    feed(60, 33);
+    expect(view.getInterpolationDelayMs()).toBe(100);
+    feed(60, 66);
+    expect(view.getInterpolationDelayMs()).toBe(132);
+    feed(60, 200);
+    expect(view.getInterpolationDelayMs()).toBe(250);
+  });
+
+  it('O05：窗口未填满时用服务器档位兜底（未知档位用默认 200）', () => {
+    const view = createSnapshotView({ now: () => 0 });
+    expect(view.getInterpolationDelayMs()).toBe(100);
+    view.setSnapshotRateX10(100);
+    expect(view.getInterpolationDelayMs()).toBe(200);
+    view.setSnapshotRateX10(150);
+    expect(view.getInterpolationDelayMs()).toBeCloseTo(133.33, 1);
+    view.setSnapshotRateX10(0);
+    expect(view.getInterpolationDelayMs()).toBeCloseTo(133.33, 1);
+  });
 });

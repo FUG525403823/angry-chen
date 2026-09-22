@@ -49,7 +49,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O02 | ✅ 已完成 | ✅ 已完成（`S5.2-4` 走替代判据 pass；200ms 变体 verdict=pass、退出码 0） | `docs/evidence/bots-schedule.json`、`bots-schedule-latency200.json`、`soak-5min-o02.json`、`report-o02.md` | `O02` |
 | O03 | ✅ 已完成 | ✅ 已完成（慢客户端 123.3s 顶到预算：丢帧计数 + 两个连接 `1013`，排空 5627 帧 `decodeFailures=0`；健康场景 soak RSS 0.278 MB/分钟） | `docs/evidence/probe-slow-client.md`、`soak-5min-o03.json/.md` | `O03` |
 | O04 | ✅ 已完成 | ✅ 已完成（60 羊基准 单 tick p95 0.074ms / p99 0.143ms ≤ 8/12ms，约 2.4× 提速；稳态 raw 分配 1002→296 B/tick；4 人 5 分钟压测 11 项门槛全 pass；`check-alloc` 绝对门槛见 §5 登记） | `docs/evidence/bench-sim-60sheep.json`、`docs/evidence/bots-after-o04.json` | `O04` |
-| O05 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o05.json` | `O05` |
+| O05 | ✅ 已完成 | ✅ 已完成（默认仍 20Hz：`S5.2-1/2/3/8` pass、`S5.2-4` 走替代判据 pass；编码段 p95 0.046ms、单 tick 合计 p95 0.094ms；新指标已在 `/metrics` 可见） | `docs/evidence/bots-o05.json`、`bench-sim-60sheep.json`（`runs.after-o05`） | `O05` |
 | O06 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/client-frame-alloc.md` | `O06` |
 | O07 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o07.json` | `O07` |
 | O08 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/` 下的重连验证记录（待生成） | `O08` |
@@ -64,6 +64,13 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 执行期发现两处口径问题并按本文件 §7 规则 2 登记：① `check-alloc` 的 `rawPerTick ≤ 8` 在本机**基线**上就不满足（`git stash` 复测 42.53/42.77 B/tick），O04 把它降到 22.5–22.9（-47%）、
 `retained` 两侧 ≈ 0，故该阈值需 O10 复核探针口径后重定；② 基准的单窗口 `raw` 会被 GC 时机放大到 ±1000 B/tick，`bench-sim.mjs` 改为 3 窗口取最小（全量留档）+ gc 后读 `retained`，基线与改动后两组同脚本重跑。
 细节见 O04 §5 调整记录与 §6。
+
+**O05 执行结论（2026-09-22）**：§4 的 11 条任务与 §7 的 8 条 DoD 全部落地（`pnpm check` 退出码 0；shared 149 / server 113 用例）。
+线上字节格式**未动**——`snapshot-codec.test.ts` 的既有字节断言一行未改即通过：`presentIds` / `mirror.ids` 改成升序紧凑列表（`Uint16Array` + 计数，插入/删除用二分 + `copyWithin`，两侧都零分配），
+解码不再每帧重建 1024 槽整表（`grep -n "id <= MAX_ENTITIES" codec.ts` = 0 命中）；截断路径从两次全排序改为「有界最大堆部分选择 + 一次结果排序」，平局按 id 升序决胜，与旧行为逐位一致（`snapshot.test.ts` 对拍一致）。
+`snapshotRateX10` 从死配置变成真档位：默认 200（每 tick 一条），拥塞（慢客户端积压 / `tickSkips` 增长 / 房间预算超出）时每 1000ms 降一档到 150（每 3 tick 发 2 次）/ 100（每 2 tick 发 1 次），连续 3 秒无拥塞逐档升回；新指标 `ac_snapshot_rate_x10`（各房间最小值）与 `ac_snapshot_rate_downshifts_total`。
+客户端插值延迟从固定 100ms 改为 `clamp(2 × 60 样本中位到达间隔, 100, 250)ms`（样本不足 60 时用档位推算，welcome 不带该字段故只在 pong 回填，协议未改）。
+证据：`docs/evidence/bots-o05.json`（`S5.2-1/2/3/8` pass，`S5.2-4` 走替代判据 pass，`verdict=fail` 仅 `S5.2-9b` 未测）、`docs/evidence/bench-sim-60sheep.json` 的 `runs.after-o05` / `runs.baseline-o04`（编码段 p95 0.046ms、单 tick 合计 p95 0.094 vs 0.091ms、稳态 raw 312.6 vs 336.9 B/tick）。执行期差异见 O05 §5.1 与 §6。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -108,8 +115,10 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | bench SLO（4 人 60 羊） | p95 ≤ 8ms、p99 ≤ 12ms | O04 | 与 `roomTickBudgetMs` 对齐的单 tick 工作量（实测 p95 0.074 / p99 0.143 ms） |
 | `ac_events_dropped_total` | counter（告警阈值待定） | O04 | 事件池溢出而丢弃的事件数；阈值记入 O10 |
 | `check-alloc` 门槛 | `rawPerTick ≤ 8`、`retainedPerTick ≤ 16`（探针已有，接入 `pnpm check` 由 O10 负责） | O04 | **本机当前状态下基线即为 42.5–42.8 B/tick，绝对门槛不可达**（O04 后 22.5–22.9，-47%；`retained` 两侧 ≈ 0）→ O10 需先复核探针口径再定阈值 |
-| `LIMITS.snapshotRateLevels` | [200, 150, 100] | O05 | 自适应快照率离散档位（默认 200） |
-| 客户端插值延迟 | `clamp(2 × 中位间隔, 100, 250)` ms | O05 | 随实测快照间隔自适应 |
+| `LIMITS.snapshotRateLevels` | [200, 150, 100] | O05 | 自适应快照率离散档位（默认 200；150 = 每 3 tick 发 2 次，100 = 每 2 tick 发 1 次） |
+| `LIMITS.snapshotRateDownshiftMs` | 3000 | O05 | 连续无拥塞多久升一档；降档条件是每 1000ms 评估一次的拥塞（慢客户端积压 / `tickSkips` 增长 / 房间预算超出） |
+| 客户端插值延迟 | `clamp(2 × 中位到达间隔, 100, 250)` ms | O05 | 60 样本滑窗中位数自适应；样本不足时用 `snapshotRateX10` 推算（默认 200 → 100ms） |
+| `ac_snapshot_rate_x10` / `ac_snapshot_rate_downshifts_total` | gauge / counter | O05 | 各房间快照率档位的最小值（无房间 = 200）与累计降档次数 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
 | `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
 | `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |

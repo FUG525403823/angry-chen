@@ -113,6 +113,14 @@ export interface Room {
   matchStateTimerMs: number;
   emptySinceMs: number | null;
   snapshotRateX10: number;
+  /** 当前档位在 LIMITS.snapshotRateLevels 中的下标。 */
+  rateLevelIndex: number;
+  /** 上次评估自适应速率的时刻与「无拥塞」累计时长。 */
+  rateCheckAtMs: number;
+  rateCleanMs: number;
+  /** 上次评估时读到的 tickSkips / roomBudgetExceeded 累计值（差分判「本秒是否增长」）。 */
+  rateSkipsSeen: number;
+  rateBudgetSeen: number;
   jitterArmed: boolean;
   lastAnticheatLogMs: number;
   readonly capacity: number;
@@ -163,6 +171,11 @@ export function createRoom(
     matchStateTimerMs: 0,
     emptySinceMs: nowMs,
     snapshotRateX10: SNAPSHOT_RATE_X10,
+    rateLevelIndex: 0,
+    rateCheckAtMs: nowMs,
+    rateCleanMs: 0,
+    rateSkipsSeen: 0,
+    rateBudgetSeen: 0,
     jitterArmed: false,
     lastAnticheatLogMs: Number.NEGATIVE_INFINITY,
     capacity: Math.min(capacity, LIMITS.maxPlayersPerRoom),
@@ -553,12 +566,16 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean, nowMs: numbe
   if (active > deps.metrics.maxEntitiesObserved) deps.metrics.maxEntitiesObserved = active;
   if (active > counters.peakEntities) counters.peakEntities = active;
 
+  updateSnapshotRate(deps, room, nowMs);
   const periodicFull = room.world.tick % LIMITS.fullSnapshotIntervalTicks === 0;
   const sessions = room.sessions;
-  for (let i = 0; i < sessions.length; i += 1) {
-    const session = sessions[i];
-    if (session === undefined || session.disconnectedAtMs !== null) continue;
-    sendSnapshot(deps, room, session, periodicFull);
+  const sendNow = shouldSendSnapshot(room.snapshotRateX10, room.world.tick);
+  if (sendNow) {
+    for (let i = 0; i < sessions.length; i += 1) {
+      const session = sessions[i];
+      if (session === undefined || session.disconnectedAtMs !== null) continue;
+      sendSnapshot(deps, room, session, periodicFull);
+    }
   }
 
   const events = room.world.events;
@@ -583,6 +600,62 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean, nowMs: numbe
   }
   recordSimDrift(deps.metrics, room.world.timeMs - room.simStartMs - (nowMs - room.wallStartMs));
   recordTickWork(deps.metrics, deps.monotonicNow() - monotonic);
+}
+
+/**
+ * 离散发送节拍（§5 冻结）：200 → 每 tick；150 → 每 3 tick 发 2 次；100 → 每 2 tick 发 1 次。
+ * 事件帧不经过这里，仍每 tick 广播。
+ */
+export function shouldSendSnapshot(rateX10: number, tick: number): boolean {
+  if (rateX10 >= 200) return true;
+  if (rateX10 >= 150) return tick % 3 !== 2;
+  return tick % 2 === 0;
+}
+
+/** 本房间最慢会话的未写完成字节数（无连接 = 0）。 */
+function slowestBufferedBytes(room: Room): number {
+  let max = 0;
+  for (let i = 0; i < room.sessions.length; i += 1) {
+    const session = room.sessions[i];
+    if (session === undefined || session.disconnectedAtMs !== null) continue;
+    const buffered = session.connection.bufferedAmount;
+    if (buffered > max) max = buffered;
+  }
+  return max;
+}
+
+/**
+ * 每秒评估一次自适应快照率：拥塞（慢客户端积压 / tick 跳过 / 房间预算超出）则降一档，
+ * 连续 LIMITS.snapshotRateDownshiftMs 无拥塞则升一档（上限 200）。
+ */
+function updateSnapshotRate(deps: RoomDeps, room: Room, nowMs: number): void {
+  const interval = 1000;
+  if (nowMs - room.rateCheckAtMs < interval) return;
+  room.rateCheckAtMs = nowMs;
+  const levels = LIMITS.snapshotRateLevels;
+  const skips = deps.metrics.tickSkips;
+  const budget = deps.metrics.roomBudgetExceeded;
+  const congested =
+    slowestBufferedBytes(room) > LIMITS.maxBufferedBytes / 2 ||
+    skips > room.rateSkipsSeen ||
+    budget > room.rateBudgetSeen;
+  room.rateSkipsSeen = skips;
+  room.rateBudgetSeen = budget;
+  if (congested) {
+    room.rateCleanMs = 0;
+    if (room.rateLevelIndex < levels.length - 1) {
+      room.rateLevelIndex += 1;
+      room.snapshotRateX10 = levels[room.rateLevelIndex] ?? levels[levels.length - 1] ?? 100;
+      deps.metrics.snapshotRateDownshifts += 1;
+    }
+    return;
+  }
+  room.rateCleanMs += interval;
+  if (room.rateCleanMs >= LIMITS.snapshotRateDownshiftMs && room.rateLevelIndex > 0) {
+    room.rateLevelIndex -= 1;
+    room.snapshotRateX10 = levels[room.rateLevelIndex] ?? 200;
+    room.rateCleanMs = 0;
+  }
 }
 
 function sendSnapshot(deps: RoomDeps, room: Room, session: Session, periodicFull: boolean): void {

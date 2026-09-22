@@ -9,8 +9,11 @@ import type { SnapshotMirror } from './codec.ts';
 import {
   LIMITS,
   OPCODE,
+  SNAPSHOT_HEADER_BYTES,
   SNAPSHOT_RECORD_BYTES,
+  baselinePresentIdsSorted,
   createSnapshotBaseline,
+  mirrorIdsSorted,
   createSnapshotMirror,
   dequantizeAngle,
   dequantizePosition,
@@ -23,9 +26,14 @@ import {
 const buffer = new Uint8Array(LIMITS.maxFrameBytes);
 const record = new Uint8Array(SNAPSHOT_RECORD_BYTES);
 
+/** O05：mirror.ids 现在是「Uint16Array + idCount」的紧凑列表，测试统一用这个取数。 */
+function mirrorIdList(mirror: SnapshotMirror): number[] {
+  return Array.from(mirror.ids.subarray(0, mirror.idCount));
+}
+
 function expectMirrorMatches(mirror: SnapshotMirror, snapshot: Snapshot): void {
   const ids = snapshot.entities.map((entity) => entity.id);
-  expect(mirror.ids).toEqual(ids);
+  expect(mirrorIdList(mirror)).toEqual(ids);
   for (const entity of snapshot.entities) {
     quantizeSnapshotEntity(entity, record, 0);
     const base = entity.id * SNAPSHOT_RECORD_BYTES;
@@ -83,12 +91,12 @@ describe('快照差分编码', () => {
     const size = encodeSnapshot(snapshot, baseline, 0, buffer, true);
     expect(decodeSnapshot(buffer.subarray(0, size), mirror).ok).toBe(true);
     const tickAfter = mirror.tick;
-    const idsAfter = [...mirror.ids];
+    const idsAfter = mirrorIdList(mirror);
 
     const result = decodeSnapshot(staleOut.subarray(0, staleSize), mirror);
     expect(result.ok).toBe(true);
     expect(mirror.tick).toBe(tickAfter);
-    expect(mirror.ids).toEqual(idsAfter);
+    expect(mirrorIdList(mirror)).toEqual(idsAfter);
   });
 
   it('未变化的实体不重复下发，差分帧显著更小', () => {
@@ -141,14 +149,14 @@ describe('快照差分编码', () => {
     if (!spawned.ok) throw new Error('spawn failed');
     stepWorld(world, [], 50);
     push(world, snapshot, baseline, mirror);
-    expect(mirror.ids).toContain(spawned.id);
+    expect(mirrorIdList(mirror)).toContain(spawned.id);
 
     despawnEntity(world, spawned.id);
     snapshotWorld(world, snapshot);
     const size = encodeSnapshot(snapshot, baseline, 0, buffer);
     expect(decodeSnapshot(buffer.subarray(0, size), mirror).ok).toBe(true);
     expect(mirror.removedCount).toBe(1);
-    expect(mirror.ids).not.toContain(spawned.id);
+    expect(mirrorIdList(mirror)).not.toContain(spawned.id);
     expectMirrorMatches(mirror, snapshot);
   });
 
@@ -161,10 +169,11 @@ describe('快照差分编码', () => {
     push(world, snapshot, baseline, mirror);
 
     mirror.present[900] = 1;
-    mirror.ids.push(900);
+    mirror.ids[mirror.idCount] = 900;
+    mirror.idCount += 1;
     push(world, snapshot, baseline, mirror, true);
     expect(mirror.baselineTick).toBe(0);
-    expect(mirror.ids).not.toContain(900);
+    expect(mirrorIdList(mirror)).not.toContain(900);
     expectMirrorMatches(mirror, snapshot);
   });
 
@@ -184,7 +193,7 @@ describe('快照差分编码', () => {
     const first = decodeSnapshot(buffer.subarray(0, firstSize), mirror);
     if (!first.ok) throw new Error('decode failed');
     expect(first.value.recordCount).toBe(LIMITS.maxSnapshotRecordsPerFrame);
-    expect(first.value.ids.length).toBe(LIMITS.maxSnapshotRecordsPerFrame);
+    expect(first.value.idCount).toBe(LIMITS.maxSnapshotRecordsPerFrame);
 
     const secondSize = encodeSnapshot(snapshot, baseline, 0, buffer);
     const second = decodeSnapshot(buffer.subarray(0, secondSize), mirror);
@@ -236,7 +245,7 @@ describe('快照差分编码', () => {
     if (!decodeSnapshot(buffer.subarray(0, size), mirror).ok) throw new Error('decode failed');
     size = encodeSnapshot(snapshot, baseline, 0, buffer);
     if (!decodeSnapshot(buffer.subarray(0, size), mirror).ok) throw new Error('decode failed');
-    expect(mirror.ids.length).toBe(260);
+    expect(mirror.idCount).toBe(260);
 
     snapshot.tick = 2;
     snapshot.entities.length = 0;
@@ -244,13 +253,13 @@ describe('快照差分编码', () => {
     const first = decodeSnapshot(buffer.subarray(0, size), mirror);
     if (!first.ok) throw new Error('decode failed');
     expect(first.value.removedCount).toBe(LIMITS.maxRemovedPerFrame);
-    expect(mirror.ids.length).toBe(5);
+    expect(mirror.idCount).toBe(5);
 
     size = encodeSnapshot(snapshot, baseline, 0, buffer);
     const second = decodeSnapshot(buffer.subarray(0, size), mirror);
     if (!second.ok) throw new Error('decode failed');
     expect(second.value.removedCount).toBe(5);
-    expect(mirror.ids.length).toBe(0);
+    expect(mirror.idCount).toBe(0);
   });
 
   it('恶意快照帧不会抛异常', () => {
@@ -317,5 +326,84 @@ describe('快照差分编码', () => {
     });
     const size = encodeSnapshot(snapshot, baseline, 0, buffer);
     expect(size).toBe(17);
+  });
+
+  it('O05：无增删的稳态帧只发差分（0 记录 / 0 删除），紧凑列表不变', () => {
+    const world = createWorld(1007);
+    const snapshot = createSnapshot();
+    const baseline = createSnapshotBaseline();
+    const mirror = createSnapshotMirror();
+    stepWorld(world, [], 50);
+    push(world, snapshot, baseline, mirror);
+    const firstCount = baseline.presentCount;
+    expect(firstCount).toBeGreaterThan(0);
+    expect(baselinePresentIdsSorted(baseline)).toBe(true);
+
+    const size = push(world, snapshot, baseline, mirror);
+    expect(size).toBe(SNAPSHOT_HEADER_BYTES + 1);
+    expect(buffer[SNAPSHOT_HEADER_BYTES - 1]).toBe(0);
+    expect(buffer[SNAPSHOT_HEADER_BYTES]).toBe(0);
+    expect(baseline.presentCount).toBe(firstCount);
+    expect(baselinePresentIdsSorted(baseline)).toBe(true);
+    expect(mirrorIdsSorted(mirror)).toBe(true);
+    expect(mirror.idCount).toBe(firstCount);
+    expectMirrorMatches(mirror, snapshot);
+  });
+
+  it('O05：删除列表升序且只含实际删除的 id', () => {
+    const world = createWorld(1008);
+    const snapshot = createSnapshot();
+    const baseline = createSnapshotBaseline();
+    const mirror = createSnapshotMirror();
+    stepWorld(world, [], 50);
+    for (let i = 0; i < 12; i += 1) {
+      spawnEntity(world, 'sheep', i - 6, 0, 20 + i * 0.1);
+    }
+    push(world, snapshot, baseline, mirror);
+
+    // 删掉中间三个 id（不是最大三个），删除列表必须是升序
+    const victims = world.activeIds.filter((id) => id > 4).slice(1, 4);
+    expect(victims.length).toBe(3);
+    for (const id of victims) despawnEntity(world, id);
+    push(world, snapshot, baseline, mirror);
+
+    const count = buffer[SNAPSHOT_HEADER_BYTES - 1] ?? 0;
+    const removedOffset = SNAPSHOT_HEADER_BYTES + count * SNAPSHOT_RECORD_BYTES;
+    const removedCount = buffer[removedOffset] ?? 0;
+    const removed: number[] = [];
+    for (let i = 0; i < removedCount; i += 1) {
+      const lo = buffer[removedOffset + 1 + i * 2] ?? 0;
+      const hi = buffer[removedOffset + 2 + i * 2] ?? 0;
+      removed.push(lo | (hi << 8));
+    }
+    expect(removed).toEqual([...victims].sort((a, b) => a - b));
+    expect(mirrorIdList(mirror)).toEqual(snapshot.entities.map((entity) => entity.id));
+    expect(baselinePresentIdsSorted(baseline)).toBe(true);
+    expect(mirrorIdsSorted(mirror)).toBe(true);
+  });
+
+  it('O05：spawn/despawn 交替 200 次后两侧紧凑列表仍严格升序、无重复', () => {
+    const world = createWorld(1009);
+    const snapshot = createSnapshot();
+    const baseline = createSnapshotBaseline();
+    const mirror = createSnapshotMirror();
+    stepWorld(world, [], 50);
+    push(world, snapshot, baseline, mirror);
+
+    for (let i = 0; i < 200; i += 1) {
+      const spawned = spawnEntity(world, 'sheep', (i % 10) - 5, 0, 22 + (i % 5) * 0.2);
+      expect(spawned.ok).toBe(true);
+      push(world, snapshot, baseline, mirror);
+      expect(baselinePresentIdsSorted(baseline)).toBe(true);
+      expect(mirrorIdsSorted(mirror)).toBe(true);
+      expect(mirror.idCount).toBe(baseline.presentCount);
+
+      if (spawned.ok) despawnEntity(world, spawned.id);
+      push(world, snapshot, baseline, mirror);
+      expect(baselinePresentIdsSorted(baseline)).toBe(true);
+      expect(mirrorIdsSorted(mirror)).toBe(true);
+      expect(mirror.idCount).toBe(baseline.presentCount);
+    }
+    expectMirrorMatches(mirror, snapshot);
   });
 });

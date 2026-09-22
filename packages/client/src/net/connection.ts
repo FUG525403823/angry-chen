@@ -279,6 +279,7 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
       const decoded = decodePong(frame);
       if (decoded.ok) {
         snapshotRateX10 = decoded.value.snapshotRateX10;
+        options.view.setSnapshotRateX10(snapshotRateX10);
         options.view.recordRtt(elapsedMs(decoded.value.clientTimeMs, clientClockMs()));
       }
       return;
