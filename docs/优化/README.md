@@ -53,7 +53,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O06 | ✅ 已完成 | ✅ 已完成（羊群实例池化 + HUD 全量脏检查：600 帧 DOM 写入 6001→1861；`pnpm check` 428 用例；体积 +1,280B / +0.73%，门槛变更见 §5） | `docs/evidence/client-frame-alloc.md` | `O06` |
 | O07 | ✅ 已完成 | ✅ 已完成（弹药账本按 ack 水位对账：显示值 = 权威值 − 未确认开火；换弹/狂暴倒计时本地推进；调试面板新增 4 字段） | `docs/evidence/bots-o07.json` | `O07` |
 | O08 | ✅ 已完成 | ✅ 已完成（重连只认令牌 + `PROTOCOL_VERSION = 2`；`welcome` 24 字节 / `join` +8 字节；ADR-006；`pnpm check` 447 用例） | `docs/evidence/reconnect-token.md`、`docs/evidence/bots-o08.json` | `O08` |
-| O09 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/store-load-100k.md` | `O09` |
+| O09 | ✅ 已完成 | ✅ 已完成（流式加载 + `maxRecords` 淘汰 + 排序缓存 + 读接口 429/TTL + 报告保留；实测 heapUsed 132.2 MB→6.9 MB、查询 49.46 ms→0.001 ms） | `docs/evidence/store-load-100k.md`、`docs/evidence/http-limit-o09.md` | `O09` |
 | O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
 
 **O04 执行结论（2026-09-22）**：§4 的 15 条任务全部落地，§7 DoD 除「`check-alloc` 绝对门槛」外全绿（`pnpm check` 退出码 0；shared 146 / server 111 用例）。
@@ -89,6 +89,13 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 决策与后果记录在 `docs/00-共识/ADR/ADR-006-会话身份与重连令牌.md`（唯一权威描述，明确「协议格式变更必须成对发布、回滚需两端同版本」）。
 证据：`packages/server/src/rooms.test.ts` 四情形（正确令牌复用 pid / 错令牌与无令牌按新玩家 / 过期后不回座，均断言 `metrics.graceReconnects`）、`codec.test.ts` 三条布局用例、`connection.test.ts` 两条客户端令牌用例、`docs/evidence/bots-o08.json`（12 项门槛全 PASS，除既有 `S5.2-9b` 未测量）。
 **门槛变更 1 项**：令牌宽度取「8 字节槽位 = 8 个十六进制字符（32 位熵）」，与文档中「16 个十六进制字符 / `randomBytes(8)`」矛盾，取字节布局为准（O08 §5.1 #1、ADR-006）。本机无浏览器 → 人工「两标签页同昵称不可顶替」测试移交 O10（步骤见 `docs/evidence/reconnect-token.md` §3）。
+
+**O09 执行结论（2026-09-22）**：§4 的 11 条任务与 §7 的 7 条 DoD 落地（`pnpm check` 退出码 0；**457 用例**）。
+存储内存**有界**：`DEFAULT_MAX_RECORDS = 10000`，超出按 `startedAtMs` 最旧批量淘汰（每 `maxRecords/100` 次 append 摊销一次），NDJSON 文件仍只追加不截断；加载改 `createReadStream` + `readline`（`readFile` 已从 `store.ts` 消失）。
+查询走可失效缓存（`topCache` / `recentCache`，`invalidateCaches()` 单点，load/append/淘汰三处触发），结果与「全排序取前 N」逐条对拍一致（并列按 `startedAtMs` 降序 → `matchId` 升序）。
+HTTP 读接口加 30 次/分钟/IP 限流（`429` + `retry-after: 60`，**先于**缓存判定）与 60s TTL 缓存（键 `path:limit`，`store.version` 变化即失效）；`reports/` 按 mtime 保留最近 `REPORT_RETENTION`（默认 200，`0` = 不清理），清理失败不抛。
+实测（`docs/evidence/store-load-100k.md`、`docs/evidence/http-limit-o09.md`）：10 万行 665 B/行 → `heapUsed` 增量 **132.2 MB → 6.9 MB**、常驻 **100 000 → 10 000** 条、`listTopScores(20)` **49.46 ms → 0.001 ms**；**代价如实记录**：加载 445 ms → 711 ms（×1.6）。真实服务器 `curl` 第 31 次 `429` 且带 `retry-after: 60`，`/metrics` 三条新指标有值。
+**未决项（移交 O10）**：反代后的真实客户端 IP（`X-Forwarded-For`）与限流阈值调优；NDJSON 文件本身的轮转/归档与完整历史榜单的离线分析工具。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -147,6 +154,10 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 | 协议版本 | `PROTOCOL_VERSION = 2`（`welcome` 24 字节 / `join` +8 字节令牌） | O08 | 两端不一致按既有路径拒绝；**协议变更必须两端成对发布/回滚** |
 | 会话令牌 | `LIMITS.tokenBytes = 8`（线上 8 字节槽位 = 8 个十六进制字符，32 位熵）；客户端 `TOKEN_STORAGE_KEY = 'ac.sessionToken.v1'` 存 `sessionStorage` | O08 | 只用于**重连身份**，不是账号体系；重连复用不重生成；空令牌一律按新玩家 |
 | 重连身份判定 | `findGracedSession(room, token)`：`token.length > 0 && session.token === token` | O08 | 昵称退出身份判定（仍用于显示/聊天）；`grep "session.name === name"` 无命中 |
+| 战绩常驻上限 | `DEFAULT_MAX_RECORDS = 10000`（`MATCH_STORE_MAX_RECORDS`）；超出按 `startedAtMs` 最旧**批量**淘汰 | O09 | 只影响内存常驻；NDJSON 文件不截断；常驻条数在 `[max-batch+1, max]` 波动 |
+| 读接口限流 | 30 次/分钟/IP → `429` + `retry-after: 60` | O09 | 按 `req.socket.remoteAddress`；反代后的真实 IP 未处理（O10 未决项） |
+| 读接口缓存 | TTL 60s，键 = `path:limit`，`store.version` 变化即失效 | O09 | 命中计 `ac_http_cache_hits_total`；限流先于缓存判定 |
+| 报告保留 | `DEFAULT_REPORT_RETENTION = 200`（`REPORT_RETENTION`；`0` = 不清理） | O09 | `retainReports` 失败不抛，不影响对局结束路径 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
 | `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
 | `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |

@@ -98,23 +98,23 @@
 
 ## 4. 任务清单
 
-- [ ] 1. `store.ts`：`JsonMatchStoreOptions` 增加 `maxRecords?: number`（默认 `DEFAULT_MAX_RECORDS = 10000`）；`records` 超过上限时按最旧（`startedAtMs` 最小）批量淘汰（每次淘汰 `max(1, maxRecords/100)` 条，摊销 O(1)）。
-- [ ] 2. `store.ts`：`load()` 改为 `createReadStream(this.filePath, { encoding: 'utf8' })` + `readline.createInterface` 逐行解析；解析后立刻入队并按上限淘汰，不保留整文件字符串；`corruptLines` 语义不变（仍计入 metrics）。
-- [ ] 3. `store.ts`：新增内部排序缓存
+- [x] 1. `store.ts`：`JsonMatchStoreOptions` 增加 `maxRecords?: number`（默认 `DEFAULT_MAX_RECORDS = 10000`）；`records` 超过上限时按最旧（`startedAtMs` 最小）批量淘汰（每次淘汰 `max(1, maxRecords/100)` 条，摊销 O(1)）。
+- [x] 2. `store.ts`：`load()` 改为 `createReadStream(this.filePath, { encoding: 'utf8' })` + `readline.createInterface` 逐行解析；解析后立刻入队并按上限淘汰，不保留整文件字符串；`corruptLines` 语义不变（仍计入 metrics）。
+- [x] 3. `store.ts`：新增内部排序缓存
       `type ScoreEntry = { record: MatchResultRecord; maxKills: number }`；
       `topCache: ScoreEntry[] | null`（按 `maxKills` 降序、`startedAtMs` 降序）与 `recentCache: MatchResultRecord[] | null`（按 `startedAtMs` 降序）；
       `load` / `appendMatchResult` / 淘汰发生后把两者置 `null`；查询时若为 `null` 则重建一次（O(n log n)），命中则 O(limit) 切片。
-- [ ] 4. `store.ts`：`listTopScores` / `getRecentMatches` 改为读缓存；保证结果与旧实现的"全排序取前 N"**逐条一致**（含并列时的 id/时间决胜）。
-- [ ] 5. `report.ts`：新增 `retainReports(dir, keep: number)`——按 mtime 降序保留前 `keep` 个 `.json`，其余 `unlink`；失败仅 `logger.warn`，绝不抛出到主流程（对局结束路径不能因清理失败而报错）。
-- [ ] 6. `http.ts`：读接口加 60s TTL 缓存（键 = `path + ':' + String(limit)`），命中计 `httpCacheHits`；新增读取限流——复用 `security.ts` 的节流模式（令牌桶/滑动窗口按 `req.socket.remoteAddress`），默认 30 次/分钟，超限返回 `429` + `retry-after` 头 + `metrics.httpRateLimited` 自增。`CORS/Cache-Control` 头保持现状。
-- [ ] 7. `main.ts`：读 `MATCH_STORE_MAX_RECORDS`、`REPORT_RETENTION`（默认 10000 / 200），非法值回落到默认并 `logger.warn`。
-- [ ] 8. `metrics.ts`：新增 `httpRateLimited`、`httpCacheHits`（counter）与 `recordsRetained`（gauge，渲染 `ac_records_retained`），并在 `renderPrometheus` 输出。
-- [ ] 9. 测试：
+- [x] 4. `store.ts`：`listTopScores` / `getRecentMatches` 改为读缓存；保证结果与旧实现的"全排序取前 N"**逐条一致**（含并列时的 id/时间决胜）。
+- [x] 5. `report.ts`：新增 `retainReports(dir, keep: number)`——按 mtime 降序保留前 `keep` 个 `.json`，其余 `unlink`；失败仅 `logger.warn`，绝不抛出到主流程（对局结束路径不能因清理失败而报错）。
+- [x] 6. `http.ts`：读接口加 60s TTL 缓存（键 = `path + ':' + String(limit)`），命中计 `httpCacheHits`；新增读取限流——复用 `security.ts` 的节流模式（令牌桶/滑动窗口按 `req.socket.remoteAddress`），默认 30 次/分钟，超限返回 `429` + `retry-after` 头 + `metrics.httpRateLimited` 自增。`CORS/Cache-Control` 头保持现状。
+- [x] 7. `main.ts`：读 `MATCH_STORE_MAX_RECORDS`、`REPORT_RETENTION`（默认 10000 / 200），非法值回落到默认并 `logger.warn`。
+- [x] 8. `metrics.ts`：新增 `httpRateLimited`、`httpCacheHits`（counter）与 `recordsRetained`（gauge，渲染 `ac_records_retained`），并在 `renderPrometheus` 输出。
+- [x] 9. 测试：
   - `store.test.ts`：①生成 10 万行临时 NDJSON（用 `appendFile` 批量写），加载后 `records.length === maxRecords`；②`maxRecords = 100` 时交替写入 200 条，最旧被淘汰、最新的都在；③top-N 对拍：与"全排序取前 N"逐条比较（含并列）；④缓存失效：写入新对局后 `listTopScores` 立刻反映；⑤坏行计数不变。
   - `report.test.ts`：构造 5 个报告文件、`keep = 2` → 只剩最新的 2 个；`unlink` 抛错时函数不抛。
   - `http.test.ts`：①连发 31 次超过限流 → 第 31 次 429 且带 `retry-after`；②两次相同请求第二次命中缓存（`httpCacheHits` 增长）；③写入新对局后缓存失效。
-- [ ] 10. 证据：`docs/evidence/store-load-100k.md` 记录改动前后的加载耗时与 `process.memoryUsage().heapUsed` 差值（脚本化：临时目录 + 生成 10 万行 + 计时），以及 `listTopScores` 的单次耗时（改动前后）。
-- [ ] 11. 文档：`.env.example` 增加 `MATCH_STORE_MAX_RECORDS` / `REPORT_RETENTION`（含"读取位置"注释）；`docs/运维手册.md` §2、§9、§6 同步；`docs/验收报告.md` 增补结论。
+- [x] 10. 证据：`docs/evidence/store-load-100k.md` 记录改动前后的加载耗时与 `process.memoryUsage().heapUsed` 差值（脚本化：临时目录 + 生成 10 万行 + 计时），以及 `listTopScores` 的单次耗时（改动前后）。
+- [x] 11. 文档：`.env.example` 增加 `MATCH_STORE_MAX_RECORDS` / `REPORT_RETENTION`（含"读取位置"注释）；`docs/运维手册.md` §2、§9、§6 同步；`docs/验收报告.md` 增补结论。
 
 ## 5. 冻结契约
 
@@ -149,6 +149,18 @@ export function retainReports(dir: string, keep: number): Promise<number>;   // 
 | 指标 | `ac_records_retained`（gauge）、`ac_http_rate_limited_total`、`ac_http_cache_hits_total`（counter） |
 | 协议 | 不涉及 |
 
+### 5.1 执行期差异
+
+| # | 差异 | 理由 |
+|---|---|---|
+| 1 | 淘汰是**批量**的：超出上限时一次淘汰 `max(1, maxRecords/100)` 条，常驻条数在 `[maxRecords - batch + 1, maxRecords]` 内波动，并非恒等于 `maxRecords` | 任务 1 要求批量淘汰换取摊销 O(1)；任务 9① 的「加载后 `records.length === maxRecords`」按「**受 `maxRecords` 压制**」验收。10 万行实测常驻 10 000 条（≤ 上限，且不随行数增长） |
+| 2 | `retainReports(dir, keep)` 保持冻结签名（不接收 logger）：单个文件删除失败只跳过并计入未删除，调用方 `controller.ts` 在 `removed > 0` 时记 `report.retention` 日志 | 冻结契约规定该函数「失败不抛」，且对局结束路径已有 `reportWriteFailed` 兜底；保持签名不变，差异只在日志归属 |
+| 3 | 新增 `reportsDir(dataDir)`（导出，`report.ts`），controller 用它拼路径 | controller 里没有 `node:path` 的 `join` 导入，新增帮助函数比改导入组更小 |
+| 4 | `MatchStore` 接口新增两个**可选**字段：`version`（写入/淘汰计数）、`recordCount`（常驻条数） | HTTP 缓存靠 `version` 失效（任务 6 的「写入新对局即失效」），`ac_records_retained` 在 `/metrics` 渲染时用 `store.recordCount` 同步（未把 `Metrics` 反向注入 store，避免 main.ts 里 store 与 metrics 的创建顺序耦合）；内存实现可省略这两个字段 |
+| 5 | 限流是 `http.ts` 内自建的按 IP 滑动窗口（与 `security.ts` 的 `checkRateLimit` 同款模式），未复用 `createJoinThrottle` | 任务 6 说的是「复用节流**模式**」；`createJoinThrottle` 绑定的是 join 失败计数与房间码语义，直接复用会把不相关状态藕合进 HTTP |
+| 6 | 新增 2 个日志事件：`report.retention`（清理了报告时）、`config.fallback`（环境变量非法回落默认时） | 任务 7 要求「非法值回落并 `logger.warn`」，任务 5 要求清理失败只记日志，都需要事件名 |
+| 7 | §3 交付物表把 `store.test.ts` / `report.test.ts` / `http.test.ts` 标为「修改」，实际是按本步要求**追加**用例（未改动既有断言） | 既有用例继续作为回归护栏 |
+
 ## 6. 验证
 
 | # | 命令 | 期望 | 失败意味着 |
@@ -160,15 +172,28 @@ export function retainReports(dir: string, keep: number): Promise<number>;   // 
 | 5 | `pnpm check` | 退出码 0 | 任一门失败 |
 | 6 | 人工复核：`grep -n "readFile" packages/server/src/match/store.ts` | 无命中（`readFile` 已换成流） | 流式加载未落地 |
 
+**实测（2026-09-22，本机 Node v24.14.1，逐条执行）**
+
+| # | 结果 | 关键数字 |
+|---|---|---|
+| 1 | PASS | `npx vitest run`：**457 用例**全绿（新增 10 组：store 5、http 3、report 2；`store.test.ts` 含 10 万行加载与 top-N 对拍） |
+| 2 | PASS | `node --expose-gc` 证据脚本（10 万行 / 66.5 MB / 665 B 行）：`heapUsed` 增量 **132.2 MB → 6.9 MB**；常驻 **100 000 → 10 000** 条；加载 **445 ms → 711 ms（×1.6，如实记录）**；`listTopScores(20)` **49.46 ms → 0.001 ms**（稳态）｜`docs/evidence/store-load-100k.md` |
+| 3 | PASS | 真实服务器 + `curl.exe` 连发 31 次：req30=`200`、**req31=`429`** 且响应头 `retry-after: 60`｜`docs/evidence/http-limit-o09.md` |
+| 4 | PASS | 同一次实测的 `/metrics`：`ac_records_retained 0`、`ac_http_cache_hits_total 29`、`ac_http_rate_limited_total 2`（三条指标都有 HELP/TYPE 与值） |
+| 5 | PASS | `pnpm check` 退出码 **0**（typecheck + eslint + prettier + 3 project vitest + check:docs/assets/count/coverage） |
+| 6 | PASS | `grep -n "readFile" packages/server/src/match/store.ts` **无命中** |
+
 ## 7. DoD（验收标准）
 
-- [ ] `pnpm check` 全绿；`store.test.ts` 覆盖 §4 任务 9 的五种情形。
-- [ ] 10 万行加载用例证明常驻记录数 = `maxRecords`，且加载走流式（`readFile` 不再出现于 `store.ts`）。
-- [ ] top-N 与旧实现逐条对拍一致（含并列决胜）。
-- [ ] HTTP 读接口限流（429 + `retry-after`）与 60s 缓存生效，`ac_http_rate_limited_total` / `ac_http_cache_hits_total` 可见。
-- [ ] `retainReports` 生效且失败不影响对局结束路径；`REPORT_RETENTION` 已加入 `.env.example` 与运维手册。
-- [ ] `docs/evidence/store-load-100k.md` 存在（改动前后耗时/内存对比）。
-- [ ] 未新增运行时依赖（`node:fs` / `node:readline` 即可）；未改协议；未改 NDJSON 记录格式。
+## 7. DoD（验收标准）
+
+- [x] `pnpm check` 全绿；`store.test.ts` 覆盖 §4 任务 9 的五种情形。
+- [x] 10 万行加载用例证明常驻记录数 = `maxRecords`，且加载走流式（`readFile` 不再出现于 `store.ts`）。
+- [x] top-N 与旧实现逐条对拍一致（含并列决胜）。
+- [x] HTTP 读接口限流（429 + `retry-after`）与 60s 缓存生效，`ac_http_rate_limited_total` / `ac_http_cache_hits_total` 可见。
+- [x] `retainReports` 生效且失败不影响对局结束路径；`REPORT_RETENTION` 已加入 `.env.example` 与运维手册。
+- [x] `docs/evidence/store-load-100k.md` 存在（改动前后耗时/内存对比）。
+- [x] 未新增运行时依赖（`node:fs` / `node:readline` 即可）；未改协议；未改 NDJSON 记录格式。
 
 ## 8. 风险与回滚
 

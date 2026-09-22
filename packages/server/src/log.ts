@@ -39,6 +39,8 @@ export const LOG_EVENTS = Object.freeze({
   securityOriginRejected: 'security.origin_rejected',
   storeError: 'store.error',
   reportWriteFailed: 'report.write_failed',
+  reportRetention: 'report.retention',
+  configFallback: 'config.fallback',
   listening: 'listening',
   shutdownRequested: 'shutdownRequested',
   shutdownComplete: 'shutdownComplete',

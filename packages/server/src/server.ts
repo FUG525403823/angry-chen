@@ -25,6 +25,8 @@ export interface GameServerOptions {
   readonly log?: LogSink;
   readonly store?: MatchStore;
   readonly dataDir?: string;
+  /** O09：`reports/` 保留份数（透传给对局结束路径，默认 `DEFAULT_REPORT_RETENTION`）。 */
+  readonly reportRetention?: number;
 }
 
 export interface GameServer {
@@ -60,6 +62,7 @@ export function createGameServer(transport: Transport, options: GameServerOption
     log,
     monotonicNow,
     ...(options.dataDir === undefined ? {} : { dataDir: options.dataDir }),
+    ...(options.reportRetention === undefined ? {} : { reportRetention: options.reportRetention }),
   };
   const deps: SessionDeps = {
     rooms,

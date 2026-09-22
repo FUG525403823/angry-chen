@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -14,6 +14,8 @@ import {
 
 export const REPORTS_DIR_NAME = 'reports';
 export const REPORT_FILE_EXTENSION = '.json';
+/** O09：`reports/` 默认保留份数（`REPORT_RETENTION=0` 表示不清理）。 */
+export const DEFAULT_REPORT_RETENTION = 200;
 
 export interface MatchDiagnostics {
   matchId: string;
@@ -136,6 +138,48 @@ export function buildMatchDiagnostics(input: MatchDiagnosticsInput): MatchDiagno
       players: counters.peakPlayers,
     },
   };
+}
+
+export function reportsDir(dataDir: string): string {
+  return join(dataDir, REPORTS_DIR_NAME);
+}
+
+/**
+ * O09：按 mtime 降序保留最近 `keep` 份 `reports/*.json`，其余删除，返回删除数量。
+ * `keep <= 0` 表示不清理；任何失败（目录不存在、单个文件删除失败）只返回已删除数量，**绝不抛出**到对局结束路径。
+ */
+export async function retainReports(dir: string, keep: number): Promise<number> {
+  if (!Number.isFinite(keep) || keep <= 0) return 0;
+  const candidates: { path: string; mtimeMs: number }[] = [];
+  try {
+    const names = await readdir(dir);
+    for (const name of names) {
+      if (!name.endsWith(REPORT_FILE_EXTENSION)) continue;
+      const filePath = join(dir, name);
+      try {
+        const info = await stat(filePath);
+        if (info.isFile()) candidates.push({ path: filePath, mtimeMs: info.mtimeMs });
+      } catch {
+        // 单个文件 stat 失败（并发删除等）：忽略。
+      }
+    }
+  } catch {
+    return 0;
+  }
+  if (candidates.length <= keep) return 0;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let removed = 0;
+  for (let i = keep; i < candidates.length; i += 1) {
+    const target = candidates[i];
+    if (target === undefined) continue;
+    try {
+      await unlink(target.path);
+      removed += 1;
+    } catch {
+      // 删除失败（权限/占用）：只记数量，不抛出。
+    }
+  }
+  return removed;
 }
 
 export function matchReportFileName(matchId: string): string {

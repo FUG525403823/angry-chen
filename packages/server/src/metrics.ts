@@ -67,6 +67,10 @@ export interface Metrics {
   corruptLines: number;
   graceStarts: number;
   graceReconnects: number;
+  /** O09：读接口被限流拒绝次数 / 命中 60s 缓存次数 / 常驻战绩条数。 */
+  httpRateLimited: number;
+  httpCacheHits: number;
+  recordsRetained: number;
   graceTimeouts: number;
 }
 
@@ -151,6 +155,9 @@ export function createMetrics(): Metrics {
     corruptLines: 0,
     graceStarts: 0,
     graceReconnects: 0,
+    httpRateLimited: 0,
+    httpCacheHits: 0,
+    recordsRetained: 0,
     graceTimeouts: 0,
   };
 }
@@ -466,6 +473,19 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     metrics.chatMessages,
   );
   push('ac_pings_total', 'ping frames answered', 'counter', metrics.pings);
+  push(
+    'ac_http_rate_limited_total',
+    'HTTP read requests rejected by the rate limiter',
+    'counter',
+    metrics.httpRateLimited,
+  );
+  push(
+    'ac_http_cache_hits_total',
+    'HTTP read responses served from the cache',
+    'counter',
+    metrics.httpCacheHits,
+  );
+  push('ac_records_retained', 'match records kept in memory', 'gauge', metrics.recordsRetained);
   push('ac_shots_fired_total', 'weapon fire commands resolved', 'counter', metrics.shotsFired);
   push('ac_hits_total', 'pellets that hit an entity', 'counter', metrics.hits);
   push('ac_damage_total', 'total damage dealt', 'counter', metrics.damage);

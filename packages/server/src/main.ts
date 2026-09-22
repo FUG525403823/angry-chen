@@ -6,7 +6,8 @@ import { LIMITS } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
 import { LOG_EVENTS, createStdoutLogger, type Logger } from './log.ts';
-import { createJsonMatchStore, DEFAULT_DATA_DIR } from './match/store.ts';
+import { createJsonMatchStore, DEFAULT_DATA_DIR, DEFAULT_MAX_RECORDS } from './match/store.ts';
+import { DEFAULT_REPORT_RETENTION } from './report.ts';
 import { createOriginGuard, parseAllowedOrigins } from './security.ts';
 import { createGameServer } from './server.ts';
 import { createWsTransport } from './transport/ws-adapter.ts';
@@ -30,6 +31,23 @@ export function readIntEnv(
   return value;
 }
 
+/** O09：计数类环境变量（允许 0；非法值回落默认并记 `config.fallback` 日志）。 */
+function readCountEnv(
+  name: string,
+  fallback: number,
+  env: NodeJS.ProcessEnv,
+  logger: Logger,
+): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    logger.warn(LOG_EVENTS.configFallback, { detail: { name, raw, fallback } });
+    return fallback;
+  }
+  return value;
+}
+
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.stack ?? error.message;
   return String(error);
@@ -44,7 +62,9 @@ export async function startServer(
   const maxRooms = readIntEnv('MAX_ROOMS', LIMITS.maxRooms, env);
   const maxPlayersPerRoom = readIntEnv('MAX_PLAYERS_PER_ROOM', LIMITS.maxPlayersPerRoom, env);
   const dataDir = env.DATA_DIR ?? DEFAULT_DATA_DIR;
-  const store = createJsonMatchStore({ dir: dataDir });
+  const maxRecords = readCountEnv('MATCH_STORE_MAX_RECORDS', DEFAULT_MAX_RECORDS, env, logger);
+  const reportRetention = readCountEnv('REPORT_RETENTION', DEFAULT_REPORT_RETENTION, env, logger);
+  const store = createJsonMatchStore({ dir: dataDir, maxRecords });
   await store.load();
   const httpServer = createServer();
   const originPolicy = parseAllowedOrigins(env.ALLOWED_ORIGINS);
@@ -64,6 +84,7 @@ export async function startServer(
     store,
     log: logger,
     dataDir,
+    reportRetention,
   });
   httpServer.on('request', createHttpHandler(game, Date.now()));
   await new Promise<void>((resolveListen) => {

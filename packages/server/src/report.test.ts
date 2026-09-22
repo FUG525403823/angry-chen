@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,9 +18,13 @@ import {
 import {
   buildMatchDiagnostics,
   createMatchCounters,
+  DEFAULT_REPORT_RETENTION,
   matchReportFileName,
   matchReportPath,
+  REPORTS_DIR_NAME,
+  reportsDir,
   resetMatchCounters,
+  retainReports,
   writeMatchReport,
 } from './report.ts';
 import { createRoom, type RoomDeps } from './room.ts';
@@ -174,6 +178,56 @@ describe('单场诊断报告', () => {
     });
     expect(parsed['net']).toMatchObject({ snapshotBytesMax: 321 });
     expect(parsed['peak']).toEqual({ entities: 12, players: 2 });
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('O09：retainReports 按 mtime 只留最近 N 份（0 = 不清理；目录不存在不抛）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-retain-'));
+    expect(reportsDir(dir)).toBe(join(dir, REPORTS_DIR_NAME));
+    const reports = reportsDir(dir);
+    await mkdir(reports, { recursive: true });
+    for (let i = 0; i < 5; i += 1) {
+      const file = join(reports, 'r-' + String(i) + '.json');
+      await writeFile(file, '{}');
+      const stamp = 1_700_000_000 + i * 10;
+      await utimes(file, stamp, stamp);
+    }
+    await writeFile(join(reports, 'keep-me.txt'), 'x');
+
+    expect(DEFAULT_REPORT_RETENTION).toBe(200);
+    expect(await retainReports(reports, 2)).toBe(3);
+    expect((await readdir(reports)).sort()).toEqual(['keep-me.txt', 'r-3.json', 'r-4.json']);
+
+    expect(await retainReports(reports, 0)).toBe(0);
+    expect((await readdir(reports)).length).toBe(3);
+    expect(await retainReports(join(dir, 'missing'), 2)).toBe(0);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('O09：单个文件删除失败时 retainReports 不抛出（对局结束路径不能被清理拖累）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-retain-fail-'));
+    const reports = reportsDir(dir);
+    await mkdir(reports, { recursive: true });
+    for (let i = 0; i < 3; i += 1) {
+      const file = join(reports, 'f-' + String(i) + '.json');
+      await writeFile(file, '{}');
+      const stamp = 1_700_000_000 + i * 10;
+      await utimes(file, stamp, stamp);
+    }
+    // Windows 上打开句柄会让 unlink 失败（EBUSY/EPERM）：无论成功与否都要求「不抛出」。
+    const handle = await open(join(reports, 'f-0.json'), 'r');
+    let removed = -1;
+    let thrown = '';
+    try {
+      removed = await retainReports(reports, 1);
+    } catch (error) {
+      thrown = String(error);
+    }
+    await handle.close();
+    expect(thrown).toBe('');
+    expect(removed).toBeGreaterThanOrEqual(0);
+    expect(removed).toBeLessThanOrEqual(2);
     await rm(dir, { recursive: true, force: true });
   });
 });

@@ -8,8 +8,32 @@ import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
-import { createJsonMatchStore } from './match/store.ts';
+import { createJsonMatchStore, type MatchResultRecord } from './match/store.ts';
 import { createHarness } from './testing/harness.ts';
+
+function makeStoredRecord(matchId: string, kills: number): MatchResultRecord {
+  return {
+    matchId,
+    startedAtMs: kills * 1000,
+    durationMs: 1000,
+    waveReached: 3,
+    winnerTeam: 0,
+    playerCount: 1,
+    players: [
+      {
+        name: 'alice',
+        kills,
+        headshots: 0,
+        shotsFired: 10,
+        hits: 5,
+        revives: 0,
+        downs: 0,
+        aliveMs: 900,
+        leftMidMatch: false,
+      },
+    ],
+  };
+}
 
 async function startHttp(
   harness: ReturnType<typeof createHarness>,
@@ -146,6 +170,85 @@ describe('运维端点', () => {
     expect(recent.status).toBe(200);
     const recentBody: unknown = await recent.json();
     expect(recentBody).toMatchObject({ ok: true, entries: [{ matchId: 'X-1' }] });
+
+    await http.close();
+    await harness.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('O09①：连发 31 次超过 30 次/分钟 → 第 31 次 429 且带 retry-after', async () => {
+    const harness = createHarness();
+    const http = await startHttp(harness);
+    const url = 'http://127.0.0.1:' + String(http.port) + '/api/leaderboard?limit=5';
+    let last = 0;
+    let lastRetryAfter: string | null = null;
+    for (let i = 0; i < 31; i += 1) {
+      const response = await fetch(url);
+      last = response.status;
+      if (i === 30) lastRetryAfter = response.headers.get('retry-after');
+    }
+    expect(last).toBe(429);
+    expect(lastRetryAfter).toBe('60');
+    expect(harness.game.metrics.httpRateLimited).toBe(1);
+
+    await http.close();
+    await harness.close();
+  });
+
+  it('O09②：两次相同读请求，第二次命中 60s 缓存（httpCacheHits 增长）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-http-cache-'));
+    const store = createJsonMatchStore({ dir });
+    await store.load();
+    await store.appendMatchResult(makeStoredRecord('C-1', 5));
+    await store.flush();
+
+    const harness = createHarness({ store });
+    const http = await startHttp(harness);
+    const base = 'http://127.0.0.1:' + String(http.port);
+
+    const first = await fetch(base + '/api/leaderboard?limit=3');
+    expect(first.status).toBe(200);
+    expect(harness.game.metrics.httpCacheHits).toBe(0);
+    const second = await fetch(base + '/api/leaderboard?limit=3');
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual(await first.json());
+    expect(harness.game.metrics.httpCacheHits).toBe(1);
+
+    const metrics = await fetch(base + '/metrics');
+    const text = await metrics.text();
+    expect(text).toContain('ac_records_retained 1');
+    expect(text).toContain('ac_http_cache_hits_total 1');
+    expect(text).toContain('ac_http_rate_limited_total 0');
+
+    await http.close();
+    await harness.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('O09③：写入新对局后缓存失效（不需要等 TTL）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-http-invalidate-'));
+    const store = createJsonMatchStore({ dir });
+    await store.load();
+    await store.appendMatchResult(makeStoredRecord('D-1', 1));
+    await store.flush();
+
+    const harness = createHarness({ store });
+    const http = await startHttp(harness);
+    const base = 'http://127.0.0.1:' + String(http.port);
+
+    const before = (await (await fetch(base + '/api/matches/recent?limit=5')).json()) as {
+      entries: { matchId: string }[];
+    };
+    expect(before.entries.map((entry) => entry.matchId)).toEqual(['D-1']);
+
+    await store.appendMatchResult(makeStoredRecord('D-2', 2));
+    await store.flush();
+
+    const after = (await (await fetch(base + '/api/matches/recent?limit=5')).json()) as {
+      entries: { matchId: string }[];
+    };
+    expect(after.entries.map((entry) => entry.matchId)).toEqual(['D-2', 'D-1']);
+    expect(harness.game.metrics.httpCacheHits).toBe(0);
 
     await http.close();
     await harness.close();

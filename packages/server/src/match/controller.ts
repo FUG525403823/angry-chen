@@ -30,7 +30,10 @@ import type { Metrics } from '../metrics.ts';
 import {
   buildMatchDiagnostics,
   createMatchCounters,
+  DEFAULT_REPORT_RETENTION,
   resetMatchCounters,
+  retainReports,
+  reportsDir,
   writeMatchReport,
   type MatchCounters,
 } from '../report.ts';
@@ -49,6 +52,8 @@ export interface MatchDeps {
   readonly metrics: Metrics;
   readonly store: MatchStore;
   readonly dataDir?: string;
+  /** O09：`reports/` 保留份数；`0` 表示不清理。 */
+  readonly reportRetention?: number;
   now(): number;
   log: LogSink;
 }
@@ -289,7 +294,8 @@ export function endMatch(room: Room, deps: MatchDeps, nowMs: number, winnerTeam:
       detail: { error: String(error) },
     });
   });
-  if (deps.dataDir !== undefined) {
+  const reportDataDir = deps.dataDir;
+  if (reportDataDir !== undefined) {
     const diagnostics = buildMatchDiagnostics({
       matchId: record.matchId,
       startedAtMs: room.match.startedAtMs,
@@ -297,13 +303,25 @@ export function endMatch(room: Room, deps: MatchDeps, nowMs: number, winnerTeam:
       counters: room.match.counters,
       metrics: deps.metrics,
     });
-    void writeMatchReport(deps.dataDir, diagnostics).catch((error: unknown) => {
-      emit(deps.log, 'error', LOG_EVENTS.reportWriteFailed, {
-        room: room.code,
-        tick: room.world.tick,
-        detail: { error: String(error) },
+    void writeMatchReport(reportDataDir, diagnostics)
+      .then(async () => {
+        const keep = deps.reportRetention ?? DEFAULT_REPORT_RETENTION;
+        if (keep <= 0) return;
+        const removed = await retainReports(reportsDir(reportDataDir), keep);
+        if (removed > 0) {
+          emit(deps.log, 'info', LOG_EVENTS.reportRetention, {
+            room: room.code,
+            detail: { removed, keep },
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        emit(deps.log, 'error', LOG_EVENTS.reportWriteFailed, {
+          room: room.code,
+          tick: room.world.tick,
+          detail: { error: String(error) },
+        });
       });
-    });
   }
 }
 

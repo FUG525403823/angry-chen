@@ -19,24 +19,78 @@ function parseLimit(url: string, fallback: number): number {
   return Math.min(value, 100);
 }
 
+/** O09：读接口 60s TTL 缓存 + 30 次/分钟/IP 限流（冻结契约见 O09 §5）。 */
+export const HTTP_CACHE_TTL_MS = 60_000;
+export const HTTP_READ_RATE_LIMIT = 30;
+export const HTTP_RATE_WINDOW_MS = 60_000;
+
+/** O09：按 IP 的滑动窗口（与 WS 侧 `checkRateLimit` 同款模式，读接口专用）。 */
+function isReadRateLimited(hits: Map<string, number[]>, ip: string, nowMs: number): boolean {
+  const list = hits.get(ip) ?? [];
+  let keep = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const at = list[i];
+    if (at !== undefined && nowMs - at < HTTP_RATE_WINDOW_MS) {
+      list[keep] = at;
+      keep += 1;
+    }
+  }
+  list.length = keep;
+  if (keep >= HTTP_READ_RATE_LIMIT) {
+    hits.set(ip, list);
+    return true;
+  }
+  list.push(nowMs);
+  hits.set(ip, list);
+  return false;
+}
+
 export function createHttpHandler(
   game: GameServer,
   startedAtMs: number,
 ): (req: IncomingMessage, res: ServerResponse) => void {
+  const readCache = new Map<string, { atMs: number; version: number; body: string }>();
+  const rateHits = new Map<string, number[]>();
   return (req: IncomingMessage, res: ServerResponse): void => {
     const url = req.url ?? '/';
     const path = url.split('?')[0] ?? '/';
     if (path === '/api/leaderboard' || path === '/api/matches/recent') {
       const fallback = path === '/api/leaderboard' ? 20 : 10;
       const limit = parseLimit(url, fallback);
+      const ip = req.socket.remoteAddress ?? 'unknown';
+      const nowMs = Date.now();
+      if (isReadRateLimited(rateHits, ip, nowMs)) {
+        game.metrics.httpRateLimited += 1;
+        res.writeHead(429, {
+          ...jsonHeaders(),
+          'retry-after': String(Math.ceil(HTTP_RATE_WINDOW_MS / 1000)),
+        });
+        res.end(JSON.stringify({ ok: false, error: 'rate-limited' }));
+        return;
+      }
+      const key = path + ':' + String(limit);
+      const version = game.store.version ?? 0;
+      const cached = readCache.get(key);
+      if (
+        cached !== undefined &&
+        cached.version === version &&
+        nowMs - cached.atMs < HTTP_CACHE_TTL_MS
+      ) {
+        game.metrics.httpCacheHits += 1;
+        res.writeHead(200, jsonHeaders());
+        res.end(cached.body);
+        return;
+      }
       const pending =
         path === '/api/leaderboard'
           ? game.store.listTopScores(limit)
           : game.store.getRecentMatches(limit);
       pending.then(
         (entries) => {
+          const body = JSON.stringify({ ok: true, entries });
+          readCache.set(key, { atMs: nowMs, version, body });
           res.writeHead(200, jsonHeaders());
-          res.end(JSON.stringify({ ok: true, entries }));
+          res.end(body);
         },
         (error: unknown) => {
           res.writeHead(500, jsonHeaders());
@@ -62,6 +116,7 @@ export function createHttpHandler(
       return;
     }
     if (path === '/metrics') {
+      game.metrics.recordsRetained = game.store.recordCount ?? game.metrics.recordsRetained;
       const body = renderPrometheus(game.metrics, {
         rooms: game.rooms.size,
         connections: game.sessionCount,
