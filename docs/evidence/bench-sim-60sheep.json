@@ -1,0 +1,156 @@
+{
+  "tool": "tools/bench-sim.mjs",
+  "environment": {
+    "node": "v24.14.1",
+    "platform": "win32 x64",
+    "cpuModel": "AMD Ryzen 9 5900HX with Radeon Graphics        ",
+    "cpuCount": 16
+  },
+  "runs": {
+    "baseline-o03": {
+      "label": "baseline-o03",
+      "measuredAt": "2026-09-22T05:51:53.208Z",
+      "options": {
+        "sheep": 60,
+        "ticks": 6000,
+        "warmup": 500,
+        "seed": 2024,
+        "players": 4
+      },
+      "scenario": {
+        "entities": 64,
+        "liveEntities": 64,
+        "players": 4,
+        "sheepAlive": 60,
+        "ticks": 12500
+      },
+      "step": {
+        "p50Ms": 0.1483,
+        "p95Ms": 0.1831,
+        "p99Ms": 0.2963,
+        "maxMs": 1.1824,
+        "meanMs": 0.15571956666666642
+      },
+      "snapshot": {
+        "p50Ms": 0.0014,
+        "p95Ms": 0.0021,
+        "p99Ms": 0.0061,
+        "maxMs": 0.1656,
+        "meanMs": 0.0018043499999999782
+      },
+      "total": {
+        "p50Ms": 0.1498,
+        "p95Ms": 0.1855,
+        "p99Ms": 0.3039,
+        "maxMs": 1.2005,
+        "meanMs": 0.15752391666666568
+      },
+      "alloc": {
+        "rawPerTick": 1002.084,
+        "rawSamples": [
+          1160.276,
+          1114.204,
+          1002.084
+        ],
+        "allocWindows": 3,
+        "allocTicks": 2000,
+        "retainedPerTick": -0.6813333333333333,
+        "gcAvailable": true
+      },
+      "slo": {
+        "stepP95Ms": 8,
+        "stepP99Ms": 12
+      },
+      "verdict": "pass"
+    },
+    "after-o04": {
+      "label": "after-o04",
+      "measuredAt": "2026-09-22T05:51:50.717Z",
+      "options": {
+        "sheep": 60,
+        "ticks": 6000,
+        "warmup": 500,
+        "seed": 2024,
+        "players": 4
+      },
+      "scenario": {
+        "entities": 64,
+        "liveEntities": 64,
+        "players": 4,
+        "sheepAlive": 60,
+        "ticks": 12500
+      },
+      "step": {
+        "p50Ms": 0.0534,
+        "p95Ms": 0.0744,
+        "p99Ms": 0.1434,
+        "maxMs": 0.7372,
+        "meanMs": 0.05858599999999989
+      },
+      "snapshot": {
+        "p50Ms": 0.0014,
+        "p95Ms": 0.0027,
+        "p99Ms": 0.0056,
+        "maxMs": 0.0772,
+        "meanMs": 0.0017605000000000082
+      },
+      "total": {
+        "p50Ms": 0.0548,
+        "p95Ms": 0.0776,
+        "p99Ms": 0.1489,
+        "maxMs": 0.7553,
+        "meanMs": 0.06034650000000039
+      },
+      "alloc": {
+        "rawPerTick": 296.464,
+        "rawSamples": [
+          388.708,
+          305.1,
+          296.464
+        ],
+        "allocWindows": 3,
+        "allocTicks": 2000,
+        "retainedPerTick": -0.5093333333333333,
+        "gcAvailable": true
+      },
+      "slo": {
+        "stepP95Ms": 8,
+        "stepP99Ms": 12
+      },
+      "verdict": "pass"
+    }
+  },
+  "generatedAt": "2026-09-22T05:51:53.214Z",
+  "allocGate": {
+    "tool": "tools/check-alloc.mjs",
+    "command": "node --expose-gc tools/check-alloc.mjs",
+    "metric": "复用外部缓冲组 rawPerTick（B/tick），门槛 ≤ 8",
+    "runs": {
+      "baseline-o03": {
+        "rawPerTick": [
+          42.53,
+          42.77
+        ],
+        "retainedPerTick": [
+          -0.11,
+          0.1
+        ],
+        "verdict": "fail"
+      },
+      "after-o04": {
+        "rawPerTick": [
+          22.52,
+          22.52,
+          22.89
+        ],
+        "retainedPerTick": [
+          -0.15,
+          -0.12,
+          -0.1
+        ],
+        "verdict": "fail"
+      }
+    },
+    "note": "本机（Node v24.14.1）当前状态下基线本身就不满足 rawPerTick ≤ 8：用 git stash 摘掉 O04 改动后复测得到 42.5–42.8 B/tick，所以绝对阈值不可达与 O04 无关；O04 把该值降到 22.5–22.9 B/tick（约 -47%），retained 两侧都 ≈ 0。"
+  }
+}

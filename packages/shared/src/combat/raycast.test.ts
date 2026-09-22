@@ -87,6 +87,28 @@ describe('rayVsAabb', () => {
     expect(hit.hit).toBe(true);
     expect(hit.t).toBeCloseTo(6, 6);
   });
+
+  it('三轴展开后仍按轴给出法线（含 -Z 面与归一化斜射）', () => {
+    rayVsAabb(0.5, 0.5, 3, 0, 0, -1, 0, 0, 0, 1, 1, 1, 100, hit);
+    expect(hit.hit).toBe(true);
+    expect(hit.t).toBeCloseTo(2, 6);
+    expect([hit.nx, hit.ny, hit.nz]).toEqual([0, 0, 1]);
+
+    const inverse = 1 / Math.sqrt(3);
+    rayVsAabb(-3, -3, -3, inverse, inverse, inverse, 0, 0, 0, 1, 1, 1, 100, hit);
+    expect(hit.hit).toBe(true);
+    expect(hit.t).toBeCloseTo(3 * Math.sqrt(3), 6);
+    expect([hit.nx, hit.ny, hit.nz]).toEqual([-1, 0, 0]);
+  });
+
+  it('轴平行且落在 slab 内时不受该轴影响，超出 maxDist 视为未命中', () => {
+    rayVsAabb(-5, 0.5, 0.5, 1, 0, 0, 0, 0, 0, 1, 1, 1, 100, hit);
+    expect(hit.hit).toBe(true);
+    expect(hit.t).toBeCloseTo(5, 6);
+
+    rayVsAabb(-5, 0.5, 0.5, 1, 0, 0, 0, 0, 0, 1, 1, 1, 4, hit);
+    expect(hit.hit).toBe(false);
+  });
 });
 
 describe('rayVsSphere', () => {

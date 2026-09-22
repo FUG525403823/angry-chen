@@ -57,9 +57,7 @@ describe('stepLocalPlayer 与 stepWorld 同一份移动代码', () => {
 
     const commands = trajectory(240);
     const local = moveStateAt(-30, 30);
-    const scratch = createCommand();
-    for (const command of commands)
-      stepLocalPlayer(local, command, moveConfig, scratch, SERVER_TICK_MS);
+    for (const command of commands) stepLocalPlayer(local, command, moveConfig, SERVER_TICK_MS);
 
     for (const command of commands) stepWorld(world, [command], SERVER_TICK_MS);
     const entity = getEntity(world, spawned.id);
@@ -84,10 +82,9 @@ describe('stepLocalPlayer 与 stepWorld 同一份移动代码', () => {
     command.yaw = Math.PI;
 
     const local = moveStateAt(0, 30);
-    const scratch = createCommand();
     for (let i = 0; i < 400; i += 1) {
       command.seq = (i + 1) & 0xffff;
-      stepLocalPlayer(local, command, moveConfig, scratch, SERVER_TICK_MS);
+      stepLocalPlayer(local, command, moveConfig, SERVER_TICK_MS);
       stepWorld(world, [command], SERVER_TICK_MS);
     }
     const entity = getEntity(world, spawned.id);
@@ -102,8 +99,7 @@ describe('stepLocalPlayer 与 stepWorld 同一份移动代码', () => {
     const local = moveStateAt(20, 25);
     local.vel.x = 3;
     local.vel.z = -3;
-    const scratch = createCommand();
-    stepLocalPlayer(local, undefined, moveConfig, scratch, SERVER_TICK_MS);
+    stepLocalPlayer(local, undefined, moveConfig, SERVER_TICK_MS);
     expect(local.pos.x).toBe(20);
     expect(local.pos.z).toBe(25);
     expect(local.vel.x).toBe(0);
@@ -112,16 +108,15 @@ describe('stepLocalPlayer 与 stepWorld 同一份移动代码', () => {
 
   it('冲刺按钮走 sprintSpeed', () => {
     const local = moveStateAt(0, 30);
-    const scratch = createCommand();
     const walk = createCommand();
     walk.moveX = 1;
-    stepLocalPlayer(local, walk, moveConfig, scratch, SERVER_TICK_MS);
+    stepLocalPlayer(local, walk, moveConfig, SERVER_TICK_MS);
     const walked = local.pos.z - 30;
     const run = createCommand();
     run.moveX = 1;
     run.buttons = 2;
     const start = local.pos.z;
-    stepLocalPlayer(local, run, moveConfig, scratch, SERVER_TICK_MS);
+    stepLocalPlayer(local, run, moveConfig, SERVER_TICK_MS);
     const ran = local.pos.z - start;
     expect(ran).toBeGreaterThan(walked);
     expect(ran).toBeCloseTo(CONFIG.player.sprintSpeed * (SERVER_TICK_MS / 1000), 6);

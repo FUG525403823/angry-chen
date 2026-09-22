@@ -12,7 +12,7 @@ import { rngInt, rngRange, type Rng } from '../rng.ts';
 import { getEntity, spawnEntity, type EntityId, type World } from '../world.ts';
 import { SHEEP_STATE } from '../config/sheep.ts';
 import { applySheepKind } from './sheepBrain.ts';
-import { pushEvent } from './sheepAttack.ts';
+import { pushEvent } from '../sim/events.ts';
 
 export const DIRECTOR_KIND_COUNT = SHEEP_ORDER.length;
 
@@ -93,13 +93,9 @@ export function plannedBudgetSum(state: DirectorState): number {
   return total;
 }
 
+/** 活动羊数：stepWorld 每 tick 只全量数一次并写入 world.stats；director 与 metrics 直接读，O(1)。 */
 export function aliveSheepCount(world: World): number {
-  let alive = 0;
-  for (let i = 0; i < world.activeIds.length; i += 1) {
-    const entity = getEntity(world, world.activeIds[i] ?? 0);
-    if (entity !== undefined && entity.active && entity.kind === 'sheep') alive += 1;
-  }
-  return alive;
+  return world.stats.aliveSheep;
 }
 
 export function nearestPlayerDistanceM(
@@ -190,6 +186,8 @@ export function updateDirector(
       result.spawned += 1;
       budget -= 1;
     }
+    // 本 tick 的出生数增量记账，保持 stats.aliveSheep 与「上一次 stepWorld 结束 + 本 tick spawns」一致。
+    world.stats.aliveSheep += result.spawned;
     return result;
   }
 

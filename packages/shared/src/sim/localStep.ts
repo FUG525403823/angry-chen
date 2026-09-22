@@ -1,4 +1,4 @@
-import { sanitizeCommand, type Command, type CommandInput } from '../command.ts';
+import type { Command } from '../command.ts';
 import { BUTTON } from '../config/index.ts';
 import type { ArenaConfig } from '../config/arena.ts';
 import type { PlayerConfig } from '../config/player.ts';
@@ -18,20 +18,23 @@ export interface MoveConfig {
   readonly radius: number;
 }
 
+/**
+ * 把一条**已净化**的命令写进移动状态。
+ * 字段范围校验在会话边界（server/session.ts 的字段夹取）完成，内核不再二次净化：
+ * 热路径只按可信命令读取字段，O04 §4 任务 10。
+ */
 export function applyCommandToState(
   state: MoveState,
-  input: CommandInput | undefined,
+  command: Command | undefined,
   player: PlayerConfig,
-  scratch: Command,
   speedMultiplier = 1,
 ): void {
-  if (input === undefined) {
+  if (command === undefined) {
     state.vel.x = 0;
     state.vel.y = 0;
     state.vel.z = 0;
     return;
   }
-  const command = sanitizeCommand(input, scratch);
   state.yaw = command.yaw;
   state.pitch = command.pitch;
 
@@ -112,13 +115,12 @@ function clampToBounds(state: MoveState, arena: ArenaConfig, radius: number): vo
 
 export function stepLocalPlayer(
   state: MoveState,
-  input: CommandInput | undefined,
+  command: Command | undefined,
   config: MoveConfig,
-  scratch: Command,
   dtMs: number,
   speedMultiplier = 1,
 ): void {
-  applyCommandToState(state, input, config.player, scratch, speedMultiplier);
+  applyCommandToState(state, command, config.player, speedMultiplier);
   integrateState(state, dtMs / MS_PER_SECOND);
   collideStatic(state, config.arena, config.radius);
 }

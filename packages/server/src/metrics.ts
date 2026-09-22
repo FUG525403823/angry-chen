@@ -30,6 +30,8 @@ export interface Metrics {
   snapshotBytesMax: number;
   snapshotRecords: number;
   eventsSent: number;
+  /** 事件池打满后丢弃的事件数（累计，O04 §5）。 */
+  eventsDropped: number;
   framesIn: number;
   framesOut: number;
   bytesIn: number;
@@ -110,6 +112,7 @@ export function createMetrics(): Metrics {
     snapshotBytesMax: 0,
     snapshotRecords: 0,
     eventsSent: 0,
+    eventsDropped: 0,
     framesIn: 0,
     framesOut: 0,
     bytesIn: 0,
@@ -441,6 +444,12 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
   push('ac_snapshots_sent_total', 'snapshot frames sent', 'counter', metrics.snapshotsSent);
   push('ac_snapshot_bytes_total', 'snapshot bytes sent', 'counter', metrics.snapshotBytes);
   push('ac_events_sent_total', 'simulation events sent', 'counter', metrics.eventsSent);
+  push(
+    'ac_events_dropped_total',
+    'events dropped because the per-tick event pool was exhausted',
+    'counter',
+    metrics.eventsDropped,
+  );
   push('ac_frames_in_total', 'inbound frames accepted', 'counter', metrics.framesIn);
   push('ac_frames_out_total', 'outbound frames sent', 'counter', metrics.framesOut);
   push('ac_bytes_in_total', 'inbound bytes accepted', 'counter', metrics.bytesIn);

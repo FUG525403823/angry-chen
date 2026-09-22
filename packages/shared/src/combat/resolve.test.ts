@@ -5,8 +5,19 @@ import { CONFIG } from '../config/index.ts';
 import { WEAPONS } from '../config/weapons.ts';
 import { createCommand } from '../command.ts';
 import { stepWorld } from '../sim.ts';
-import { createWorld, getEntity, spawnEntity } from '../world.ts';
+import { createWorld, getEntity, spawnEntity, type World } from '../world.ts';
 import { createCombatContext } from './resolve.ts';
+import { createRayHit, rayVsAabb, rayVsCapsule } from './raycast.ts';
+import { partForHeight } from '../config/combat.ts';
+import { SHOT_MAX_DISTANCE_M, createShotTrace, traceRay, type ShotTrace } from './resolve.ts';
+import {
+  createPoseHistory,
+  createSampledPose,
+  recordPoseHistory,
+  samplePoseAgo,
+  type PoseHistory,
+} from '../sim/history.ts';
+import { SERVER_TICK_MS } from '../index.ts';
 
 const bareConfig = {
   ...CONFIG,
@@ -95,5 +106,218 @@ describe('权威命中结算', () => {
     stepWorld(world, [move, move], 50, ctx);
     expect(entity.vel.x).toBe(0);
     expect(entity.vel.z).toBe(0);
+  });
+});
+
+describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', () => {
+  function referenceTrace(
+    world: World,
+    history: PoseHistory | null,
+    shooterId: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxDistanceM: number,
+    rewindMs: number,
+    out: ShotTrace,
+  ): ShotTrace {
+    // 与 traceRay 同语义的暴力参考实现：不做任何早退，逐实体做胶囊求交；
+    // out 的复用与局部复位也和 traceRay 保持一致（否则残留字段会造成假差异）。
+    out.hit = false;
+    out.targetId = 0;
+    out.distanceM = 0;
+    out.x = 0;
+    out.y = 0;
+    out.z = 0;
+    const barn = world.config.arena.barn;
+    const barnHit = createRayHit();
+    rayVsAabb(
+      ox,
+      oy,
+      oz,
+      dx,
+      dy,
+      dz,
+      barn.minX,
+      barn.minY,
+      barn.minZ,
+      barn.maxX,
+      barn.maxY,
+      barn.maxZ,
+      maxDistanceM,
+      barnHit,
+    );
+    let bestT = barnHit.hit ? barnHit.t : maxDistanceM;
+    const ids = world.activeIds;
+    const radiusByKind = world.config.entity.radiusByKind;
+    const heightByKind = world.config.entity.heightByKind;
+    for (let i = 0; i < ids.length; i += 1) {
+      const target = getEntity(world, ids[i] ?? 0);
+      if (target === undefined || !target.active || target.id === shooterId) continue;
+      if (target.kind !== 'player' && target.kind !== 'sheep') continue;
+      let tx = target.pos.x;
+      let ty = target.pos.y;
+      let tz = target.pos.z;
+      if (history !== null && target.kind === 'player') {
+        const pose = createSampledPose();
+        samplePoseAgo(history, rewindMs, target.id, pose);
+        if (pose.found) {
+          tx = pose.x;
+          ty = pose.y;
+          tz = pose.z;
+        }
+      }
+      const radius = radiusByKind[target.kind];
+      const height = heightByKind[target.kind];
+      const hit = createRayHit();
+      rayVsCapsule(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        tx,
+        ty + radius,
+        tz,
+        tx,
+        ty + height - radius,
+        tz,
+        radius,
+        maxDistanceM,
+        hit,
+      );
+      if (!hit.hit || hit.t >= bestT) continue;
+      bestT = hit.t;
+      out.hit = true;
+      out.targetId = target.id;
+      out.targetKind = target.kind;
+      out.part = partForHeight(ty, height, hit.y);
+      out.distanceM = hit.t;
+      out.x = hit.x;
+      out.y = hit.y;
+      out.z = hit.z;
+    }
+    return out;
+  }
+
+  function expectSameTrace(actual: ShotTrace, expected: ShotTrace, label: string): void {
+    expect({ label, ...actual }).toEqual({ label, ...expected });
+  }
+
+  it('20 组固定姿态下 traceRay 与暴力参考实现逐字段一致', () => {
+    const world = createWorld(23, bareConfig);
+    const shooter = spawnEntity(world, 'player', 0, 0, 20);
+    if (!shooter.ok) throw new Error('shooter spawn failed');
+    for (let i = 0; i < 10; i += 1) {
+      spawnEntity(world, 'sheep', 2.2 * i - 9, 0, 26 + (i % 3) * 3);
+    }
+    spawnEntity(world, 'player', -3, 0, 30);
+    spawnEntity(world, 'player', 3, 0, 31);
+
+    const history = createPoseHistory(SERVER_TICK_MS);
+    for (let i = 0; i < 6; i += 1) {
+      world.tick += 1;
+      world.timeMs += SERVER_TICK_MS;
+      recordPoseHistory(history, world);
+    }
+
+    const poses: { ox: number; oy: number; oz: number; dx: number; dy: number; dz: number }[] = [];
+    const aim = (ox: number, oy: number, oz: number, tx: number, ty: number, tz: number): void => {
+      const ddx = tx - ox;
+      const ddy = ty - oy;
+      const ddz = tz - oz;
+      const length = Math.hypot(ddx, ddy, ddz);
+      poses.push({ ox, oy, oz, dx: ddx / length, dy: ddy / length, dz: ddz / length });
+    };
+    const targets = world.activeIds;
+    for (let i = 0; i < targets.length && poses.length < 20; i += 1) {
+      const target = getEntity(world, targets[i] ?? 0);
+      if (target === undefined) continue;
+      const ox = target.pos.x + (i % 2 === 0 ? 6 : -6);
+      const oy = target.pos.y + 2.2;
+      const oz = target.pos.z + 5;
+      aim(ox, oy, oz, target.pos.x, target.pos.y + 0.9, target.pos.z);
+      aim(ox, oy, oz, target.pos.x + 0.4, target.pos.y + 1.8, target.pos.z - 0.3);
+    }
+    expect(poses.length).toBe(20);
+
+    const direct = createShotTrace();
+    const directReference = createShotTrace();
+    for (let i = 0; i < 10; i += 1) {
+      const pose = poses[i];
+      if (pose === undefined) continue;
+      traceRay(
+        world,
+        null,
+        shooter.id,
+        pose.ox,
+        pose.oy,
+        pose.oz,
+        pose.dx,
+        pose.dy,
+        pose.dz,
+        SHOT_MAX_DISTANCE_M,
+        0,
+        direct,
+      );
+      const expected = referenceTrace(
+        world,
+        null,
+        shooter.id,
+        pose.ox,
+        pose.oy,
+        pose.oz,
+        pose.dx,
+        pose.dy,
+        pose.dz,
+        SHOT_MAX_DISTANCE_M,
+        0,
+        directReference,
+      );
+      expectSameTrace(direct, expected, 'pose ' + i);
+    }
+
+    const rewound = createShotTrace();
+    const rewoundReference = createShotTrace();
+    let hits = 0;
+    for (let i = 10; i < 20; i += 1) {
+      const pose = poses[i];
+      if (pose === undefined) continue;
+      traceRay(
+        world,
+        history,
+        shooter.id,
+        pose.ox,
+        pose.oy,
+        pose.oz,
+        pose.dx,
+        pose.dy,
+        pose.dz,
+        SHOT_MAX_DISTANCE_M,
+        120,
+        rewound,
+      );
+      const expected = referenceTrace(
+        world,
+        history,
+        shooter.id,
+        pose.ox,
+        pose.oy,
+        pose.oz,
+        pose.dx,
+        pose.dy,
+        pose.dz,
+        SHOT_MAX_DISTANCE_M,
+        120,
+        rewoundReference,
+      );
+      expectSameTrace(rewound, expected, 'rewound pose ' + i);
+      if (rewound.hit) hits += 1;
+    }
+    expect(hits).toBeGreaterThan(0);
   });
 });

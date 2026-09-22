@@ -6,6 +6,7 @@ import {
   integrateState,
 } from './sim/localStep.ts';
 import {
+  countActive,
   despawnEntity,
   getEntity,
   radiusOf,
@@ -13,6 +14,8 @@ import {
   type EntityId,
   type World,
 } from './world.ts';
+import { CONFIG } from './config/index.ts';
+import { buildSpatialGrid, createSpatialGrid, type SpatialGrid } from './sim/spatialGrid.ts';
 import { RAGE, REVIVE } from './config/combat.ts';
 import { isRageActive } from './combat/rage.ts';
 import { SHEEP_AI, SHEEP_STATE } from './config/sheep.ts';
@@ -30,6 +33,21 @@ import { updateKing } from './ai/kingPhases.ts';
 const playerIdScratch: EntityId[] = [];
 const intentIds: EntityId[] = [];
 const intentPool: SheepIntent[] = [];
+/** 每 tick 复用的空间网格（邻居聚集与实体分离共用同一份网格结构，零分配）。 */
+const spatialGrid = createSpatialGrid(SHEEP_AI.neighborRadiusM, CONFIG.entity.maxEntities);
+/** 分离的半邻域偏移（东/南/东南/西南），保证每对实体只处理一次。 */
+const SEPARATION_OFFSETS = new Int8Array([1, 0, 0, 1, 1, 1, -1, 1]);
+const SEPARATION_RADIUS_BY_KIND = CONFIG.entity.radiusByKind;
+/** 便宜预筛阈值：(最大半径 × 2)²，先于 radiusOf 查表排除远对。 */
+const MAX_PAIR_DISTANCE_SQ =
+  (2 *
+    Math.max(
+      SEPARATION_RADIUS_BY_KIND.player,
+      SEPARATION_RADIUS_BY_KIND.sheep,
+      SEPARATION_RADIUS_BY_KIND.pickup,
+      SEPARATION_RADIUS_BY_KIND.projectile,
+    )) **
+  2;
 import { BUTTON } from './config/input.ts';
 import { hasDownedTeammateInRange, resolveCombat, type CombatContext } from './combat/resolve.ts';
 
@@ -42,24 +60,29 @@ export function stepWorld(
   world.tick += 1;
   world.timeMs += dtMs;
   world.events.length = 0;
+  world.eventCursor = 0;
 
   applyCommands(world, commands);
 
   const playerIds = collectPlayerIds(world);
-  updateAiIntents(world, dtMs, playerIds);
+  buildSpatialGrid(spatialGrid, world);
+  updateAiIntents(world, dtMs, playerIds, spatialGrid);
   applyAiIntents(world);
   applyKnockback(world, dtMs);
 
   integrate(world, dtMs / MS_PER_SECOND, dtMs);
 
   resolveStaticCollisions(world);
-  resolveEntitySeparation(world);
+  buildSpatialGrid(spatialGrid, world);
+  resolveEntitySeparation(world, spatialGrid);
 
   resolveCombat(world, commands, dtMs, combat);
   resolveSheepAttacks(world, playerIds);
   resolveEliteFire(world, playerIds);
   advanceProjectiles(world, dtMs, playerIds);
   updateKings(world, dtMs);
+
+  world.stats.aliveSheep = countActive(world, 'sheep');
 }
 
 function applyCommands(world: World, commands: readonly Command[]): void {
@@ -75,7 +98,6 @@ function applyCommands(world: World, commands: readonly Command[]): void {
       entity,
       raw,
       world.config.player,
-      world.commandScratch,
       isRageActive(entity.combat.rage, world.timeMs) ? RAGE.moveSpeedMultiplier : 1,
     );
     if (entity.combat.downed.downed) {
@@ -111,7 +133,12 @@ function intentAt(index: number): SheepIntent {
   return intentPool[index] as SheepIntent;
 }
 
-export function updateAiIntents(world: World, dtMs: number, playerIds: readonly EntityId[]): void {
+export function updateAiIntents(
+  world: World,
+  dtMs: number,
+  playerIds: readonly EntityId[],
+  grid: SpatialGrid,
+): void {
   const speedMultiplier = sheepSpeedMultiplier(playerIds.length);
   intentIds.length = 0;
   let count = 0;
@@ -123,7 +150,7 @@ export function updateAiIntents(world: World, dtMs: number, playerIds: readonly 
       entity.ai.timerMs += dtMs;
       continue;
     }
-    gatherNeighbors(entity.ai.flock, world, entity);
+    gatherNeighbors(entity.ai.flock, world, entity, grid);
     const intent = intentAt(count);
     updateSheepIntent(world, entity, playerIds, speedMultiplier, dtMs, intent);
     intentIds.push(entity.id);
@@ -225,39 +252,46 @@ function resolveStaticCollisions(world: World): void {
   }
 }
 
-function resolveEntitySeparation(world: World): void {
+function resolveEntitySeparation(world: World, grid: SpatialGrid): void {
   const passes = world.config.entity.separationPasses;
   const epsilon = world.config.entity.separationEpsilon;
   const ids = world.activeIds;
+  const entities = world.entities;
+  const cellStart = grid.cellStart;
+  const cellItems = grid.cellItems;
+  const cols = grid.cols;
+  const rows = grid.rows;
+  const cells = cols * rows;
   for (let pass = 0; pass < passes; pass += 1) {
-    for (let i = 0; i < ids.length; i += 1) {
-      const a = getEntity(world, ids[i] ?? 0);
-      if (a === undefined || !a.active || a.kind === 'projectile') continue;
-      for (let j = i + 1; j < ids.length; j += 1) {
-        const b = getEntity(world, ids[j] ?? 0);
-        if (b === undefined || !b.active || b.kind === 'projectile') continue;
-        const minDistance = radiusOf(world, a.kind) + radiusOf(world, b.kind);
-        let dx = b.pos.x - a.pos.x;
-        let dz = b.pos.z - a.pos.z;
-        const distanceSq = dx * dx + dz * dz;
-        if (distanceSq >= minDistance * minDistance) continue;
-
-        let distance = Math.sqrt(distanceSq);
-        if (distance < epsilon) {
-          dx = 1;
-          dz = 0;
-          distance = 0;
+    // 半邻域扫描：同格（i<j）+ 东/南/东南/西南四格，每对只处理一次，顺序仍是 id 升序。
+    for (let cell = 0; cell < cells; cell += 1) {
+      const start = cellStart[cell] ?? 0;
+      const end = cellStart[cell + 1] ?? 0;
+      if (start >= end) continue;
+      const cx = cell % cols;
+      const cz = (cell - cx) / cols;
+      for (let i = start; i < end; i += 1) {
+        const aIndex = cellItems[i];
+        if (aIndex === undefined) continue;
+        const a = entities[aIndex];
+        if (a === undefined || !a.active || a.kind === 'projectile') continue;
+        for (let j = i + 1; j < end; j += 1) {
+          const bIndex = cellItems[j];
+          if (bIndex === undefined) continue;
+          separatePair(a, entities[bIndex], epsilon);
         }
-        const inverse = distance === 0 ? 1 : 1 / distance;
-        const nx = dx * inverse;
-        const nz = dz * inverse;
-        const half = (minDistance - distance) / 2;
-        a.pos.x -= nx * half;
-        a.pos.z -= nz * half;
-        b.pos.x += nx * half;
-        b.pos.z += nz * half;
-        noteDerivedMove(a, -nx * half, -nz * half);
-        noteDerivedMove(b, nx * half, nz * half);
+        for (let o = 0; o < SEPARATION_OFFSETS.length; o += 2) {
+          const nx = cx + (SEPARATION_OFFSETS[o] ?? 0);
+          const nz = cz + (SEPARATION_OFFSETS[o + 1] ?? 0);
+          if (nx < 0 || nz < 0 || nx >= cols || nz >= rows) continue;
+          const neighbor = nz * cols + nx;
+          const neighborEnd = cellStart[neighbor + 1] ?? 0;
+          for (let j = cellStart[neighbor] ?? 0; j < neighborEnd; j += 1) {
+            const bIndex = cellItems[j];
+            if (bIndex === undefined) continue;
+            separatePair(a, entities[bIndex], epsilon);
+          }
+        }
       }
     }
     for (let i = 0; i < ids.length; i += 1) {
@@ -266,4 +300,32 @@ function resolveEntitySeparation(world: World): void {
       collideStaticTracked(world, entity);
     }
   }
+}
+
+/** 单对分离：n 指向 a→b，按重叠量的一半互推（公式与逐对循环一致；结果对调换 a/b 对称）。 */
+function separatePair(a: Entity, b: Entity | undefined, epsilon: number): void {
+  if (b === undefined || !b.active || b.kind === 'projectile') return;
+  let dx = b.pos.x - a.pos.x;
+  let dz = b.pos.z - a.pos.z;
+  const distanceSq = dx * dx + dz * dz;
+  if (distanceSq >= MAX_PAIR_DISTANCE_SQ) return;
+  const minDistance =
+    (SEPARATION_RADIUS_BY_KIND[a.kind] ?? 0) + (SEPARATION_RADIUS_BY_KIND[b.kind] ?? 0);
+  if (distanceSq >= minDistance * minDistance) return;
+  let distance = Math.sqrt(distanceSq);
+  if (distance < epsilon) {
+    dx = 1;
+    dz = 0;
+    distance = 0;
+  }
+  const inverse = distance === 0 ? 1 : 1 / distance;
+  const nx = dx * inverse;
+  const nz = dz * inverse;
+  const half = (minDistance - distance) / 2;
+  a.pos.x -= nx * half;
+  a.pos.z -= nz * half;
+  b.pos.x += nx * half;
+  b.pos.z += nz * half;
+  noteDerivedMove(a, -nx * half, -nz * half);
+  noteDerivedMove(b, nx * half, nz * half);
 }

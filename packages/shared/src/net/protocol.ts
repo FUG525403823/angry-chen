@@ -130,6 +130,8 @@ export const LIMITS = Object.freeze({
   /** 单次 updateRoom 调用内步进 tick 的工作量预算（毫秒），超出则本房间让出事件循环（让出 ≠ 丢 tick）。 */
   roomTickBudgetMs: 8,
   fullSnapshotIntervalTicks: 40,
+  /** 事件对象池容量：每 tick 复用同批对象，超出容量的事件被丢弃并计入 world.stats.eventsDropped。 */
+  eventPoolSize: 256,
   emptyRoomReclaimMs: 60000,
   roomCodeLength: 4,
   roomCodeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ23456789',

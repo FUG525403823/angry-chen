@@ -1,6 +1,5 @@
 import {
   SERVER_TICK_MS,
-  createCommand,
   stepLocalPlayer,
   type Command,
   type MoveConfig,
@@ -34,7 +33,6 @@ export function createPredictor(config: MoveConfig): Predictor {
     yaw: 0,
     pitch: 0,
   };
-  const scratch = createCommand();
   let activeConfig = config;
   let accumulatorMs = 0;
 
@@ -58,14 +56,14 @@ export function createPredictor(config: MoveConfig): Predictor {
       accumulatorMs = 0;
     },
     stepWith(command: Command | undefined): void {
-      stepLocalPlayer(state, command, activeConfig, scratch, PREDICTION_SUBSTEP_MS);
+      stepLocalPlayer(state, command, activeConfig, PREDICTION_SUBSTEP_MS);
     },
     advance(dtMs: number, command: Command | undefined): number {
       if (!Number.isFinite(dtMs) || dtMs <= 0) return 0;
       accumulatorMs += Math.min(dtMs, PREDICTION_SUBSTEP_MS * MAX_SUBSTEPS_PER_FRAME);
       let steps = 0;
       while (accumulatorMs >= PREDICTION_SUBSTEP_MS && steps < MAX_SUBSTEPS_PER_FRAME) {
-        stepLocalPlayer(state, command, activeConfig, scratch, PREDICTION_SUBSTEP_MS);
+        stepLocalPlayer(state, command, activeConfig, PREDICTION_SUBSTEP_MS);
         accumulatorMs -= PREDICTION_SUBSTEP_MS;
         steps += 1;
       }

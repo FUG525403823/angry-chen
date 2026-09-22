@@ -13,8 +13,8 @@ import { signedJitter, type WeaponDef } from '../config/weapons.ts';
 import { createVec3, wrapAngle, yawPitchToDirection } from '../math.ts';
 import { HIT_FLAG } from '../net/protocol.ts';
 import { createSampledPose, samplePoseAgo, type PoseHistory } from '../sim/history.ts';
+import { pushEvent } from '../sim/events.ts';
 import {
-  createSimEvent,
   despawnEntity,
   getEntity,
   type Entity,
@@ -130,6 +130,7 @@ export function traceRay(
   const ids = world.activeIds;
   const radiusByKind = world.config.entity.radiusByKind;
   const heightByKind = world.config.entity.heightByKind;
+  const horizontalSq = dx * dx + dz * dz;
   for (let i = 0; i < ids.length; i += 1) {
     const id = ids[i] ?? 0;
     const target = getEntity(world, id);
@@ -150,6 +151,18 @@ export function traceRay(
 
     const radius = radiusByKind[target.kind];
     const height = heightByKind[target.kind];
+    // 廉价早退（不改变命中结果）：胶囊竖直，水平距离 > 半径必然打不中；
+    // 最近可能命中参数 minAlong - radius 已超过当前最优命中时也不可能反超。
+    if (horizontalSq > 1e-12) {
+      const along = ((tx - originX) * dx + (tz - originZ) * dz) / horizontalSq;
+      const clamped = along < 0 ? 0 : along > maxDistanceM ? maxDistanceM : along;
+      const gapX = originX + dx * clamped - tx;
+      const gapZ = originZ + dz * clamped - tz;
+      if (gapX * gapX + gapZ * gapZ > radius * radius) continue;
+    }
+    const axisY = dy >= 0 ? ty + radius : ty + height - radius;
+    const minAlong = (tx - originX) * dx + (axisY - originY) * dy + (tz - originZ) * dz;
+    if (minAlong - radius > bestT) continue;
     rayVsCapsule(
       originX,
       originY,
@@ -179,30 +192,6 @@ export function traceRay(
     out.z = targetHitScratch.z;
   }
   return out;
-}
-
-function pushEvent(
-  world: World,
-  type: string,
-  flags: number,
-  subjectId: EntityId,
-  targetId: EntityId,
-  x: number,
-  y: number,
-  z: number,
-  value: number,
-): void {
-  const event = createSimEvent();
-  event.type = type;
-  event.tick = world.tick;
-  event.flags = flags;
-  event.subjectId = subjectId;
-  event.targetId = targetId;
-  event.x = x;
-  event.y = y;
-  event.z = z;
-  event.value = value;
-  world.events.push(event);
 }
 
 function fireRateMultiplierFor(entity: Entity, nowMs: number): number {

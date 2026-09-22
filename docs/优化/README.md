@@ -48,13 +48,22 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O01 | ✅ 已完成 | ✅ 已完成（含执行期并入的任务 11 = 谷仓边界，见上方结论） | `docs/evidence/bots-pose-validation.json`（原始基线 + 10507 中间态 + 最终 0/0/0 + 边界探针） | `O01` |
 | O02 | ✅ 已完成 | ✅ 已完成（`S5.2-4` 走替代判据 pass；200ms 变体 verdict=pass、退出码 0） | `docs/evidence/bots-schedule.json`、`bots-schedule-latency200.json`、`soak-5min-o02.json`、`report-o02.md` | `O02` |
 | O03 | ✅ 已完成 | ✅ 已完成（慢客户端 123.3s 顶到预算：丢帧计数 + 两个连接 `1013`，排空 5627 帧 `decodeFailures=0`；健康场景 soak RSS 0.278 MB/分钟） | `docs/evidence/probe-slow-client.md`、`soak-5min-o03.json/.md` | `O03` |
-| O04 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bench-sim-60sheep.json` | `O04` |
+| O04 | ✅ 已完成 | ✅ 已完成（60 羊基准 单 tick p95 0.074ms / p99 0.143ms ≤ 8/12ms，约 2.4× 提速；稳态 raw 分配 1002→296 B/tick；4 人 5 分钟压测 11 项门槛全 pass；`check-alloc` 绝对门槛见 §5 登记） | `docs/evidence/bench-sim-60sheep.json`、`docs/evidence/bots-after-o04.json` | `O04` |
 | O05 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o05.json` | `O05` |
 | O06 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/client-frame-alloc.md` | `O06` |
 | O07 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/bots-o07.json` | `O07` |
 | O08 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/` 下的重连验证记录（待生成） | `O08` |
 | O09 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/store-load-100k.md` | `O09` |
 | O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
+
+**O04 执行结论（2026-09-22）**：§4 的 15 条任务全部落地，§7 DoD 除「`check-alloc` 绝对门槛」外全绿（`pnpm check` 退出码 0；shared 146 / server 111 用例）。
+分离与邻居聚集统一走同一张均匀网格（cell 边长 = `SHEEP_AI.neighborRadiusM = 3m`，两趟计数排序建表，零稳态分配），事件对象池化（`LIMITS.eventPoolSize = 256`，溢出计
+`ac_events_dropped_total`），邻居改为「按距离最近的 12 个」（与 `activeIds` 顺序无关，逆序后逐位一致），活动羊数每 tick 只数一次（director 用 `spawned` 回加，`metrics.sheepAlive` 口径不变），
+净化职责收敛到会话边界（`localStep.ts` 0 命中 `sanitizeCommand`）。基准 `tools/bench-sim.mjs`（4 玩家 + 60 羊、固定种子）实测单 tick p95 0.074ms / p99 0.143ms，
+基线 0.183 / 0.296 → 约 2.4× 提速；真实 4 人局 `tickWorkP95Ms 0.676`、`roomBudgetExceededTotal 0`。
+执行期发现两处口径问题并按本文件 §7 规则 2 登记：① `check-alloc` 的 `rawPerTick ≤ 8` 在本机**基线**上就不满足（`git stash` 复测 42.53/42.77 B/tick），O04 把它降到 22.5–22.9（-47%）、
+`retained` 两侧 ≈ 0，故该阈值需 O10 复核探针口径后重定；② 基准的单窗口 `raw` 会被 GC 时机放大到 ±1000 B/tick，`bench-sim.mjs` 改为 3 窗口取最小（全量留档）+ gc 后读 `retained`，基线与改动后两组同脚本重跑。
+细节见 O04 §5 调整记录与 §6。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -96,7 +105,9 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | `S5.2-4` 替代判据（仅当定时器粒度 >8ms） | 前 1/3 与后 1/3 的 schedule error p95 差 ≤2ms **且** `|ac_sim_drift_ms|` ≤50ms | O02 | 粒度受限的环境判「误差是否累积」，三件套（粒度、前后段、漂移）缺一即视为验证失败 |
 | `LIMITS.maxBufferedBytes` | 262144 | O03 | 单连接出站积压上限；`队列顶到该值且已丢帧`（`bufferedAmount ≥ 该值`）⇒ 按 `1013` 断开（§5 调整记录：原判据 `> 2 ×` 取不到） |
 | `LIMITS.eventPoolSize` | 256 | O04 | 事件对象池容量（超出计 `eventsDropped`） |
-| bench SLO（4 人 60 羊） | p95 ≤ 8ms、p99 ≤ 12ms | O04 | 与 `roomTickBudgetMs` 对齐的单 tick 工作量 |
+| bench SLO（4 人 60 羊） | p95 ≤ 8ms、p99 ≤ 12ms | O04 | 与 `roomTickBudgetMs` 对齐的单 tick 工作量（实测 p95 0.074 / p99 0.143 ms） |
+| `ac_events_dropped_total` | counter（告警阈值待定） | O04 | 事件池溢出而丢弃的事件数；阈值记入 O10 |
+| `check-alloc` 门槛 | `rawPerTick ≤ 8`、`retainedPerTick ≤ 16`（探针已有，接入 `pnpm check` 由 O10 负责） | O04 | **本机当前状态下基线即为 42.5–42.8 B/tick，绝对门槛不可达**（O04 后 22.5–22.9，-47%；`retained` 两侧 ≈ 0）→ O10 需先复核探针口径再定阈值 |
 | `LIMITS.snapshotRateLevels` | [200, 150, 100] | O05 | 自适应快照率离散档位（默认 200） |
 | 客户端插值延迟 | `clamp(2 × 中位间隔, 100, 250)` ms | O05 | 随实测快照间隔自适应 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |

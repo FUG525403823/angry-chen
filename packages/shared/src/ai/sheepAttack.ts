@@ -19,6 +19,7 @@ import {
   type World,
 } from '../world.ts';
 import { sheepKindOf } from './sheepBrain.ts';
+import { pushEvent } from '../sim/events.ts';
 
 export const BOLT_LIFE_MS = 3000;
 export const BOLT_RADIUS_M = 0.22;
@@ -26,20 +27,6 @@ export const BITE_KNOCKBACK_M = 1.5;
 export const CHARGE_KNOCKBACK_M = 3;
 
 const damageScratch = createDamageResult();
-
-export function pushEvent(
-  world: World,
-  type: World['events'][number]['type'],
-  flags: number,
-  subjectId: EntityId,
-  targetId: EntityId,
-  x: number,
-  y: number,
-  z: number,
-  value: number,
-): void {
-  world.events.push({ type, tick: world.tick, flags, subjectId, targetId, x, y, z, value });
-}
 
 export function knockbackPlayer(
   target: Entity,

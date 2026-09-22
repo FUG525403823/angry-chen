@@ -5,8 +5,10 @@ import {
   BUTTON,
   BUTTON_MASK_ALL,
   CLIENT_OPCODE_LIST,
+  CONFIG,
   INPUT,
   OPCODE,
+  applyCommandToState,
   createCommand,
 } from '@ac/shared';
 import { describe, expect, it } from 'vitest';
@@ -153,6 +155,25 @@ describe('安全清单代码化', () => {
     const withButton = createCommand();
     sanitizeCommandFields({ buttons: BUTTON.switchWeapon, switchTo: 2 }, withButton);
     expect(withButton.switchTo).toBe(2);
+  });
+
+  it('#5 净化只在会话边界：模拟内核信任 Command（O04 §5 契约）', () => {
+    const boundary = createCommand();
+    sanitizeCommandFields({ moveX: 999, moveY: -999, yaw: Math.PI * 4 + 0.5 }, boundary);
+    expect(boundary.moveX).toBe(INPUT.moveAxisLimit);
+    expect(Math.abs(boundary.yaw)).toBeLessThanOrEqual(Math.PI);
+
+    const raw = createCommand();
+    raw.moveX = 999;
+    raw.yaw = Math.PI * 4 + 0.5;
+    raw.pitch = 99;
+    const state = { pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 }, yaw: 0, pitch: 0 };
+    applyCommandToState(state, raw, CONFIG.player);
+    // 会话边界已夹取过的值原样使用：内核不再 wrap 角度（旧实现在这里会得到 0.5）。
+    expect(state.yaw).toBe(Math.PI * 4 + 0.5);
+    expect(state.pitch).toBe(99);
+    // 移动轴只做长度归一化（内核自身的数学），不做范围夹取。
+    expect(Math.hypot(state.vel.x, state.vel.z)).toBeCloseTo(CONFIG.player.moveSpeed, 6);
   });
 
   it('#9 ALLOWED_ORIGINS 解析与白名单判定', () => {

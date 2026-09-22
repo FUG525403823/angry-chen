@@ -111,7 +111,34 @@ export function rayVsSphere(
   );
 }
 
-/** 轴对齐盒体（slab 法）。方向向量必须是单位向量。 */
+let slabTMin = 0;
+let slabTMax = 0;
+let slabAxis = 0;
+let slabSign = 1;
+
+/** 单轴 slab 更新，结果写模块级暂存（零分配）。返回 false 表示已判定不相交。 */
+function updateSlab(axis: number, origin: number, dir: number, low: number, high: number): boolean {
+  if (Math.abs(dir) < epsilon) return origin >= low && origin <= high;
+  const inverse = 1 / dir;
+  let near = (low - origin) * inverse;
+  let far = (high - origin) * inverse;
+  let nearSign = -1;
+  if (near > far) {
+    const swap = near;
+    near = far;
+    far = swap;
+    nearSign = 1;
+  }
+  if (near > slabTMin) {
+    slabTMin = near;
+    slabAxis = axis;
+    slabSign = nearSign;
+  }
+  if (far < slabTMax) slabTMax = far;
+  return slabTMin <= slabTMax;
+}
+
+/** 轴对齐盒体（slab 法）。方向向量必须是单位向量。零分配：三轴展开，逐轴保持原运算顺序。 */
 export function rayVsAabb(
   ox: number,
   oy: number,
@@ -129,45 +156,20 @@ export function rayVsAabb(
   out: RayHit,
 ): RayHit {
   clearRayHit(out);
-  let tMin = 0;
-  let tMax = maxDist;
-  let axis = 0;
-  let sign = 1;
-  const origins = [ox, oy, oz];
-  const dirs = [dx, dy, dz];
-  const lows = [minX, minY, minZ];
-  const highs = [maxX, maxY, maxZ];
-  for (let i = 0; i < 3; i += 1) {
-    const origin = origins[i] ?? 0;
-    const dir = dirs[i] ?? 0;
-    const low = lows[i] ?? 0;
-    const high = highs[i] ?? 0;
-    if (Math.abs(dir) < epsilon) {
-      if (origin < low || origin > high) return out;
-      continue;
-    }
-    const inverse = 1 / dir;
-    let near = (low - origin) * inverse;
-    let far = (high - origin) * inverse;
-    let nearSign = -1;
-    if (near > far) {
-      const swap = near;
-      near = far;
-      far = swap;
-      nearSign = 1;
-    }
-    if (near > tMin) {
-      tMin = near;
-      axis = i;
-      sign = nearSign;
-    }
-    if (far < tMax) tMax = far;
-    if (tMin > tMax) return out;
-  }
-  const nx = axis === 0 ? sign : 0;
-  const ny = axis === 1 ? sign : 0;
-  const nz = axis === 2 ? sign : 0;
-  return writeHit(out, tMin, ox, oy, oz, dx, dy, dz, nx, ny, nz);
+  slabTMin = 0;
+  slabTMax = maxDist;
+  slabAxis = 0;
+  slabSign = 1;
+  if (
+    !updateSlab(0, ox, dx, minX, maxX) ||
+    !updateSlab(1, oy, dy, minY, maxY) ||
+    !updateSlab(2, oz, dz, minZ, maxZ)
+  )
+    return out;
+  const nx = slabAxis === 0 ? slabSign : 0;
+  const ny = slabAxis === 1 ? slabSign : 0;
+  const nz = slabAxis === 2 ? slabSign : 0;
+  return writeHit(out, slabTMin, ox, oy, oz, dx, dy, dz, nx, ny, nz);
 }
 
 /** 胶囊 = 线段 a→b 加半径；方向向量必须是单位向量。 */

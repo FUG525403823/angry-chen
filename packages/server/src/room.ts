@@ -88,6 +88,8 @@ export interface Room {
   readonly code: string;
   readonly world: World;
   readonly sessions: Session[];
+  /** pid → 会话，O(1) 取命令（房间人数 ≤ 4，避免每 tick 的线性查找）。 */
+  readonly sessionsByPid: Map<number, Session>;
   readonly commands: Command[];
   readonly idleCommand: Command;
   readonly snapshot: Snapshot;
@@ -120,6 +122,8 @@ export interface Room {
   readonly preTickIds: EntityId[];
   readonly combat: CombatContext;
   readonly match: MatchRuntime;
+  /** 已同步到 metrics 的事件池丢弃数（world 级累计值的已消费部分）。 */
+  eventsDroppedSeen: number;
 }
 
 export interface RoomDeps extends MatchDeps {
@@ -137,6 +141,7 @@ export function createRoom(
     code,
     world,
     sessions: [],
+    sessionsByPid: new Map<number, Session>(),
     commands: [],
     idleCommand: createCommand(),
     snapshot: createSnapshot(),
@@ -165,6 +170,7 @@ export function createRoom(
     combat: createCombatContext(),
     preTick: new Float64Array(LIMITS.maxPlayersPerRoom * 3),
     preTickIds: [],
+    eventsDroppedSeen: 0,
   };
 }
 
@@ -194,6 +200,7 @@ export function roomJoin(room: Room, session: Session, nowMs: number): 'ok' | 'f
   session.disconnectedAtMs = null;
   session.joinedAtMs = nowMs;
   room.sessions.push(session);
+  room.sessionsByPid.set(session.pid, session);
   if (room.match.hostId === 0) room.match.hostId = session.pid;
   joinMatchRecord(room, session.pid, session.name);
   room.emptySinceMs = null;
@@ -219,6 +226,7 @@ export function roomReconnect(
   incoming.disconnectedAtMs = null;
   incoming.joinedAtMs = existing.joinedAtMs;
   room.sessions[index] = incoming;
+  if (incoming.pid > 0) room.sessionsByPid.set(incoming.pid, incoming);
   existing.pid = 0;
   existing.roomCode = null;
   const entity = incoming.pid > 0 ? room.world.entities[incoming.pid - 1] : undefined;
@@ -263,6 +271,7 @@ export function removeMember(
   const index = room.sessions.indexOf(session);
   if (index < 0) return false;
   room.sessions.splice(index, 1);
+  if (session.pid > 0) room.sessionsByPid.delete(session.pid);
   if (session.pid > 0) {
     const record = room.match.records.get(session.pid);
     if (record !== undefined) record.leftMidMatch = true;
@@ -355,14 +364,7 @@ function buildCommands(room: Room): void {
     if (id === undefined) continue;
     const entity = world.entities[id - 1];
     if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
-    let command: Command | undefined;
-    for (let s = 0; s < room.sessions.length; s += 1) {
-      const session = room.sessions[s];
-      if (session !== undefined && session.pid === id) {
-        command = session.command;
-        break;
-      }
-    }
+    let command: Command | undefined = room.sessionsByPid.get(id)?.command;
     if (command === undefined) {
       const idle = room.idleCommand;
       idle.moveX = 0;
@@ -463,7 +465,7 @@ function collectDirectorPlayerIds(room: Room): number[] {
     if (entity === undefined || !entity.active || entity.kind !== 'player' || entity.idle) continue;
     directorPlayerIdScratch.push(entity.id);
   }
-  directorPlayerIdScratch.sort((a, b) => a - b);
+  // 邻居/出生点选择已走空间网格或按距离判定，不再依赖 pid 升序（O04 §4 任务 7）。
   return directorPlayerIdScratch;
 }
 
@@ -538,6 +540,11 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean, nowMs: numbe
   applyShotDeltas(room);
   accumulateMatchTime(room, SERVER_TICK_MS);
   deps.metrics.sheepAlive = aliveSheepCount(room.world);
+  const eventsDropped = room.world.stats.eventsDropped;
+  if (eventsDropped > room.eventsDroppedSeen) {
+    deps.metrics.eventsDropped += eventsDropped - room.eventsDroppedSeen;
+    room.eventsDroppedSeen = eventsDropped;
+  }
   deps.metrics.waveCurrent = room.wave;
   recordPoseHistory(room.history, room.world);
   snapshotWorld(room.world, room.snapshot);

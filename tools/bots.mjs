@@ -590,7 +590,7 @@ function tickBot(bot, nowMs, runStartMs) {
     }
   }
   if (myPos !== null) {
-    stepLocalPlayer(bot.predicted, cmd, MOVE_CONFIG, bot.scratchCommand, SERVER_TICK_MS);
+    stepLocalPlayer(bot.predicted, cmd, MOVE_CONFIG, SERVER_TICK_MS);
   }
   const dropped = rngFloat(bot.rng) < options.loss;
   if (dropped) {

@@ -85,6 +85,8 @@ export {
 export type { Snapshot, SnapshotEntity } from './snapshot.ts';
 
 export { stepWorld } from './sim.ts';
+export * from './sim/events.ts';
+export * from './sim/spatialGrid.ts';
 
 export {
   CLIENT_OPCODE_LIST,

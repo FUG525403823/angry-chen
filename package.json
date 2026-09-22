@@ -21,7 +21,9 @@
     "check:assets": "node tools/check-assets.mjs",
     "check:count": "node tools/check-test-count.mjs",
     "check:coverage": "vitest run --coverage --project shared",
-    "check:build": "pnpm --filter @ac/client run build"
+    "check:build": "pnpm --filter @ac/client run build",
+    "check:alloc": "node --expose-gc tools/check-alloc.mjs",
+    "bench:sim": "node tools/bench-sim.mjs --sheep 60 --ticks 6000"
   },
   "devDependencies": {
     "@types/node": "24.13.6",

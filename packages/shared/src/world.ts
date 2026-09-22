@@ -1,8 +1,8 @@
-import { createCommand, type Command } from './command.ts';
 import { createDownedState, resetDownedState, type DownedState } from './combat/downed.ts';
 import { createRageState, resetRageState, type RageState } from './combat/rage.ts';
 import { createWeaponState, resetWeaponState, type WeaponState } from './combat/weapon.ts';
 import { CONFIG, type WorldConfig } from './config/index.ts';
+import { LIMITS } from './net/protocol.ts';
 import { createVec3, type Vec3 } from './math.ts';
 import { createRng, type Rng } from './rng.ts';
 
@@ -91,6 +91,13 @@ const defaultTeamByKind: Record<EntityKind, Team> = {
 
 export type SpawnResult = { ok: true; id: EntityId } | { ok: false; reason: SpawnFailureReason };
 
+/** 每 tick 由 stepWorld 写一次的统计量；director 与 metrics 只读，避免重复全量遍历。 */
+export interface WorldStats {
+  aliveSheep: number;
+  /** 事件池打满后丢弃的事件数（累计）。 */
+  eventsDropped: number;
+}
+
 export interface World {
   readonly seed: number;
   readonly config: WorldConfig;
@@ -98,12 +105,21 @@ export interface World {
   readonly activeIds: EntityId[];
   readonly freeStack: EntityId[];
   readonly events: SimEvent[];
+  /** 事件对象池（容量 LIMITS.eventPoolSize）：仅在当 tick 内有效，pushEvent 会覆写池对象。 */
+  readonly eventPool: SimEvent[];
+  eventCursor: number;
+  readonly stats: WorldStats;
   readonly scratchEntities: Entity[];
-  readonly commandScratch: Command;
   readonly rng: Readonly<{ ai: Rng; spawn: Rng; fx: Rng }>;
   readonly liveCount: number;
   tick: number;
   timeMs: number;
+}
+
+export function createEventPool(size: number): SimEvent[] {
+  const pool: SimEvent[] = [];
+  for (let i = 0; i < size; i += 1) pool.push(createSimEvent());
+  return pool;
 }
 
 export function createSimEvent(): SimEvent {
@@ -152,8 +168,10 @@ export function createWorld(seed: number, config: WorldConfig = CONFIG): World {
     activeIds,
     freeStack,
     events: [],
+    eventPool: createEventPool(LIMITS.eventPoolSize),
+    eventCursor: 0,
+    stats: { aliveSheep: 0, eventsDropped: 0 },
     scratchEntities: [],
-    commandScratch: createCommand(),
     rng: { ai: createRng(seed, 'ai'), spawn: createRng(seed, 'spawn'), fx: createRng(seed, 'fx') },
     get liveCount(): number {
       return activeIds.length;

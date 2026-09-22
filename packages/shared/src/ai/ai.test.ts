@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { CONFIG } from '../config/index.ts';
+import { CONFIG, MAX_ENTITIES } from '../config/index.ts';
+import { buildSpatialGrid, createSpatialGrid } from '../sim/spatialGrid.ts';
 import {
   SHEEP_AI,
   SHEEP_ORDER,
@@ -28,7 +29,13 @@ import {
   selectSpawnPointIndices,
   updateDirector,
 } from './director.ts';
-import { addNeighbor, createFlockNeighbors, finalizeNeighbors, flockForce } from './flocking.ts';
+import {
+  addNeighbor,
+  createFlockNeighbors,
+  finalizeNeighbors,
+  flockForce,
+  gatherNeighbors,
+} from './flocking.ts';
 import { applySheepKind } from './sheepBrain.ts';
 import { arrive, createSteeringOut, separation } from './steering.ts';
 
@@ -97,6 +104,57 @@ describe('flocking', () => {
     for (let i = 0; i < 40; i += 1) addNeighbor(flock, i * 0.1, 0, 0, 0);
     finalizeNeighbors(flock);
     expect(flock.count).toBe(SHEEP_AI.maxNeighbors);
+  });
+});
+
+describe('flocking 网格查询与有界插入（O04）', () => {
+  const CENTER_Z = 20;
+
+  function scatter(world: World, count: number): void {
+    for (let i = 0; i < count; i += 1) {
+      spawnEntity(world, 'sheep', 0.31 * i - 2.4, 0, CENTER_Z + 0.21 * i - 2.0);
+    }
+  }
+
+  it('选中的是距离最近的 12 个，而不是最先遇到的 12 个', () => {
+    const world = bareWorld(31);
+    const self = addSheep(world, 'grunt', 0, CENTER_Z);
+    for (let i = 1; i <= 20; i += 1) spawnEntity(world, 'sheep', i * 0.1, 0, CENTER_Z);
+    const grid = createSpatialGrid(SHEEP_AI.neighborRadiusM, MAX_ENTITIES);
+    buildSpatialGrid(grid, world);
+    const flock = createFlockNeighbors(SHEEP_AI.maxNeighbors);
+    expect(gatherNeighbors(flock, world, self, grid)).toBe(SHEEP_AI.maxNeighbors);
+    expect(flock.distSq[0]).toBeCloseTo(0.01, 10);
+    expect(flock.distSq[SHEEP_AI.maxNeighbors - 1]).toBeCloseTo(1.44, 10);
+  });
+
+  it('打乱 activeIds 顺序后邻居集合与 flock 力逐位一致', () => {
+    const world = bareWorld(32);
+    const self = addSheep(world, 'grunt', 0.05, CENTER_Z + 0.05);
+    scatter(world, 24);
+    const grid = createSpatialGrid(SHEEP_AI.neighborRadiusM, MAX_ENTITIES);
+    buildSpatialGrid(grid, world);
+    const before = createFlockNeighbors(SHEEP_AI.maxNeighbors);
+    gatherNeighbors(before, world, self, grid);
+    const forceBefore = createSteeringOut();
+    flockForce(forceBefore, self.pos.x, self.pos.z, before, 1);
+    expect(before.count).toBeGreaterThan(3);
+
+    world.activeIds.reverse();
+    buildSpatialGrid(grid, world);
+    const after = createFlockNeighbors(SHEEP_AI.maxNeighbors);
+    gatherNeighbors(after, world, self, grid);
+    const forceAfter = createSteeringOut();
+    flockForce(forceAfter, self.pos.x, self.pos.z, after, 1);
+
+    expect(after.count).toBe(before.count);
+    expect(after.centroidX).toBe(before.centroidX);
+    expect(after.centroidZ).toBe(before.centroidZ);
+    expect(after.averageDirX).toBe(before.averageDirX);
+    expect(after.averageDirZ).toBe(before.averageDirZ);
+    expect([...after.distSq]).toEqual([...before.distSq]);
+    expect(forceAfter.x).toBe(forceBefore.x);
+    expect(forceAfter.z).toBe(forceBefore.z);
   });
 });
 
