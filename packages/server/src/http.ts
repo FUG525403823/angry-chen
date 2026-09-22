@@ -3,6 +3,7 @@ import { PROTOCOL_VERSION, SNAPSHOT_RATE_X10 } from '@ac/shared';
 
 import { renderPrometheus } from './metrics.ts';
 import type { GameServer } from './server.ts';
+import type { StaticServer } from './static.ts';
 
 function jsonHeaders(): Record<string, string> {
   return { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
@@ -48,6 +49,7 @@ function isReadRateLimited(hits: Map<string, number[]>, ip: string, nowMs: numbe
 export function createHttpHandler(
   game: GameServer,
   startedAtMs: number,
+  staticServer?: StaticServer,
 ): (req: IncomingMessage, res: ServerResponse) => void {
   const readCache = new Map<string, { atMs: number; version: number; body: string }>();
   const rateHits = new Map<string, number[]>();
@@ -136,6 +138,8 @@ export function createHttpHandler(
       res.end(body);
       return;
     }
+    // ADR-007：静态托管排在所有运维端点之后，绝不吞掉 /health、/metrics、/api/*。
+    if (staticServer !== undefined && staticServer.handle(req, res)) return;
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ error: 'not-found', path }));
   };

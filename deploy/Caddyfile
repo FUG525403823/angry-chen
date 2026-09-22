@@ -4,7 +4,7 @@
 # 验证状态：静态审查（本机无 docker、无 caddy，此文件从未被 caddy validate/run 过）。
 # 人类必须验证的点：
 #   1) 语法：`caddy validate --config deploy/Caddyfile --adapter caddyfile`
-#   2) WSS 握手：浏览器打开 https://<域名>/?server=wss://<域名>/ws，应能进房
+#   2) WSS 握手：浏览器打开 https://<域名>/ 即可进房（同源自动连 wss://<域名>/ws，ADR-007）
 #      （反代返回 101；Caddy 的 reverse_proxy 自动透传 Upgrade/Connection）
 #   3) 缓存头：`curl -sI https://<域名>/assets/<hash>.js` 应含
 #      `Cache-Control: public, max-age=31536000, immutable`
@@ -21,8 +21,8 @@
 	encode zstd gzip
 	root * {$CLIENT_ROOT:/srv/client}
 
-	# 游戏 WebSocket。客户端默认连 ws://127.0.0.1:8787，公网需显式指定：
-	#   https://<域名>/?server=wss://<域名>/ws
+	# 游戏 WebSocket。客户端生产构建与页面同源，自动连 wss://<域名>/ws（ADR-007），
+	# 所以这里只需要 /ws 的转发；只有「页面与游戏服务器不同源」时才需要 ?server=wss://<域名>/ws。
 	# （服务端接受任意路径的 upgrade，见 packages/server/src/transport/ws-adapter.ts）
 	handle /ws {
 		reverse_proxy {$GAME_UPSTREAM:127.0.0.1:8787}

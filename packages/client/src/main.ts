@@ -30,6 +30,7 @@ import { createInputSampler } from './input/sampler.ts';
 import { createGameConnection, readStoredCredentials } from './net/connection.ts';
 import { createSnapshotView } from './net/state.ts';
 import { createSheepVisualTracker } from './net/sheepVisual.ts';
+import { DEFAULT_SERVER_URL, resolveServerUrl } from './net/serverUrl.ts';
 import { type ArenaArtParams, createArenaArt } from './render/arenaArt.ts';
 import { createEffects } from './render/effects.ts';
 import { type SheepVisual, createEntityViews } from './render/entityViews.ts';
@@ -54,7 +55,6 @@ import { createLobby, errorMessageFor, filterRoomCodeInput } from './ui/lobby.ts
 import { createResults, type ResultsSummary } from './ui/results.ts';
 import { applyAccessibilityClasses, createSettingsPanel } from './ui/settings.ts';
 
-export const DEFAULT_SERVER_URL = 'ws://127.0.0.1:8787';
 export const DEFAULT_PLAYER_NAME = '陈sir';
 export const PHASE_NAMES: readonly string[] = ['大厅', '加载中', '战斗中', '波间备战', '结算'];
 export const SHEEP_LABELS: readonly string[] = ['咩咩兵', '冲撞羊', '问界羊', '羊王'];
@@ -102,7 +102,13 @@ export function boot(): void {
   const chatRoot = requireElement('chat');
 
   const params = new URLSearchParams(window.location.search);
-  const serverUrl = params.get('server') ?? DEFAULT_SERVER_URL;
+  const serverUrl = resolveServerUrl({
+    search: window.location.search,
+    protocol: window.location.protocol,
+    host: window.location.host,
+    isDev: import.meta.env.DEV,
+    fallback: DEFAULT_SERVER_URL,
+  });
   const storage = safeLocalStorage();
   const stored = readStoredCredentials(storage, params.get('name') ?? DEFAULT_PLAYER_NAME);
   const initialRoomCode = filterRoomCodeInput(params.get('room') ?? stored.roomCode);

@@ -33,35 +33,60 @@ curl -s http://localhost:8787/health
 - 第 1–4 条命令与 `pnpm dev` 的双进程形态在本机实测过；`pnpm check` 是否全绿取决于并行施工的 `tools/**`，
   逐项证据与阻塞项见 [docs/验收报告.md](docs/验收报告.md)。
 
+## 和真人联机（局域网 / 公网 IP）
+
+服务端**自带客户端页面**（ADR-007）：一个进程、一个端口、一个地址，不需要反向代理。
+
+```bash
+cp .env.example .env          # 模板默认 HOST=0.0.0.0（联机就绪）；只在本机玩就改回 127.0.0.1
+pnpm serve                    # = 构建客户端 + 启动服务端（8787）
+```
+
+启动日志的最后一行就是发给朋友的地址（`joinUrls`）：
+
+```json
+{"ts":...,"level":"info","evt":"listening","url":"http://0.0.0.0:8787","clientDist":".../packages/client/dist","joinUrls":["http://192.168.1.5:8787"]}
+```
+
+- 局域网：朋友打开 `http://<你的内网 IP>:8787`，流程和本机一样（填昵称 → 创建/加入房间）。
+- 公网 IP：先在云安全组 / Windows 防火墙放行 TCP 8787，再把 `http://<公网 IP>:8787` 发出去。
+- 这是明文 `http://` + `ws://`（朋友局够用）。要域名 + HTTPS 再加一层可选反代（`deploy/Caddyfile`）；
+  客户端会自动改用 `wss://<域名>/ws`（ADR-007），**仍然不需要** `?server=`。
+- `?server=` 仍然可用，只在「页面与游戏服务器不同源」时才需要：`http://localhost:5173/?server=ws://127.0.0.1:9000`。
+- **注意暴露面**：`HOST=0.0.0.0` 表示 8787 对同网段（或公网 IP）可达。公网直连请用云安全组 / 防火墙限定来源；
+  代码默认（不放 `.env` 时）仍是 `127.0.0.1`，只有本机能连。
+
 ## 常见问题
 
-| 症状                       | 原因                                                                                 | 处理                                                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| 端口 8787 被占用           | 已有服务端实例，或本机其它软件占用（8080 尤其常见）                                  | 换端口起服务端：`PORT=9000 pnpm dev:server`，客户端打开 `http://localhost:5173/?server=ws://127.0.0.1:9000` |
-| 端口 5173 被占用           | Vite 配置了 `strictPort: true`，不会自动换端口                                       | `pnpm --filter @ac/client run dev -- --port 5174`，再打开 `http://localhost:5174`                           |
-| 鼠标不锁、视角不能转       | Pointer Lock 必须由用户手势触发；页面失焦、按 Esc 或被其它窗口抢焦点后会释放         | 用鼠标点一下游戏画面；浏览器若弹出「已退出指针锁定」提示，点「允许」后再点一次画面                          |
-| 完全没有声音               | 浏览器自动播放策略禁止在首次用户交互前启动 `AudioContext`                            | 先点一下画面或按任意键；音频在首次交互时才解锁（`packages/client/src/audio/synth.ts`）                      |
-| 想重置本地战绩/排行榜      | 战绩落盘在 `DATA_DIR`（默认 `./data/matches.ndjson`）                                | 停服后删目录：`rm -rf data`；用 systemd/PM2 部署时改删 `/var/lib/angry-chen`，然后重启服务                  |
-| 想重置昵称/设置/上次房间码 | 浏览器 `localStorage`（键 `ac.nickname.v1`、`ac.lastRoomCode.v1`、`ac.settings.v1`） | DevTools → Application → Local Storage 删除对应键，或执行 `localStorage.removeItem('ac.nickname.v1')` 等    |
-| 排行榜接口空/404           | 还没打完整一局（`DATA_DIR/matches.ndjson` 为空），或 `DATA_DIR` 不可写               | 先打完一局；用 `curl -s localhost:8787/api/leaderboard` 确认接口通；检查 `DATA_DIR` 目录权限与磁盘          |
+| 症状                          | 原因                                                                                                           | 处理                                                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 朋友打开地址后一直重连 / 白屏 | 服务端 `HOST` 还是 `127.0.0.1`（只有本机能连），或没跑 `pnpm build:client` / `pnpm serve`，或防火墙没放行 8787 | 按上面「和真人联机」一节：`.env` 设 `HOST=0.0.0.0` + `pnpm serve`；看启动日志的 `joinUrls` 与 `clientDist`；`curl -sI http://<IP>:8787/` 应返回 200 HTML |
+| 端口 8787 被占用              | 已有服务端实例，或本机其它软件占用（8080 尤其常见）                                                            | 换端口起服务端：`PORT=9000 pnpm dev:server`，客户端打开 `http://localhost:5173/?server=ws://127.0.0.1:9000`                                              |
+| 端口 5173 被占用              | Vite 配置了 `strictPort: true`，不会自动换端口                                                                 | `pnpm --filter @ac/client run dev -- --port 5174`，再打开 `http://localhost:5174`                                                                        |
+| 鼠标不锁、视角不能转          | Pointer Lock 必须由用户手势触发；页面失焦、按 Esc 或被其它窗口抢焦点后会释放                                   | 用鼠标点一下游戏画面；浏览器若弹出「已退出指针锁定」提示，点「允许」后再点一次画面                                                                       |
+| 完全没有声音                  | 浏览器自动播放策略禁止在首次用户交互前启动 `AudioContext`                                                      | 先点一下画面或按任意键；音频在首次交互时才解锁（`packages/client/src/audio/synth.ts`）                                                                   |
+| 想重置本地战绩/排行榜         | 战绩落盘在 `DATA_DIR`（默认 `./data/matches.ndjson`）                                                          | 停服后删目录：`rm -rf data`；用 systemd/PM2 部署时改删 `/var/lib/angry-chen`，然后重启服务                                                               |
+| 想重置昵称/设置/上次房间码    | 浏览器 `localStorage`（键 `ac.nickname.v1`、`ac.lastRoomCode.v1`、`ac.settings.v1`）                           | DevTools → Application → Local Storage 删除对应键，或执行 `localStorage.removeItem('ac.nickname.v1')` 等                                                 |
+| 排行榜接口空/404              | 还没打完整一局（`DATA_DIR/matches.ndjson` 为空），或 `DATA_DIR` 不可写                                         | 先打完一局；用 `curl -s localhost:8787/api/leaderboard` 确认接口通；检查 `DATA_DIR` 目录权限与磁盘                                                       |
 
 ## 交付物与验证状态（P10 §3 / §5.5）
 
 验证状态只有三种：**已验证**（有可复现命令与输出）、**静态审查**（无环境验证）、**未验证**。
 
-| 交付物                                                     | 验证状态                                | 依据 / 缺失说明                                                                                 |
-| ---------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `README.md`、`docs/运维手册.md`、`docs/验收报告.md`        | 已验证                                  | `node tools/check-docs.mjs` 退出码 0（本轮本机运行）                                            |
-| `.env.example`                                             | 已验证                                  | 逐变量对照 ADR-004 与 `packages/server/src/main.ts` 的真实读取点                                |
-| `tools/probe.mjs`                                          | 已验证                                  | P03 §6.1 实测记录：快照 20.39/s、avg 46.9 B、洪泛被 Error(4) 断开                               |
-| `packages/client/vite.config.ts`（体积预算）               | 已验证                                  | 构建插件断言 gzip JS ≤ 1.5MB；P09 §6.1 记录 175,547 B                                           |
-| `packages/server/src/{metrics,log,http}.ts`                | 已验证                                  | P03 §6.1：`/metrics` 含 `ac_tick_jitter_ms_p95` 等指标、结构化 JSON 行日志                      |
-| `tools/bots.mjs` / `tools/soak.mjs` / `tools/report.mjs`   | 未验证                                  | 文件存在，但本轮未运行（需先起服务端并跑满 5 / 30 分钟，见运维手册「发布清单」与「压测用法」）  |
-| `tools/e2e-edge.mjs`                                       | 未验证                                  | 可选 E2E，需本机 Edge 与真实会话；设计为缺浏览器时打印 `Skipped` 并以 0 退出                    |
-| `deploy/Caddyfile`、`deploy/nginx.conf`                    | 静态审查                                | 本机无 caddy / nginx，未 `caddy validate`、未 `nginx -t`、未做 WSS 101 握手                     |
-| `deploy/angry-chen.service`、`deploy/ecosystem.config.cjs` | 静态审查                                | 本机是 Windows，无 systemd / PM2，未启停验证                                                    |
-| `Dockerfile`、`docker-compose.yml`                         | 静态审查（本机无 docker，未做构建验证） | 从未执行 `docker build` / `docker compose up`；首次部署前按运维手册「首次部署验证清单」逐条回填 |
-| `pnpm check` 的类型/风格/测试/文档链四项                   | 未验证（本轮未复跑）                    | 并行施工期 `tools/**` 可能未收敛；逐项证据见 [docs/验收报告.md](docs/验收报告.md)               |
+| 交付物                                                                             | 验证状态                                | 依据 / 缺失说明                                                                                                                  |
+| ---------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `README.md`、`docs/运维手册.md`、`docs/验收报告.md`                                | 已验证                                  | `node tools/check-docs.mjs` 退出码 0（本轮本机运行）                                                                             |
+| `packages/server/src/static.ts`、`packages/client/src/net/serverUrl.ts`、`ADR-007` | 已验证（本机 loopback）                 | `docs/evidence/single-process-online.md`：`/` 200 HTML、`/assets/*` immutable+gzip、`/ws` 101 握手、probe OK；跨机联机**未执行** |
+| `.env.example`                                                                     | 已验证                                  | 逐变量对照 ADR-004 与 `packages/server/src/main.ts` 的真实读取点                                                                 |
+| `tools/probe.mjs`                                                                  | 已验证                                  | P03 §6.1 实测记录：快照 20.39/s、avg 46.9 B、洪泛被 Error(4) 断开                                                                |
+| `packages/client/vite.config.ts`（体积预算）                                       | 已验证                                  | 构建插件断言 gzip JS ≤ 1.5MB；P09 §6.1 记录 175,547 B                                                                            |
+| `packages/server/src/{metrics,log,http}.ts`                                        | 已验证                                  | P03 §6.1：`/metrics` 含 `ac_tick_jitter_ms_p95` 等指标、结构化 JSON 行日志                                                       |
+| `tools/bots.mjs` / `tools/soak.mjs` / `tools/report.mjs`                           | 未验证                                  | 文件存在，但本轮未运行（需先起服务端并跑满 5 / 30 分钟，见运维手册「发布清单」与「压测用法」）                                   |
+| `tools/e2e-edge.mjs`                                                               | 未验证                                  | 可选 E2E，需本机 Edge 与真实会话；设计为缺浏览器时打印 `Skipped` 并以 0 退出                                                     |
+| `deploy/Caddyfile`、`deploy/nginx.conf`                                            | 静态审查                                | 本机无 caddy / nginx，未 `caddy validate`、未 `nginx -t`、未做 WSS 101 握手                                                      |
+| `deploy/angry-chen.service`、`deploy/ecosystem.config.cjs`                         | 静态审查                                | 本机是 Windows，无 systemd / PM2，未启停验证                                                                                     |
+| `Dockerfile`、`docker-compose.yml`                                                 | 静态审查（本机无 docker，未做构建验证） | 从未执行 `docker build` / `docker compose up`；首次部署前按运维手册「首次部署验证清单」逐条回填                                  |
+| `pnpm check` 的类型/风格/测试/文档链四项                                           | 已验证（ADR-007 轮复跑）                | `pnpm check` 退出码 0；72 测试文件 / 481 用例；逐项证据见 [docs/验收报告.md](docs/验收报告.md)                                   |
 
 ## 文档怎么读
 

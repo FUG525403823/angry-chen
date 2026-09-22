@@ -11,6 +11,7 @@
     "dev": "pnpm -r --parallel --filter @ac/server --filter @ac/client run dev",
     "dev:server": "pnpm --filter @ac/server run dev",
     "dev:client": "pnpm --filter @ac/client run dev",
+    "serve": "pnpm build:client && pnpm --filter @ac/server run start",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm check:docs && pnpm check:assets && pnpm check:count && pnpm check:coverage && pnpm check:build && pnpm check:alloc",
     "typecheck": "tsc --noEmit -p packages/shared && tsc --noEmit -p packages/server && tsc --noEmit -p packages/client",
     "lint": "eslint . && prettier --check .",

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import { PROTOCOL_VERSION } from '@ac/shared';
 
 import { createHttpHandler } from './http.ts';
 import { createJsonMatchStore, type MatchResultRecord } from './match/store.ts';
+import { createStaticServer, type StaticServer } from './static.ts';
 import { createHarness } from './testing/harness.ts';
 
 function makeStoredRecord(matchId: string, kills: number): MatchResultRecord {
@@ -37,8 +38,9 @@ function makeStoredRecord(matchId: string, kills: number): MatchResultRecord {
 
 async function startHttp(
   harness: ReturnType<typeof createHarness>,
+  staticServer?: StaticServer,
 ): Promise<{ port: number; close(): Promise<void> }> {
-  const server = createServer(createHttpHandler(harness.game, Date.now()));
+  const server = createServer(createHttpHandler(harness.game, Date.now(), staticServer));
   await new Promise<void>((resolveListen) => {
     server.listen(0, '127.0.0.1', () => resolveListen());
   });
@@ -264,5 +266,37 @@ describe('运维端点', () => {
     expect(body['error']).toBe('not-found');
     await http.close();
     await harness.close();
+  });
+
+  it('挂载静态托管后 / 返回页面，运维端点仍然优先（ADR-007）', async () => {
+    const harness = createHarness();
+    const dir = await mkdtemp(join(tmpdir(), 'ac-http-static-'));
+    await mkdir(join(dir, 'assets'), { recursive: true });
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>ac</title>');
+    await writeFile(join(dir, 'assets', 'app.js'), 'const a = 1;\n');
+    const http = await startHttp(harness, createStaticServer({ root: dir }));
+    const base = 'http://127.0.0.1:' + String(http.port);
+
+    const page = await fetch(base + '/');
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('<title>ac</title>');
+
+    const asset = await fetch(base + '/assets/app.js');
+    expect(asset.status).toBe(200);
+    expect(String(asset.headers.get('cache-control'))).toContain('immutable');
+
+    const health = await fetch(base + '/health');
+    expect(health.status).toBe(200);
+    expect(((await health.json()) as Record<string, unknown>)['status']).toBe('ok');
+
+    const board = await fetch(base + '/api/leaderboard');
+    expect(board.status).toBe(200);
+
+    const missing = await fetch(base + '/nope');
+    expect(missing.status).toBe(404);
+
+    await http.close();
+    await harness.close();
+    await rm(dir, { recursive: true, force: true });
   });
 });

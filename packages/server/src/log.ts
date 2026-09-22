@@ -41,6 +41,7 @@ export const LOG_EVENTS = Object.freeze({
   reportWriteFailed: 'report.write_failed',
   reportRetention: 'report.retention',
   configFallback: 'config.fallback',
+  clientDistMissing: 'clientDist.missing',
   listening: 'listening',
   shutdownRequested: 'shutdownRequested',
   shutdownComplete: 'shutdownComplete',
@@ -51,7 +52,7 @@ export const LOG_EVENTS = Object.freeze({
 
 export type LogEvent = (typeof LOG_EVENTS)[keyof typeof LOG_EVENTS];
 
-export type LogDetailValue = string | number | boolean;
+export type LogDetailValue = string | number | boolean | readonly string[] | null;
 export type LogDetail = Readonly<Record<string, LogDetailValue | undefined>>;
 
 export interface LogFields {

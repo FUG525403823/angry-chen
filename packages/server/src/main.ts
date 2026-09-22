@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,10 +11,14 @@ import { createJsonMatchStore, DEFAULT_DATA_DIR, DEFAULT_MAX_RECORDS } from './m
 import { DEFAULT_REPORT_RETENTION } from './report.ts';
 import { createOriginGuard, parseAllowedOrigins } from './security.ts';
 import { createGameServer } from './server.ts';
+import { createStaticServer, resolveClientDist } from './static.ts';
 import { createWsTransport } from './transport/ws-adapter.ts';
 
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_HOST = '127.0.0.1';
+/** ADR-007：CLI 入口加载 .env 的环境变量名与默认文件名。 */
+export const ENV_FILE_ENV = 'AC_ENV_FILE';
+export const DEFAULT_ENV_FILE = '.env';
 export interface StartedServer {
   readonly port: number;
   close(): Promise<void>;
@@ -53,6 +58,56 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+export function isLoopbackHost(host: string): boolean {
+  return host === DEFAULT_HOST || host === 'localhost' || host === '::1';
+}
+
+/**
+ * ADR-007：启动日志里给出「朋友可以打开的地址」。
+ * 只监听回环时给回环地址——其它地址根本连不上，列出来是误导。
+ */
+export function joinUrlsFor(host: string, port: number, addresses: readonly string[]): string[] {
+  if (isLoopbackHost(host)) return ['http://127.0.0.1:' + String(port)];
+  const urls: string[] = [];
+  for (const address of addresses) urls.push('http://' + address + ':' + String(port));
+  return urls;
+}
+
+export function nonInternalIPv4(): string[] {
+  const addresses: string[] = [];
+  for (const entries of Object.values(networkInterfaces())) {
+    if (entries === undefined) continue;
+    for (const entry of entries) {
+      if (entry.family !== 'IPv4' || entry.internal) continue;
+      addresses.push(entry.address);
+    }
+  }
+  return addresses;
+}
+
+/** ADR-007：.env 候选路径——cwd 与仓库根（`pnpm --filter` 的 cwd 是包目录，不是仓库根）。 */
+export function resolveEnvFileCandidates(cwd: string, moduleUrl: string): string[] {
+  const repoRoot = fileURLToPath(new URL('../../../', moduleUrl));
+  return [resolve(cwd, DEFAULT_ENV_FILE), resolve(repoRoot, DEFAULT_ENV_FILE)];
+}
+
+/** ADR-007：只在 CLI 入口调用；已存在的真实环境变量不会被 .env 覆盖（Node 原生语义）。 */
+function loadEnvFile(moduleUrl: string): void {
+  const explicit = process.env[ENV_FILE_ENV];
+  const candidates =
+    explicit === undefined || explicit.trim() === ''
+      ? resolveEnvFileCandidates(process.cwd(), moduleUrl)
+      : [resolve(process.cwd(), explicit)];
+  for (const candidate of candidates) {
+    try {
+      process.loadEnvFile(candidate);
+      return;
+    } catch {
+      // 文件不存在属正常情况：静默尝试下一个候选。
+    }
+  }
+}
+
 export async function startServer(
   env: NodeJS.ProcessEnv = process.env,
   logger: Logger = createStdoutLogger(env),
@@ -72,6 +127,14 @@ export async function startServer(
     logger.warn(LOG_EVENTS.securityOriginRejected, { detail: { origin: origin ?? '' } });
   });
   httpServer.on('upgrade', guardOrigin);
+  const clientDist = resolveClientDist(env.CLIENT_DIST, import.meta.url);
+  if (clientDist.explicit && clientDist.root === null) {
+    logger.warn(LOG_EVENTS.clientDistMissing, {
+      detail: { name: 'CLIENT_DIST', path: clientDist.requested ?? '' },
+    });
+  }
+  const staticServer =
+    clientDist.root === null ? undefined : createStaticServer({ root: clientDist.root });
   const transport = createWsTransport({
     port,
     host,
@@ -86,13 +149,14 @@ export async function startServer(
     dataDir,
     reportRetention,
   });
-  httpServer.on('request', createHttpHandler(game, Date.now()));
+  httpServer.on('request', createHttpHandler(game, Date.now(), staticServer));
   await new Promise<void>((resolveListen) => {
     httpServer.listen(port, host, () => resolveListen());
   });
   await game.listen();
   const address = httpServer.address();
   const boundPort = address !== null && typeof address !== 'string' ? address.port : port;
+  const joinUrls = joinUrlsFor(host, boundPort, nonInternalIPv4());
   logger.info(LOG_EVENTS.listening, {
     detail: {
       url: 'http://' + host + ':' + String(boundPort),
@@ -104,6 +168,8 @@ export async function startServer(
       maxRooms,
       maxPlayersPerRoom,
       allowedOrigins: originPolicy.mode,
+      clientDist: clientDist.root,
+      joinUrls,
     },
   });
   return {
@@ -118,6 +184,7 @@ export async function startServer(
 }
 
 async function main(): Promise<void> {
+  loadEnvFile(import.meta.url);
   const logger = createStdoutLogger();
   process.on('uncaughtException', (error: unknown) => {
     logger.error(LOG_EVENTS.errorUncaught, { detail: { error: describeError(error) } });
