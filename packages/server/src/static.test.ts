@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
@@ -51,7 +51,8 @@ function rawRequest(
   return new Promise<RawResponse>((resolvePromise, rejectPromise) => {
     const req = httpRequest(
       url,
-      { method: options.method ?? 'GET', headers: options.headers ?? {} },
+      // agent: false = 每次请求用完即关；否则 Node 全局 agent 的 keep-alive 空闲连接会让 server.close() 等到 keepAliveTimeout（~4s）。
+      { method: options.method ?? 'GET', headers: options.headers ?? {}, agent: false },
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -80,6 +81,7 @@ async function startStatic(root: string): Promise<string> {
   closers.push(
     () =>
       new Promise<void>((resolveClose) => {
+        server.closeAllConnections();
         server.close(() => resolveClose());
       }),
   );
@@ -89,7 +91,8 @@ async function startStatic(root: string): Promise<string> {
 }
 
 describe('resolveStaticPath', () => {
-  const root = join('C:', 'repo', 'packages', 'client', 'dist');
+  // 用 resolve(tmpdir()) 造绝对路径：`join('C:', ...)` 只在 Windows 上是绝对的，Linux 上会退化成相对路径。
+  const root = resolve(tmpdir(), 'ac-repo', 'packages', 'client', 'dist');
 
   it('把 URL 路径映射到 root 内，并给目录请求补 index.html', () => {
     expect(resolveStaticPath(root, '/')).toBe(join(root, 'index.html'));

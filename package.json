@@ -25,6 +25,7 @@
     "check:build": "pnpm build:client",
     "check:alloc": "node --expose-gc tools/check-alloc.mjs",
     "check:perf": "node tools/bots.mjs --players 4 --minutes 2 --strict",
+    "smoke": "node tools/smoke-serve.mjs",
     "bench:sim": "node tools/bench-sim.mjs --sheep 60 --ticks 6000"
   },
   "devDependencies": {

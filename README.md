@@ -53,6 +53,7 @@ pnpm serve                    # = 构建客户端 + 启动服务端（8787）
 - 这是明文 `http://` + `ws://`（朋友局够用）。要域名 + HTTPS 再加一层可选反代（`deploy/Caddyfile`）；
   客户端会自动改用 `wss://<域名>/ws`（ADR-007），**仍然不需要** `?server=`。
 - `?server=` 仍然可用，只在「页面与游戏服务器不同源」时才需要：`http://localhost:5173/?server=ws://127.0.0.1:9000`。
+- 自检：`pnpm smoke`（与 CI 的 ubuntu `smoke` job 同一份脚本）真起一个进程，逐项验证 `/`、`/assets/*`、`/health`、`/api/leaderboard`、穿越路径 404、SPA 兜底与 `/ws` 握手。
 - **注意暴露面**：`HOST=0.0.0.0` 表示 8787 对同网段（或公网 IP）可达。公网直连请用云安全组 / 防火墙限定来源；
   代码默认（不放 `.env` 时）仍是 `127.0.0.1`，只有本机能连。
 
@@ -77,6 +78,7 @@ pnpm serve                    # = 构建客户端 + 启动服务端（8787）
 | ---------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `README.md`、`docs/运维手册.md`、`docs/验收报告.md`                                | 已验证                                  | `node tools/check-docs.mjs` 退出码 0（本轮本机运行）                                                                             |
 | `packages/server/src/static.ts`、`packages/client/src/net/serverUrl.ts`、`ADR-007` | 已验证（本机 loopback）                 | `docs/evidence/single-process-online.md`：`/` 200 HTML、`/assets/*` immutable+gzip、`/ws` 101 握手、probe OK；跨机联机**未执行** |
+| `tools/smoke-serve.mjs`（`pnpm smoke`）                                            | 已验证（Windows 本机 + CI ubuntu）      | 真起一个服务端进程：`/` 200 HTML、`/assets/*` immutable+gzip、`/health`、`/api/leaderboard`、穿越 404、SPA 兜底、`/ws` 101       |
 | `.env.example`                                                                     | 已验证                                  | 逐变量对照 ADR-004 与 `packages/server/src/main.ts` 的真实读取点                                                                 |
 | `tools/probe.mjs`                                                                  | 已验证                                  | P03 §6.1 实测记录：快照 20.39/s、avg 46.9 B、洪泛被 Error(4) 断开                                                                |
 | `packages/client/vite.config.ts`（体积预算）                                       | 已验证                                  | 构建插件断言 gzip JS ≤ 1.5MB；P09 §6.1 记录 175,547 B                                                                            |

@@ -95,6 +95,67 @@ npx vitest run packages/server/src/static.test.ts packages/server/src/http.test.
 2. Windows 防火墙 / 云安全组放行 8787（8899）后的**真实跨机**连通性。
 3. 真实 HTTPS + 反代形态下 `wss://<域名>/ws` 的自动推导（`deploy/**` 仍是静态审查）。
 
+## 7. 跨平台（Windows / Linux）
+
+结论：**服务端源码平台中立**（只用 `node:*` 内置模块 + `ws` + `tsx`，无原生模块、无 `process.platform` 分支），
+Windows 与 Linux（CI ubuntu-latest）都会真实执行同一份源码；macOS 未跑过。
+
+### 7.1 CI 抓到的第一个 Windows-only 断言（真实红→绿）
+
+提交 `00c353d` 在本机 `pnpm check` 全绿，但 GitHub Actions 的 `quality` job（ubuntu-latest）在 `Run pnpm check` 一步失败：
+
+```text
+原代码 packages/server/src/static.test.ts:
+  const root = join('C:', 'repo', 'packages', 'client', 'dist');
+Windows: 'C:\\repo\\packages\\client\\dist'  → 绝对路径，resolveStaticPath 的断言成立
+Linux:   'C:/repo/packages/client/dist'     → 相对路径，resolve(root, ...) 会拼上 cwd，断言失败
+修复:    resolve(tmpdir(), 'ac-repo', 'packages', 'client', 'dist')
+```
+
+这正是「同一份测试在两个平台都要跑」的价值：服务端代码没问题，**测试里的平台假设**有问题。
+
+### 7.2 顺带修掉的第二个平台隐患（超时抖动）
+
+该文件里 `GET / 返回 index.html（no-cache）` 一例本机耗时 **4045ms**（vitest 默认单例超时 5000ms，CI 慢机上必红）：
+Node 19+ 的全局 `http` agent 默认 keep-alive，`server.close()` 要等空闲连接自然回收（`keepAliveTimeout` ≈ 5s）。
+修复：请求加 `agent: false` + 关闭前 `server.closeAllConnections()`。
+
+```text
+修复后：11 passed；单例 38ms；文件总时长 348ms（此前 4.36s）
+```
+
+### 7.3 跨平台冒烟：`pnpm smoke`（新增 `tools/smoke-serve.mjs`）
+
+脚本真起一个服务端进程（`PORT=0` 让 OS 分配端口，从 `listening` 日志里读回），逐项验证后关进程；
+Windows / Linux / macOS 同一份脚本，CI 的 `smoke` job 在 ubuntu 上跑它。
+
+```text
+node tools/smoke-serve.mjs（本机 Windows，Node v24.14.1）
+  · GET /：200 text/html
+  · GET /assets/index-Cfzv30Q1.js：200 cache-control=public, max-age=31536000, immutable content-encoding=gzip
+  · GET /health：200 status=ok protocolVersion=2
+  · GET /api/leaderboard：200 ok=true
+  · 路径穿越 /%2e%2e%2f%2e%2e%2fpackage.json：404
+  · 导航请求 /room/ABCD 走 index.html 兜底：200
+  · WebSocket /ws 握手：101 Switching Protocols
+  · 服务端日志含 clientDist 与 joinUrls：D:\\projects\\tmp\\angry-chen\\packages\\client\\dist
+=== smoke-serve ===
+OK：单进程联机冒烟全部通过（win32 x64，Node v24.14.1）
+```
+
+### 7.4 平台矩阵
+
+| 平台 | 跑过什么 | 结果 |
+|---|---|---|
+| Windows（本机开发机） | `pnpm check` 九步、`pnpm smoke`、`pnpm serve` + curl/probe（§1–§3） | 全绿 |
+| Linux（CI ubuntu-latest） | `pnpm check` 九步（含真实 in-process HTTP/静态/WS 测试、vite build、覆盖率、分配探针）、`pnpm smoke`、`pnpm check:perf` | 见 Actions；§7.1 的红即来自这里 |
+| macOS | 无 | **未跑过**（无机器；代码无 `darwin` 分支，风险仅剩未验证） |
+
+平台相关的已知边界（都不影响服务端本体）：
+
+- `deploy/**`（systemd unit / PM2 / Dockerfile / Caddyfile / nginx.conf）是 **Linux 专用产物**，且仍是**静态审查**（本机无 docker/caddy/nginx）。
+- `tools/e2e-edge.mjs` 里写死了 Windows 的 Edge/Chrome 路径，缺 `puppeteer-core` 或浏览器时打印 `Skipped` 并以 0 退出（Linux 上属预期跳过）。
+- `tools/check-assets.mjs` 用 `split('\\').join('/')` 归一化相对路径——在 POSIX 上本来就是 `/`，是空操作，不构成平台差异。
 ## 6. 复现命令（本机）
 
 ```bash

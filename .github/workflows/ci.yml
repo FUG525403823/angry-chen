@@ -29,6 +29,26 @@ jobs:
           path: coverage/test-results.json
           if-no-files-found: warn
 
+  smoke:
+    name: smoke（ubuntu 上真起服务端：页面 + /ws 握手，跨平台脚本）
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 构建客户端（dist 是冒烟的前置）
+        run: pnpm build:client
+      - name: 单进程冒烟（与 Windows 本机跑同一份脚本）
+        run: pnpm smoke
+
   perf:
     name: perf（pnpm check:perf：4 人 2 分钟 --strict）
     needs: quality
