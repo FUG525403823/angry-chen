@@ -21,7 +21,8 @@ describe('房间生命周期', () => {
     const welcome = alice.welcome();
     expect(welcome).toBeDefined();
     expect(welcome?.pid).toBe(1);
-    expect(welcome?.protocolVersion).toBe(1);
+    expect(welcome?.protocolVersion).toBe(2);
+    expect(welcome?.token.length).toBe(8);
     expect(welcome?.roomCode.length).toBe(4);
     expect(NEW_ROOM_CODE).not.toBe(welcome?.roomCode);
     expect(harness.game.rooms.size).toBe(1);

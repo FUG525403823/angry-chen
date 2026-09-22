@@ -52,7 +52,7 @@ P01–P10 是"从零把游戏做出来"，O01–O10 是"把已经做出来的东
 | O05 | ✅ 已完成 | ✅ 已完成（默认仍 20Hz：`S5.2-1/2/3/8` pass、`S5.2-4` 走替代判据 pass；编码段 p95 0.046ms、单 tick 合计 p95 0.094ms；新指标已在 `/metrics` 可见） | `docs/evidence/bots-o05.json`、`bench-sim-60sheep.json`（`runs.after-o05`） | `O05` |
 | O06 | ✅ 已完成 | ✅ 已完成（羊群实例池化 + HUD 全量脏检查：600 帧 DOM 写入 6001→1861；`pnpm check` 428 用例；体积 +1,280B / +0.73%，门槛变更见 §5） | `docs/evidence/client-frame-alloc.md` | `O06` |
 | O07 | ✅ 已完成 | ✅ 已完成（弹药账本按 ack 水位对账：显示值 = 权威值 − 未确认开火；换弹/狂暴倒计时本地推进；调试面板新增 4 字段） | `docs/evidence/bots-o07.json` | `O07` |
-| O08 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/` 下的重连验证记录（待生成） | `O08` |
+| O08 | ✅ 已完成 | ✅ 已完成（重连只认令牌 + `PROTOCOL_VERSION = 2`；`welcome` 24 字节 / `join` +8 字节；ADR-006；`pnpm check` 447 用例） | `docs/evidence/reconnect-token.md`、`docs/evidence/bots-o08.json` | `O08` |
 | O09 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/store-load-100k.md` | `O09` |
 | O10 | ✅ 已完成 | ⬜ 未开始 | `docs/evidence/gate-selfcheck.md` | `O10` |
 
@@ -83,6 +83,12 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 新增 `packages/client/src/combat/localTimers.ts`：换弹/狂暴倒计时每帧本地推进，权威值到达时取 `min(本地, 权威 + SERVER_TICK_MS)`，本地归零后采用新一轮权威值（下限 0、迟到帧不变大）。
 `main.ts` 每帧 `applyAmmo()` + `advance(dtMs)`；调试面板新增 `pendingShots` / `rejectedShots` / `ammoDivergence` / `resyncCount` 一行。压测 `docs/evidence/bots-o07.json`：`S5.2-1/2/3/4/8/9` + 新 `S5.2-10` 全 `pass`，`ammoDivergenceMax = 2`（阈值 ≤ 2），`verdict=fail` 仅来自既有的 `S5.2-9b` 未测。
 **未改协议**（`packages/shared/src/net/**` 无改动、无新增运行时依赖）；本机无浏览器 → 「按住开火弹药不回跳 / 换弹环与狂暴倒计时连续」的人工观察移交 O10。
+
+**O08 执行结论（2026-09-22）**：§4 的 11 条任务与 §7 的 7 条 DoD 落地（`pnpm check` 退出码 0；3 project **447 用例**）。
+宽限期重连的身份判定从「昵称匹配」改为**只认令牌**：服务器每次成功 join 生成会话令牌（8 字节槽位 / 8 个十六进制字符）随 `welcome` 下发（帧 16 → 24 字节），客户端存 `sessionStorage`（`TOKEN_STORAGE_KEY = 'ac.sessionToken.v1'`，每标签页独立）并在重连的 `join` 中上行（+8 字节）；`findGracedSession(room, token)` 要求非空且相等，昵称退出身份判定；`roomReconnect` 复制旧令牌（重连不重生成）；`PROTOCOL_VERSION` 升到 2，两端不符按既有路径拒绝并把双方版本写进错误帧与关闭原因。
+决策与后果记录在 `docs/00-共识/ADR/ADR-006-会话身份与重连令牌.md`（唯一权威描述，明确「协议格式变更必须成对发布、回滚需两端同版本」）。
+证据：`packages/server/src/rooms.test.ts` 四情形（正确令牌复用 pid / 错令牌与无令牌按新玩家 / 过期后不回座，均断言 `metrics.graceReconnects`）、`codec.test.ts` 三条布局用例、`connection.test.ts` 两条客户端令牌用例、`docs/evidence/bots-o08.json`（12 项门槛全 PASS，除既有 `S5.2-9b` 未测量）。
+**门槛变更 1 项**：令牌宽度取「8 字节槽位 = 8 个十六进制字符（32 位熵）」，与文档中「16 个十六进制字符 / `randomBytes(8)`」矛盾，取字节布局为准（O08 §5.1 #1、ADR-006）。本机无浏览器 → 人工「两标签页同昵称不可顶替」测试移交 O10（步骤见 `docs/evidence/reconnect-token.md` §3）。
 
 **O03 执行结论（2026-09-22）**：§4 的 10 条任务全部落地，§7 DoD 全绿（`pnpm check` 退出码 0）。拷贝点唯一化之后，
 复用缓冲（`session.outbound` / `room.broadcastBuffer`）在发送后即可安全改写：反向验证把「入队计数但直传原帧」写回去，新用例立刻报 `expected 127 to be 24`；
@@ -138,6 +144,9 @@ HUD 把「先拼字符串后比较」改成「按显示精度先比较后写」�
 | 弹药对账水位 | 快照帧头 `lastAckedSeq`，只在 seq 严格增大时推进 | O07 | ack 回退忽略；重连/换房与 `reconciler.reset()` 同点 `reset()` |
 | `ammoDivergenceMax` | ≤ 2（2 分钟 4 人压测，`S5.2-10`） | O07 | 本地预测与权威值之差；超限说明账本与服务器行为不一致 |
 | 倒计时对齐 | `min(本地, 权威 + SERVER_TICK_MS)`；本地 ≤ 0 时采用权威值；下限 0 | O07 | 换弹/狂暴每帧推进；迟到帧不得让剩余变大 |
+| 协议版本 | `PROTOCOL_VERSION = 2`（`welcome` 24 字节 / `join` +8 字节令牌） | O08 | 两端不一致按既有路径拒绝；**协议变更必须两端成对发布/回滚** |
+| 会话令牌 | `LIMITS.tokenBytes = 8`（线上 8 字节槽位 = 8 个十六进制字符，32 位熵）；客户端 `TOKEN_STORAGE_KEY = 'ac.sessionToken.v1'` 存 `sessionStorage` | O08 | 只用于**重连身份**，不是账号体系；重连复用不重生成；空令牌一律按新玩家 |
+| 重连身份判定 | `findGracedSession(room, token)`：`token.length > 0 && session.token === token` | O08 | 昵称退出身份判定（仍用于显示/聊天）；`grep "session.name === name"` 无命中 |
 | `ammoDivergenceMax` | ≤ 2 | O07 | 弹药对账允许的最大偏差（压测报告字段） |
 | `LIMITS.tokenBytes` / `PROTOCOL_VERSION` | 8 / 2 | O08 | 会话令牌字节数与协议版本 |
 | `DEFAULT_MAX_RECORDS` | 10000（`MATCH_STORE_MAX_RECORDS`） | O09 | 常驻战绩记录上限 |

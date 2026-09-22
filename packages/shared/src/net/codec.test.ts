@@ -98,19 +98,49 @@ describe('命令编解码', () => {
 });
 
 describe('进房与社交帧', () => {
-  it('Join 往返保留协议版本、昵称与房间码', () => {
-    const size = encodeJoin({ protocolVersion: 1, name: '陈sir', roomCode: 'ABCD' }, buffer);
+  it('Join 往返保留协议版本、昵称、房间码与令牌', () => {
+    const size = encodeJoin(
+      { protocolVersion: 2, name: '陈sir', roomCode: 'ABCD', token: '01234567' },
+      buffer,
+    );
+    expect(size).toBe(3 + utf8Length('陈sir') + LIMITS.roomCodeLength + LIMITS.tokenBytes);
     const join = expectOk(decodeJoin(buffer.subarray(0, size)));
-    expect(join.protocolVersion).toBe(1);
+    expect(join.protocolVersion).toBe(2);
     expect(join.name).toBe('陈sir');
     expect(join.roomCode).toBe('ABCD');
+    expect(join.token).toBe('01234567');
+  });
+
+  it('O08：空令牌仍占 8 字节；旧布局（无令牌）解析为空串', () => {
+    const size = encodeJoin({ protocolVersion: 2, name: 'a', roomCode: '0000', token: '' }, buffer);
+    expect(size).toBe(3 + 1 + LIMITS.roomCodeLength + LIMITS.tokenBytes);
+    expect(expectOk(decodeJoin(buffer.subarray(0, size))).token).toBe('');
+
+    // 过渡期旧客户端：帧里没有令牌那 8 字节。
+    const legacy = expectOk(decodeJoin(buffer.subarray(0, size - LIMITS.tokenBytes)));
+    expect(legacy.token).toBe('');
+    expect(legacy.name).toBe('a');
+  });
+
+  it('O08：令牌含非十六进制/非 ASCII 字节时被拒，长度不合法被拒', () => {
+    const size = encodeJoin({ protocolVersion: 2, name: 'a', roomCode: '0000', token: '' }, buffer);
+    const tokenOffset = size - LIMITS.tokenBytes;
+
+    buffer[tokenOffset] = 0x67; // 'g' 不是十六进制
+    expectFail(decodeJoin(buffer.subarray(0, size)), 'bad-value');
+
+    buffer[tokenOffset] = 0xc3; // 非 ASCII
+    expectFail(decodeJoin(buffer.subarray(0, size)), 'bad-value');
+
+    buffer[tokenOffset] = 0x30;
+    expectFail(decodeJoin(buffer.subarray(0, size - 1)), 'bad-length');
   });
 
   it('房间码 0000 表示新建，非法字符被拒', () => {
-    const size = encodeJoin({ protocolVersion: 1, name: 'a', roomCode: '0000' }, buffer);
+    const size = encodeJoin({ protocolVersion: 2, name: 'a', roomCode: '0000', token: '' }, buffer);
     expect(expectOk(decodeJoin(buffer.subarray(0, size))).roomCode).toBe('0000');
 
-    const bad = encodeJoin({ protocolVersion: 1, name: 'a', roomCode: 'ILO0' }, buffer);
+    const bad = encodeJoin({ protocolVersion: 2, name: 'a', roomCode: 'ILO0', token: '' }, buffer);
     expectFail(decodeJoin(buffer.subarray(0, bad)), 'bad-value');
   });
 
@@ -168,16 +198,27 @@ describe('进房与社交帧', () => {
 describe('服务器下行帧', () => {
   it('Welcome / Pong / Error 往返', () => {
     let size = encodeWelcome(
-      { pid: 7, roomCode: 'WXYZ', protocolVersion: 1, tick: 15, serverTimeMs: 750 },
+      {
+        pid: 7,
+        roomCode: 'WXYZ',
+        protocolVersion: 2,
+        tick: 15,
+        serverTimeMs: 750,
+        token: 'fedcba98',
+      },
       buffer,
     );
+    expect(size).toBe(16 + LIMITS.tokenBytes);
     expect(expectOk(decodeWelcome(buffer.subarray(0, size)))).toEqual({
       pid: 7,
       roomCode: 'WXYZ',
-      protocolVersion: 1,
+      protocolVersion: 2,
       tick: 15,
       serverTimeMs: 750,
+      token: 'fedcba98',
     });
+    // O08：旧 16 字节 welcome 必须被拒（协议版本不兼容要显式暴露）。
+    expectFail(decodeWelcome(buffer.subarray(0, 16)), 'bad-length');
 
     size = encodePong({ clientTimeMs: 1, serverTimeMs: 2, snapshotRateX10: 200 }, buffer);
     expect(expectOk(decodePong(buffer.subarray(0, size)))).toEqual({

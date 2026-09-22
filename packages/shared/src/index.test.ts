@@ -9,8 +9,8 @@ import {
 } from './index.ts';
 
 describe('@ac/shared 冻结常量', () => {
-  it('协议版本为 1', () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+  it('协议版本为 2（O08：welcome 24 字节 / join 携带令牌）', () => {
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 
   it('服务器 tick 为 50ms，即 20Hz', () => {

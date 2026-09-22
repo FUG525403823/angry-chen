@@ -38,11 +38,12 @@ export interface RoomRegistry {
   readonly size: number;
 }
 
-function findGracedSession(room: Room, name: string): Session | undefined {
-  if (name.length === 0) return undefined;
+/** O08：宽限期会话**只按令牌**匹配；昵称不参与身份判定（仍用于显示与聊天）。 */
+function findGracedSession(room: Room, token: string): Session | undefined {
+  if (token.length === 0) return undefined;
   for (let i = 0; i < room.sessions.length; i += 1) {
     const session = room.sessions[i];
-    if (session !== undefined && session.disconnectedAtMs !== null && session.name === name) {
+    if (session !== undefined && session.disconnectedAtMs !== null && session.token === token) {
       return session;
     }
   }
@@ -95,7 +96,7 @@ export function createRoomRegistry(metrics: Metrics, options: RoomRegistryOption
       } else {
         room = rooms.get(code);
         if (room === undefined) return { ok: false, reason: 'room-not-found' };
-        const graced = findGracedSession(room, session.name);
+        const graced = findGracedSession(room, session.token);
         if (graced !== undefined) {
           const reconnected = roomReconnect(room, graced, session);
           if (reconnected === 'ok') {

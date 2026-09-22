@@ -118,6 +118,8 @@ export const LIMITS = Object.freeze({
   rateStrikesBeforeDisconnect: 3,
   minNameBytes: 1,
   maxNameBytes: 12,
+  /** O08：会话令牌字节数（线上 8 字节 ASCII 十六进制 = 16 个字符）。 */
+  tokenBytes: 8,
   maxChatBytes: 64,
   maxCommandsPerSession: 3,
   maxPlayersPerRoom: 4,
@@ -157,6 +159,8 @@ export interface Welcome {
   protocolVersion: number;
   tick: number;
   serverTimeMs: number;
+  /** O08：重连身份令牌（16 个小写十六进制字符；用于后续 `join` 复用会话）。 */
+  token: string;
 }
 
 export interface Pong {

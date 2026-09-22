@@ -37,6 +37,8 @@ export const MAX_MATCH_STATE_PLAYERS = LIMITS.maxPlayersPerRoom;
 export const MAX_CHAT_BYTES = LIMITS.maxChatBytes;
 export const NICKNAME_STORAGE_KEY = 'ac.nickname.v1';
 export const LAST_ROOM_CODE_STORAGE_KEY = 'ac.lastRoomCode.v1';
+/** O08：会话身份令牌（**每标签页独立**，存 `sessionStorage`；不可用时回退注入 storage）。 */
+export const TOKEN_STORAGE_KEY = 'ac.sessionToken.v1';
 
 export const ERROR_MESSAGES: Record<number, string> = Object.freeze({
   [ERROR_CODE.protocolMismatch]: '协议版本不一致，请刷新页面',
@@ -195,11 +197,38 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
     return credentials;
   }
 
+  function tokenStore(): ClientCredentialStorage | undefined {
+    try {
+      const storage = globalThis.sessionStorage as ClientCredentialStorage | undefined;
+      if (storage !== undefined) return storage;
+    } catch {
+      // 隐私模式等场景取不到 sessionStorage：回退到注入的 storage。
+    }
+    return options.storage;
+  }
+
+  function readToken(): string {
+    return readKey(tokenStore(), TOKEN_STORAGE_KEY) ?? '';
+  }
+
+  function writeToken(token: string): void {
+    try {
+      tokenStore()?.setItem(TOKEN_STORAGE_KEY, token);
+    } catch {
+      // 存储不可用时静默降级：重连会退化成新玩家（对局中则被拒绝）。
+    }
+  }
+
   function sendJoin(target: StoredCredentials): void {
     send(
       out,
       encodeJoin(
-        { protocolVersion: PROTOCOL_VERSION, name: target.nickname, roomCode: target.roomCode },
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          name: target.nickname,
+          roomCode: target.roomCode,
+          token: readToken(),
+        },
         out,
       ),
     );
@@ -216,6 +245,8 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
   function handleWelcome(frame: Uint8Array): void {
     const decoded = decodeWelcome(frame);
     if (!decoded.ok) return;
+    // O08：服务器下发的会话令牌写入本标签页的 sessionStorage（重连时上行）。
+    if (decoded.value.token !== '') writeToken(decoded.value.token);
     if (decoded.value.roomCode !== activeRoomCode) {
       // 换房间（含断线后重新入新房）时 tick 会从头开始，必须清空关键帧缓冲，
       // 否则单调丢弃规则会让画面永久冻结（P04 评审 SPEC-2）。
@@ -233,11 +264,22 @@ export function createGameConnection(options: ConnectionOptions): GameConnection
     if (!decoded.ok) return;
     const { code, message } = decoded.value;
     options.onServerError?.(code, message);
+    // O08：下列错误说明"带令牌的重连被拒/会话已失效"，令牌必须清掉，否则会反复失败。
+    if (
+      code === ERROR_CODE.protocolMismatch ||
+      code === ERROR_CODE.matchInProgress ||
+      code === ERROR_CODE.roomNotFound
+    ) {
+      writeToken('');
+    }
     if (code === ERROR_CODE.matchInProgress) {
       autoJoinSuppressed = true;
       credentials = { nickname: credentials.nickname, roomCode: '' };
       clearStoredRoomCode(options.storage);
-      options.onReturnToLobby?.(ERROR_MESSAGES[ERROR_CODE.matchInProgress] ?? message);
+      options.onReturnToLobby?.(
+        (ERROR_MESSAGES[ERROR_CODE.matchInProgress] ?? message) +
+          '（会话已失效，请作为新玩家加入）',
+      );
       return;
     }
     if (code === ERROR_CODE.roomNotFound || code === ERROR_CODE.roomFull) {

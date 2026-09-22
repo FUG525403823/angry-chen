@@ -206,6 +206,8 @@ export function roomJoin(room: Room, session: Session, nowMs: number): 'ok' | 'f
   const result = spawnEntity(room.world, 'player', spawn.x, 0, spawn.z);
   if (!result.ok) return 'full';
   session.pid = result.id;
+  // O08：新玩家一律丢弃连线带来的令牌，由下发 welcome 时重新生成。
+  session.token = '';
   session.roomCode = room.code;
   session.ready = false;
   session.weapon = 0;
@@ -231,6 +233,8 @@ export function roomReconnect(
   if (index < 0) return 'not-found';
   incoming.pid = existing.pid;
   incoming.name = existing.name;
+  // O08：重连复用旧令牌，不重新生成（避免连续刷新第二次掉线）。
+  incoming.token = existing.token;
   incoming.ready = existing.ready;
   incoming.weapon = existing.weapon;
   incoming.weaponApplied = existing.weaponApplied;

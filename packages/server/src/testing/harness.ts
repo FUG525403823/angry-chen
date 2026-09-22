@@ -1,5 +1,6 @@
 import {
   LIMITS,
+  PROTOCOL_VERSION,
   SERVER_TICK_MS,
   createSnapshotMirror,
   decodeError,
@@ -28,7 +29,7 @@ export interface TestClient {
   readonly mirror: SnapshotMirror;
   send(frame: Uint8Array): void;
   disconnect(): void;
-  join(name: string, roomCode: string, protocolVersion?: number): void;
+  join(name: string, roomCode: string, protocolVersion?: number, token?: string): void;
   framesOf(opcode: number): Uint8Array[];
   errorCodes(): number[];
   welcome(): Welcome | undefined;
@@ -76,6 +77,9 @@ export function createHarness(options?: {
   void game.listen();
   const outbound = new Uint8Array(LIMITS.maxFrameBytes);
 
+  // O08：同一 harness 共享最近一次下发的令牌（模拟"同一标签页断线后重连"）。
+  let sharedToken = '';
+
   function connect(): TestClient {
     const client = transport.connect();
     const frames: Uint8Array[] = [];
@@ -83,6 +87,10 @@ export function createHarness(options?: {
     let appliedSnapshots = 0;
     client.onMessage((frame: Uint8Array): void => {
       frames.push(frame);
+      if (frame[0] === 0x81) {
+        const welcome = decodeWelcome(frame);
+        if (welcome.ok && welcome.value.token !== '') sharedToken = welcome.value.token;
+      }
     });
     const api: TestClient = {
       id: client.id,
@@ -95,8 +103,14 @@ export function createHarness(options?: {
       disconnect(): void {
         client.disconnect();
       },
-      join(name: string, roomCode: string, protocolVersion = 1): void {
-        const size = encodeJoin({ protocolVersion, name, roomCode }, outbound);
+      join(
+        name: string,
+        roomCode: string,
+        protocolVersion = PROTOCOL_VERSION,
+        token = sharedToken,
+      ): void {
+        // O08：默认带上本连接已收到的令牌（重连语义），测试可显式传空串模拟"新玩家"。
+        const size = encodeJoin({ protocolVersion, name, roomCode, token }, outbound);
         client.send(outbound.subarray(0, size));
       },
       framesOf(opcode: number): Uint8Array[] {
@@ -115,7 +129,10 @@ export function createHarness(options?: {
         for (const frame of frames) {
           if (frame[0] !== 0x81) continue;
           const decoded = decodeWelcome(frame);
-          if (decoded.ok) return decoded.value;
+          if (decoded.ok) {
+            if (decoded.value.token !== '') sharedToken = decoded.value.token;
+            return decoded.value;
+          }
         }
         return undefined;
       },

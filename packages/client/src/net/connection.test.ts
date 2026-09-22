@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   LAST_ROOM_CODE_STORAGE_KEY,
+  TOKEN_STORAGE_KEY,
   NICKNAME_STORAGE_KEY,
   clearStoredRoomCode,
   createGameConnection,
@@ -136,9 +137,9 @@ class FakeWebSocket {
 
 const frameBuffer = new Uint8Array(64);
 
-function welcomeFrame(pid: number, roomCode: string): Uint8Array {
+function welcomeFrame(pid: number, roomCode: string, token = 'abcdef01'): Uint8Array {
   const size = encodeWelcome(
-    { pid, roomCode, protocolVersion: PROTOCOL_VERSION, tick: 0, serverTimeMs: 0 },
+    { pid, roomCode, protocolVersion: PROTOCOL_VERSION, tick: 0, serverTimeMs: 0, token },
     frameBuffer,
   );
   return frameBuffer.slice(0, size);
@@ -149,13 +150,20 @@ function errorFrame(code: number, message: string): Uint8Array {
   return frameBuffer.slice(0, size);
 }
 
-function lastJoinOf(socket: FakeWebSocket | undefined): { name: string; roomCode: string } | null {
+function lastJoinOf(
+  socket: FakeWebSocket | undefined,
+): { name: string; roomCode: string; token: string } | null {
   if (socket === undefined) return null;
   for (let i = socket.sent.length - 1; i >= 0; i -= 1) {
     const frame = socket.sent[i];
     if (frame === undefined) continue;
     const decoded = decodeJoin(frame);
-    if (decoded.ok) return { name: decoded.value.name, roomCode: decoded.value.roomCode };
+    if (decoded.ok)
+      return {
+        name: decoded.value.name,
+        roomCode: decoded.value.roomCode,
+        token: decoded.value.token,
+      };
   }
   return null;
 }
@@ -211,7 +219,7 @@ describe('断线重连回座', () => {
     expect(lastJoinOf(first)).toBeNull();
     expect(harness.connection.joinRoom('AB2D', '陈sir')).toBe(true);
     first.open();
-    expect(lastJoinOf(first)).toEqual({ name: '陈sir', roomCode: 'AB2D' });
+    expect(lastJoinOf(first)).toEqual({ name: '陈sir', roomCode: 'AB2D', token: '' });
     first.deliver(welcomeFrame(1, 'AB2D'));
     expect(harness.storage.getItem(LAST_ROOM_CODE_STORAGE_KEY)).toBe('AB2D');
     harness.storage.setItem(LAST_ROOM_CODE_STORAGE_KEY, 'WX23');
@@ -222,7 +230,8 @@ describe('断线重连回座', () => {
     expect(second).toBeDefined();
     if (second === undefined) return;
     second.open();
-    expect(lastJoinOf(second)).toEqual({ name: '陈sir', roomCode: 'WX23' });
+    // O08：重连必须带上 welcome 下发的令牌，否则服务器会当成新玩家。
+    expect(lastJoinOf(second)).toEqual({ name: '陈sir', roomCode: 'WX23', token: 'abcdef01' });
     harness.connection.dispose();
   });
 
@@ -236,7 +245,7 @@ describe('断线重连回座', () => {
     first.open();
     first.deliver(errorFrame(7, 'match in progress'));
     expect(harness.errors).toEqual([7]);
-    expect(harness.returned).toEqual(['对局已开始，无法加入']);
+    expect(harness.returned).toEqual(['对局已开始，无法加入（会话已失效，请作为新玩家加入）']);
     expect(harness.storage.getItem(LAST_ROOM_CODE_STORAGE_KEY)).toBe('');
     expect(harness.connection.roomCode).toBe('');
     first.close();
@@ -271,6 +280,34 @@ describe('断线重连回座', () => {
     expect(harness.connection.joinRoom('AB1D', '陈sir')).toBe(false);
     expect(harness.connection.joinRoom('AB2D', 'a b')).toBe(false);
     expect(lastJoinOf(first)).toBeNull();
+    harness.connection.dispose();
+  });
+
+  it('O08：welcome 里的令牌写入存储，下一次 Join 带上它', () => {
+    const harness = startConnection();
+    const first = FakeWebSocket.sockets[0];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    harness.connection.joinRoom('AB2D', '陈sir');
+    first.open();
+    first.deliver(welcomeFrame(3, 'AB2D', '01020304'));
+    expect(harness.storage.getItem(TOKEN_STORAGE_KEY)).toBe('01020304');
+    harness.connection.joinRoom('AB2D', '陈sir');
+    expect(lastJoinOf(first)?.token).toBe('01020304');
+    harness.connection.dispose();
+  });
+
+  it('O08：重连被拒（对局中）后清空令牌，不再拿旧令牌重试', () => {
+    const harness = startConnection();
+    const first = FakeWebSocket.sockets[0];
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+    harness.connection.joinRoom('AB2D', '陈sir');
+    first.open();
+    first.deliver(welcomeFrame(3, 'AB2D', '01020304'));
+    expect(harness.storage.getItem(TOKEN_STORAGE_KEY)).toBe('01020304');
+    first.deliver(errorFrame(7, 'match in progress'));
+    expect(harness.storage.getItem(TOKEN_STORAGE_KEY)).toBe('');
     harness.connection.dispose();
   });
 });

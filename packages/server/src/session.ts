@@ -39,6 +39,8 @@ import {
   type JoinThrottle,
   type RateLimitState,
 } from './security.ts';
+import { randomBytes } from 'node:crypto';
+
 import type { Connection } from './transport/types.ts';
 
 export interface Session {
@@ -46,6 +48,8 @@ export interface Session {
   readonly connection: Connection;
   pid: number;
   name: string;
+  /** O08：重连身份令牌（16 个小写十六进制字符；空串 = 尚未分配）。 */
+  token: string;
   roomCode: string | null;
   ready: boolean;
   weapon: number;
@@ -86,6 +90,7 @@ export function createSession(connection: Connection, nowMs: number): Session {
     connection,
     pid: 0,
     name: '',
+    token: '',
     roomCode: null,
     ready: false,
     weapon: 0,
@@ -177,8 +182,25 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     return;
   }
   if (decoded.value.protocolVersion !== PROTOCOL_VERSION) {
-    sendError(deps, session, ERROR_CODE.protocolMismatch, 'protocol version mismatch');
-    closeSession(deps, session, 1002, 'protocol mismatch');
+    // O08：两端版本号写进错误帧与关闭原因，便于定位"刷新即可"的场景。
+    sendError(
+      deps,
+      session,
+      ERROR_CODE.protocolMismatch,
+      'protocol version mismatch: client ' +
+        String(decoded.value.protocolVersion) +
+        ' server ' +
+        String(PROTOCOL_VERSION),
+    );
+    closeSession(
+      deps,
+      session,
+      1002,
+      'protocol mismatch client=' +
+        String(decoded.value.protocolVersion) +
+        ' server=' +
+        String(PROTOCOL_VERSION),
+    );
     return;
   }
   const name = sanitizeNickname(decoded.value.name);
@@ -187,6 +209,8 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     return;
   }
   session.name = name;
+  // O08：把连线声明的令牌交给注册表做身份判定（空串 = 新玩家）。
+  session.token = decoded.value.token;
   const outcome = deps.rooms.join(decoded.value.roomCode, session, nowMs);
   if (!outcome.ok) {
     if (outcome.reason === 'room-not-found') {
@@ -214,6 +238,9 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
     pid: session.pid,
     detail: { name },
   });
+  // O08：新会话生成令牌；重连路径已由 roomReconnect 复制旧令牌（不重生成）。
+  // 线上令牌槽位是 8 字节（ASCII 十六进制 = 8 个字符），故取 4 字节随机数（32 位熵）。
+  if (session.token === '') session.token = randomBytes(4).toString('hex');
   const size = encodeWelcome(
     {
       pid: session.pid,
@@ -221,6 +248,7 @@ function handleJoin(deps: SessionDeps, session: Session, frame: Uint8Array, nowM
       protocolVersion: PROTOCOL_VERSION,
       tick: outcome.room.world.tick,
       serverTimeMs: nowMs,
+      token: session.token,
     },
     session.outbound,
   );

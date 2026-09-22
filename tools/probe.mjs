@@ -101,7 +101,10 @@ function createState(index) {
 }
 
 function sendJoin(state, code) {
-  const size = encodeJoin({ protocolVersion: 1, name: state.name, roomCode: code }, scratch);
+  const size = encodeJoin(
+    { protocolVersion: shared.PROTOCOL_VERSION, name: state.name, roomCode: code, token: '' },
+    scratch,
+  );
   state.socket.send(scratch.subarray(0, size));
 }
 

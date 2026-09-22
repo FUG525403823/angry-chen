@@ -241,6 +241,32 @@ export interface JoinRequest {
   protocolVersion: number;
   name: string;
   roomCode: string;
+  /** O08：会话令牌（空串 = 无令牌，按新玩家处理）。 */
+  token: string;
+}
+
+/** O08：令牌线上是 8 字节 ASCII 十六进制，尾部 0x00 用于补位；返回 null 表示格式非法。 */
+function readToken(frame: Uint8Array, offset: number): string | null {
+  let length = LIMITS.tokenBytes;
+  while (length > 0 && (frame[offset + length - 1] ?? 0) === 0) length -= 1;
+  let token = '';
+  for (let i = 0; i < length; i += 1) {
+    const code = frame[offset + i] ?? 0;
+    const isHex =
+      (code >= 0x30 && code <= 0x39) ||
+      (code >= 0x41 && code <= 0x46) ||
+      (code >= 0x61 && code <= 0x66);
+    if (!isHex) return null;
+    token += String.fromCharCode(code);
+  }
+  return token;
+}
+
+/** O08：把令牌写进 8 字节槽位，不足部分补 0x00（空令牌 = 全 0）。 */
+function writeToken(out: Uint8Array, offset: number, token: string): number {
+  const length = writeUtf8(out, offset, token, LIMITS.tokenBytes);
+  for (let i = length; i < LIMITS.tokenBytes; i += 1) out[offset + i] = 0;
+  return offset + LIMITS.tokenBytes;
 }
 
 export function encodeJoin(request: JoinRequest, out: Uint8Array): number {
@@ -251,7 +277,7 @@ export function encodeJoin(request: JoinRequest, out: Uint8Array): number {
   for (let i = 0; i < LIMITS.roomCodeLength; i += 1) {
     out[3 + nameLength + i] = (request.roomCode.charCodeAt(i) || 0x30) & 0xff;
   }
-  return 3 + nameLength + LIMITS.roomCodeLength;
+  return writeToken(out, 3 + nameLength + LIMITS.roomCodeLength, request.token);
 }
 
 export function decodeJoin(frame: Uint8Array): DecodeResult<JoinRequest> {
@@ -260,10 +286,23 @@ export function decodeJoin(frame: Uint8Array): DecodeResult<JoinRequest> {
   const nameLength = u8(frame, 2);
   if (nameLength < LIMITS.minNameBytes || nameLength > LIMITS.maxNameBytes)
     return fail('name-invalid');
-  if (frame.length !== 3 + nameLength + LIMITS.roomCodeLength) return fail('bad-length');
+  const base = 3 + nameLength + LIMITS.roomCodeLength;
+  // O08：只接受两种长度 —— 旧布局（无令牌）与新布局（+8 字节令牌）。
+  if (frame.length !== base && frame.length !== base + LIMITS.tokenBytes) return fail('bad-length');
   const roomCode = readUtf8(frame, 3 + nameLength, LIMITS.roomCodeLength);
   if (!isValidRoomCode(roomCode)) return fail('bad-value');
-  return ok({ protocolVersion: u8(frame, 1), name: readUtf8(frame, 3, nameLength), roomCode });
+  let token = '';
+  if (frame.length === base + LIMITS.tokenBytes) {
+    const parsed = readToken(frame, base);
+    if (parsed === null) return fail('bad-value');
+    token = parsed;
+  }
+  return ok({
+    protocolVersion: u8(frame, 1),
+    name: readUtf8(frame, 3, nameLength),
+    roomCode,
+    token,
+  });
 }
 
 export interface ReadyRequest {
@@ -372,18 +411,19 @@ export function encodeWelcome(welcome: Welcome, out: Uint8Array): number {
   putU8(out, 7, welcome.protocolVersion & 0xff);
   putU32(out, 8, welcome.tick >>> 0);
   putU32(out, 12, welcome.serverTimeMs >>> 0);
-  return 16;
+  return writeToken(out, 16, welcome.token);
 }
 
 export function decodeWelcome(frame: Uint8Array): DecodeResult<Welcome> {
   if (u8(frame, 0) !== OPCODE.welcome) return fail('bad-opcode');
-  if (frame.length !== 16) return fail('bad-length');
+  if (frame.length !== 16 + LIMITS.tokenBytes) return fail('bad-length');
   return ok({
     pid: u16(frame, 1),
     roomCode: readUtf8(frame, 3, LIMITS.roomCodeLength),
     protocolVersion: u8(frame, 7),
     tick: u32(frame, 8),
     serverTimeMs: u32(frame, 12),
+    token: readToken(frame, 16) ?? '',
   });
 }
 

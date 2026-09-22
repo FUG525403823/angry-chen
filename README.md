@@ -20,7 +20,7 @@ pnpm install
 pnpm check
 # 3. 一条命令并行起服务端（8787，HTTP + WebSocket）与客户端（Vite dev，5173）
 pnpm dev
-# 4. 另开一个终端，确认服务端活着（期望 {"status":"ok","protocolVersion":1,...}）
+# 4. 另开一个终端，确认服务端活着（期望 {"status":"ok","protocolVersion":2,...}）
 curl -s http://localhost:8787/health
 ```
 
