@@ -73,7 +73,12 @@ import {
   type MatchRuntime,
 } from './match/controller.ts';
 import { LOG_EVENTS, emit } from './log.ts';
-import { recordTickJitter } from './metrics.ts';
+import {
+  recordSimDrift,
+  recordTickInterval,
+  recordTickScheduleError,
+  recordTickWork,
+} from './metrics.ts';
 import type { Session } from './session.ts';
 
 export const MATCH_STATE_INTERVAL_MS = 1000;
@@ -94,6 +99,14 @@ export interface Room {
   director: DirectorState;
   lastUpdateMs: number;
   lastTickAtMs: number;
+  /** 本房间首个 tick 的 monotonic 时刻（自校正调度的参考点）；-1 = 尚未开始。 */
+  firstTickAtMs: number;
+  /** 从首 tick 起的 tick 序号：理想时刻 = firstTickAtMs + tickIndex × SERVER_TICK_MS。 */
+  tickIndex: number;
+  /** 漂移基准：首个 tick 走完那一刻的真实时刻与模拟时间（见 runTick 里的口径说明）。 */
+  wallStartMs: number;
+  simStartMs: number;
+  driftArmed: boolean;
   accumulatorMs: number;
   matchStateTimerMs: number;
   emptySinceMs: number | null;
@@ -136,6 +149,11 @@ export function createRoom(
     director: createDirectorState(),
     lastUpdateMs: nowMs,
     lastTickAtMs: nowMs,
+    firstTickAtMs: -1,
+    tickIndex: 0,
+    wallStartMs: 0,
+    simStartMs: 0,
+    driftArmed: false,
     accumulatorMs: 0,
     matchStateTimerMs: 0,
     emptySinceMs: nowMs,
@@ -179,7 +197,7 @@ export function roomJoin(room: Room, session: Session, nowMs: number): 'ok' | 'f
   if (room.match.hostId === 0) room.match.hostId = session.pid;
   joinMatchRecord(room, session.pid, session.name);
   room.emptySinceMs = null;
-  room.jitterArmed = false;
+  resetSchedule(room);
   broadcastMatchState(room);
   return 'ok';
 }
@@ -259,7 +277,7 @@ export function removeMember(
   if (room.sessions.length === 0) {
     room.emptySinceMs = nowMs;
     room.accumulatorMs = 0;
-    room.jitterArmed = false;
+    resetSchedule(room);
   }
   broadcastMatchState(room);
   return true;
@@ -361,6 +379,16 @@ function buildCommands(room: Room): void {
   }
 }
 
+/** 房间清空 / 重建时重置调度基准：新一串 tick 从新的参考点重新计时。 */
+function resetSchedule(room: Room): void {
+  room.firstTickAtMs = -1;
+  room.tickIndex = 0;
+  room.wallStartMs = 0;
+  room.simStartMs = 0;
+  room.driftArmed = false;
+  room.jitterArmed = false;
+}
+
 export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
   let elapsed = nowMs - room.lastUpdateMs;
   if (elapsed < 0) elapsed = 0;
@@ -374,17 +402,18 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
       broadcastMatchState(room);
     }
     room.accumulatorMs = 0;
-    room.jitterArmed = false;
     room.matchStateTimerMs = 0;
+    resetSchedule(room);
     return;
   }
   if (connectedSessionCount(room) === 0) {
     room.accumulatorMs = 0;
-    room.jitterArmed = false;
+    resetSchedule(room);
     return;
   }
 
   room.accumulatorMs += elapsed;
+  const budgetStartMs = deps.monotonicNow();
   let steps = 0;
   while (room.accumulatorMs >= SERVER_TICK_MS) {
     if (steps >= LIMITS.tickCatchUpLimit) {
@@ -395,8 +424,14 @@ export function updateRoom(deps: RoomDeps, room: Room, nowMs: number): void {
       break;
     }
     room.accumulatorMs -= SERVER_TICK_MS;
-    runTick(deps, room, steps === 0);
+    runTick(deps, room, steps === 0, nowMs);
     steps += 1;
+    // 单房间工作量预算：超出即让出事件循环，剩余累积量留给下一次调用（让出 ≠ 丢 tick，
+    // 不改步长也不改 tick 顺序，只是把同一串 tick 分摊到多次调用）。
+    if (deps.monotonicNow() - budgetStartMs > LIMITS.roomTickBudgetMs) {
+      deps.metrics.roomBudgetExceeded += 1;
+      break;
+    }
   }
 
   if (updateMatch(room, deps, nowMs, elapsed)) broadcastMatchState(room);
@@ -432,10 +467,19 @@ function collectDirectorPlayerIds(room: Room): number[] {
   return directorPlayerIdScratch;
 }
 
-function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
+function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean, nowMs: number): void {
   const monotonic = deps.monotonicNow();
+  if (room.firstTickAtMs < 0) {
+    room.firstTickAtMs = monotonic;
+    room.tickIndex = 0;
+  }
+  recordTickScheduleError(
+    deps.metrics,
+    monotonic - (room.firstTickAtMs + room.tickIndex * SERVER_TICK_MS),
+  );
+  room.tickIndex += 1;
   if (room.jitterArmed && firstInBurst)
-    recordTickJitter(deps.metrics, monotonic - room.lastTickAtMs - SERVER_TICK_MS);
+    recordTickInterval(deps.metrics, monotonic - room.lastTickAtMs - SERVER_TICK_MS);
   room.lastTickAtMs = monotonic;
   room.jitterArmed = true;
   deps.metrics.ticks += 1;
@@ -521,6 +565,17 @@ function runTick(deps: RoomDeps, room: Room, firstInBurst: boolean): void {
     }
     deps.metrics.eventsSent += events.length;
   }
+
+  // 口径写死：工作量 = 整段 runTick 的真实耗时；漂移 =（模拟时间增量）−（真实时间增量）。
+  // 漂移基准在**首个 tick 走完**时取：若在 stepWorld 之前取，模拟已经领先真实时间一个 tick，
+  // 指标会永久读出一个 +50ms 的系统偏差（本文件的单测固定了这一口径）。
+  if (!room.driftArmed) {
+    room.driftArmed = true;
+    room.wallStartMs = nowMs;
+    room.simStartMs = room.world.timeMs;
+  }
+  recordSimDrift(deps.metrics, room.world.timeMs - room.simStartMs - (nowMs - room.wallStartMs));
+  recordTickWork(deps.metrics, deps.monotonicNow() - monotonic);
 }
 
 function sendSnapshot(deps: RoomDeps, room: Room, session: Session, periodicFull: boolean): void {

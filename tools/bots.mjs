@@ -809,7 +809,28 @@ try {
   metricsStart = await fetchMetrics();
   runStartMs = Date.now();
   const durationMs = options.minutes * 60000;
+  // O02 §4 任务 6：在 1/3 与 2/3 时刻各采样一次 /metrics，用于「替代判据」的前后段对比
+  let metricsThird1 = null;
+  let metricsThird2 = null;
+  const thirdTimer1 = setTimeout(
+    () => {
+      void fetchMetrics().then((value) => {
+        metricsThird1 = value;
+      });
+    },
+    Math.round(durationMs / 3),
+  );
+  const thirdTimer2 = setTimeout(
+    () => {
+      void fetchMetrics().then((value) => {
+        metricsThird2 = value;
+      });
+    },
+    Math.round((durationMs * 2) / 3),
+  );
   await sleep(durationMs);
+  clearTimeout(thirdTimer1);
+  clearTimeout(thirdTimer2);
   const elapsedSec = (Date.now() - runStartMs) / 1000;
   const metricsEnd = await fetchMetrics();
   await sleep(250);
@@ -881,7 +902,68 @@ try {
   const poseRejectedTotal = metricDelta(metricsStart, metricsEnd, 'ac_pose_rejected_total');
   const serverSnapshots = metricDelta(metricsStart, metricsEnd, 'ac_snapshots_sent_total');
   const serverSnapshotRatePerClient = serverSnapshots / elapsedSec / bots.length;
-  const tickJitterP95 = metricsEnd.get('ac_tick_jitter_ms_p95') ?? 0;
+  // O02：判定改用 schedule error（实际 tick 时刻 − 理想时刻）；interval error 保留作对照。
+  const tickIntervalErrorP95 = metricsEnd.get('ac_tick_interval_error_ms_p95') ?? 0;
+  const tickJitterP95 = tickIntervalErrorP95;
+  const scheduleErrorP95 = metricsEnd.get('ac_tick_schedule_error_ms_p95') ?? 0;
+  const scheduleErrorP95Early =
+    metricsThird1 === null ? null : (metricsThird1.get('ac_tick_schedule_error_ms_p95') ?? 0);
+  const scheduleErrorP95Late =
+    metricsThird2 === null ? null : (metricsThird2.get('ac_tick_schedule_error_ms_p95') ?? 0);
+  const scheduleErrorP95Delta =
+    scheduleErrorP95Early === null || scheduleErrorP95Late === null
+      ? null
+      : Math.abs(scheduleErrorP95Late - scheduleErrorP95Early);
+  const simDriftMsMax = Math.max(
+    metricsEnd.get('ac_sim_drift_ms') ?? 0,
+    metricsThird1 === null ? 0 : (metricsThird1.get('ac_sim_drift_ms') ?? 0),
+    metricsThird2 === null ? 0 : (metricsThird2.get('ac_sim_drift_ms') ?? 0),
+  );
+  const tickWorkP95 = metricsEnd.get('ac_tick_work_ms_p95') ?? 0;
+  const tickWorkP99 = metricsEnd.get('ac_tick_work_ms_p99') ?? 0;
+  const roomBudgetExceededTotal = metricDelta(
+    metricsStart,
+    metricsEnd,
+    'ac_room_budget_exceeded_total',
+  );
+
+  // 直接判据优先；粒度 > 8ms 时按 O02 §1 的替代判据判定，依据三件套必须写进 note。
+  const s524Direct = scheduleErrorP95 <= 8;
+  const s524Alt =
+    timerGranularityMs > 8 &&
+    scheduleErrorP95Delta !== null &&
+    scheduleErrorP95Delta <= 2 &&
+    simDriftMsMax <= 50;
+  const s524Status = s524Direct || s524Alt ? 'pass' : 'fail';
+  const s524Note = s524Direct
+    ? '直接判据：schedule error p95=' +
+      String(round(scheduleErrorP95, 2)) +
+      'ms ≤ 8ms（本机定时器粒度 ' +
+      String(timerGranularityMs) +
+      'ms）；sim_drift max=' +
+      String(round(simDriftMsMax, 2)) +
+      'ms'
+    : s524Alt
+      ? '替代判据（docs/优化/O02 §1）：本机定时器粒度实测 ' +
+        String(timerGranularityMs) +
+        'ms > 8ms；前 1/3 schedule error p95=' +
+        String(round(scheduleErrorP95Early ?? 0, 2)) +
+        'ms、后 1/3=' +
+        String(round(scheduleErrorP95Late ?? 0, 2)) +
+        'ms（差 ' +
+        String(round(scheduleErrorP95Delta ?? 0, 2)) +
+        'ms ≤ 2ms）；|sim_drift| max=' +
+        String(round(simDriftMsMax, 2)) +
+        'ms ≤ 50ms ⇒ 误差不随运行时间累积'
+      : '直接判据与替代判据都不成立：schedule error p95=' +
+        String(round(scheduleErrorP95, 2)) +
+        'ms，定时器粒度 ' +
+        String(timerGranularityMs) +
+        'ms，前后段差 ' +
+        String(scheduleErrorP95Delta === null ? 'n/a' : round(scheduleErrorP95Delta, 2)) +
+        'ms，|sim_drift| max=' +
+        String(round(simDriftMsMax, 2)) +
+        'ms';
   const serverSnapshotBytesAvg = metricDelta(metricsStart, metricsEnd, 'ac_snapshot_bytes_total');
   const serverBytesAvg =
     serverSnapshots === 0 ? 0 : serverSnapshotBytesAvg / Math.max(1, serverSnapshots);
@@ -913,17 +995,12 @@ try {
     },
     {
       id: 'S5.2-4',
-      label: '服务端 tick 抖动 P95 ≤ 8ms',
-      measured: round(tickJitterP95, 2),
+      label: '服务端 tick 调度误差 P95 ≤ 8ms（粒度 >8ms 时用替代判据）',
+      measured: round(scheduleErrorP95, 2),
       limit: 8,
       unit: 'ms',
-      status: tickJitterP95 <= 8 ? 'pass' : 'fail',
-      note:
-        tickJitterP95 > 8 && timerGranularityMs > 8
-          ? '本机 5ms 定时器实际量化到 ' +
-            String(timerGranularityMs) +
-            'ms（Node 事件循环粒度，房间循环 5ms 被拉长）；生产 Linux 上 5ms 循环可用，该值需在目标环境复测'
-          : '',
+      status: s524Status,
+      note: s524Note,
     },
     {
       id: 'S5.2-8',
@@ -1041,6 +1118,18 @@ try {
       poseSuspectPerMinutePerClient: round(poseSuspectPerMinutePerClient, 2),
       poseRejectedTotal,
       tickJitterP95Ms: round(tickJitterP95, 2),
+      tickIntervalErrorP95Ms: round(tickIntervalErrorP95, 2),
+      tickScheduleErrorP95Ms: round(scheduleErrorP95, 2),
+      tickScheduleErrorP95EarlyMs:
+        scheduleErrorP95Early === null ? null : round(scheduleErrorP95Early, 2),
+      tickScheduleErrorP95LateMs:
+        scheduleErrorP95Late === null ? null : round(scheduleErrorP95Late, 2),
+      tickScheduleErrorP95DeltaMs:
+        scheduleErrorP95Delta === null ? null : round(scheduleErrorP95Delta, 2),
+      simDriftMsMax: round(simDriftMsMax, 2),
+      tickWorkP95Ms: round(tickWorkP95, 3),
+      tickWorkP99Ms: round(tickWorkP99, 3),
+      roomBudgetExceededTotal,
       serverSnapshotBytesAvg: round(serverBytesAvg, 1),
       shotsFiredLocal: bots.reduce((sum, bot) => sum + bot.shotsSent, 0),
       hitsTotal: clientReports.reduce((sum, r) => sum + r.hits, 0),
@@ -1104,7 +1193,19 @@ try {
       'ms p95=' +
       String(report.aggregate.rttP95Ms) +
       'ms',
-    'tick jitter P95(/metrics)=' + String(report.aggregate.tickJitterP95Ms) + 'ms',
+    'tick schedule error P95(/metrics)=' +
+      String(report.aggregate.tickScheduleErrorP95Ms) +
+      'ms (interval error P95=' +
+      String(report.aggregate.tickIntervalErrorP95Ms) +
+      'ms)  sim drift max=' +
+      String(report.aggregate.simDriftMsMax) +
+      'ms',
+    'tick work p95=' +
+      String(report.aggregate.tickWorkP95Ms) +
+      'ms p99=' +
+      String(report.aggregate.tickWorkP99Ms) +
+      'ms  room budget yields=' +
+      String(report.aggregate.roomBudgetExceededTotal),
     'hard corrections total=' +
       String(hardCorrectTotal) +
       ' → ' +

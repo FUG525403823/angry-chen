@@ -19,6 +19,9 @@ function parseArgs(argv) {
       const list = multi.get(key) ?? [];
       list.push(next);
       multi.set(key, list);
+      // 同名参数同时登记到 args：`--out <path>` / `--title <text>` 读 args，`--bots` / `--soak` 读 multi。
+      // （O02 执行期修复：此前带值参数只进 multi，导致文档化的 `--out` 静默失效、报告只能打到 stdout。）
+      args.set(key, next);
       i += 1;
     } else {
       args.set(key, 'true');
@@ -161,6 +164,37 @@ if (notMeasured.length > 0) {
   }
   lines.push('');
 }
+lines.push('### 调度 / 漂移 / 工作量（O02）');
+lines.push('');
+lines.push(
+  '| 来源 | schedule error p95 | 前 1/3 → 后 1/3 | sim drift max | tick work p95 / p99 | 预算让出次数 |',
+);
+lines.push('| --- | --- | --- | --- | --- | --- |');
+for (const source of sources) {
+  const a = source.aggregate ?? {};
+  const early = a.tickScheduleErrorP95EarlyMs;
+  const late = a.tickScheduleErrorP95LateMs;
+  lines.push(
+    '| ' +
+      source.label +
+      ' | ' +
+      String(a.tickScheduleErrorP95Ms ?? '—') +
+      ' ms | ' +
+      (early === undefined || early === null || late === undefined || late === null
+        ? '—'
+        : String(early) + ' → ' + String(late) + ' ms') +
+      ' | ' +
+      String(a.simDriftMsMax ?? '—') +
+      ' ms | ' +
+      (a.tickWorkP95Ms === undefined
+        ? '—'
+        : String(a.tickWorkP95Ms) + ' / ' + String(a.tickWorkP99Ms) + ' ms') +
+      ' | ' +
+      (a.roomBudgetExceededTotal === undefined ? '—' : String(a.roomBudgetExceededTotal)) +
+      ' |',
+  );
+}
+lines.push('');
 lines.push('### §7 DoD 第 2 条判定');
 lines.push('');
 lines.push(

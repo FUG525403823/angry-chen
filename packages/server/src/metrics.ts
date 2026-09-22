@@ -1,14 +1,30 @@
 const newline = String.fromCharCode(10);
-const jitterRingSize = 128;
+const sampleRingSize = 128;
 
 export interface Metrics {
   ticks: number;
   tickSkips: number;
-  tickJitterSamples: number;
-  tickJitterSumMs: number;
-  tickJitterMaxMs: number;
-  tickJitterRing: Float64Array;
-  tickJitterCursor: number;
+  tickIntervalSamples: number;
+  tickIntervalSumMs: number;
+  tickIntervalMaxMs: number;
+  tickIntervalRing: Float64Array;
+  tickIntervalCursor: number;
+  tickScheduleErrorSamples: number;
+  tickScheduleErrorSumMs: number;
+  tickScheduleErrorMaxMs: number;
+  tickScheduleErrorRing: Float64Array;
+  tickScheduleErrorCursor: number;
+  tickWorkSamples: number;
+  tickWorkSumMs: number;
+  tickWorkMaxMs: number;
+  tickWorkRing: Float64Array;
+  tickWorkCursor: number;
+  simDriftSamples: number;
+  simDriftMaxAbs: number;
+  simDriftLastMs: number;
+  simDriftRing: Float64Array;
+  simDriftCursor: number;
+  roomBudgetExceeded: number;
   snapshotsSent: number;
   snapshotBytes: number;
   snapshotBytesMax: number;
@@ -64,11 +80,27 @@ export function createMetrics(): Metrics {
   return {
     ticks: 0,
     tickSkips: 0,
-    tickJitterSamples: 0,
-    tickJitterSumMs: 0,
-    tickJitterMaxMs: 0,
-    tickJitterRing: new Float64Array(jitterRingSize),
-    tickJitterCursor: 0,
+    tickIntervalSamples: 0,
+    tickIntervalSumMs: 0,
+    tickIntervalMaxMs: 0,
+    tickIntervalRing: new Float64Array(sampleRingSize),
+    tickIntervalCursor: 0,
+    tickScheduleErrorSamples: 0,
+    tickScheduleErrorSumMs: 0,
+    tickScheduleErrorMaxMs: 0,
+    tickScheduleErrorRing: new Float64Array(sampleRingSize),
+    tickScheduleErrorCursor: 0,
+    tickWorkSamples: 0,
+    tickWorkSumMs: 0,
+    tickWorkMaxMs: 0,
+    tickWorkRing: new Float64Array(sampleRingSize),
+    tickWorkCursor: 0,
+    simDriftSamples: 0,
+    simDriftMaxAbs: 0,
+    simDriftLastMs: 0,
+    simDriftRing: new Float64Array(sampleRingSize),
+    simDriftCursor: 0,
+    roomBudgetExceeded: 0,
     snapshotsSent: 0,
     snapshotBytes: 0,
     snapshotBytesMax: 0,
@@ -111,13 +143,59 @@ export function createMetrics(): Metrics {
   };
 }
 
-export function recordTickJitter(metrics: Metrics, deltaMs: number): void {
+function recordRing(ring: Float64Array, cursor: number, sample: number): number {
+  ring[cursor] = sample;
+  return (cursor + 1) % ring.length;
+}
+
+/**
+ * 旧口径（对照）：相邻两次实际 tick 的间隔误差。它同时混入调度误差与 OS 定时器粒度，
+ * 因此 O02 起判定改用 `recordTickScheduleError`，本指标只保留作对照（`ac_tick_interval_error_ms_p95`）。
+ */
+export function recordTickInterval(metrics: Metrics, deltaMs: number): void {
   const sample = Math.abs(deltaMs);
-  metrics.tickJitterSamples += 1;
-  metrics.tickJitterSumMs += sample;
-  if (sample > metrics.tickJitterMaxMs) metrics.tickJitterMaxMs = sample;
-  metrics.tickJitterRing[metrics.tickJitterCursor] = sample;
-  metrics.tickJitterCursor = (metrics.tickJitterCursor + 1) % jitterRingSize;
+  metrics.tickIntervalSamples += 1;
+  metrics.tickIntervalSumMs += sample;
+  if (sample > metrics.tickIntervalMaxMs) metrics.tickIntervalMaxMs = sample;
+  metrics.tickIntervalCursor = recordRing(
+    metrics.tickIntervalRing,
+    metrics.tickIntervalCursor,
+    sample,
+  );
+}
+
+/** 新口径：实际 tick 时刻 − 理想时刻（首 tick + n × 50ms），衡量调度质量而非定时器粒度。 */
+export function recordTickScheduleError(metrics: Metrics, errorMs: number): void {
+  const sample = Math.abs(errorMs);
+  metrics.tickScheduleErrorSamples += 1;
+  metrics.tickScheduleErrorSumMs += sample;
+  if (sample > metrics.tickScheduleErrorMaxMs) metrics.tickScheduleErrorMaxMs = sample;
+  metrics.tickScheduleErrorCursor = recordRing(
+    metrics.tickScheduleErrorRing,
+    metrics.tickScheduleErrorCursor,
+    sample,
+  );
+}
+
+/** 单次 runTick 的工作耗时：把「调度问题」与「计算问题」分开。 */
+export function recordTickWork(metrics: Metrics, workMs: number): void {
+  const sample = workMs > 0 ? workMs : 0;
+  metrics.tickWorkSamples += 1;
+  metrics.tickWorkSumMs += sample;
+  if (sample > metrics.tickWorkMaxMs) metrics.tickWorkMaxMs = sample;
+  metrics.tickWorkCursor = recordRing(metrics.tickWorkRing, metrics.tickWorkCursor, sample);
+}
+
+/**
+ * 漂移：`(模拟时间 − 基准模拟时间) − (真实时间 − 基准真实时间)`，带符号。
+ * 环里保留近期样本（供 gauge 与判定），`simDriftMaxAbs` 记录全时段最大值。
+ */
+export function recordSimDrift(metrics: Metrics, driftMs: number): void {
+  metrics.simDriftSamples += 1;
+  metrics.simDriftLastMs = driftMs;
+  const abs = Math.abs(driftMs);
+  if (abs > metrics.simDriftMaxAbs) metrics.simDriftMaxAbs = abs;
+  metrics.simDriftCursor = recordRing(metrics.simDriftRing, metrics.simDriftCursor, driftMs);
 }
 
 export function percentileFromSorted(sorted: readonly number[], percentile: number): number {
@@ -127,24 +205,75 @@ export function percentileFromSorted(sorted: readonly number[], percentile: numb
   return sorted[index] ?? 0;
 }
 
-export function tickJitterPercentile(metrics: Metrics, percentile: number): number {
-  const filled = Math.min(metrics.tickJitterSamples, jitterRingSize);
+function ringPercentile(ring: Float64Array, samples: number, percentile: number): number {
+  const filled = Math.min(samples, ring.length);
   if (filled === 0) return 0;
-  const sorted = Array.from(metrics.tickJitterRing.subarray(0, filled)).sort((a, b) => a - b);
+  const sorted = Array.from(ring.subarray(0, filled)).sort((a, b) => a - b);
   return percentileFromSorted(sorted, percentile);
 }
 
-export function tickJitterP50(metrics: Metrics): number {
-  return tickJitterPercentile(metrics, 0.5);
+function ringAvg(sumMs: number, samples: number): number {
+  if (samples === 0) return 0;
+  return sumMs / samples;
 }
 
-export function tickJitterP95(metrics: Metrics): number {
-  return tickJitterPercentile(metrics, 0.95);
+export function tickIntervalPercentile(metrics: Metrics, percentile: number): number {
+  return ringPercentile(metrics.tickIntervalRing, metrics.tickIntervalSamples, percentile);
 }
 
-export function tickJitterAvg(metrics: Metrics): number {
-  if (metrics.tickJitterSamples === 0) return 0;
-  return metrics.tickJitterSumMs / metrics.tickJitterSamples;
+export function tickIntervalP50(metrics: Metrics): number {
+  return tickIntervalPercentile(metrics, 0.5);
+}
+
+export function tickIntervalP95(metrics: Metrics): number {
+  return tickIntervalPercentile(metrics, 0.95);
+}
+
+export function tickIntervalAvg(metrics: Metrics): number {
+  return ringAvg(metrics.tickIntervalSumMs, metrics.tickIntervalSamples);
+}
+
+export function tickScheduleErrorPercentile(metrics: Metrics, percentile: number): number {
+  return ringPercentile(
+    metrics.tickScheduleErrorRing,
+    metrics.tickScheduleErrorSamples,
+    percentile,
+  );
+}
+
+export function tickScheduleErrorP50(metrics: Metrics): number {
+  return tickScheduleErrorPercentile(metrics, 0.5);
+}
+
+export function tickScheduleErrorP95(metrics: Metrics): number {
+  return tickScheduleErrorPercentile(metrics, 0.95);
+}
+
+export function tickWorkPercentile(metrics: Metrics, percentile: number): number {
+  return ringPercentile(metrics.tickWorkRing, metrics.tickWorkSamples, percentile);
+}
+
+export function tickWorkP95(metrics: Metrics): number {
+  return tickWorkPercentile(metrics, 0.95);
+}
+
+export function tickWorkP99(metrics: Metrics): number {
+  return tickWorkPercentile(metrics, 0.99);
+}
+
+export function tickWorkAvg(metrics: Metrics): number {
+  return ringAvg(metrics.tickWorkSumMs, metrics.tickWorkSamples);
+}
+
+/** 近期样本里 |漂移| 的最大值（Prometheus gauge 用；单次毛刺不会长期污染判定）。 */
+export function simDriftMsMaxAbs(metrics: Metrics): number {
+  const filled = Math.min(metrics.simDriftSamples, metrics.simDriftRing.length);
+  let max = 0;
+  for (let i = 0; i < filled; i += 1) {
+    const value = Math.abs(metrics.simDriftRing[i] ?? 0);
+    if (value > max) max = value;
+  }
+  return max;
 }
 
 export function snapshotBytesAvg(metrics: Metrics): number {
@@ -165,28 +294,89 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
     lines.push(name + ' ' + String(value));
   };
   push(
-    'ac_tick_jitter_ms_p95',
-    'simulation tick jitter p95 in ms',
+    'ac_tick_schedule_error_ms_p95',
+    'p95 of (actual tick instant - ideal instant), ideal = first tick + n x 50ms',
     'gauge',
-    Number(tickJitterP95(metrics).toFixed(3)),
+    Number(tickScheduleErrorP95(metrics).toFixed(3)),
+  );
+  push(
+    'ac_tick_schedule_error_ms_p50',
+    'p50 of (actual tick instant - ideal instant)',
+    'gauge',
+    Number(tickScheduleErrorP50(metrics).toFixed(3)),
+  );
+  push(
+    'ac_tick_schedule_error_ms_max',
+    'largest observed schedule error since startup',
+    'gauge',
+    Number(metrics.tickScheduleErrorMaxMs.toFixed(3)),
+  );
+  push(
+    'ac_tick_work_ms_p95',
+    'p95 of wall time spent inside a single runTick',
+    'gauge',
+    Number(tickWorkP95(metrics).toFixed(3)),
+  );
+  push(
+    'ac_tick_work_ms_p99',
+    'p99 of wall time spent inside a single runTick',
+    'gauge',
+    Number(tickWorkP99(metrics).toFixed(3)),
+  );
+  push(
+    'ac_tick_work_ms_max',
+    'largest runTick wall time since startup',
+    'gauge',
+    Number(metrics.tickWorkMaxMs.toFixed(3)),
+  );
+  push(
+    'ac_sim_drift_ms',
+    'max recent |simulated time delta - real time delta| in ms',
+    'gauge',
+    Number(simDriftMsMaxAbs(metrics).toFixed(3)),
+  );
+  push(
+    'ac_sim_drift_ms_last',
+    'signed simulated-time drift of the most recent tick in ms',
+    'gauge',
+    Number(metrics.simDriftLastMs.toFixed(3)),
+  );
+  push(
+    'ac_room_budget_exceeded_total',
+    'rooms that yielded the event loop because of the per-call tick budget',
+    'counter',
+    metrics.roomBudgetExceeded,
+  );
+  push(
+    'ac_tick_interval_error_ms_p95',
+    'p95 of (interval between consecutive ticks - 50ms); legacy diagnostic, scheduled error is the criterion',
+    'gauge',
+    Number(tickIntervalP95(metrics).toFixed(3)),
+  );
+  // 旧名保留为别名：docs/运维手册.md、tools/soak.mjs、http.test.ts 仍按此名引用（与 interval p95 同值）。
+  push(
+    'ac_tick_jitter_ms_p95',
+    'alias of ac_tick_interval_error_ms_p95',
+    'gauge',
+    Number(tickIntervalP95(metrics).toFixed(3)),
   );
   push(
     'ac_tick_jitter_ms_p50',
-    'simulation tick jitter p50 in ms',
+    'alias of the interval-based p50 diagnostic',
     'gauge',
-    Number(tickJitterP50(metrics).toFixed(3)),
+    Number(tickIntervalP50(metrics).toFixed(3)),
   );
   push(
     'ac_tick_jitter_ms_avg',
-    'simulation tick jitter average in ms',
+    'alias of the interval-based average diagnostic',
     'gauge',
-    Number(tickJitterAvg(metrics).toFixed(3)),
+    Number(tickIntervalAvg(metrics).toFixed(3)),
   );
   push(
     'ac_tick_jitter_ms_max',
-    'simulation tick jitter maximum in ms',
+    'largest observed tick interval error since startup',
     'gauge',
-    Number(metrics.tickJitterMaxMs.toFixed(3)),
+    Number(metrics.tickIntervalMaxMs.toFixed(3)),
   );
   push(
     'ac_snapshot_bytes_avg',

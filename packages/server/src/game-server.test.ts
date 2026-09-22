@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { ERROR_CODE, MATCH_PHASE, NEW_ROOM_CODE, OPCODE, countActive, createRng } from '@ac/shared';
+import {
+  ERROR_CODE,
+  MATCH_PHASE,
+  NEW_ROOM_CODE,
+  OPCODE,
+  SERVER_TICK_MS,
+  countActive,
+  createRng,
+} from '@ac/shared';
 
 import { createHarness, sendSimple } from './testing/harness.ts';
 
@@ -173,6 +181,53 @@ describe('房间生命周期', () => {
     expect(room?.phase).toBe(MATCH_PHASE.lobby);
     expect(room?.snapshotRateX10).toBe(Math.round(10000 / 50));
     expect(createRng(1, 'fx')()).toBeCloseTo(createRng(1, 'fx')(), 12);
+    await harness.close();
+  });
+});
+
+describe('调度与漂移（O02）', () => {
+  it('假时钟驱动 1000 次 step：模拟时间与真实时间偏差 ≤ 1 tick', async () => {
+    const harness = createHarness();
+    const alice = harness.connect();
+    alice.join('alice', NEW_ROOM_CODE);
+    const code = alice.welcome()?.roomCode ?? '';
+    const room = harness.game.rooms.rooms.get(code);
+    if (room === undefined) throw new Error('room missing');
+    const simStart = room.world.timeMs;
+    const wallStart = harness.clock.value;
+
+    harness.tick(1000);
+
+    const simElapsed = room.world.timeMs - simStart;
+    const wallElapsed = harness.clock.value - wallStart;
+    expect(wallElapsed).toBe(1000 * SERVER_TICK_MS);
+    expect(simElapsed).toBe(wallElapsed);
+    expect(harness.game.metrics.ticks).toBe(1000);
+    expect(harness.game.metrics.tickSkips).toBe(0);
+    expect(harness.game.metrics.simDriftMaxAbs).toBe(0);
+    expect(harness.game.metrics.tickScheduleErrorMaxMs).toBe(0);
+    await harness.close();
+  });
+
+  it('不规则喂入仍不丢 tick、不漂移，而调度误差有值', async () => {
+    const harness = createHarness();
+    const alice = harness.connect();
+    alice.join('alice', NEW_ROOM_CODE);
+    const room = harness.game.rooms.rooms.get(alice.welcome()?.roomCode ?? '');
+    if (room === undefined) throw new Error('room missing');
+    const simStart = room.world.timeMs;
+    const wallStart = harness.clock.value;
+
+    const pattern = [12, 18, 25, 7, 38];
+    for (let i = 0; i < 200; i += 1) harness.advance(pattern[i % pattern.length] ?? 20);
+
+    const simElapsed = room.world.timeMs - simStart;
+    const wallElapsed = harness.clock.value - wallStart;
+    expect(wallElapsed).toBe(4000);
+    expect(Math.abs(simElapsed - wallElapsed)).toBeLessThanOrEqual(SERVER_TICK_MS);
+    expect(harness.game.metrics.simDriftMaxAbs).toBeLessThanOrEqual(SERVER_TICK_MS);
+    expect(harness.game.metrics.tickScheduleErrorSamples).toBe(harness.game.metrics.ticks);
+    expect(harness.game.metrics.tickScheduleErrorMaxMs).toBeGreaterThan(0);
     await harness.close();
   });
 });

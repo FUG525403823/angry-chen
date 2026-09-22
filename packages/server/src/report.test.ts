@@ -8,7 +8,13 @@ import { describe, expect, it } from 'vitest';
 import { SILENT_LOGGER } from './log.ts';
 import { endMatch } from './match/controller.ts';
 import { createNullMatchStore } from './match/store.ts';
-import { createMetrics, recordTickJitter } from './metrics.ts';
+import {
+  createMetrics,
+  recordSimDrift,
+  recordTickInterval,
+  recordTickScheduleError,
+  recordTickWork,
+} from './metrics.ts';
 import {
   buildMatchDiagnostics,
   createMatchCounters,
@@ -46,7 +52,11 @@ describe('单场诊断报告', () => {
     metrics.speedViolations = 5;
     metrics.shotsFired = 60;
     metrics.hits = 21;
-    for (const jitter of [1, 2, 3, 4, 5]) recordTickJitter(metrics, jitter);
+    for (const jitter of [1, 2, 3, 4, 5]) recordTickInterval(metrics, jitter);
+    for (const error of [0, 1, 2, 3, 12]) recordTickScheduleError(metrics, error);
+    for (const work of [0.5, 1, 1.5, 2, 4]) recordTickWork(metrics, work);
+    recordSimDrift(metrics, 3);
+    recordSimDrift(metrics, -40);
 
     const counters = createMatchCounters();
     counters.ticks = 10;
@@ -69,6 +79,10 @@ describe('单场诊断报告', () => {
     expect(diagnostics.ticks.skipped).toBe(2);
     expect(diagnostics.ticks.jitterMsP50).toBeGreaterThan(0);
     expect(diagnostics.ticks.jitterMsP95).toBeGreaterThan(diagnostics.ticks.jitterMsP50);
+    expect(diagnostics.ticks.scheduleErrorMsP95).toBe(12);
+    expect(diagnostics.ticks.workMsP95).toBe(4);
+    expect(diagnostics.ticks.workMsP99).toBe(4);
+    expect(diagnostics.ticks.simDriftMsMax).toBe(40);
     expect(diagnostics.net).toEqual({
       snapshotBytesAvg: 50,
       snapshotBytesMax: 777,
@@ -125,7 +139,7 @@ describe('单场诊断报告', () => {
     const now = 2_000_000;
     const startedAtMs = now - 1000;
     const metrics = createMetrics();
-    recordTickJitter(metrics, 2);
+    recordTickInterval(metrics, 2);
     metrics.snapshotBytesMax = 321;
     const room = createRoom('RP01', 7, now);
     const deps: RoomDeps = {
@@ -153,6 +167,10 @@ describe('单场诊断报告', () => {
       skipped: 0,
       jitterMsP50: 2,
       jitterMsP95: 2,
+      scheduleErrorMsP95: 0,
+      workMsP95: 0,
+      workMsP99: 0,
+      simDriftMsMax: 0,
     });
     expect(parsed['net']).toMatchObject({ snapshotBytesMax: 321 });
     expect(parsed['peak']).toEqual({ entities: 12, players: 2 });

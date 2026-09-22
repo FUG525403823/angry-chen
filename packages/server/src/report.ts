@@ -1,7 +1,16 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { snapshotBytesAvg, tickJitterP50, tickJitterP95, type Metrics } from './metrics.ts';
+import {
+  simDriftMsMaxAbs,
+  snapshotBytesAvg,
+  tickIntervalP50,
+  tickIntervalP95,
+  tickScheduleErrorP95,
+  tickWorkP95,
+  tickWorkP99,
+  type Metrics,
+} from './metrics.ts';
 
 export const REPORTS_DIR_NAME = 'reports';
 export const REPORT_FILE_EXTENSION = '.json';
@@ -9,7 +18,16 @@ export const REPORT_FILE_EXTENSION = '.json';
 export interface MatchDiagnostics {
   matchId: string;
   durationMs: number;
-  ticks: { total: number; skipped: number; jitterMsP50: number; jitterMsP95: number };
+  ticks: {
+    total: number;
+    skipped: number;
+    jitterMsP50: number;
+    jitterMsP95: number;
+    scheduleErrorMsP95: number;
+    workMsP95: number;
+    workMsP99: number;
+    simDriftMsMax: number;
+  };
   net: {
     snapshotBytesAvg: number;
     snapshotBytesMax: number;
@@ -85,8 +103,12 @@ export function buildMatchDiagnostics(input: MatchDiagnosticsInput): MatchDiagno
     ticks: {
       total: counters.ticks,
       skipped: counters.skipped,
-      jitterMsP50: roundTo(tickJitterP50(metrics), 3),
-      jitterMsP95: roundTo(tickJitterP95(metrics), 3),
+      jitterMsP50: roundTo(tickIntervalP50(metrics), 3),
+      jitterMsP95: roundTo(tickIntervalP95(metrics), 3),
+      scheduleErrorMsP95: roundTo(tickScheduleErrorP95(metrics), 3),
+      workMsP95: roundTo(tickWorkP95(metrics), 3),
+      workMsP99: roundTo(tickWorkP99(metrics), 3),
+      simDriftMsMax: roundTo(simDriftMsMaxAbs(metrics), 3),
     },
     net: {
       snapshotBytesAvg: roundTo(snapshotBytesAvg(metrics), 2),

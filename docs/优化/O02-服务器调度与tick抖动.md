@@ -81,34 +81,52 @@
 
 ## 4. 任务清单
 
-- [ ] 1. `metrics.ts`：新增 `tickScheduleErrorSamples/Sum/Max/Ring/Cursor`、`tickWorkSamples/Sum/Max/Ring/Cursor`、`simDriftSamples/MaxAbs`；新增 `recordTickScheduleError(metrics, errorMs)`、`recordTickWork(metrics, workMs)`、`recordSimDrift(metrics, driftMs)`（可复用现有 `recordTickJitter` 的环实现，抽成 `recordRing(ring, cursor, sample)`）。
-- [ ] 2. `metrics.ts`：新增 `tickScheduleErrorP95/P50`、`tickWorkP95/P99`、`simDriftMsMaxAbs`；`renderPrometheus` 输出
+- [x] 1. `metrics.ts`：新增 `tickScheduleErrorSamples/Sum/Max/Ring/Cursor`、`tickWorkSamples/Sum/Max/Ring/Cursor`、`simDriftSamples/MaxAbs`；新增 `recordTickScheduleError(metrics, errorMs)`、`recordTickWork(metrics, workMs)`、`recordSimDrift(metrics, driftMs)`（可复用现有 `recordTickJitter` 的环实现，抽成 `recordRing(ring, cursor, sample)`）。
+- [x] 2. `metrics.ts`：新增 `tickScheduleErrorP95/P50`、`tickWorkP95/P99`、`simDriftMsMaxAbs`；`renderPrometheus` 输出
       `ac_tick_schedule_error_ms_p95`、`ac_tick_work_ms_p95`、`ac_tick_work_ms_p99`、`ac_sim_drift_ms`（gauge，取最近样本的绝对值最大值）。
-- [ ] 3. `room.ts`：
+- [x] 3. `room.ts`：
   - `Room` 增加 `firstTickAtMs: number`（首 tick 的 monotonic 时刻）与 `tickIndex: number`；
   - `runTick` 内：`const ideal = room.firstTickAtMs + room.tickIndex * SERVER_TICK_MS`，
     `recordTickScheduleError(deps.metrics, monotonic - ideal)`；
   - 用 `deps.monotonicNow()` 取首尾差值 `recordTickWork(deps.metrics, workMs)`（只统计 tick 主体，不含快照发送以外的分支？— 统一计入整段 `runTick`，口径写死）；
   - `deps.metrics.simDriftMs` 更新：`recordSimDrift(deps.metrics, room.world.timeMs - （首次 tick 的真实时间 + 累积真实经过时间))`，实现方式：`Room` 记 `wallStartMs` 与 `simStartMs`，漂移 = `(world.timeMs − simStartMs) − (nowMs − wallStartMs)`；
   - 保留现有 `recordTickJitter`（改名 `recordTickInterval`）作为对照指标 `ac_tick_interval_error_ms_p95`，便于对比新旧口径。
-- [ ] 4. `room.ts` `updateRoom` 的 tick 循环加预算：进入 `while` 前取 `budgetStartMs = deps.monotonicNow()`，
+- [x] 4. `room.ts` `updateRoom` 的 tick 循环加预算：进入 `while` 前取 `budgetStartMs = deps.monotonicNow()`，
       每步后若 `now - budgetStartMs > LIMITS.roomTickBudgetMs && steps > 0` 则 `break`（**不丢累积量**，剩余留给下一次调用），
       计数 `ac_room_budget_exceeded_total`。语义约束：不得跳 tick、不得改步长、不得改 tick 顺序；只把同一串 tick 分摊到多次调用。
-- [ ] 5. `server.ts`：`setInterval(5ms)` → 自校正调度：
+- [x] 5. `server.ts`：`setInterval(5ms)` → 自校正调度：
   - `let nextDeadlineMs = monotonicNow();`
   - `function pump(): void { const now = monotonicNow(); while (now >= nextDeadlineMs) nextDeadlineMs += 1; if (now - (nextDeadlineMs - 1) > 100) nextDeadlineMs = now; step(now); loop = setTimeout(pump, 1); }`
   - 说明写进代码注释：**模拟正确性来自房间累积器**，调度只决定"何时把时间片喂给房间"；`setTimeout(1)` 的粒度由 OS 决定（Windows ≈15.56ms），自校正保证误差不累积。
-- [ ] 6. `tools/bots.mjs`：
+- [x] 6. `tools/bots.mjs`：
   - `S5.2-4` 的 `measured` 改为 `metricsEnd.get('ac_tick_schedule_error_ms_p95')`；
   - 采样时在 1/3 与 2/3 时刻各记一次 `/metrics`，据此计算 `scheduleErrorP95Early` / `scheduleErrorP95Late`；
   - 判定：`p95 ≤ 8` 直接 pass；否则若 `timerGranularityMs > 8` 且 `|late − early| ≤ 2` 且 `|ac_sim_drift_ms| ≤ 50`，判 `pass（替代判据）`，note 里写清依据与实测粒度；
   - 删除原 note 中"生产 Linux 上 5ms 循环可用"的断言，替换为"本机定时器粒度实测 X ms；自校正调度下误差不累积（前 1/3 与后 1/3 差 Y ms）"。
-- [ ] 7. `tools/report.mjs`：Markdown 报告新增三行（schedule error p95、sim drift max、tick work p95/p99）。
-- [ ] 8. 测试：`server.test.ts` 用假 `monotonicNow`（可手动推进的时间源）驱动 `step()` 1000 次，断言
+- [x] 7. `tools/report.mjs`：Markdown 报告新增三行（schedule error p95、sim drift max、tick work p95/p99）。
+- [x] 8. 测试：`server.test.ts` 用假 `monotonicNow`（可手动推进的时间源）驱动 `step()` 1000 次，断言
       `|world.timeMs − 真实经过时间| ≤ SERVER_TICK_MS`；`metrics.test.ts` 断言分位数与 `simDriftMsMaxAbs` 计算正确（含跨环覆盖）。
-- [ ] 9. 复跑并落证据：`node tools/bots.mjs --players 4 --minutes 5 --strict --out docs/evidence/bots-schedule.json`，
+- [x] 9. 复跑并落证据：`node tools/bots.mjs --players 4 --minutes 5 --strict --out docs/evidence/bots-schedule.json`，
       再跑 `node tools/soak.mjs --minutes 5 --sample 10 --out docs/evidence/soak-5min.md --json docs/evidence/soak-5min.json` 确认 CPU/RSS 无回归。
-- [ ] 10. 回填 `docs/验收报告.md` §3.2（`S5.2-4` 结论 + 判据依据）与 §6（若替代判据生效，写明"生产环境复测"仍是未决项及其命令）。
+- [x] 10. 回填 `docs/验收报告.md` §3.2（`S5.2-4` 结论 + 判据依据）与 §6（若替代判据生效，写明"生产环境复测"仍是未决项及其命令）。
+
+**执行偏差与实现说明（2026-09-22）**
+
+1. **交付物文件名**：本仓库没有 `packages/server/src/server.test.ts`。任务 8 的「假 `monotonicNow` 驱动 1000 次 `step()`」落在
+   `packages/server/src/game-server.test.ts`（复用 `testing/harness.ts` 的假时钟），另新增 `packages/server/src/schedule.test.ts`
+   （房间层：预算让出、不规则喂入、空房不采样）与 `packages/server/src/metrics.test.ts`（分位数、环回绕、漂移绝对值）。
+2. **§5「`nextDeadlineMs += 1`（ms 网格）」**：字面实现等于每次 `pump` 都 `step()`，在低粒度环境（Linux `setTimeout(1)`）会变成每秒上千次
+   `updateRoom`，正是 §6 #6 要防的「把调度误差换成 CPU 空转」。改成：**1ms 轮询**（`ROOM_LOOP_POLL_MS`）+ **5ms 绝对网格**（`nextDeadlineMs += ROOM_LOOP_INTERVAL_MS`，
+   与旧 `setInterval(5ms)` 同节奏但按绝对时刻自校正），只在 `now ≥ nextDeadlineMs` 时 `step(now)`，落后超过 100ms 直接对齐。
+3. **漂移基准的取样时刻**：§5 写「`wallStartMs`/`simStartMs` 在房间首个 tick 时取」。若在 `stepWorld` **之前**取，首个 tick 的模拟时间已经领先
+   真实时间一个 tick，指标会永久读出 `+50ms` 的系统偏差（单测固定了这一点）。实现改为在**首个 tick 走完**时取基准，公式与 §5 完全一致。
+4. **旧口径指标保留双名**：`ac_tick_interval_error_ms_p95` 是 §5 的新名，同时保留 `ac_tick_jitter_ms_p95/p50/avg/max` 作为同值别名，
+   以免破坏 `docs/运维手册.md`、`tools/soak.mjs` 与 `packages/server/src/http.test.ts` 的既有引用（运维手册该行已改为指向新判据）。
+5. **`report.ts` 连带修改**：`MatchDiagnostics.ticks` 增加 `scheduleErrorMsP95` / `workMsP95` / `workMsP99` / `simDriftMsMax` 四个字段
+   （旧 `jitterMsP50/P95` 保留、语义变为 interval 口径），`report.test.ts` 同步断言。
+6. **证据文件路径**：任务 9 写的 `docs/evidence/soak-5min.json` 是 P10 的既有证据，直接覆盖会丢失历史，故 O02 的 soak 证据写到
+   `docs/evidence/soak-5min-o02.{md,json}`；bots 证据按原路径写 `docs/evidence/bots-schedule.json`，另加一份 200ms RTT 变体
+   `docs/evidence/bots-schedule-latency200.json`（`S5.2-9b` 只有在 `--latency ≥200` 时才被测量，这是 §6 #2「退出码 0」唯一可达的跑法）。
 
 ## 5. 冻结契约
 
@@ -144,15 +162,31 @@ ac_tick_interval_error_ms_p95  // gauge：旧口径（与上一次实际 tick �
 | 5 | `pnpm check` | 退出码 0 | 类型/风格/文档/覆盖率任一门失败 |
 | 6 | 人工复核：`grep -n "nextDeadlineMs" packages/server/src/server.ts` | 存在自校正步进与 100ms 追赶上限 | 退化成"每次 setTimeout(1) 立即 step"，把调度误差换成了 CPU 空转 |
 
+**执行实测（2026-09-22，Windows 11 / Node v24.14.1，进程内服务器）**
+
+| # | 实测结果 |
+|---|---|
+| 1 | ✅ `pnpm --filter @ac/server test`：**103 passed**（含新增 `schedule.test.ts` 6 例、`metrics.test.ts` 6 例、`game-server.test.ts` 新增 2 例） |
+| 2 | ✅ `S5.2-4` `pass`（**替代判据**）：`docs/evidence/bots-schedule.json` 的 schedule error p95 = **11.46ms**（定时器粒度 15.51ms；前 1/3 11.12ms → 后 1/3 11.60ms，差 **0.48ms**；`ac_sim_drift_ms` **12ms**）。⚠️ 该跑次 `--strict` 退出码 = 1，唯一原因是 `S5.2-9b`（200ms RTT 断言）在无延迟参数时状态为 `not-measured`；补跑 200ms 变体 `docs/evidence/bots-schedule-latency200.json` **verdict=pass、退出码 0**（schedule error p95 13.22ms、前/后 13.24→12.61ms、drift 15ms、隔墙命中 0、硬纠正 0） |
+| 3 | ✅ `curl -s localhost:8787/metrics` 实测：`ac_tick_schedule_error_ms_p95`、`ac_tick_work_ms_p95`、`ac_tick_work_ms_p99`、`ac_sim_drift_ms`、`ac_room_budget_exceeded_total`、`ac_tick_interval_error_ms_p95`（外加旧名别名 `ac_tick_jitter_ms_p95`）全部取到 |
+| 4 | ✅ `docs/evidence/soak-5min-o02.json`：verdict=pass，RSS 斜率 **0.413 MB/分钟**、CPU 均值 **2.31%** / P95 4.84%、房间回落到 0、未捕获异常 0、`tickSkips` 0 —— 自校正调度没有引入定时器泄漏或 CPU 空转（P10 基线：CPU 2.07%、RSS 0.337） |
+| 5 | ✅ `pnpm check` 退出码 0（typecheck / lint / test / docs / assets / count / coverage） |
+| 6 | ✅ `server.ts` 存在自校正步进：`nextDeadlineMs` 按 5ms 网格前进 + `ROOM_LOOP_MAX_CATCH_UP_MS = 100` 追赶上限 + `ROOM_LOOP_POLL_MS = 1` 轮询 |
+
+**调度三件套实测**（由 `tools/report.mjs` 渲染，产物 `docs/evidence/report-o02.md`）：单 tick 工作量 p95 **0.80–0.88ms**、p99 **3.37–3.38ms**（预算 8ms），
+`ac_room_budget_exceeded_total` 全程 **0** —— 4 人 5 分钟场景下计算量不是瓶颈，调度误差全部来自本机定时器粒度（15.5ms），且前后 1/3 只差 0.5ms、
+`sim_drift` 12–15ms「不随运行时间累积」，即 §1 替代判据的成立条件。
+
 ## 7. DoD（验收标准）
 
-- [ ] `pnpm check` 全绿。
-- [ ] `ac_tick_schedule_error_ms_p95 ≤ 8ms`；若使用替代判据，则 `|late − early| ≤ 2ms` 且 `|ac_sim_drift_ms| ≤ 50ms`，且判据依据写进证据文件与报告 note。
-- [ ] `ac_tick_work_ms_p95/p99` 与 `ac_sim_drift_ms` 在 `/metrics` 可见并被 `tools/report.mjs` 渲染。
-- [ ] `server.test.ts` 的"1000 次 step 后模拟时间与真实时间偏差 ≤1 tick"断言通过。
-- [ ] `tools/bots.mjs` 中不再存在"生产 Linux 上 5ms 循环可用"这类未验证断言。
-- [ ] `docs/evidence/bots-schedule.json` 与回填后的 `docs/验收报告.md` 存在。
-- [ ] 未新增运行时依赖；未改 `SERVER_TICK_MS = 50`；未改 tick 顺序与模拟步长。
+- [x] `pnpm check` 全绿。
+- [x] `ac_tick_schedule_error_ms_p95 ≤ 8ms`；若使用替代判据，则 `|late − early| ≤ 2ms` 且 `|ac_sim_drift_ms| ≤ 50ms`，且判据依据写进证据文件与报告 note。
+  > **替代判据成立**：粒度 15.51ms > 8ms、前后 1/3 差 0.48ms ≤ 2ms、`|ac_sim_drift_ms|` 12ms ≤ 50ms；三件套已写进 `tools/bots.mjs` 的 S5.2-4 note 与两份证据文件。
+- [x] `ac_tick_work_ms_p95/p99` 与 `ac_sim_drift_ms` 在 `/metrics` 可见并被 `tools/report.mjs` 渲染（`docs/evidence/report-o02.md`）。
+- [x] "1000 次 step 后模拟时间与真实时间偏差 ≤1 tick"断言通过（实际落在 `packages/server/src/game-server.test.ts`；本仓库无 `server.test.ts`）。
+- [x] `tools/bots.mjs` 中不再存在"生产 Linux 上 5ms 循环可用"这类未验证断言（换成粒度 / 前后段 / 漂移三个实测数）。
+- [x] `docs/evidence/bots-schedule.json`（+ 200ms 变体、O02 soak、report 渲染产物）与回填后的 `docs/验收报告.md` 存在。
+- [x] 未新增运行时依赖；未改 `SERVER_TICK_MS = 50`；未改 tick 顺序与模拟步长。
 
 ## 8. 风险与回滚
 
@@ -182,4 +216,10 @@ ac_tick_interval_error_ms_p95  // gauge：旧口径（与上一次实际 tick �
 - `/metrics` 与压测报告都能看到"调度 / 漂移 / 工作量"三件事，便于把后续 O04/O05 的收益量化
 
 **未决项（移交后续）**
-- 若替代判据生效，则"生产 Linux（低粒度定时器）上直接判据是否 ≤8ms"仍是未验证项，命令与预期已写入 `docs/验收报告.md` §6
+- 若替代判据生效，则"生产 Linux（低粒度定时器）上直接判据是否 ≤8ms"仍是未验证项：
+  `node tools/bots.mjs --players 4 --minutes 5 --latency 200 --jitter 20 --loss 0.01 --strict`，预期 `S5.2-4` 走**直接判据**且退出码 0；
+  命令、替代判据的成立条件与「本机判不了直接判据」的说明已写入 `docs/验收报告.md` §3.5 与 §6。
+- `S5.2-9b`（200ms RTT 隔墙命中）只在 `--latency ≥200` 时被测量，因此**无延迟参数的 `--strict` 跑法永远退出码 1**（`not-measured` 视为非 pass）。
+  这是 P10 既有语义，不是本步引入；O02 用 200ms 变体给出全绿证据（verdict=pass、退出码 0）。
+- `ac_tick_jitter_ms_*` 是 `ac_tick_interval_error_ms_*` 的同值别名，保留一个版本周期；
+  后续要删别名时需同时改 `docs/运维手册.md`、`tools/soak.mjs`、`packages/server/src/http.test.ts`。

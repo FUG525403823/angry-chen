@@ -125,6 +125,8 @@ export const LIMITS = Object.freeze({
   maxRemovedPerFrame: 255,
   tickCatchUpLimit: 5,
   poseHardCorrectFactor: 1.5,
+  /** 单次 updateRoom 调用内步进 tick 的工作量预算（毫秒），超出则本房间让出事件循环（让出 ≠ 丢 tick）。 */
+  roomTickBudgetMs: 8,
   fullSnapshotIntervalTicks: 40,
   emptyRoomReclaimMs: 60000,
   roomCodeLength: 4,
