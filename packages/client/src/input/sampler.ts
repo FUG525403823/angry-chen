@@ -62,7 +62,10 @@ export function createInputSampler(deps: SamplerDeps): InputSampler {
 
   function recomputeAxes(): void {
     const forward = (pressed.has('forward') ? 1 : 0) - (pressed.has('back') ? 1 : 0);
-    const strafe = (pressed.has('right') ? 1 : 0) - (pressed.has('left') ? 1 : 0);
+    // 模拟的 (forward, right) 相对 three.js 是**镜像基**：moveY = +1 沿模型左手侧。
+    // 视图侧已用 SIM_TO_VIEW_YAW_OFFSET = π 对齐前向，因此横移轴必须反号，
+    // 才能让「D = 画面右侧」。见 render/scene.ts 的约定说明与 scene.test.ts。
+    const strafe = (pressed.has('left') ? 1 : 0) - (pressed.has('right') ? 1 : 0);
     state.moveX = forward * INPUT.moveAxisLimit;
     state.moveY = strafe * INPUT.moveAxisLimit;
   }
@@ -101,7 +104,8 @@ export function createInputSampler(deps: SamplerDeps): InputSampler {
     },
     addMouse(deltaX: number, deltaY: number): void {
       const scale = MOUSE_SENSITIVITY_SCALE * sensitivity;
-      state.yaw += deltaX * scale;
+      // three.js 相机 yaw 增大 = 向左转，故鼠标右移（deltaX > 0）必须减小 yaw。
+      state.yaw -= deltaX * scale;
       state.pitch = clampPitch(state.pitch - deltaY * scale);
     },
     setSensitivity(value: number): void {

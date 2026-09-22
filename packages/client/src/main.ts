@@ -15,6 +15,7 @@ import {
   WEAPONS,
   WEAPON_SLOT_ORDER,
   createCommand,
+  yawPitchToDirection,
 } from '@ac/shared';
 import { createAudioLayer, outcomeCueForWinnerTeam } from './audio/layer.ts';
 import type { ListenerPose } from './audio/mixer.ts';
@@ -33,6 +34,7 @@ import { createSheepVisualTracker } from './net/sheepVisual.ts';
 import { DEFAULT_SERVER_URL, resolveServerUrl } from './net/serverUrl.ts';
 import { type ArenaArtParams, createArenaArt } from './render/arenaArt.ts';
 import { createEffects } from './render/effects.ts';
+import { createFrameProfiler } from './render/frameProfiler.ts';
 import { type SheepVisual, createEntityViews } from './render/entityViews.ts';
 import {
   type ArtPalette,
@@ -44,7 +46,7 @@ import {
 } from './render/materials.ts';
 import { PARTICLE_EMITTER, createParticles } from './render/particles.ts';
 import { createRenderer } from './render/renderer.ts';
-import { applyFov, createScene, updateCamera } from './render/scene.ts';
+import { applyFov, createScene, muzzleOrigin, updateCamera } from './render/scene.ts';
 import { createViewModelModel } from './render/viewmodelModel.ts';
 import { createSettingsStore, type SettingsStorage } from './settings/store.ts';
 import { createChat } from './ui/chat.ts';
@@ -59,6 +61,8 @@ export const DEFAULT_PLAYER_NAME = '陈sir';
 export const PHASE_NAMES: readonly string[] = ['大厅', '加载中', '战斗中', '波间备战', '结算'];
 export const SHEEP_LABELS: readonly string[] = ['咩咩兵', '冲撞羊', '问界羊', '羊王'];
 export const FALLBACK_CAMERA = { x: 0, y: 3, z: 18 };
+/** 本地曳光可视化长度（米）。命中后另有「枪口 → 命中点」的真实曳光。 */
+export const TRACER_RANGE_M = 30;
 const projectScratch = new Vector3();
 const fireOriginScratch = new Vector3();
 const listenerForward = new Vector3();
@@ -228,7 +232,10 @@ export function boot(): void {
     };
   });
   const hud = createHud(hudRoot, bannerRoot);
-  const debug = createDebugPanel(debugRoot, params.get('debug') === '1');
+  const debugEnabled = params.get('debug') === '1';
+  const debug = createDebugPanel(debugRoot, debugEnabled);
+  // 每帧分阶段计时：F3 面板展示，「画面卡顿」排查与 tools/e2e-cdp.mjs 采集用。
+  const profiler = createFrameProfiler();
 
   const sampler = createInputSampler({
     now: () => performance.now(),
@@ -245,12 +252,13 @@ export function boot(): void {
       commands.push(predictCommand);
       connection.sendCommand(predictCommand);
       if ((predictCommand.buttons & BUTTON.fire) !== 0) {
-        camera.getWorldDirection(forwardScratch);
+        // 与服务器射线共用同一函数：客户端准星方向 = 权威命中方向。
+        yawPitchToDirection(forwardScratch, sampler.state.yaw, sampler.state.pitch);
         if (localWeapon.onFire(performance.now())) {
           ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot);
           viewModel.triggerFire();
           audioLayer.notifyFire(weaponSlot);
-          fireOriginScratch.copy(camera.position).addScaledVector(forwardScratch, 0.45);
+          muzzleOrigin(fireOriginScratch, camera, forwardScratch);
           fx.spawnMuzzleFlash(
             fireOriginScratch.x,
             fireOriginScratch.y,
@@ -261,13 +269,14 @@ export function boot(): void {
           );
           fx.triggerShake(0.03);
         }
-        tracerEnd.x = camera.position.x + forwardScratch.x * 30;
-        tracerEnd.y = camera.position.y + forwardScratch.y * 30;
-        tracerEnd.z = camera.position.z + forwardScratch.z * 30;
+        muzzleOrigin(fireOriginScratch, camera, forwardScratch);
+        tracerEnd.x = fireOriginScratch.x + forwardScratch.x * TRACER_RANGE_M;
+        tracerEnd.y = fireOriginScratch.y + forwardScratch.y * TRACER_RANGE_M;
+        tracerEnd.z = fireOriginScratch.z + forwardScratch.z * TRACER_RANGE_M;
         fx.spawnTracer(
-          camera.position.x,
-          camera.position.y,
-          camera.position.z,
+          fireOriginScratch.x,
+          fireOriginScratch.y,
+          fireOriginScratch.z,
           tracerEnd.x,
           tracerEnd.y,
           tracerEnd.z,
@@ -501,10 +510,12 @@ export function boot(): void {
         combatHud.pushDamage(event.x, event.y, event.z, event.value, headshot);
         fx.spawnImpact(event.x, event.y, event.z);
         views.flashHit(event.targetId);
+        camera.getWorldDirection(forwardScratch);
+        muzzleOrigin(fireOriginScratch, camera, forwardScratch);
         fx.spawnTracer(
-          camera.position.x,
-          camera.position.y,
-          camera.position.z,
+          fireOriginScratch.x,
+          fireOriginScratch.y,
+          fireOriginScratch.z,
           event.x,
           event.y,
           event.z,
@@ -697,13 +708,16 @@ export function boot(): void {
   }
 
   function frameBody(nowMs: number): void {
+    profiler.begin();
     sampler.update();
+    profiler.mark('input');
 
     const dtMs = lastFrameMs === 0 ? 0 : nowMs - lastFrameMs;
     lastFrameMs = nowMs;
     localWeapon.update(nowMs, dtMs);
     views.sync(resolveSheepVisual, dtMs);
     fx.syncEliteBolts(view);
+    profiler.mark('sync');
     if (predictionReady) {
       predictor.advance(dtMs, predictCommand);
       predictor.renderPosition(renderPos);
@@ -735,6 +749,7 @@ export function boot(): void {
     } else {
       updateCamera(camera, local.pos, local.yaw, local.pitch, fx.shakeX, fx.shakeY);
     }
+    profiler.mark('predict');
     const timers = localTimers.advance(dtMs);
     const reloadMs = WEAPONS[WEAPON_SLOT_ORDER[weaponSlot] ?? 'pistol'].reloadMs;
     combatState.reloadRatio = timers.reloadLeftMs <= 0 ? 0 : 1 - timers.reloadLeftMs / reloadMs;
@@ -755,6 +770,7 @@ export function boot(): void {
     fx.setBerserk(combatState.rageLeftMs > 0);
     fx.setChargeWarnings(views.chargeWarnings);
     fx.update(dtMs);
+    profiler.mark('fx');
     camera.getWorldDirection(listenerForward);
     listenerPose.x = camera.position.x;
     listenerPose.y = camera.position.y;
@@ -764,13 +780,16 @@ export function boot(): void {
     listenerPose.forwardZ = listenerForward.z;
     audioWorld.localPlayerId = view.localPlayerId;
     audioLayer.update(dtMs, listenerPose, audioWorld);
+    profiler.mark('audio');
     combatHud.set(combatState);
     if (combatState.downed) {
       predictCommand.moveX = 0;
       predictCommand.moveY = 0;
     }
     renderer.draw(scene, camera, nowMs);
+    profiler.mark('draw');
     renderer.drawOverlay(viewModel.scene, viewModel.camera);
+    profiler.mark('overlay');
     const stats = renderer.getStats();
     const renderStats = renderer.getRenderStats();
     const viewStats = view.getStats();
@@ -807,7 +826,26 @@ export function boot(): void {
     debugUpdateScratch.rejectedShots = ammoLedger.rejectedTotal;
     debugUpdateScratch.ammoDivergence = ammoDivergence;
     debugUpdateScratch.resyncCount = ammoResyncCount;
+    // 分位数只在面板可见时才算（8 段插入排序不便宜），E2E 工具直接读 profiler.summary()。
+    debugUpdateScratch.stages = debug.visible ? profiler.summary() : '';
     debug.update(debugUpdateScratch);
+    profiler.mark('hud');
+    profiler.end();
+  }
+
+  if (debugEnabled) {
+    // 自动化与手工排查的观测入口（仅在 ?debug=1 时挂载）。
+    (window as unknown as { __ac?: Record<string, unknown> }).__ac = {
+      sampler,
+      view,
+      predictor,
+      profiler,
+      views,
+      renderer,
+      camera,
+      scene,
+      connection,
+    };
   }
   window.requestAnimationFrame(frame);
 

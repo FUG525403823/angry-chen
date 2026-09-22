@@ -64,10 +64,18 @@ describe('输入采样器', () => {
     h.sampler.setKey('KeyS', false);
     h.sampler.setKey('KeyD', true);
     expect(h.sampler.state.moveX).toBe(1);
-    expect(h.sampler.state.moveY).toBe(1);
+    expect(h.sampler.state.moveY).toBe(-1);
     h.sampler.setKey('KeyD', false);
     h.sampler.setKey('KeyA', true);
-    expect(h.sampler.state.moveY).toBe(-1);
+    expect(h.sampler.state.moveY).toBe(1);
+  });
+
+  it('moveY 相对 three.js 的“右”取反：D 键送负值（模拟右侧轴是模型左手侧）', () => {
+    const h = createHarness();
+    h.sampler.setKey('KeyD', true);
+    expect(h.emitted[0]?.moveY).toBe(-1);
+    h.sampler.setKey('KeyA', true);
+    expect(h.emitted[1]?.moveY).toBe(0);
   });
 
   it('Shift/Space 等按键写入对应的位标志', () => {
@@ -84,8 +92,9 @@ describe('输入采样器', () => {
   it('鼠标位移按 0.001 × 灵敏度换算，俯仰被夹在 ±π/2', () => {
     const h = createHarness();
     h.sampler.setSensitivity(1);
+    // 鼠标右移必须是「右转」：three.js 相机 yaw 增大 = 左转，所以 yaw 减小。
     h.sampler.addMouse(10, 0);
-    expect(h.sampler.state.yaw).toBeCloseTo(0.01, 6);
+    expect(h.sampler.state.yaw).toBeCloseTo(-0.01, 6);
     h.sampler.addMouse(0, 100000);
     expect(h.sampler.state.pitch).toBeCloseTo(-Math.PI / 2, 6);
     h.sampler.addMouse(0, -100000);
@@ -93,6 +102,9 @@ describe('输入采样器', () => {
     h.sampler.setSensitivity(2);
     h.sampler.setYaw(0);
     h.sampler.addMouse(10, 0);
+    expect(h.sampler.state.yaw).toBeCloseTo(-0.02, 6);
+    h.sampler.setYaw(0);
+    h.sampler.addMouse(-10, 0);
     expect(h.sampler.state.yaw).toBeCloseTo(0.02, 6);
   });
 

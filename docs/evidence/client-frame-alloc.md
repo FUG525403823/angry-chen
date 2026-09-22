@@ -4,7 +4,7 @@
 
 ## 1. 测量边界（先说清能证明什么）
 
-本机**没有可用浏览器**，无法执行 O06 §6 #4 要求的「4 人局 + DevTools Performance 看 GC 次数 / 调试面板帧 p95」人工观察。
+本机**没有可用浏览器**（当时的判断；2026-09-22 已用 `tools/e2e-cdp.mjs` 直连 Edge 的 DevTools 协议补齐，见 [playtest-fixes §4](./playtest-fixes.md)），无法执行 O06 §6 #4 要求的「4 人局 + DevTools Performance 看 GC 次数 / 调试面板帧 p95」人工观察。
 因此本文件用三条**可复现的代理证据**替代，并如实标注边界：
 
 | 证据 | 能证明 | 不能证明 |
@@ -44,5 +44,5 @@ git stash pop
 
 ## 4. 未测量项（移交）
 
-`p95IntervalMs` / `p95WorkMs` 面板值与 DevTools 的 GC 次数都需要在浏览器里跑（`pnpm dev` + Edge 或 `pnpm e2e:edge`）——本机未执行，移交 O10 的待复测清单。
+`p95IntervalMs` / `p95WorkMs` 面板值与 DevTools 的 GC 次数都需要在浏览器里跑（`pnpm dev` + Edge 或 `pnpm e2e:edge`）——本机未执行，移交 O10 的待复测清单；**2026-09-22 补测**：`node tools/e2e-cdp.mjs --headful` 给出 fps 60.0 / 帧间隔 p95 16.8ms / 每帧工作 p95 ≤ 2.4ms（1 人与 4 人局），详见 [playtest-fixes §4](./playtest-fixes.md)；GC 次数仍未采集。
 建议复测口径：同场景 30 秒窗口、改动前后各录一次 Performance profile，比较 Major GC 次数与帧 p95；若差异小于本机噪声，按 O06 §7「如实写明」处理。

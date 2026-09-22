@@ -21,8 +21,9 @@ import { PARTICLE_EMITTER, type ParticleSystem } from './particles.ts';
 import type { ChargeWarning } from './sheepModel.ts';
 
 export const TRACER_CAPACITY = 32;
-export const TRACER_LOCAL_MS = 45;
-export const TRACER_REMOTE_MS = 90;
+/** 本地曳光存活时长（ms）：至少覆盖低帧率下的 2~3 帧，否则玩家看不到弹道。 */
+export const TRACER_LOCAL_MS = 120;
+export const TRACER_REMOTE_MS = 120;
 export const ELITE_BOLT_CAPACITY = 24;
 export const ELITE_BOLT_ENTITY_KIND = 2;
 export const ELITE_BOLT_SPIN_HZ = 1.6;
@@ -128,7 +129,7 @@ export function createEffects(
   root.name = 'effects';
   scene.add(root);
 
-  const tracerGeometry = new BoxGeometry(0.012, 0.012, 1);
+  const tracerGeometry = new BoxGeometry(0.02, 0.02, 1);
   const tracerMesh = new InstancedMesh(tracerGeometry, materials.tracer, TRACER_CAPACITY);
   tracerMesh.name = 'tracers';
   tracerMesh.frustumCulled = false;

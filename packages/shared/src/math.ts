@@ -64,6 +64,13 @@ export function forwardFromYaw(out: Vec3, yaw: number): Vec3 {
   return setVec3(out, Math.sin(yaw), 0, Math.cos(yaw));
 }
 
+/**
+ * 注意方向约定：以 three.js 右手系看，本函数返回的是模型坐标系的**左手侧**
+ * （cross(forwardFromYaw, rightFromYaw) = +Y，而右手系的 forward × right 应为 -Y）。
+ * 也就是说 yaw 把模型 +Z 旋到前向，(forward, right) 构成镜像基。
+ * 客户端视图侧用 `SIM_TO_VIEW_YAW_OFFSET` 把相机转到该前向，并把横移轴反号。
+ * 改动这里会同时影响服务端射线、AI 与全部快照语义，请勿在未同步客户端的前提下翻转。
+ */
 export function rightFromYaw(out: Vec3, yaw: number): Vec3 {
   return setVec3(out, Math.cos(yaw), 0, -Math.sin(yaw));
 }

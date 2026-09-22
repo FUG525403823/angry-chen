@@ -36,6 +36,8 @@ export interface DebugSample {
   readonly ammoDivergence: number;
   /** O07：权威值与本地倒计时的重同步次数（换弹 + 狂暴）。 */
   readonly resyncCount: number;
+  /** 每帧分阶段 p95（仅 F3 可见时填充，见 render/frameProfiler.ts）。 */
+  readonly stages?: string;
 }
 
 export interface DebugPanel {
@@ -124,6 +126,7 @@ export function debugLines(sample: DebugSample): readonly string[] {
       String(sample.resyncCount),
     'status ' + sample.status + '  room ' + sample.roomCode,
     sample.versionLine,
+    ...(sample.stages === undefined || sample.stages === '' ? [] : ['stages ' + sample.stages]),
     'budget ' + (withinBudget(sample) ? 'OK' : 'OVER'),
   ];
 }

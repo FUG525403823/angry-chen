@@ -205,7 +205,9 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
       SHEEP_FORM_CAPACITY,
     );
     bodyMesh.name = 'sheep-body-' + String(form);
-    bodyMesh.frustumCulled = true;
+    // 实例矩阵每帧都变，而 three 只会计算一次 InstancedMesh.boundingSphere 并永久缓存
+    // （启动首帧羊数为 0 ⇒ 空球 ⇒ 整局被剔除）。与 smallMesh/粒子/曳光一致：不做视锥剔除。
+    bodyMesh.frustumCulled = false;
     for (let i = 0; i < SHEEP_FORM_CAPACITY; i += 1) {
       identity.makeScale(0, 0, 0);
       bodyMesh.setMatrixAt(i, identity);
@@ -225,7 +227,7 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
       SHEEP_FORM_CAPACITY * clusters,
     );
     woolMesh.name = 'sheep-wool-' + String(form);
-    woolMesh.frustumCulled = true;
+    woolMesh.frustumCulled = false;
     for (let i = 0; i < SHEEP_FORM_CAPACITY * clusters; i += 1) {
       identity.makeScale(0, 0, 0);
       woolMesh.setMatrixAt(i, identity);
@@ -240,7 +242,7 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
       const hornMaterial = form === SHEEP_FORM.king ? materials.hornKing : materials.hornRam;
       const hornMesh = new InstancedMesh(hornGeometry, hornMaterial, SHEEP_FORM_CAPACITY);
       hornMesh.name = 'sheep-horn-' + String(form);
-      hornMesh.frustumCulled = true;
+      hornMesh.frustumCulled = false;
       for (let i = 0; i < SHEEP_FORM_CAPACITY; i += 1) {
         identity.makeScale(0, 0, 0);
         hornMesh.setMatrixAt(i, identity);
@@ -262,7 +264,7 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
   emblemGeometry.setAttribute('instanceEmissiveIntensity', intensityAttribute);
   const emblemMesh = new InstancedMesh(emblemGeometry, materials.emblem, SHEEP_TOTAL_CAPACITY);
   emblemMesh.name = 'sheep-emblem';
-  emblemMesh.frustumCulled = true;
+  emblemMesh.frustumCulled = false;
   for (let i = 0; i < SHEEP_TOTAL_CAPACITY; i += 1) {
     identity.makeScale(0, 0, 0);
     emblemMesh.setMatrixAt(i, identity);
@@ -393,32 +395,43 @@ export function createSheepFlock(scene: Scene, materials: RenderMaterials): Shee
       }
       for (let form = 0; form < SHEEP_FORM_COUNT; form += 1) {
         const count = counts[form] ?? 0;
+        // 只有本帧真的写过实例（count > 0）或实例数变化时才上传整块缓冲：
+        // 空场帧（大厅/波间清场）不再每帧重传 sheeps 的全部实例矩阵。
         const bodyMesh = bodyMeshes[form];
         if (bodyMesh !== undefined) {
+          const upload = count > 0 || bodyMesh.count !== count;
           bodyMesh.count = count;
-          bodyMesh.instanceMatrix.needsUpdate = true;
-          if (bodyMesh.instanceColor !== null) bodyMesh.instanceColor.needsUpdate = true;
+          if (upload) {
+            bodyMesh.instanceMatrix.needsUpdate = true;
+            if (bodyMesh.instanceColor !== null) bodyMesh.instanceColor.needsUpdate = true;
+          }
         }
         const offsets = woolOffsets[form];
         const woolMesh = woolMeshes[form];
         const clusters = offsets === undefined ? 0 : offsets.length;
         if (woolMesh !== undefined) {
-          woolMesh.count = count * clusters;
-          woolMesh.instanceMatrix.needsUpdate = true;
+          const instanceCount = count * clusters;
+          const upload = instanceCount > 0 || woolMesh.count !== instanceCount;
+          woolMesh.count = instanceCount;
+          if (upload) woolMesh.instanceMatrix.needsUpdate = true;
         }
         const hornMesh = hornMeshes[form];
         if (hornMesh !== undefined) {
+          const upload = count > 0 || hornMesh.count !== count;
           hornMesh.count = count;
-          hornMesh.instanceMatrix.needsUpdate = true;
+          if (upload) hornMesh.instanceMatrix.needsUpdate = true;
         }
       }
       for (const id of corpseElapsed.keys()) {
         if (!deadIds.has(id)) corpseElapsed.delete(id);
       }
+      const emblemUpload = emblemSlots > 0 || emblemMesh.count !== emblemSlots;
       emblemMesh.count = emblemSlots;
-      emblemMesh.instanceMatrix.needsUpdate = true;
-      intensityAttribute.needsUpdate = true;
-      tintAttribute.needsUpdate = true;
+      if (emblemUpload) {
+        emblemMesh.instanceMatrix.needsUpdate = true;
+        intensityAttribute.needsUpdate = true;
+        tintAttribute.needsUpdate = true;
+      }
       list.length = 0;
     },
     flash(id: number): void {
