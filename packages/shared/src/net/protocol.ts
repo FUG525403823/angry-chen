@@ -124,6 +124,7 @@ export const LIMITS = Object.freeze({
   maxSnapshotRecordsPerFrame: 255,
   maxRemovedPerFrame: 255,
   tickCatchUpLimit: 5,
+  poseHardCorrectFactor: 1.5,
   fullSnapshotIntervalTicks: 40,
   emptyRoomReclaimMs: 60000,
   roomCodeLength: 4,

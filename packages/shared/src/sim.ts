@@ -152,6 +152,7 @@ export function applyAiIntents(world: World): void {
 }
 
 export function applyKnockback(world: World, dtMs: number): void {
+  const dtSeconds = dtMs / MS_PER_SECOND;
   const ids = world.activeIds;
   for (let i = 0; i < ids.length; i += 1) {
     const entity = getEntity(world, ids[i] ?? 0);
@@ -162,6 +163,7 @@ export function applyKnockback(world: World, dtMs: number): void {
     entity.vel.x = entity.combat.knockVx;
     entity.vel.z = entity.combat.knockVz;
     entity.vel.y = 0;
+    noteDerivedMove(entity, entity.combat.knockVx * dtSeconds, entity.combat.knockVz * dtSeconds);
   }
 }
 
@@ -175,6 +177,15 @@ export function updateKings(world: World, dtMs: number): number {
     spawned += updateKing(world, entity, dtMs);
   }
   return spawned;
+}
+
+/**
+ * 记账：本 tick 由权威模拟自身（击退 / 实体分离 / 静态碰撞外推）产生的水平位移。
+ * 新增位移来源必须走这里，否则姿态校验会把它当成客户端非法位移。
+ */
+export function noteDerivedMove(entity: Entity, dx: number, dz: number): void {
+  entity.derivedMoveX += dx;
+  entity.derivedMoveZ += dz;
 }
 
 function clampHorizontalSpeed(entity: Entity, limit: number): void {
@@ -197,13 +208,20 @@ function integrate(world: World, dtSeconds: number, dtMs: number): void {
   }
 }
 
+function collideStaticTracked(world: World, entity: Entity): void {
+  const beforeX = entity.pos.x;
+  const beforeZ = entity.pos.z;
+  collideStatic(entity, world.config.arena, radiusOf(world, entity.kind));
+  noteDerivedMove(entity, entity.pos.x - beforeX, entity.pos.z - beforeZ);
+}
+
 function resolveStaticCollisions(world: World): void {
   const ids = world.activeIds;
   for (let i = 0; i < ids.length; i += 1) {
     const entity = getEntity(world, ids[i] ?? 0);
     if (entity === undefined || !entity.active) continue;
     if (entity.kind === 'projectile') continue;
-    collideStatic(entity, world.config.arena, radiusOf(world, entity.kind));
+    collideStaticTracked(world, entity);
   }
 }
 
@@ -238,12 +256,14 @@ function resolveEntitySeparation(world: World): void {
         a.pos.z -= nz * half;
         b.pos.x += nx * half;
         b.pos.z += nz * half;
+        noteDerivedMove(a, -nx * half, -nz * half);
+        noteDerivedMove(b, nx * half, nz * half);
       }
     }
     for (let i = 0; i < ids.length; i += 1) {
       const entity = getEntity(world, ids[i] ?? 0);
       if (entity === undefined || !entity.active || entity.kind === 'projectile') continue;
-      collideStatic(entity, world.config.arena, radiusOf(world, entity.kind));
+      collideStaticTracked(world, entity);
     }
   }
 }

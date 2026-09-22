@@ -40,6 +40,8 @@ describe('单场诊断报告', () => {
     metrics.malformedFrames = 3;
     metrics.rateLimitedFrames = 2;
     metrics.hardCorrectTotal = 4;
+    metrics.poseSuspects = 7;
+    metrics.poseRejected = 2;
     metrics.rewindClampedCount = 1;
     metrics.speedViolations = 5;
     metrics.shotsFired = 60;
@@ -76,6 +78,8 @@ describe('单场诊断报告', () => {
     });
     expect(diagnostics.fair).toEqual({
       hardCorrectTotal: 4,
+      poseSuspectTotal: 7,
+      poseRejectedTotal: 2,
       rewindClampedTotal: 1,
       speedViolationsTotal: 5,
       shotsFiredTotal: 60,

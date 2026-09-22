@@ -57,6 +57,12 @@ export interface Entity {
   ownerId: EntityId;
   aliveMs: number;
   idle: boolean;
+  /**
+   * 本 tick 内由权威模拟自身（击退 / 实体分离 / 静态碰撞外推）产生的水平位移，单位 m。
+   * sim 累加，服务器姿态校验读取后清零；不入快照、不上行。
+   */
+  derivedMoveX: number;
+  derivedMoveZ: number;
   weapon: WeaponState;
   combat: CombatState;
   ai: SheepAiState;
@@ -121,6 +127,8 @@ export function createEntity(id: EntityId): Entity {
     ownerId: 0,
     aliveMs: 0,
     idle: false,
+    derivedMoveX: 0,
+    derivedMoveZ: 0,
     weapon: createWeaponState(),
     combat: createCombatState(),
     ai: createSheepAiState(),
@@ -209,6 +217,8 @@ export function spawnEntity(
   entity.ownerId = ownerId;
   entity.aliveMs = 0;
   entity.idle = false;
+  entity.derivedMoveX = 0;
+  entity.derivedMoveZ = 0;
   resetWeaponState(entity.weapon);
   resetCombatState(entity.combat);
   resetSheepAiState(entity.ai);

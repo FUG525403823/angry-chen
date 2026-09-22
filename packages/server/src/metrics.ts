@@ -36,6 +36,8 @@ export interface Metrics {
   hits: number;
   damage: number;
   speedViolations: number;
+  poseSuspects: number;
+  poseRejected: number;
   sheepAlive: number;
   waveCurrent: number;
   spawns: number;
@@ -94,6 +96,8 @@ export function createMetrics(): Metrics {
     hits: 0,
     damage: 0,
     speedViolations: 0,
+    poseSuspects: 0,
+    poseRejected: 0,
     sheepAlive: 0,
     waveCurrent: 0,
     spawns: 0,
@@ -250,13 +254,25 @@ export function renderPrometheus(metrics: Metrics, gauges: PrometheusGauges): st
   push('ac_spawns_total', 'sheep spawns by the director', 'counter', metrics.spawns);
   push(
     'ac_speed_violations_total',
-    'commands rejected by pose validation',
+    'ticks flagged by the pose speed or vertical check',
     'counter',
     metrics.speedViolations,
   );
   push(
+    'ac_pose_suspect_total',
+    'pose anomalies explained by authoritative derived movement (recorded, not corrected)',
+    'counter',
+    metrics.poseSuspects,
+  );
+  push(
+    'ac_pose_rejected_total',
+    'pose rejections forced by an illegal position',
+    'counter',
+    metrics.poseRejected,
+  );
+  push(
     'ac_hard_correct_total',
-    'authoritative corrections forced on clients',
+    'authoritative corrections actually forced on clients',
     'counter',
     metrics.hardCorrectTotal,
   );

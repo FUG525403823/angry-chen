@@ -2,6 +2,7 @@ import {
   ARENA,
   type CombatContext,
   type Command,
+  type EntityId,
   LIMITS,
   MATCH_PHASE,
   aliveSheepCount,
@@ -45,7 +46,16 @@ import {
   yawPitchToDirection,
 } from '@ac/shared';
 
-import { createAdvanceCheck, isLegalPosition, validateAdvance } from './anticheat.ts';
+import {
+  createAdvanceCheck,
+  explainableByDerived,
+  hardCorrectLimitM,
+  horizontalDistanceM,
+  horizontalLimitM,
+  isLegalPosition,
+  validateAdvance,
+  type AdvanceCheck,
+} from './anticheat.ts';
 import {
   GRACE_PERIOD_MS,
   RECONNECT_MIN_HP_RATIO,
@@ -93,6 +103,8 @@ export interface Room {
   readonly capacity: number;
   readonly history: PoseHistory;
   readonly preTick: Float64Array;
+  /** 与 preTick 三元组一一对应的 pid，按 pid 取回 tick 前位置（不依赖遍历序号）。 */
+  readonly preTickIds: EntityId[];
   readonly combat: CombatContext;
   readonly match: MatchRuntime;
 }
@@ -134,6 +146,7 @@ export function createRoom(
     history: createPoseHistory(SERVER_TICK_MS),
     combat: createCombatContext(),
     preTick: new Float64Array(LIMITS.maxPlayersPerRoom * 3),
+    preTickIds: [],
   };
 }
 
@@ -641,11 +654,14 @@ export function rewindMsForSession(session: Session): number {
 function capturePreTick(room: Room): number {
   const ids = room.world.activeIds;
   const preTick = room.preTick;
+  const preTickIds = room.preTickIds;
+  preTickIds.length = 0;
   let count = 0;
   for (let i = 0; i < ids.length; i += 1) {
     const entity = getEntity(room.world, ids[i] ?? 0);
     if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
     if (count >= LIMITS.maxPlayersPerRoom) break;
+    preTickIds.push(entity.id);
     preTick[count * 3] = entity.pos.x;
     preTick[count * 3 + 1] = entity.pos.y;
     preTick[count * 3 + 2] = entity.pos.z;
@@ -654,41 +670,91 @@ function capturePreTick(room: Room): number {
   return count;
 }
 
+function logPoseViolation(
+  deps: RoomDeps,
+  room: Room,
+  pid: number,
+  check: AdvanceCheck,
+  distanceM: number,
+  derivedBudgetM: number,
+  decision: 'suspect' | 'rejected',
+): void {
+  const nowMs = room.lastUpdateMs;
+  if (nowMs - room.lastAnticheatLogMs < ANTICHEAT_LOG_INTERVAL_MS) return;
+  room.lastAnticheatLogMs = nowMs;
+  const round = (value: number): number => Number(value.toFixed(4));
+  emit(deps.log, 'warn', LOG_EVENTS.anticheatSpeed, {
+    room: room.code,
+    tick: room.world.tick,
+    pid,
+    detail: {
+      decision,
+      speed: String(check.speed),
+      vertical: String(check.vertical),
+      position: String(check.position),
+      distanceM: round(distanceM),
+      derivedBudgetM: round(derivedBudgetM),
+      suspects: deps.metrics.poseSuspects,
+      rejected: deps.metrics.poseRejected,
+      hardCorrects: deps.metrics.hardCorrectTotal,
+    },
+  });
+}
+
 export function applyPoseValidation(deps: RoomDeps, room: Room, checked: number): void {
   const world = room.world;
-  const ids = world.activeIds;
   const preTick = room.preTick;
+  const preTickIds = room.preTickIds;
   const arena = world.config.arena;
   const radius = world.config.entity.radiusByKind.player;
   const check = advanceCheckScratch;
-  let index = 0;
-  for (let i = 0; i < ids.length; i += 1) {
-    const entity = getEntity(world, ids[i] ?? 0);
-    if (entity === undefined || !entity.active || entity.kind !== 'player') continue;
-    if (index >= checked) break;
+  const limitM = horizontalLimitM(SERVER_TICK_MS);
+  const count = Math.min(checked, preTickIds.length);
+  for (let index = 0; index < count; index += 1) {
+    const entity = getEntity(world, preTickIds[index] ?? 0);
+    if (entity === undefined) continue;
+    const derivedBudgetM = Math.sqrt(
+      entity.derivedMoveX * entity.derivedMoveX + entity.derivedMoveZ * entity.derivedMoveZ,
+    );
+    entity.derivedMoveX = 0;
+    entity.derivedMoveZ = 0;
+    if (!entity.active || entity.kind !== 'player') continue;
+
     const prevX = preTick[index * 3] ?? 0;
     const prevZ = preTick[index * 3 + 2] ?? 0;
-    index += 1;
-    validateAdvance(prevX, prevZ, entity.pos.x, entity.pos.z, entity.vel.y, SERVER_TICK_MS, check);
+    const distanceM = horizontalDistanceM(prevX, prevZ, entity.pos.x, entity.pos.z);
+    validateAdvance(
+      prevX,
+      prevZ,
+      entity.pos.x,
+      entity.pos.z,
+      entity.vel.y,
+      SERVER_TICK_MS,
+      check,
+      derivedBudgetM,
+    );
     check.position = !isLegalPosition(entity.pos.x, entity.pos.y, entity.pos.z, arena, radius);
-    if (!check.speed && !check.vertical && !check.position) continue;
-    if (check.speed || check.vertical) {
-      deps.metrics.speedViolations += 1;
-      const nowMs = room.lastUpdateMs;
-      if (nowMs - room.lastAnticheatLogMs >= ANTICHEAT_LOG_INTERVAL_MS) {
-        room.lastAnticheatLogMs = nowMs;
-        emit(deps.log, 'warn', LOG_EVENTS.anticheatSpeed, {
-          room: room.code,
-          tick: world.tick,
-          pid: entity.id,
-          detail: {
-            speed: String(check.speed),
-            vertical: String(check.vertical),
-            total: deps.metrics.speedViolations,
-          },
-        });
-      }
+    // 判定优先级：位置非法 > 垂直违规 > 超出硬上限 > 派生位移可解释（可疑） > 通过
+    if (
+      explainableByDerived(distanceM, limitM, derivedBudgetM) &&
+      !check.vertical &&
+      !check.position
+    )
+      continue;
+
+    if (check.speed || check.vertical) deps.metrics.speedViolations += 1;
+    const rejected =
+      check.position ||
+      check.vertical ||
+      distanceM > hardCorrectLimitM(SERVER_TICK_MS, derivedBudgetM);
+    if (!rejected) {
+      deps.metrics.poseSuspects += 1;
+      logPoseViolation(deps, room, entity.id, check, distanceM, derivedBudgetM, 'suspect');
+      continue;
     }
+
+    if (check.position) deps.metrics.poseRejected += 1;
+    logPoseViolation(deps, room, entity.id, check, distanceM, derivedBudgetM, 'rejected');
     deps.metrics.hardCorrectTotal += 1;
     entity.pos.x = prevX;
     entity.pos.z = prevZ;

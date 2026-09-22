@@ -876,6 +876,9 @@ try {
   const elapsedMinutes = elapsedSec / 60;
   const hardCorrectTotal = metricDelta(metricsStart, metricsEnd, 'ac_hard_correct_total');
   const hardCorrectPerMinutePerClient = hardCorrectTotal / elapsedMinutes / bots.length;
+  const poseSuspectTotal = metricDelta(metricsStart, metricsEnd, 'ac_pose_suspect_total');
+  const poseSuspectPerMinutePerClient = poseSuspectTotal / elapsedMinutes / bots.length;
+  const poseRejectedTotal = metricDelta(metricsStart, metricsEnd, 'ac_pose_rejected_total');
   const serverSnapshots = metricDelta(metricsStart, metricsEnd, 'ac_snapshots_sent_total');
   const serverSnapshotRatePerClient = serverSnapshots / elapsedSec / bots.length;
   const tickJitterP95 = metricsEnd.get('ac_tick_jitter_ms_p95') ?? 0;
@@ -934,7 +937,9 @@ try {
         String(hardCorrectTotal) +
         '（/metrics 差值，' +
         String(round(elapsedMinutes, 2)) +
-        ' 分钟）',
+        ' 分钟），poseSuspectTotal=' +
+        String(poseSuspectTotal) +
+        '（派生位移可解释，记录不处置）',
     },
     {
       id: 'S5.2-9',
@@ -1032,6 +1037,9 @@ try {
       configuredLoss: options.loss,
       hardCorrectTotal,
       hardCorrectPerMinutePerClient: round(hardCorrectPerMinutePerClient, 2),
+      poseSuspectTotal,
+      poseSuspectPerMinutePerClient: round(poseSuspectPerMinutePerClient, 2),
+      poseRejectedTotal,
       tickJitterP95Ms: round(tickJitterP95, 2),
       serverSnapshotBytesAvg: round(serverBytesAvg, 1),
       shotsFiredLocal: bots.reduce((sum, bot) => sum + bot.shotsSent, 0),
@@ -1102,6 +1110,13 @@ try {
       ' → ' +
       String(report.aggregate.hardCorrectPerMinutePerClient) +
       '/min/client',
+    'pose suspects total=' +
+      String(poseSuspectTotal) +
+      ' → ' +
+      String(report.aggregate.poseSuspectPerMinutePerClient) +
+      '/min/client (rejected=' +
+      String(poseRejectedTotal) +
+      ')',
     'hits=' + String(report.aggregate.hitsTotal) + ' kills=' + String(report.aggregate.killsTotal),
     'shots(fire commands)=' + String(report.aggregate.shotsFiredLocal),
     'validation=' + JSON.stringify(validation),

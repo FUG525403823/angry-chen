@@ -19,6 +19,8 @@ export interface MatchDiagnostics {
   };
   fair: {
     hardCorrectTotal: number;
+    poseSuspectTotal: number;
+    poseRejectedTotal: number;
     rewindClampedTotal: number;
     speedViolationsTotal: number;
     shotsFiredTotal: number;
@@ -95,6 +97,8 @@ export function buildMatchDiagnostics(input: MatchDiagnosticsInput): MatchDiagno
     },
     fair: {
       hardCorrectTotal: metrics.hardCorrectTotal,
+      poseSuspectTotal: metrics.poseSuspects,
+      poseRejectedTotal: metrics.poseRejected,
       rewindClampedTotal: metrics.rewindClampedCount,
       speedViolationsTotal: metrics.speedViolations,
       shotsFiredTotal: metrics.shotsFired,
