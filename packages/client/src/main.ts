@@ -249,7 +249,10 @@ export function boot(): void {
       predictCommand.moveY = command.moveY;
       predictCommand.yaw = command.yaw;
       predictCommand.pitch = command.pitch;
-      predictCommand.buttons = command.buttons | (fireHeld && pointer.locked ? BUTTON.fire : 0);
+      // 倒地时不再扣扳机：服务器本来就会忽略倒地玩家的开火命令（resolveCombat 直接 continue），
+      // 而本地若继续走开火路径就会出现"有枪口火焰/曳光/扣弹、但打不出伤害"的假象。
+      predictCommand.buttons =
+        command.buttons | (fireHeld && pointer.locked && !combatState.downed ? BUTTON.fire : 0);
       predictCommand.switchTo = command.switchTo;
       if (!pointer.locked || !predictionReady) return;
       commands.push(predictCommand);
@@ -260,7 +263,7 @@ export function boot(): void {
         // 曳光与枪口火焰同门：只有真的打出一发（onFire 为真）才产生弹道。
         // 空弹匣 / 换弹中 / 射速节流内点左键都不该有弹道（真人试玩反馈「没子弹还有弹道」）。
         if (localWeapon.onFire(performance.now())) {
-          ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot);
+          ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot, performance.now());
           localShotCount += 1;
           viewModel.triggerFire();
           audioLayer.notifyFire(weaponSlot);
@@ -684,9 +687,9 @@ export function boot(): void {
   };
 
   /** O07：用账本裁决结果刷新本地弹药显示（每帧调用，ack 到达后立刻反映）。 */
-  function applyAmmo(): void {
+  function applyAmmo(nowMs: number = performance.now()): void {
     if (authorityMag < 0) return;
-    const view = ammoLedger.reconcile(authorityMag, authorityReserve, weaponSlot);
+    const view = ammoLedger.reconcile(authorityMag, authorityReserve, weaponSlot, nowMs);
     localWeapon.reconcileAmmo(weaponSlot, authorityMag, authorityReserve, view);
     combatState.mag = view.mag < combatState.magSize ? view.mag : combatState.magSize;
     combatState.reserve = view.reserve;
@@ -752,7 +755,7 @@ export function boot(): void {
     const reloadMs = WEAPONS[WEAPON_SLOT_ORDER[weaponSlot] ?? 'pistol'].reloadMs;
     combatState.reloadRatio = timers.reloadLeftMs <= 0 ? 0 : 1 - timers.reloadLeftMs / reloadMs;
     combatState.rageLeftMs = timers.rageLeftMs;
-    applyAmmo();
+    applyAmmo(nowMs);
     combatState.spreadDeg = localWeapon.spreadDeg;
     combatState.bossHpRatio = views.bossHpRatio;
     viewModel.setMoveAmount(
@@ -853,6 +856,7 @@ export function boot(): void {
         divergence: ammoDivergence,
         rejected: ammoLedger.rejectedTotal,
         localShots: localShotCount,
+        downed: combatState.downed,
       }),
     };
   }

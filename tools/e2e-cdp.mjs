@@ -50,7 +50,7 @@ const AMMO_PROBE =
   '(() => { const a = window.__ac.ammo(); const t = document.querySelector(".hud-ammo-text");' +
   ' return { hud: t ? t.textContent : null, name: a.name, displayed: a.displayed,' +
   ' authority: a.authority, pending: a.pending, reserve: a.reserve, divergence: a.divergence,' +
-  ' rejected: a.rejected, localShots: a.localShots }; })()';
+  ' rejected: a.rejected, localShots: a.localShots, downed: a.downed }; })()';
 // 准星四条臂与中心的实测几何（旧 CSS 的 calc 类型错误会让上/左两臂堆在中心）。
 const CROSSHAIR_PROBE =
   '(() => { const host = document.querySelector(".hud-crosshair"); if (host === null) return null;' +
@@ -776,6 +776,10 @@ async function main() {
     // HUD 文本每帧写一次（≤16ms），而 displayed 来自 20Hz 快照 ⇒ 允许一帧漂移（且不得为非数字）。
     let hudMaxDrift = 0;
     let hudBad = 0;
+    let displayAhead = 0;
+    let displayRises = 0;
+    let leadSamples = 0;
+    let previousDisplayed = -1;
     for (let i = 0; i < 15; i += 1) {
       await sleep(100);
       const sample = await evaluate(AMMO_PROBE);
@@ -788,6 +792,10 @@ async function main() {
         const drift = Math.abs(hudValue - Math.max(0, Math.round(sample.displayed)));
         if (drift > hudMaxDrift) hudMaxDrift = drift;
       }
+      if (sample.displayed > sample.authority) displayAhead += 1;
+      if (sample.displayed < sample.authority) leadSamples += 1;
+      if (previousDisplayed >= 0 && sample.displayed > previousDisplayed) displayRises += 1;
+      previousDisplayed = sample.displayed;
     }
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
@@ -796,14 +804,22 @@ async function main() {
       button: 'left',
       clickCount: 1,
     });
+    // 停火等过账本自愈阈值：显示值应收敛回权威值，HUD 也要追上显示值。
+    await sleep(700);
+    const ammoSettled = await evaluate(AMMO_PROBE);
     const ammoFirst = ammoSamples[0];
     const ammoLast = ammoSamples[ammoSamples.length - 1];
     check(
-      '弹药显示与权威弹匣逐帧一致（HUD 数字 = 权威弹匣，不受未 ack 开火影响）',
+      '弹药显示本地立即扣（HUD 跟着数字走、不超前权威）、停火后与权威一致',
       ammoSamples.length >= 10 &&
         hudBad === 0 &&
         hudMaxDrift <= 1 &&
-        ammoSamples.every((s) => s.displayed === s.authority) &&
+        displayAhead === 0 &&
+        displayRises === 0 &&
+        leadSamples >= 1 &&
+        ammoSettled !== null &&
+        ammoSettled.displayed === ammoSettled.authority &&
+        ammoSettled.hud === String(Math.max(0, Math.round(ammoSettled.displayed))) &&
         ammoFirst !== undefined &&
         ammoLast !== undefined &&
         ammoLast.displayed <= ammoFirst.displayed,
@@ -823,7 +839,17 @@ async function main() {
             String(hudMaxDrift) +
             '（非数字 ' +
             String(hudBad) +
-            ' 次），rejected ' +
+            ' 次），本地领先权威 ' +
+            String(leadSamples) +
+            ' 次采样（超前 ' +
+            String(displayAhead) +
+            '、回升 ' +
+            String(displayRises) +
+            '），停火后 ' +
+            (ammoSettled === null
+              ? '?'
+              : String(ammoSettled.displayed) + '/' + String(ammoSettled.authority)) +
+            '，rejected ' +
             String(ammoLast.rejected) +
             '，备弹 ' +
             String(ammoLast.reserve),
@@ -1154,7 +1180,9 @@ async function main() {
   };
   const reloadWeapon = async () => {
     await keyHold('KeyR');
-    await sleep(2200);
+    // 换弹时长：手枪 1.4s / 步枪 2.0s；留足余量，避免"换弹在连射中途才完成"
+    // 把权威弹药推高（那会让下面的消耗统计失真）。
+    await sleep(3200);
   };
   // Q 是"切到下一把"的循环键：按一次 = 一条带 switchTo 的命令，按多了会绕回原枪，
   // 所以这里按到目标武器为止（真人也是这么按的），最多 6 次。
@@ -1170,6 +1198,10 @@ async function main() {
   const burstSeries = async (label) => {
     const before = await evaluate(AMMO_PROBE);
     const displayed = [];
+    const authorities = [];
+    const pendings = [];
+    const downedFlags = [];
+    const localShotsSeries = [];
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x: box.x,
@@ -1180,7 +1212,13 @@ async function main() {
     for (let i = 0; i < 12; i += 1) {
       await sleep(100);
       const sample = await evaluate(AMMO_PROBE);
-      if (sample !== null) displayed.push(sample.displayed);
+      if (sample !== null) {
+        displayed.push(sample.displayed);
+        authorities.push(sample.authority);
+        pendings.push(sample.pending);
+        downedFlags.push(sample.downed === true);
+        localShotsSeries.push(sample.localShots);
+      }
     }
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
@@ -1189,12 +1227,39 @@ async function main() {
       button: 'left',
       clickCount: 1,
     });
-    await sleep(400);
+    // 停火后等过账本自愈阈值（AMMO_IDLE_HEAL_MS = 500ms）+ ack 过期水位（约 0.7s），
+    // 此时显示值必须收敛回权威值（被拒的那发不再挂账）。
+    await sleep(1500);
     const after = await evaluate(AMMO_PROBE);
     if (before === null || after === null) return null;
+    // 倒地之后本地开火计数**不得再增长**（倒地还能扣扳机 = 有火光没伤害，且弹药数字白掉）。
+    let shotsWhileDowned = 0;
+    for (let i = 1; i < localShotsSeries.length; i += 1) {
+      if (downedFlags[i] === true && (localShotsSeries[i] ?? 0) > (localShotsSeries[i - 1] ?? 0)) {
+        shotsWhileDowned += (localShotsSeries[i] ?? 0) - (localShotsSeries[i - 1] ?? 0);
+      }
+    }
+    let leads = 0;
+    let serverConsumed = 0;
+    for (let i = 0; i < displayed.length; i += 1) {
+      const shown = displayed[i] ?? 0;
+      const authority = authorities[i] ?? 0;
+      // 显示值先于权威值下降 = 本地开火当帧就扣（本轮修复的核心观感）。
+      if (shown < authority) leads += 1;
+      if (i > 0) {
+        const prev = authorities[i - 1] ?? 0;
+        if (authority < prev) serverConsumed += prev - authority;
+      }
+    }
+    // 数字只允许在权威值也上升（换弹/补弹）时回升，其余回升都算"跳动"。
     let rises = 0;
     for (let i = 1; i < displayed.length; i += 1) {
-      if ((displayed[i] ?? 0) > (displayed[i - 1] ?? 0)) rises += 1;
+      if (
+        (displayed[i] ?? 0) > (displayed[i - 1] ?? 0) &&
+        (authorities[i] ?? 0) <= (authorities[i - 1] ?? 0)
+      ) {
+        rises += 1;
+      }
     }
     return {
       label: label,
@@ -1204,6 +1269,11 @@ async function main() {
       rejected: after.rejected - before.rejected,
       localShots: after.localShots - before.localShots,
       rises: rises,
+      serverConsumed: serverConsumed,
+      leads: leads,
+      downed: after.downed === true || before.downed === true,
+      shotsWhileDowned: shotsWhileDowned,
+      settled: after.displayed === after.authority,
       series: displayed.join(','),
     };
   };
@@ -1219,13 +1289,21 @@ async function main() {
         : entry.label +
           '（' +
           String(entry.name) +
-          '）：权威 -' +
-          String(entry.consumed) +
+          '）：权威消耗 ' +
+          String(entry.serverConsumed) +
           '，显示 -' +
           String(entry.displayedDrop) +
-          '，回升 ' +
+          '，本地领先权威 ' +
+          String(entry.leads) +
+          ' 次采样，回升 ' +
           String(entry.rises) +
-          ' 次，被拒 +' +
+          ' 次，停火后收敛 ' +
+          String(entry.settled) +
+          (entry.downed ? '（机器人已被扑倒）' : '') +
+          '，倒地后开火 ' +
+          String(entry.shotsWhileDowned) +
+          ' 发' +
+          '，被拒 +' +
           String(entry.rejected) +
           '，本地开火 ' +
           String(entry.localShots) +
@@ -1233,28 +1311,38 @@ async function main() {
           entry.series,
     )
     .join('；');
-  // 相位差说明：客户端射速闸门与服务端（按 tick 结算）最多错开一个 50ms tick，
-  // 所以每轮连射允许"本地多记 1 发"，它会走 ack 过期路径计一次被拒并回到权威值。
-  // 判据只看玩家能看到的两件事：数字不回升、权威消耗 = 数字下降。
+  // 判据（三轮追加反馈「打出去子弹不扣、要过一段时间才扣」后重写）：
+  // 显示值必须**当帧**等于"权威 − 未确认开火"（identityHolds），而不是等服务器来回一趟才掉；
+  // 同时数字不得回升（rises = 0 = 二轮试玩的"子弹数跳动"），停火后要收敛回权威值（settled）。
   // localShots / rejected 只作诊断读数（客户端与 20Hz 服务端的射速闸门相位差会有 ±1~2 发）。
+  // 机器人被羊扑倒时这一轮样本失去意义（服务器对倒地玩家直接 continue，权威弹匣根本不会动），
+  // 所以存活时才校验"本地领先权威 + 权威确实消耗 + 停火收敛"；任何情况下都校验
+  // "倒地之后不得再开火"（倒地还能扣扳机 = 有火光没伤害，还白掉弹药数字）。
+  const ledgerEntryOk = (entry, minConsumed) =>
+    entry !== null &&
+    entry.shotsWhileDowned === 0 &&
+    entry.rises === 0 &&
+    entry.settled &&
+    (entry.downed ? true : entry.serverConsumed >= minConsumed && entry.leads >= 1);
+  const ledgerDowned = (pistolLedger && pistolLedger.downed) || (rifleLedger && rifleLedger.downed);
   check(
-    '连射期间弹药显示不跳动（显示单调不回升，且权威消耗 = 显示下降）',
-    pistolLedger !== null &&
-      rifleLedger !== null &&
-      pistolLedger.consumed >= 4 &&
-      rifleLedger.consumed >= 8 &&
-      pistolLedger.rises === 0 &&
-      rifleLedger.rises === 0 &&
-      pistolLedger.consumed === pistolLedger.displayedDrop &&
-      rifleLedger.consumed === rifleLedger.displayedDrop,
-    ledgerDetail,
+    '连射时弹药数字先于权威下降（本地立即扣）、不回升、停火后收敛',
+    ledgerEntryOk(pistolLedger, 4) && ledgerEntryOk(rifleLedger, 8),
+    ledgerDetail + (ledgerDowned ? '（机器人被羊扑倒：该轮样本作废，只校验"倒地不再开火"）' : ''),
   );
+  // 倒地状态下服务器拒绝切枪，这条判据同样只在存活时有意义。
   check(
     '按 Q 切到下一把武器后武器名与弹匣口径同步（满匣 30 发）',
-    rifleBefore !== null && rifleBefore.name === '步枪' && rifleBefore.authority === 30,
+    rifleBefore !== null &&
+      (rifleBefore.downed === true ||
+        (rifleBefore.name === '步枪' && rifleBefore.authority === 30)),
     rifleBefore === null
       ? '未取到样本'
-      : '切换后为 ' + String(rifleBefore.name) + '，权威 ' + String(rifleBefore.authority),
+      : '切换后为 ' +
+          String(rifleBefore.name) +
+          '，权威 ' +
+          String(rifleBefore.authority) +
+          (rifleBefore.downed === true ? '（机器人被扑倒，切枪判据跳过）' : ''),
   );
 
   if (!locked) {

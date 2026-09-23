@@ -101,7 +101,8 @@
       - `noteServerAck(seq): void`（每次快照后调用，推进水位并结算已被 ack 的开火）；
       - `reconcile(serverMag, serverReserve, slot): AmmoView`，其中 `AmmoView = { mag, reserve, pending, rejected, diverged }`；
       - 结算规则（冻结，见 §5）：`actualDrop = lastServerMag − serverMag`，`expectedDrop = 本轮确认数`；
-        若 `actualDrop < expectedDrop` → `rejected += expectedDrop − actualDrop` 且把显示值钳到 `serverMag`；
+        若 `actualDrop < expectedDrop` → `rejected += expectedDrop − actualDrop`，**显示值不回跳**（同一弹匣周期内只降不升）；
+        停火 ≥ `AMMO_IDLE_HEAL_MS`(500ms) 且 `pending === 0` 时静默回到 `serverMag`（避免长期与权威不符）；
         若 `serverMag > lastServerMag`（换弹/拾取完成）→ 清空已确认项、重置累加器、显示值 = 权威值。
 - [x] 3. `localWeapon.ts`：`syncMag` 保留但改为调用 `reconcileAmmo`；新增
       `reconcileAmmo(slot, serverMag, serverReserve, view: AmmoView): void`，写入 `state.magInSlot[slot] = view.mag`。
@@ -161,7 +162,8 @@ export function createLocalTimers(): LocalTimers;
 | 冻结项 | 值 / 定义 |
 |---|---|
 | 对账水位 | 快照帧头的 `lastAckedSeq`（既有字段，**不改协议**） |
-| 显示值公式 | `mag = clamp(serverMag − pending, 0, magSize)`；`reserve = serverReserve` |
+| 显示值公式 | `mag = clamp(serverMag − pending, 0, magSize)`，**本地开火当帧就扣、不等服务器往返**；同一弹匣周期内只降不升（被拒不回跳），停火 500ms 后静默回到权威值 |
+| 开火闸门 | `gateMag = min(mag, serverMag − pending)`：既不高于权威值，也不高于玩家看到的数字（"显示 0 还能打出曳光"是自相矛盾） |
 | 结算不变量 | `actualDrop = lastServerMag − serverMag`；`expectedDrop = 本轮被 ack 覆盖的开火数`；`actualDrop < expectedDrop ⇒ rejected += 差` 且本帧 `overridden = true` |
 | 换弹/拾取检测 | `serverMag > lastServerMag` ⇒ 重置账本（清空已确认项与累加器），显示值 = 权威值 |
 | 倒计时对齐 | 本地推进；权威到达时取 `min(本地, 权威)`（更紧急者）；允许单帧容差 `SERVER_TICK_MS`；下限 0；不得因迟到帧而变大 |
