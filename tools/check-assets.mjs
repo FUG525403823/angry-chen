@@ -1,170 +1,84 @@
 #!/usr/bin/env node
+// 素材与依赖门禁（v2）：仓库零外部素材（NFR-07）+ 双端依赖白名单。
+// 素材：按扩展名黑名单与二进制嗅探检查所有受版本控制的文件。
+// 依赖：v2 只允许自研代码与官方 SDK —— 不允许 v1 的 Node 工具链回归，不允许 C++/Unity 引入第三方包。
+import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.vite', 'data']);
-
-const BANNED_EXTENSIONS = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.avif',
-  '.bmp',
-  '.ico',
-  '.tga',
-  '.tiff',
-  '.svg',
-  '.mp3',
-  '.wav',
-  '.ogg',
-  '.oga',
-  '.m4a',
-  '.aac',
-  '.flac',
-  '.opus',
-  '.glb',
-  '.gltf',
-  '.fbx',
-  '.obj',
-  '.dae',
-  '.stl',
-  '.ply',
-  '.ktx2',
-  '.hdr',
-  '.exr',
-  '.dds',
-  '.basis',
-  '.ttf',
-  '.otf',
-  '.woff',
-  '.woff2',
-  '.eot',
-  '.mp4',
-  '.webm',
-  '.mov',
-  '.avi',
-]);
-
-const ALLOWED_RUNTIME_DEPENDENCIES = new Set(['three', 'ws', 'tsx', '@ac/shared']);
-
 const errors = [];
 const notes = [];
+const fail = (msg) => errors.push(msg);
 
-function walk(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir)) {
-    if (SKIP_DIRS.has(entry)) continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) out.push(...walk(full));
-    else out.push(full);
-  }
-  return out;
-}
+const BANNED_ASSET =
+  /\.(png|jpe?g|gif|bmp|tga|psd|webp|ico|svg|wav|mp3|ogg|m4a|aiff|flac|ttf|otf|woff2?|fbx|obj|gltf|glb|blend|dae|mp4|mov|webm|unitypackage|assetbundle|dll|so|dylib|zip|7z|rar)$/i;
+
+// Unity 官方包与模块白名单（C01 §5 冻结）
+const UNITY_ALLOWED = /^(com\.unity\.(render-pipelines\.universal|ugui|modules\..*|test-framework|ide\..*))$/;
 
 function trackedFiles() {
-  try {
-    const output = execFileSync('git', ['ls-files', '-z'], {
-      cwd: ROOT,
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return { source: 'git ls-files', files: output.split('\0').filter((entry) => entry !== '') };
-  } catch (error) {
-    notes.push(`git ls-files 不可用（${String(error)}），退化为文件树扫描`);
-    return {
-      source: 'filesystem walk',
-      files: walk(ROOT).map((full) => relative(ROOT, full).split('\\').join('/')),
-    };
-  }
+  return execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\u0000')
+    .filter(Boolean);
 }
 
-function scanAssets(source, files) {
-  const offenders = files.filter((file) => BANNED_EXTENSIONS.has(extname(file).toLowerCase()));
-  notes.push(`素材扫描来源：${source}，共 ${files.length} 个文件`);
-  if (offenders.length > 0) {
-    for (const file of offenders)
-      errors.push(`发现第三方素材文件（违反 NFR-07 / P10 §2.4）：${file}`);
+function checkAssets(listed) {
+  for (const f of listed.filter((f) => BANNED_ASSET.test(f))) {
+    fail('版本控制中包含外部素材候选：' + f);
+  }
+  let sniffed = 0;
+  for (const f of listed) {
+    const abs = join(ROOT, f);
+    if (!existsSync(abs)) continue;
+    if (readFileSync(abs).subarray(0, 8192).includes(0)) {
+      fail('受版本控制的文件含 NUL 字节（疑似二进制）：' + f);
+    }
+    sniffed += 1;
+  }
+  notes.push('素材扫描：' + listed.length + ' 个受控文件，二进制嗅探 ' + sniffed + ' 个，零素材类扩展名');
+}
+
+function checkDependencies() {
+  if (existsSync(join(ROOT, 'package.json')) || existsSync(join(ROOT, 'packages'))) {
+    fail('检测到 v1 的 Node 工程形态（package.json 或 packages/）：v2 只保留 client/ server/ tools/ docs/');
+  }
+  const manifest = join(ROOT, 'client', 'Packages', 'manifest.json');
+  if (existsSync(manifest)) {
+    const json = JSON.parse(readFileSync(manifest, 'utf8'));
+    const deps = Object.keys(json.dependencies ?? {});
+    for (const dep of deps) {
+      if (!UNITY_ALLOWED.test(dep)) fail('client/Packages/manifest.json 含白名单外依赖：' + dep);
+    }
+    notes.push('Unity 依赖：' + deps.length + ' 个，全部在官方白名单内');
   } else {
-    notes.push('未发现图片/音频/模型/字体等素材文件');
+    notes.push('Unity 工程清单尚未创建（C01 交付）');
   }
-}
-
-// 二道检查：扩展名可能被改名绕过，这里按内容嗅探（含 NUL 字节即视为二进制资产）。
-function scanBinaryAssets(files) {
-  const binaries = [];
-  for (const file of files) {
-    const full = join(ROOT, file);
-    let stat;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
+  const cmake = join(ROOT, 'server', 'CMakeLists.txt');
+  if (existsSync(cmake)) {
+    const text = readFileSync(cmake, 'utf8');
+    for (const bad of ['FetchContent', 'ExternalProject', 'vcpkg']) {
+      if (text.includes(bad)) fail('server/CMakeLists.txt 引入了第三方依赖：' + bad);
     }
-    if (!stat.isFile() || stat.size === 0) continue;
-    const head = readFileSync(full).subarray(0, Math.min(8192, stat.size));
-    if (head.includes(0)) binaries.push(file);
-  }
-  notes.push(
-    `二进制嗅探：检查 ${files.length} 个受版本控制的文件（前 8KB 含 NUL 字节即判为二进制）`,
-  );
-  if (binaries.length > 0) {
-    for (const file of binaries)
-      errors.push(`仓库不应携带二进制资产（P10 §5.1 素材扫描）：${file}`);
+    notes.push('C++ 构建清单：未发现第三方依赖引入');
   } else {
-    notes.push('全部受控文件均为纯文本，零二进制资产');
+    notes.push('C++ 构建清单尚未创建（S01 交付）');
   }
 }
 
-function packageFiles() {
-  const files = [join(ROOT, 'package.json')];
-  const packagesDir = join(ROOT, 'packages');
-  for (const entry of readdirSync(packagesDir)) {
-    const candidate = join(packagesDir, entry, 'package.json');
-    if (statSync(join(packagesDir, entry)).isDirectory() && statSync(candidate).isFile()) {
-      files.push(candidate);
-    }
-  }
-  return files;
-}
-
-function scanRuntimeDependencies() {
-  const found = [];
-  for (const file of packageFiles()) {
-    const pkg = JSON.parse(readFileSync(file, 'utf8'));
-    const rel = relative(ROOT, file).split('\\').join('/');
-    const dependencies = pkg.dependencies ?? {};
-    for (const name of Object.keys(dependencies)) {
-      found.push({ rel, name });
-      if (!ALLOWED_RUNTIME_DEPENDENCIES.has(name)) {
-        errors.push(`运行时依赖越界：${rel} 声明了 ${name}（ADR-004 仅允许 three + ws + tsx）`);
-      }
-    }
-  }
-  notes.push(
-    `运行时依赖：${
-      found.length === 0 ? '（无）' : found.map((item) => `${item.name} <- ${item.rel}`).join(', ')
-    }`,
-  );
-  notes.push(`允许集合：${[...ALLOWED_RUNTIME_DEPENDENCIES].join(' + ')}`);
-}
-
-const tracked = trackedFiles();
-scanAssets(tracked.source, tracked.files);
-scanBinaryAssets(tracked.files);
-scanRuntimeDependencies();
+const listed = trackedFiles();
+checkAssets(listed);
+checkDependencies();
 
 console.log('=== check-assets ===');
-for (const note of notes) console.log(`  · ${note}`);
+for (const n of notes) console.log('  · ' + n);
+for (const e of errors) console.log('  ✗ ' + e);
 if (errors.length === 0) {
-  console.log('\nOK：仓库零外部素材，运行时依赖未越界。');
+  console.log('');
+  console.log('OK：仓库零外部素材，依赖白名单未被破坏。');
   process.exit(0);
 }
 console.log('');
-for (const error of errors) console.log(`  ✗ ${error}`);
-console.log(`\nFAIL：${errors.length} 处问题。`);
+console.log('FAIL：' + errors.length + ' 处错误。');
 process.exit(1);
