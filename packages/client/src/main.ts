@@ -212,6 +212,8 @@ export function boot(): void {
   const ammoLedger = createAmmoLedger();
   const localTimers = createLocalTimers();
   let authorityMag = -1;
+  /** 本地"真的打出一发"的累计次数（调试读数：与服务端消耗对拍）。 */
+  let localShotCount = 0;
   let authorityReserve = 0;
   let ammoPendingShots = 0;
   let ammoDivergence = 0;
@@ -239,6 +241,7 @@ export function boot(): void {
 
   const sampler = createInputSampler({
     now: () => performance.now(),
+    getActiveSlot: () => weaponSlot,
     emit: (command) => {
       predictCommand.seq = command.seq;
       predictCommand.tick = command.tick;
@@ -258,6 +261,7 @@ export function boot(): void {
         // 空弹匣 / 换弹中 / 射速节流内点左键都不该有弹道（真人试玩反馈「没子弹还有弹道」）。
         if (localWeapon.onFire(performance.now())) {
           ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot);
+          localShotCount += 1;
           viewModel.triggerFire();
           audioLayer.notifyFire(weaponSlot);
           muzzleOrigin(fireOriginScratch, camera, forwardScratch);
@@ -839,6 +843,17 @@ export function boot(): void {
       camera,
       scene,
       connection,
+      // 弹药的三个口径（显示值 / 权威值 / 未 ack 开火数）：排查"显示与实际不符"用。
+      ammo: () => ({
+        name: combatState.weaponName,
+        displayed: combatState.mag,
+        authority: authorityMag,
+        reserve: authorityReserve,
+        pending: ammoPendingShots,
+        divergence: ammoDivergence,
+        rejected: ammoLedger.rejectedTotal,
+        localShots: localShotCount,
+      }),
     };
   }
   window.requestAnimationFrame(frame);

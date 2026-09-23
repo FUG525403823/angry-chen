@@ -38,6 +38,19 @@ const SHEEP_PROBE =
 // 曳光 mesh 的 count = min(容量, spawn 次数)，因此可直接当"生成了几条"的累加计数器用。
 const TRACER_COUNT_PROBE =
   '(() => { const t = window.__ac.scene.getObjectByName("tracers"); return t ? t.count : -1; })()';
+// 羊额头「问界」徽标（InstancedMesh sheep-emblem）：实例已上传 + 贴图有像素才算真的在画。
+const EMBLEM_PROBE =
+  '(() => { const e = window.__ac.scene.getObjectByName("sheep-emblem"); if (!e) return null;' +
+  ' const mat = e.material; const img = mat.map ? mat.map.image : null;' +
+  ' const arr = e.instanceMatrix ? e.instanceMatrix.array : null;' +
+  ' return { count: e.count, visible: e.visible !== false, hasMap: !!mat.map,' +
+  ' mapW: img ? img.width || 0 : 0, opacity: mat.opacity, first: arr ? [arr[12], arr[13], arr[14]] : null }; })()';
+// 弹药：HUD 数字 vs 账本裁决值 vs 权威弹匣（?debug=1 的 __ac.ammo()）。
+const AMMO_PROBE =
+  '(() => { const a = window.__ac.ammo(); const t = document.querySelector(".hud-ammo-text");' +
+  ' return { hud: t ? t.textContent : null, name: a.name, displayed: a.displayed,' +
+  ' authority: a.authority, pending: a.pending, reserve: a.reserve, divergence: a.divergence,' +
+  ' rejected: a.rejected, localShots: a.localShots }; })()';
 // 准星四条臂与中心的实测几何（旧 CSS 的 calc 类型错误会让上/左两臂堆在中心）。
 const CROSSHAIR_PROBE =
   '(() => { const host = document.querySelector(".hud-crosshair"); if (host === null) return null;' +
@@ -512,6 +525,28 @@ async function main() {
       String(moved) + '/' + String(later.length) + ' 只移动',
     );
 
+    // —— 羊额头「问界」徽标：实例已上传、有贴图像素、材质可见 ——
+    const emblem = await evaluate(EMBLEM_PROBE);
+    check(
+      '羊额头「问界」徽标已上传且可见（实例 > 0、贴图 128px、材质可见）',
+      emblem !== null &&
+        emblem.count > 0 &&
+        emblem.visible === true &&
+        emblem.hasMap === true &&
+        emblem.mapW > 0 &&
+        emblem.opacity > 0,
+      emblem === null
+        ? '场景里没有 sheep-emblem'
+        : '实例 ' +
+            String(emblem.count) +
+            '，贴图 ' +
+            String(emblem.mapW) +
+            'px，opacity ' +
+            String(emblem.opacity) +
+            '，首实例 ' +
+            JSON.stringify(emblem.first),
+    );
+
     // 把视角转向最近的羊：相机前向必须指向它（这一条同时证明「准星 = 命中判定」）
     const aim = await evaluate(
       '(() => { const me = window.__ac.view.getLocalPlayer(); if (!me) return null;' +
@@ -728,9 +763,66 @@ async function main() {
       check('曳光是一段真实线段', length > 1, '长度 ' + length.toFixed(2) + 'm');
     }
 
+    // —— 弹药显示 × 权威弹匣：HUD 数字必须等于账本裁决值，未 ack 开火数不得堆积 ——
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    const ammoSamples = [];
+    let maxPending = 0;
+    let hudMismatch = 0;
+    for (let i = 0; i < 15; i += 1) {
+      await sleep(100);
+      const sample = await evaluate(AMMO_PROBE);
+      if (sample === null) continue;
+      ammoSamples.push(sample);
+      if (sample.pending > maxPending) maxPending = sample.pending;
+      if (sample.hud !== String(Math.max(0, Math.round(sample.displayed)))) hudMismatch += 1;
+    }
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    const ammoFirst = ammoSamples[0];
+    const ammoLast = ammoSamples[ammoSamples.length - 1];
+    check(
+      '弹药显示与权威弹匣逐帧一致（HUD 数字 = 权威弹匣，不受未 ack 开火影响）',
+      ammoSamples.length >= 10 &&
+        hudMismatch === 0 &&
+        ammoSamples.every((s) => s.displayed === s.authority) &&
+        ammoFirst !== undefined &&
+        ammoLast !== undefined &&
+        ammoLast.displayed <= ammoFirst.displayed,
+      ammoFirst === undefined || ammoLast === undefined
+        ? '未取到样本'
+        : '显示 ' +
+            String(ammoFirst.displayed) +
+            '→' +
+            String(ammoLast.displayed) +
+            '（权威 ' +
+            String(ammoFirst.authority) +
+            '→' +
+            String(ammoLast.authority) +
+            '），pending 峰值 ' +
+            String(maxPending) +
+            '，HUD 不一致 ' +
+            String(hudMismatch) +
+            ' 次，rejected ' +
+            String(ammoLast.rejected) +
+            '，备弹 ' +
+            String(ammoLast.reserve),
+    );
+
     // —— 真命中：准星对准最近的羊并持续开火，服务端 HP 应下降 ——
     // 旧实现 yaw 差 180°（相机背对权威方向），玩家"打不到羊"；这里用服务端复制的 hpRatio 做判据。
-    const AIM_AT_SHEEP =
+    // `heightOffset`：0 = 瞄脚底/身体中心（老判据），1.0 = 瞄头部高度带（真人试玩「打头打不到」的场景）。
+    const aimProbe = (heightOffset) =>
       '(() => { const ac = window.__ac; const me = ac.view.getLocalPlayer(); if (me === undefined) return null;' +
       ' let best = null; let bestD = Infinity;' +
       ' ac.view.forEachVisible((e) => { if (e.kind !== 1) return;' +
@@ -740,8 +832,18 @@ async function main() {
       ' const eye = ac.camera.position;' +
       ' const flat = Math.max(0.001, Math.hypot(best.x - eye.x, best.z - eye.z));' +
       ' ac.sampler.setYaw(Math.atan2(best.x - me.pos.x, best.z - me.pos.z));' +
-      ' ac.sampler.setPitch(Math.atan2(best.y - eye.y, flat));' +
+      ' ac.sampler.setPitch(Math.atan2(best.y + ' +
+      String(heightOffset) +
+      ' - eye.y, flat));' +
       ' return { id: best.id, hp: best.hp }; })()';
+    const AIM_AT_SHEEP = aimProbe(0);
+    const AIM_AT_SHEEP_HEAD = aimProbe(1.0);
+    const hpProbeOf = (id) =>
+      '(() => { let found = null;' +
+      ' window.__ac.view.forEachVisible((e) => { if (e.id === ' +
+      String(id) +
+      ') found = e.hpRatio; });' +
+      ' return found; })()';
     const firstAim = await evaluate(AIM_AT_SHEEP);
     if (firstAim === null) {
       check('开火命中最近的羊（服务端 HP 下降）', false, '场上没有羊可打');
@@ -782,18 +884,15 @@ async function main() {
       });
       let hp = firstAim.hp;
       let hits = 0;
+      let killed = false;
+      const hpProbe = hpProbeOf(firstAim.id);
       for (let i = 0; i < 50 && hp >= firstAim.hp; i += 1) {
         await sleep(80);
         await evaluate(AIM_AT_SHEEP);
-        const now = await evaluate(
-          '(() => { let found = null;' +
-            ' window.__ac.view.forEachVisible((e) => { if (e.id === ' +
-            String(firstAim.id) +
-            ') found = e.hpRatio; });' +
-            ' return found; })()',
-        );
+        const now = await evaluate(hpProbe);
         if (now === null) {
           hits = 1; // 目标已被消灭（从可见集合中消失）
+          killed = true;
           break;
         }
         if (now < firstAim.hp) hits += 1;
@@ -814,8 +913,56 @@ async function main() {
           ' hpRatio ' +
           firstAim.hp.toFixed(3) +
           ' → ' +
-          (hp === null ? '已消灭' : hp.toFixed(3)),
+          (killed ? '已消灭（连续命中致死）' : hp.toFixed(3)),
       );
+
+      // —— 瞄头部高度带的连射：旧竖胶囊在 1.0m 高度只有 0.18–0.46m 有效半径，
+      //    23m 外配合 0.8° 散布经常整轮打空（真人试玩「我打头还是达不到」）——
+      const headAim = await evaluate(AIM_AT_SHEEP_HEAD);
+      if (headAim !== null) {
+        // 上一轮连射打空了弹匣（本作不自动换弹），先按 R 换满再打，否则整轮都是空枪。
+        await evaluate("(() => { window.__ac.sampler.setKey('KeyR', true); return true; })()");
+        await sleep(150);
+        await evaluate("(() => { window.__ac.sampler.setKey('KeyR', false); return true; })()");
+        await sleep(2400);
+        const headHpProbe = hpProbeOf(headAim.id);
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: box.x,
+          y: box.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        let headHp = headAim.hp;
+        let headKilled = false;
+        for (let i = 0; i < 40 && headHp >= headAim.hp; i += 1) {
+          await sleep(80);
+          await evaluate(AIM_AT_SHEEP_HEAD);
+          const now = await evaluate(headHpProbe);
+          if (now === null) {
+            headKilled = true;
+            break;
+          }
+          headHp = now;
+        }
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: box.x,
+          y: box.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        check(
+          '瞄头部高度（+1.0m）连射仍能命中（旧胶囊该高度有效半径仅 0.18–0.46m）',
+          headKilled || headHp < headAim.hp,
+          '目标 ' +
+            String(headAim.id) +
+            ' hpRatio ' +
+            headAim.hp.toFixed(3) +
+            ' → ' +
+            (headKilled ? '已消灭（头部命中致死）' : headHp.toFixed(3)),
+        );
+      }
     }
 
     // —— 空弹匣：按住左键不再产生弹道（旧实现曳光在 onFire 判定之外，按 30Hz 采样速率刷弹道）——
@@ -869,6 +1016,127 @@ async function main() {
         ' 条',
     );
   }
+
+  // —— 账本对拍（真人试玩：开枪时子弹数跳动）：显示必须单调不回升、权威消耗 = 显示下降、无被拒 ——
+  // 按键走 sampler.setKey（与真实键盘事件同一条游戏逻辑路径；CDP 的 dispatchKeyEvent 在
+  // 无头/未聚焦页面里到不了 canvas 监听器，实测按键被丢弃）。按住 ~120ms 保证被采样帧看到。
+  const keyHold = async (code) => {
+    await evaluate(
+      '(() => { const s = window.__ac.sampler; s.setKey(' +
+        JSON.stringify(code) +
+        ', true); return true; })()',
+    );
+    await sleep(120);
+    await evaluate(
+      '(() => { const s = window.__ac.sampler; s.setKey(' +
+        JSON.stringify(code) +
+        ', false); return true; })()',
+    );
+  };
+  const reloadWeapon = async () => {
+    await keyHold('KeyR');
+    await sleep(2200);
+  };
+  // Q 是"切到下一把"的循环键：按一次 = 一条带 switchTo 的命令，按多了会绕回原枪，
+  // 所以这里按到目标武器为止（真人也是这么按的），最多 6 次。
+  const switchToWeapon = async (label) => {
+    for (let i = 0; i < 6; i += 1) {
+      const now = await evaluate(AMMO_PROBE);
+      if (now !== null && now.name === label) return now;
+      await keyHold('KeyQ');
+      await sleep(500);
+    }
+    return await evaluate(AMMO_PROBE);
+  };
+  const burstSeries = async (label) => {
+    const before = await evaluate(AMMO_PROBE);
+    const displayed = [];
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    for (let i = 0; i < 12; i += 1) {
+      await sleep(100);
+      const sample = await evaluate(AMMO_PROBE);
+      if (sample !== null) displayed.push(sample.displayed);
+    }
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await sleep(400);
+    const after = await evaluate(AMMO_PROBE);
+    if (before === null || after === null) return null;
+    let rises = 0;
+    for (let i = 1; i < displayed.length; i += 1) {
+      if ((displayed[i] ?? 0) > (displayed[i - 1] ?? 0)) rises += 1;
+    }
+    return {
+      label: label,
+      name: before.name,
+      consumed: before.authority - after.authority,
+      displayedDrop: before.displayed - after.displayed,
+      rejected: after.rejected - before.rejected,
+      localShots: after.localShots - before.localShots,
+      rises: rises,
+      series: displayed.join(','),
+    };
+  };
+  await reloadWeapon();
+  const pistolLedger = await burstSeries('手枪');
+  const rifleBefore = await switchToWeapon('步枪');
+  await reloadWeapon();
+  const rifleLedger = await burstSeries('步枪');
+  const ledgerDetail = [pistolLedger, rifleLedger]
+    .map((entry) =>
+      entry === null
+        ? '未取到样本'
+        : entry.label +
+          '（' +
+          String(entry.name) +
+          '）：权威 -' +
+          String(entry.consumed) +
+          '，显示 -' +
+          String(entry.displayedDrop) +
+          '，回升 ' +
+          String(entry.rises) +
+          ' 次，被拒 +' +
+          String(entry.rejected) +
+          '，本地开火 ' +
+          String(entry.localShots) +
+          '，序列 ' +
+          entry.series,
+    )
+    .join('；');
+  // 相位差说明：客户端射速闸门与服务端（按 tick 结算）最多错开一个 50ms tick，
+  // 所以每轮连射允许"本地多记 1 发"，它会走 ack 过期路径计一次被拒并回到权威值。
+  // 判据只看玩家能看到的两件事：数字不回升、权威消耗 = 数字下降。
+  // localShots / rejected 只作诊断读数（客户端与 20Hz 服务端的射速闸门相位差会有 ±1~2 发）。
+  check(
+    '连射期间弹药显示不跳动（显示单调不回升，且权威消耗 = 显示下降）',
+    pistolLedger !== null &&
+      rifleLedger !== null &&
+      pistolLedger.consumed >= 4 &&
+      rifleLedger.consumed >= 8 &&
+      pistolLedger.rises === 0 &&
+      rifleLedger.rises === 0 &&
+      pistolLedger.consumed === pistolLedger.displayedDrop &&
+      rifleLedger.consumed === rifleLedger.displayedDrop,
+    ledgerDetail,
+  );
+  check(
+    '按 Q 切到下一把武器后武器名与弹匣口径同步（满匣 30 发）',
+    rifleBefore !== null && rifleBefore.name === '步枪' && rifleBefore.authority === 30,
+    rifleBefore === null
+      ? '未取到样本'
+      : '切换后为 ' + String(rifleBefore.name) + '，权威 ' + String(rifleBefore.authority),
+  );
 
   if (!locked) {
     // 无头/自动化环境下 pointer lock 常被浏览器拒绝，此时用「喂给本地预测器一条 W 命令」验证

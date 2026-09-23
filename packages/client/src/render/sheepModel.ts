@@ -74,7 +74,24 @@ export const SHEEP_HEAD_BOX: SheepBox = Object.freeze({
   y: 0.9,
   z: 0.66,
 });
+
+/** 羊王冠盒：0.5×0.5×0.24 @ (0, 1.02, 0.78)（只有羊王有）。 */
+export const SHEEP_CROWN_BOX: SheepBox = Object.freeze({
+  sizeX: 0.5,
+  sizeY: 0.5,
+  sizeZ: 0.24,
+  x: 0,
+  y: 1.02,
+  z: 0.78,
+});
 export const WOOL_CLUSTER_RADIUS_M = 0.21;
+/** 羊毛团相对躯干中心的分布半径（再乘 ring ≤ 1、加团自身半径，就是渲染轮廓）。 */
+export const WOOL_SPREAD_X_M = 0.62;
+export const WOOL_SPREAD_Z_M = 0.42;
+export const WOOL_SPREAD_Y_HALF_M = 0.2;
+/** 羊毛团自身缩放区间（clusterOffsets 的 hashFloat 区间）。 */
+export const WOOL_CLUSTER_SCALE_MIN = 0.86;
+export const WOOL_CLUSTER_SCALE_MAX = 1.14;
 export const EMBLEM_HEAD_OFFSET = Object.freeze({ y: 0.9, z: 0.92 });
 export const EMBLEM_LOCAL_SCALE: readonly number[] = Object.freeze(
   SHEEP_FORM_SCALE.map(
@@ -176,7 +193,7 @@ function buildBodyGeometry(form: number): BufferGeometry {
     box(0.22, 0.08, 0.16, -0.3, 0.99, 0.6, 0.5),
     box(0.12, 0.2, 0.12, 0, 0.72, -0.4, 0.5),
   ];
-  if (form === SHEEP_FORM.king) parts.push(box(0.5, 0.5, 0.24, 0, 1.02, 0.78, 0.8));
+  if (form === SHEEP_FORM.king) parts.push(boxFrom(SHEEP_CROWN_BOX, 0.8));
   return mergeParts(parts);
 }
 
@@ -186,13 +203,15 @@ function clusterOffsets(count: number): Matrix4[] {
     const ratio = (i + 0.5) / count;
     const angle = i * GOLDEN_ANGLE;
     const ring = Math.sqrt(ratio);
-    const scale = 0.86 + hashFloat(i * 977 + count) * 0.28;
+    const scale =
+      WOOL_CLUSTER_SCALE_MIN +
+      hashFloat(i * 977 + count) * (WOOL_CLUSTER_SCALE_MAX - WOOL_CLUSTER_SCALE_MIN);
     const matrix = new Matrix4();
     matrix.compose(
       new Vector3(
-        Math.cos(angle) * ring * 0.62,
-        SHEEP_BODY_HEIGHT_M + (ratio - 0.5) * 0.4,
-        Math.sin(angle) * ring * 0.42,
+        Math.cos(angle) * ring * WOOL_SPREAD_X_M,
+        SHEEP_BODY_HEIGHT_M + (ratio - 0.5) * (WOOL_SPREAD_Y_HALF_M * 2),
+        Math.sin(angle) * ring * WOOL_SPREAD_Z_M,
       ),
       new Quaternion(),
       new Vector3(scale, scale, scale),

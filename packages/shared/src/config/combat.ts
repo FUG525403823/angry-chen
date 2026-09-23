@@ -20,7 +20,7 @@ export const TORSO_MIN_HEIGHT_RATIO = 0.4;
 export const ARMOR_ABSORB_RATIO = 0.6;
 export const ARMOR_MAX = 50;
 export const HEALTH_MAX = 100;
-export const FALLOFF_MIN_MULTIPLIER = 0.2;
+export const FALLOFF_MIN_MULTIPLIER = 0.5;
 export const FRIENDLY_FIRE = false;
 
 export const RAGE = Object.freeze({

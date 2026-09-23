@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { COMMAND_INTERVAL_MS, createInputSampler } from './sampler.ts';
 
-function createHarness(startSeq?: number) {
+function createHarness(startSeq?: number, getActiveSlot?: () => number) {
   const emitted: Command[] = [];
   let clockMs = 0;
   const command = createCommand();
@@ -15,6 +15,7 @@ function createHarness(startSeq?: number) {
     emit: (draft: Command) => emitted.push({ ...draft }),
     command,
     getTick: () => 42,
+    getActiveSlot: getActiveSlot ?? (() => 0),
   });
   if (startSeq !== undefined) {
     for (let i = 0; i < startSeq; i += 1) sampler.flush();
@@ -115,5 +116,41 @@ describe('输入采样器', () => {
     h.sampler.flush();
     expect(h.emitted[1]?.seq).toBe(0);
     expect(h.sampler.getSeq()).toBe(0x10001);
+  });
+
+  it('按 Q 写入"下一把"的绝对槽位（真人试玩：切枪总变成手枪，HUD 弹匣数跟着跳到 12）', () => {
+    const h = createHarness();
+    h.sampler.setKey('KeyQ', true);
+    expect(h.emitted[0]?.switchTo).toBe(1);
+    expect((h.emitted[0]?.buttons ?? 0) & BUTTON.switchWeapon).toBe(BUTTON.switchWeapon);
+  });
+
+  it('按住 Q 不连跳：目标槽位在按下瞬间锁定，松开清零', () => {
+    const h = createHarness();
+    h.sampler.setKey('KeyQ', true);
+    // 浏览器的按键自动重复会再送一次 keydown，不能因此又切一把
+    h.sampler.setKey('KeyQ', true);
+    expect(h.emitted[1]?.switchTo).toBe(1);
+    h.advance(COMMAND_INTERVAL_MS);
+    h.sampler.update();
+    expect(h.emitted[2]?.switchTo).toBe(1);
+    h.sampler.setKey('KeyQ', false);
+    expect(h.emitted[3]?.switchTo).toBe(0);
+  });
+
+  it('按当前槽位算下一把：0→1、1→2、2→0', () => {
+    let slot = 0;
+    const h = createHarness(undefined, () => slot);
+    h.sampler.setKey('KeyQ', true);
+    h.sampler.setKey('KeyQ', false);
+    slot = 1;
+    h.sampler.setKey('KeyQ', true);
+    h.sampler.setKey('KeyQ', false);
+    slot = 2;
+    h.sampler.setKey('KeyQ', true);
+    h.sampler.setKey('KeyQ', false);
+    expect(h.emitted[0]?.switchTo).toBe(1);
+    expect(h.emitted[2]?.switchTo).toBe(2);
+    expect(h.emitted[4]?.switchTo).toBe(0);
   });
 });

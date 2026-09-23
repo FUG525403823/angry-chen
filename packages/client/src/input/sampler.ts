@@ -1,4 +1,4 @@
-import { BUTTON, INPUT, createCommand, type Command } from '@ac/shared';
+import { BUTTON, INPUT, WEAPON_SLOT_COUNT, createCommand, type Command } from '@ac/shared';
 
 export const COMMAND_RATE_HZ = 30;
 export const COMMAND_INTERVAL_MS = 1000 / COMMAND_RATE_HZ;
@@ -44,6 +44,17 @@ export interface SamplerDeps {
   command?: Command;
   getTick?: () => number;
   getSensitivity?: () => number;
+  /** 当前武器槽位（0/1/2）。Q 是"切到下一把"，目标槽位必须由当前槽位算出。 */
+  getActiveSlot?: () => number;
+}
+
+/** 把任意槽位号折成合法槽位（0/1/2），非法输入回落到手枪。 */
+export function sanitizeSlot(slot: number): 0 | 1 | 2 {
+  if (!Number.isFinite(slot)) return 0;
+  const folded = Math.floor(slot) % WEAPON_SLOT_COUNT;
+  if (folded === 1) return 1;
+  if (folded === 2) return 2;
+  return 0;
 }
 
 export function createInputSampler(deps: SamplerDeps): InputSampler {
@@ -53,6 +64,7 @@ export function createInputSampler(deps: SamplerDeps): InputSampler {
   let sensitivity = 1;
   let seq = 0;
   let lastSentAtMs = Number.NEGATIVE_INFINITY;
+  let switchTo: 0 | 1 | 2 = 0;
 
   function clampPitch(value: number): number {
     if (value > INPUT.pitchLimitRad) return INPUT.pitchLimitRad;
@@ -79,7 +91,8 @@ export function createInputSampler(deps: SamplerDeps): InputSampler {
     command.yaw = state.yaw;
     command.pitch = state.pitch;
     command.buttons = state.buttons;
-    command.switchTo = 0;
+    // 按 Q 那一刻锁定的绝对目标槽位；按住期间保持不变（否则一条按住会连跳好几把）。
+    command.switchTo = switchTo;
     lastSentAtMs = nowMs;
     deps.emit(command);
     return true;
@@ -91,8 +104,17 @@ export function createInputSampler(deps: SamplerDeps): InputSampler {
       const binding: string | number | undefined = KEY_BINDINGS[code as keyof typeof KEY_BINDINGS];
       if (binding === undefined) return false;
       if (typeof binding === 'number') {
+        const wasDown = (state.buttons & binding) !== 0;
         if (down) state.buttons |= binding;
         else state.buttons &= ~binding;
+        if (binding === BUTTON.switchWeapon) {
+          if (down && !wasDown) {
+            const current = deps.getActiveSlot === undefined ? 0 : deps.getActiveSlot();
+            switchTo = sanitizeSlot(sanitizeSlot(current) + 1);
+          } else if (!down) {
+            switchTo = 0;
+          }
+        }
       } else if (down) {
         pressed.add(binding);
       } else {

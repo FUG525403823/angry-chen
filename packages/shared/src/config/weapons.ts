@@ -33,7 +33,7 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 1400,
     spreadDeg: 0.8,
     falloffStartM: 30,
-    falloffPerM: 0.08,
+    falloffPerM: 0.04,
     headshotMultiplier: 2.0,
   },
   rifle: {
@@ -45,7 +45,7 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 2000,
     spreadDeg: 1.4,
     falloffStartM: 40,
-    falloffPerM: 0.06,
+    falloffPerM: 0.03,
     headshotMultiplier: 2.0,
   },
   shotgun: {
@@ -57,7 +57,7 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 2600,
     spreadDeg: 4.0,
     falloffStartM: 12,
-    falloffPerM: 0.15,
+    falloffPerM: 0.075,
     headshotMultiplier: 2.0,
   },
 });

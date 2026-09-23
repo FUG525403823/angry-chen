@@ -28,26 +28,80 @@ export const SHEEP: Readonly<Record<SheepKind, SheepDef>> = Object.freeze({
 });
 
 export interface SheepHitProfile {
-  readonly radiusM: number;
+  /** 躯干盒（羊局部坐标，米）：x ±halfWidthM、z ±halfDepthM、y ∈ [0, topM]。 */
+  readonly halfWidthM: number;
+  readonly halfDepthM: number;
   readonly topM: number;
+  /** 头盒（局部坐标）：x ±headHalfWidthM、y ∈ [headMinYM, headMaxYM]、z ∈ [headMinZM, headMaxZM]。 */
+  readonly headHalfWidthM: number;
+  readonly headMinYM: number;
+  readonly headMaxYM: number;
+  readonly headMinZM: number;
+  readonly headMaxZM: number;
+  /** 躯干盒内部的高度阈值：≥ headMinM 判头、≥ torsoMinM 判躯干、否则四肢。 */
   readonly headMinM: number;
   readonly torsoMinM: number;
 }
 
 /**
- * 命中体口径（竖直胶囊 + 高度阈值），与客户端渲染模型 render/sheepModel.ts 对齐：
- * 躯干 1.1×0.72×0.72 @ y=0.62、头盒 0.44×0.44×0.5 @ (0, 0.90, 0.66)，整体乘 SHEEP_FORM_SCALE(1/1.06/1.12/1.6)。
- * radiusM = 体宽一半（向上取整到 cm，浮点比较必须 ≥ 渲染体半宽）、topM = 头顶（留少量余量）、
- * headMinM = 头盒下沿附近、torsoMinM = 腿/躯干分界。
- * 注意：SHEEP.radiusM/heightM 仍是移动与碰撞口径（分离、攻击距离），不要拿来做命中判定；
- * 旧实现两种口径共用 0.5/0.9，于是"描羊头打不到、描羊王只有一半体积算命中"（真人试玩反馈）。
- * 客户端 render/sheepHit.test.ts 守这条不漂移。
+ * 命中体口径 = 客户端渲染盒体本身（躯干盒 + 前伸头盒），在羊的局部坐标系（+Z = 正前方）里求交。
+ * 躯干盒 x/ z 取羊毛团的包围（0.62 + 0.21×1.14 ≈ 0.86 半宽、0.42 + 0.24 ≈ 0.66 半深，见 render/sheepModel.ts
+ * 的 WOOL_SPREAD_*）；头盒是躯干前方那个独立的盒子（0.44×0.44×0.5 @ (0, 0.90, 0.66)），整体乘
+ * SHEEP_FORM_SCALE(1/1.06/1.12/1.6) 并向上取整到 cm。
+ * 旧口径是竖直胶囊（半径 0.55、轴 y∈[0.55,0.60]）：头顶高度上的有效半宽只剩 0.18–0.46 m，且胶囊完全盖不住
+ * 前伸 0.66 m 的头盒 —— 真人试玩"受击体积太小、描头打不到"的根因（二轮只把胶囊口径换成按羊种的胶囊，仍不够）。
+ * 注意：SHEEP.radiusM/heightM 仍是移动与碰撞口径（分离、攻击距离），不要拿来做命中判定。
+ * 客户端 src/test/sheepHit.test.ts 守这条不漂移。
  */
 export const SHEEP_HIT: Readonly<Record<SheepKind, SheepHitProfile>> = Object.freeze({
-  grunt: { radiusM: 0.55, topM: 1.15, headMinM: 0.78, torsoMinM: 0.34 },
-  ram: { radiusM: 0.59, topM: 1.22, headMinM: 0.83, torsoMinM: 0.36 },
-  elite: { radiusM: 0.62, topM: 1.29, headMinM: 0.87, torsoMinM: 0.38 },
-  king: { radiusM: 0.89, topM: 1.84, headMinM: 1.25, torsoMinM: 0.54 },
+  grunt: {
+    halfWidthM: 0.86,
+    halfDepthM: 0.66,
+    topM: 1.15,
+    headHalfWidthM: 0.22,
+    headMinYM: 0.68,
+    headMaxYM: 1.12,
+    headMinZM: 0.41,
+    headMaxZM: 0.91,
+    headMinM: 0.78,
+    torsoMinM: 0.34,
+  },
+  ram: {
+    halfWidthM: 0.92,
+    halfDepthM: 0.7,
+    topM: 1.22,
+    headHalfWidthM: 0.24,
+    headMinYM: 0.72,
+    headMaxYM: 1.19,
+    headMinZM: 0.43,
+    headMaxZM: 0.97,
+    headMinM: 0.83,
+    torsoMinM: 0.36,
+  },
+  elite: {
+    halfWidthM: 0.97,
+    halfDepthM: 0.74,
+    topM: 1.29,
+    headHalfWidthM: 0.25,
+    headMinYM: 0.76,
+    headMaxYM: 1.26,
+    headMinZM: 0.45,
+    headMaxZM: 1.02,
+    headMinM: 0.87,
+    torsoMinM: 0.38,
+  },
+  king: {
+    halfWidthM: 1.38,
+    halfDepthM: 1.06,
+    topM: 2.05,
+    headHalfWidthM: 0.36,
+    headMinYM: 1.08,
+    headMaxYM: 2.04,
+    headMinZM: 0.65,
+    headMaxZM: 1.46,
+    headMinM: 1.25,
+    torsoMinM: 0.54,
+  },
 });
 
 export const SHEEP_AI = Object.freeze({

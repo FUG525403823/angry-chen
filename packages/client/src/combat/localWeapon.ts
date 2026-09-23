@@ -15,6 +15,7 @@ export interface LocalWeapon {
 
 const authorityOnlyView: AmmoView = {
   mag: 0,
+  gateMag: 0,
   reserve: 0,
   pending: 0,
   rejected: 0,
@@ -33,6 +34,7 @@ export function createLocalWeapon(): LocalWeapon {
     syncMag(slot: 0 | 1 | 2, mag: number, reserve: number): void {
       // O07：无账本时的退化路径 —— 直接采用权威值（等价于 pending = 0 的裁决结果）。
       authorityOnlyView.mag = mag;
+      authorityOnlyView.gateMag = mag;
       authorityOnlyView.reserve = reserve;
       authorityOnlyView.pending = 0;
       authorityOnlyView.rejected = 0;
@@ -42,7 +44,7 @@ export function createLocalWeapon(): LocalWeapon {
     reconcileAmmo(slot: 0 | 1 | 2, serverMag: number, serverReserve: number, view: AmmoView): void {
       void serverMag;
       void serverReserve;
-      state.magInSlot[slot] = view.mag;
+      state.magInSlot[slot] = view.gateMag;
       state.reserveAmmo = view.reserve;
     },
     onFire(nowMs: number): boolean {

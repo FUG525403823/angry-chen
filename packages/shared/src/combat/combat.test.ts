@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { HIT_PART, RAGE, REVIVE, partForHeight, type HitPart } from '../config/combat.ts';
+import {
+  FALLOFF_MIN_MULTIPLIER,
+  HIT_PART,
+  RAGE,
+  REVIVE,
+  partForHeight,
+  type HitPart,
+} from '../config/combat.ts';
 import { SPREAD_MAX_DEG, WEAPONS, rpmToIntervalMs, signedJitter } from '../config/weapons.ts';
 import {
   createDownedState,
@@ -32,7 +39,10 @@ function referenceDamage(
 ): number {
   const multiplier =
     part === HIT_PART.head ? def.headshotMultiplier : part === HIT_PART.torso ? 1.0 : 0.75;
-  const falloff = Math.max(0.2, 1 - def.falloffPerM * Math.max(0, distanceM - def.falloffStartM));
+  const falloff = Math.max(
+    FALLOFF_MIN_MULTIPLIER,
+    1 - def.falloffPerM * Math.max(0, distanceM - def.falloffStartM),
+  );
   return def.damage * multiplier * falloff * (isRage ? RAGE.damageMultiplier : 1);
 }
 
@@ -56,19 +66,21 @@ describe('伤害矩阵', () => {
   });
 
   it('手算抽样值与武器表一致', () => {
+    // 二轮试玩后重新冻结：衰减斜率减半 + 下限 0.5（见 docs/evidence/playtest-fixes-round3.md §2）
     const cases: [keyof typeof WEAPONS, HitPart, number, boolean, number][] = [
       ['pistol', HIT_PART.torso, 10, false, 25],
       ['pistol', HIT_PART.head, 10, false, 50],
       ['pistol', HIT_PART.limb, 10, false, 18.75],
-      ['pistol', HIT_PART.torso, 40, false, 5],
-      ['pistol', HIT_PART.head, 40, false, 10],
+      ['pistol', HIT_PART.torso, 40, false, 15],
+      ['pistol', HIT_PART.head, 40, false, 30],
+      ['pistol', HIT_PART.torso, 60, false, 12.5],
       ['rifle', HIT_PART.torso, 40, false, 20],
-      ['rifle', HIT_PART.torso, 45, false, 14],
-      ['rifle', HIT_PART.head, 100, false, 8],
+      ['rifle', HIT_PART.torso, 45, false, 17],
+      ['rifle', HIT_PART.head, 100, false, 20],
       ['rifle', HIT_PART.torso, 20, true, 26],
       ['shotgun', HIT_PART.torso, 0, false, 12],
       ['shotgun', HIT_PART.torso, 12, false, 12],
-      ['shotgun', HIT_PART.torso, 100, false, 2.4],
+      ['shotgun', HIT_PART.torso, 100, false, 6],
       ['shotgun', HIT_PART.head, 0, false, 24],
     ];
     for (const [name, part, distance, rage, expected] of cases) {
@@ -76,6 +88,17 @@ describe('伤害矩阵', () => {
       expect(result.hpDamage).toBeCloseTo(expected, 10);
       expect(result.isHeadshot).toBe(part === HIT_PART.head);
     }
+  });
+
+  it('远距离命中仍有有效伤害（真人试玩：有效射程太近，远处打了等于没打）', () => {
+    for (const name of ['pistol', 'rifle', 'shotgun'] as const) {
+      const def = WEAPONS[name];
+      const far = damageFor(def, HIT_PART.torso, 90, false, 0);
+      expect(far.hpDamage).toBeCloseTo(def.damage * FALLOFF_MIN_MULTIPLIER, 10);
+      expect(far.hpDamage).toBeGreaterThanOrEqual(def.damage * 0.5);
+    }
+    // 步枪 60m 躯干已进入下限：20 × 0.5 = 10 点（旧口径只有 4 点）
+    expect(damageFor(WEAPONS.rifle, HIT_PART.torso, 60, false, 0).hpDamage).toBeCloseTo(10, 10);
   });
 
   it('护甲先扣 60% 且吸收量等于护甲损耗', () => {

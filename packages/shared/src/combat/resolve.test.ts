@@ -8,7 +8,7 @@ import { stepWorld } from '../sim.ts';
 import { createWorld, getEntity, spawnEntity, type World } from '../world.ts';
 import { createCombatContext } from './resolve.ts';
 import { createRayHit, rayVsAabb, rayVsCapsule } from './raycast.ts';
-import { HIT_PART, partForHeight, partForThresholds } from '../config/combat.ts';
+import { HIT_PART, partForHeight, partForThresholds, type HitPart } from '../config/combat.ts';
 import { SHEEP_HIT, SHEEP_ORDER } from '../config/sheep.ts';
 import { applySheepKind } from '../ai/sheepBrain.ts';
 import { SHOT_MAX_DISTANCE_M, createShotTrace, traceRay, type ShotTrace } from './resolve.ts';
@@ -177,8 +177,80 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
         target.kind === 'sheep'
           ? SHEEP_HIT[SHEEP_ORDER[target.ai.sheepKind] ?? 'grunt']
           : undefined;
-      const radius = sheepProfile === undefined ? radiusByKind[target.kind] : sheepProfile.radiusM;
-      const height = sheepProfile === undefined ? heightByKind[target.kind] : sheepProfile.topM;
+      if (sheepProfile !== undefined) {
+        const sinYaw = Math.sin(target.yaw);
+        const cosYaw = Math.cos(target.yaw);
+        const relX = ox - tx;
+        const relZ = oz - tz;
+        const lox = cosYaw * relX - sinYaw * relZ;
+        const loz = sinYaw * relX + cosYaw * relZ;
+        const ldx = cosYaw * dx - sinYaw * dz;
+        const ldz = sinYaw * dx + cosYaw * dz;
+        const relY = oy - ty;
+        const body = createRayHit();
+        rayVsAabb(
+          lox,
+          relY,
+          loz,
+          ldx,
+          dy,
+          ldz,
+          -sheepProfile.halfWidthM,
+          0,
+          -sheepProfile.halfDepthM,
+          sheepProfile.halfWidthM,
+          sheepProfile.topM,
+          sheepProfile.halfDepthM,
+          maxDistanceM,
+          body,
+        );
+        let hitT = body.hit ? body.t : Number.POSITIVE_INFINITY;
+        let part: HitPart = HIT_PART.limb;
+        if (body.hit) {
+          part = partForThresholds(
+            ty,
+            sheepProfile.headMinM,
+            sheepProfile.torsoMinM,
+            oy + dy * hitT,
+          );
+        }
+        const head = createRayHit();
+        rayVsAabb(
+          lox,
+          relY,
+          loz,
+          ldx,
+          dy,
+          ldz,
+          -sheepProfile.headHalfWidthM,
+          sheepProfile.headMinYM,
+          sheepProfile.headMinZM,
+          sheepProfile.headHalfWidthM,
+          sheepProfile.headMaxYM,
+          sheepProfile.headMaxZM,
+          maxDistanceM,
+          head,
+        );
+        if (head.hit && head.t < hitT) {
+          hitT = head.t;
+          part = HIT_PART.head;
+        }
+        if (hitT >= bestT) continue;
+        bestT = hitT;
+        out.hit = true;
+        out.targetId = target.id;
+        out.targetKind = target.kind;
+        out.part = part;
+        out.distanceM = hitT;
+        out.x = ox + dx * hitT;
+        out.y = oy + dy * hitT;
+        out.z = oz + dz * hitT;
+        continue;
+      }
+
+      // —— 玩家：ENTITY 口径的竖直胶囊 ——
+      const radius = radiusByKind[target.kind];
+      const height = heightByKind[target.kind];
       const hit = createRayHit();
       rayVsCapsule(
         ox,
@@ -202,10 +274,7 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
       out.hit = true;
       out.targetId = target.id;
       out.targetKind = target.kind;
-      out.part =
-        sheepProfile === undefined
-          ? partForHeight(ty, height, hit.y)
-          : partForThresholds(ty, sheepProfile.headMinM, sheepProfile.torsoMinM, hit.y);
+      out.part = partForHeight(ty, height, hit.y);
       out.distanceM = hit.t;
       out.x = hit.x;
       out.y = hit.y;
@@ -331,11 +400,11 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
     expect(hits).toBeGreaterThan(0);
   });
 });
-describe('羊的命中体与渲染模型对齐（真人试玩：描头打不出有效伤害、羊王只有一半体积算命中）', () => {
-  const DISTANCES = [4, 10, 20];
+describe('羊的命中体 = 渲染盒体（真人试玩：受击体积太小、描头打不到）', () => {
+  const DISTANCES = [4, 10, 20, 30];
 
   for (const kind of SHEEP_ORDER) {
-    it(kind + '：按 SHEEP_HIT 阈值判头/躯干/四肢，头顶之上为 miss', () => {
+    it(kind + '：躯干盒 / 头盒 / 高度阈值决定命中部位，盒外落空', () => {
       const profile = SHEEP_HIT[kind];
       // 站位要在谷仓 AABB（x∈[-4,4], z∈[-4,4]）之外，否则射线先打墙、羊永远排在墙后
       const world = createWorld(11, bareConfig);
@@ -346,29 +415,44 @@ describe('羊的命中体与渲染模型对齐（真人试玩：描头打不出�
       const entity = getEntity(world, sheep.id);
       if (entity === undefined) throw new Error('sheep missing');
       applySheepKind(entity, kind);
+      // 羊正面朝射手（追击时的真实姿态）：局部 +Z（头盒外伸的那一侧）指向射手
+      entity.yaw = Math.PI;
 
       const out = createShotTrace();
-      // 正对轴线水平照射：入射点高度 = 瞄准高度，因此 part 完全由高度阈值决定
-      const shotAt = (distance: number, height: number, offsetX: number): number | string => {
+      const place = (distance: number): void => {
         entity.pos.x = 0;
         entity.pos.y = 0;
         entity.pos.z = 6 + distance;
+      };
+      /** 正面射入（沿 +Z 前进）：入射点高度 = 瞄准高度。 */
+      const frontAt = (distance: number, height: number, offsetX: number): number | string => {
+        place(distance);
         traceRay(world, null, shooter.id, offsetX, height, 6, 0, 0, 1, SHOT_MAX_DISTANCE_M, 0, out);
         return out.hit ? out.part : 'miss';
       };
-      const partAt = (distance: number, height: number): number | string =>
-        shotAt(distance, height, 0);
+      /** 侧面射入（沿 +X 前进）到羊局部深度 localZ，用来验证头盒的前伸段。 */
+      const sideAt = (distance: number, height: number, localZ: number): number | string => {
+        place(distance);
+        const z = entity.pos.z - localZ;
+        traceRay(world, null, shooter.id, -12, height, z, 1, 0, 0, SHOT_MAX_DISTANCE_M, 0, out);
+        return out.hit ? out.part : 'miss';
+      };
 
+      const torsoMid = (profile.torsoMinM + profile.headMinM) / 2;
+      const headMid = (profile.headMinYM + profile.headMaxYM) / 2;
       for (const distance of DISTANCES) {
-        expect(partAt(distance, profile.topM - 0.05)).toBe(HIT_PART.head);
-        expect(partAt(distance, (profile.headMinM + profile.topM) / 2)).toBe(HIT_PART.head);
-        expect(partAt(distance, (profile.torsoMinM + profile.headMinM) / 2)).toBe(HIT_PART.torso);
-        expect(partAt(distance, profile.torsoMinM - 0.1)).toBe(HIT_PART.limb);
-        expect(partAt(distance, profile.topM + 0.1)).toBe('miss');
-        // 侧向偏移把胶囊半径也钉住：半径内算命中、半径外落空
-        const torsoMid = (profile.torsoMinM + profile.headMinM) / 2;
-        expect(shotAt(distance, torsoMid, profile.radiusM - 0.05)).toBe(HIT_PART.torso);
-        expect(shotAt(distance, torsoMid, profile.radiusM + 0.1)).toBe('miss');
+        // 躯干盒：横向半宽（羊毛轮廓）内命中、外落空
+        expect(frontAt(distance, torsoMid, profile.halfWidthM - 0.05)).toBe(HIT_PART.torso);
+        expect(frontAt(distance, torsoMid, profile.halfWidthM + 0.1)).toBe('miss');
+        // 高度阈值与盒顶
+        expect(frontAt(distance, profile.torsoMinM - 0.1, 0)).toBe(HIT_PART.limb);
+        expect(frontAt(distance, profile.topM + 0.05, 0)).toBe('miss');
+        // 头盒：正面命中即判头（旧胶囊在头顶高度只剩 0.18–0.46 m 有效半宽）
+        expect(frontAt(distance, headMid, 0)).toBe(HIT_PART.head);
+        expect(frontAt(distance, headMid, profile.headHalfWidthM - 0.03)).toBe(HIT_PART.head);
+        // 头盒前伸段（超出躯干盒半深）：侧面射入必须判头，旧胶囊整发落空
+        expect(sideAt(distance, headMid, profile.headMaxZM - 0.05)).toBe(HIT_PART.head);
+        expect(sideAt(distance, headMid, profile.headMaxZM + 0.05)).toBe('miss');
       }
     });
   }

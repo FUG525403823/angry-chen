@@ -83,6 +83,7 @@ export function createShotTrace(): ShotTrace {
 
 const rayScratch = createRayHit();
 const targetHitScratch = createRayHit();
+const headHitScratch = createRayHit();
 const poseScratch = createSampledPose();
 const directionScratch = createVec3();
 const damageScratch = createDamageResult();
@@ -151,11 +152,92 @@ export function traceRay(
       }
     }
 
-    // 命中体口径：羊用 SHEEP_HIT（与渲染模型对齐的胶囊 + 高度阈值），玩家沿用 ENTITY 的半径/身高。
+    // 命中体口径：羊用 SHEEP_HIT（= 渲染模型的躯干盒 + 前伸头盒，在羊的局部坐标系里求交），
+    // 玩家沿用 ENTITY 的竖直胶囊。两条路径分开写，避免两种口径互相污染。
     const sheepProfile =
       target.kind === 'sheep' ? SHEEP_HIT[SHEEP_ORDER[target.ai.sheepKind] ?? 'grunt'] : undefined;
-    const radius = sheepProfile === undefined ? radiusByKind[target.kind] : sheepProfile.radiusM;
-    const height = sheepProfile === undefined ? heightByKind[target.kind] : sheepProfile.topM;
+    if (sheepProfile !== undefined) {
+      // 世界 → 羊局部（绕 Y 轴反向旋转；局部 +Z = 羊的正前方）。
+      const sinYaw = Math.sin(target.yaw);
+      const cosYaw = Math.cos(target.yaw);
+      const relX = originX - tx;
+      const relZ = originZ - tz;
+      const lox = cosYaw * relX - sinYaw * relZ;
+      const loz = sinYaw * relX + cosYaw * relZ;
+      const ldx = cosYaw * dx - sinYaw * dz;
+      const ldz = sinYaw * dx + cosYaw * dz;
+      const relY = originY - ty;
+      // 廉价早退（不改变命中结果）：盒体包围球之外必然打不中。
+      const reach = Math.hypot(sheepProfile.halfWidthM, sheepProfile.halfDepthM);
+      if (horizontalSq > 1e-12) {
+        const along = ((tx - originX) * dx + (tz - originZ) * dz) / horizontalSq;
+        const clamped = along < 0 ? 0 : along > maxDistanceM ? maxDistanceM : along;
+        const gapX = originX + dx * clamped - tx;
+        const gapZ = originZ + dz * clamped - tz;
+        if (gapX * gapX + gapZ * gapZ > reach * reach) continue;
+      }
+      rayVsAabb(
+        lox,
+        relY,
+        loz,
+        ldx,
+        dy,
+        ldz,
+        -sheepProfile.halfWidthM,
+        0,
+        -sheepProfile.halfDepthM,
+        sheepProfile.halfWidthM,
+        sheepProfile.topM,
+        sheepProfile.halfDepthM,
+        maxDistanceM,
+        targetHitScratch,
+      );
+      let hitT = targetHitScratch.hit ? targetHitScratch.t : Number.POSITIVE_INFINITY;
+      let part: HitPart = HIT_PART.limb;
+      if (targetHitScratch.hit) {
+        part = partForThresholds(
+          ty,
+          sheepProfile.headMinM,
+          sheepProfile.torsoMinM,
+          originY + dy * hitT,
+        );
+      }
+      rayVsAabb(
+        lox,
+        relY,
+        loz,
+        ldx,
+        dy,
+        ldz,
+        -sheepProfile.headHalfWidthM,
+        sheepProfile.headMinYM,
+        sheepProfile.headMinZM,
+        sheepProfile.headHalfWidthM,
+        sheepProfile.headMaxYM,
+        sheepProfile.headMaxZM,
+        maxDistanceM,
+        headHitScratch,
+      );
+      if (headHitScratch.hit && headHitScratch.t < hitT) {
+        hitT = headHitScratch.t;
+        part = HIT_PART.head;
+      }
+      if (hitT >= bestT) continue;
+      bestT = hitT;
+      out.hit = true;
+      out.targetId = target.id;
+      out.targetKind = target.kind;
+      out.part = part;
+      out.distanceM = hitT;
+      out.x = originX + dx * hitT;
+      out.y = originY + dy * hitT;
+      out.z = originZ + dz * hitT;
+      continue;
+    }
+
+    // —— 玩家：ENTITY 口径的竖直胶囊（配合历史姿态回滚）——
+    const radius = radiusByKind[target.kind];
+    const height = heightByKind[target.kind];
     // 廉价早退（不改变命中结果）：胶囊竖直，水平距离 > 半径必然打不中；
     // 最近可能命中参数 minAlong - radius 已超过当前最优命中时也不可能反超。
     if (horizontalSq > 1e-12) {
@@ -190,10 +272,7 @@ export function traceRay(
     out.hit = true;
     out.targetId = target.id;
     out.targetKind = target.kind;
-    out.part =
-      sheepProfile === undefined
-        ? partForHeight(ty, height, targetHitScratch.y)
-        : partForThresholds(ty, sheepProfile.headMinM, sheepProfile.torsoMinM, targetHitScratch.y);
+    out.part = partForHeight(ty, height, targetHitScratch.y);
     out.distanceM = targetHitScratch.t;
     out.x = targetHitScratch.x;
     out.y = targetHitScratch.y;
