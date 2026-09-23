@@ -1,0 +1,19 @@
+# 构建产物
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.pdb
+*.ilk
+compile_commands.json
+.cache/
+# 运行时产物
+*.log
+logs/
+reports/

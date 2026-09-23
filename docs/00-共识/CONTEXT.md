@@ -54,7 +54,7 @@
 | 权威 | `authoritative` | 只有服务器产生既定事实。客户端的一切状态都是推测。 |
 | 宽限期 | `graceperiod` | 玩家断线后保留其位置与名额的时长，30 秒。 |
 | 对局状态机 | `MatchPhase` | `lobby → loading → playing → intermission → ended`。 |
-| 质量门 | `pnpm check` | typecheck + lint + test + 文档链校验。任何提交必须通过。 |
+| 质量门 | `node tools/check-docs.mjs` | typecheck + lint + test + 文档链校验。任何提交必须通过。 |
 
 ## 3. 硬约束词汇（出现即表示不可违反）
 
@@ -65,3 +65,19 @@
 | **零外部素材** | 仓库不含任何第三方模型/贴图/音频二进制。所有视听内容在运行时程序化生成。 |
 | **可擦除语法** | 只使用可被类型剥离的 TypeScript 语法（禁 `enum`、禁参数属性、禁 `namespace`）。 |
 | **线性文档链** | 计划文档 P01→P10 顺序执行，每份的入口条件等于上一份的移交物。 |
+
+## 4. v2 术语（重构期新增，标识符与 v1 同名者语义不变）
+
+| 术语 | 标识符 | 定义 |
+|---|---|---|
+| 服务器进程 | `ServerProcess` | `server/` 产出的 C++ 可执行文件，承载全部权威模拟与房间。 |
+| 客户端仿真 | `ClientSim` | `client/` 内与服务端同规则、同运算子集的预测步进实现（ADR-010）。 |
+| 快照通道 | `SnapshotChannel` | 服务器→客户端的**不可靠**快照通道，旧包直接丢（ADR-009）。 |
+| 命令通道 | `CommandChannel` | 客户端→服务器的**可靠有序**命令通道，只发最新。 |
+| 事件通道 | `EventChannel` | 服务器→客户端的**可靠幂等**事件通道，按 `eventId` 去重。 |
+| UDP 传输 | `UdpTransport` | 自研 UDP 可靠性层（握手/ack 位图/分片/重传/心跳），双端同一份规范。 |
+| 对拍向量 | `Fixture` | 由冻结的 v1 `packages/shared` 导出的纯文本测试向量，C++ 与 C# 必须逐位复现。 |
+| 里程碑 | `MS<nn>` / `MC<nn>` | v2 服务器链 / 客户端链的里程碑标签（v1 的 `M0–M9` 不再使用）。 |
+| 移交物 | `HANDOFF-S<nn>` / `HANDOFF-C<nn>` | v2 两条链的移交物 ID（v1 的 `HANDOFF-H<nn>` 仅用于 P01–P10）。 |
+| 硬约束：跨语言确定性 | — | 权威模拟与客户端预测只用 `+ - * / sqrt` 与整数运算；禁用超越函数与 fast-math。 |
+| 硬约束：双端分离 | — | `server/` 与 `client/` 不共享源码，只共享 ADR-009 冻结的协议与 ADR-010 冻结的运算子集。 |
