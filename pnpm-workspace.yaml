@@ -1,7 +1,0 @@
-packages:
-  - packages/*
-
-# pnpm 11 起不再读取 package.json 的 "pnpm" 字段，构建设置迁移到这里（见 P01 §8 风险表）。
-# esbuild 需要执行安装脚本以放置平台二进制，vite / vitest / tsx 都依赖它。
-allowBuilds:
-  esbuild: true

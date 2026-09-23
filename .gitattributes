@@ -1,4 +1,0 @@
-# 统一换行符，避免 Windows 上 Git/Prettier 反复报行尾差异（见 P01 §8）
-* text=auto eol=lf
-*.bat text eol=crlf
-*.cmd text eol=crlf
