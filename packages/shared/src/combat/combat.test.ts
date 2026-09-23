@@ -66,21 +66,22 @@ describe('伤害矩阵', () => {
   });
 
   it('手算抽样值与武器表一致', () => {
-    // 二轮试玩后重新冻结：衰减斜率减半 + 下限 0.5（见 docs/evidence/playtest-fixes-round3.md §2）
+    // 三轮试玩追加反馈（射击有效距离还是太近）后重新冻结：距离衰减整体关闭，
+    // 所以只有部位倍率与狂暴加成起作用（见 docs/evidence/playtest-fixes-round3-followup.md）。
     const cases: [keyof typeof WEAPONS, HitPart, number, boolean, number][] = [
       ['pistol', HIT_PART.torso, 10, false, 25],
       ['pistol', HIT_PART.head, 10, false, 50],
       ['pistol', HIT_PART.limb, 10, false, 18.75],
-      ['pistol', HIT_PART.torso, 40, false, 15],
-      ['pistol', HIT_PART.head, 40, false, 30],
-      ['pistol', HIT_PART.torso, 60, false, 12.5],
+      ['pistol', HIT_PART.torso, 40, false, 25],
+      ['pistol', HIT_PART.head, 40, false, 50],
+      ['pistol', HIT_PART.torso, 60, false, 25],
       ['rifle', HIT_PART.torso, 40, false, 20],
-      ['rifle', HIT_PART.torso, 45, false, 17],
-      ['rifle', HIT_PART.head, 100, false, 20],
+      ['rifle', HIT_PART.torso, 45, false, 20],
+      ['rifle', HIT_PART.head, 100, false, 40],
       ['rifle', HIT_PART.torso, 20, true, 26],
       ['shotgun', HIT_PART.torso, 0, false, 12],
       ['shotgun', HIT_PART.torso, 12, false, 12],
-      ['shotgun', HIT_PART.torso, 100, false, 6],
+      ['shotgun', HIT_PART.torso, 100, false, 12],
       ['shotgun', HIT_PART.head, 0, false, 24],
     ];
     for (const [name, part, distance, rage, expected] of cases) {
@@ -90,15 +91,25 @@ describe('伤害矩阵', () => {
     }
   });
 
-  it('远距离命中仍有有效伤害（真人试玩：有效射程太近，远处打了等于没打）', () => {
+  it('任何距离都是满伤害（三轮追加反馈：射击有效距离还是太近 ⇒ 关闭距离衰减）', () => {
     for (const name of ['pistol', 'rifle', 'shotgun'] as const) {
       const def = WEAPONS[name];
-      const far = damageFor(def, HIT_PART.torso, 90, false, 0);
-      expect(far.hpDamage).toBeCloseTo(def.damage * FALLOFF_MIN_MULTIPLIER, 10);
-      expect(far.hpDamage).toBeGreaterThanOrEqual(def.damage * 0.5);
+      for (const distance of [0, 5, 30, 60, 100, 150, 400]) {
+        expect(damageFor(def, HIT_PART.torso, distance, false, 0).hpDamage).toBeCloseTo(
+          def.damage,
+          10,
+        );
+        expect(damageFor(def, HIT_PART.head, distance, false, 0).hpDamage).toBeCloseTo(
+          def.damage * def.headshotMultiplier,
+          10,
+        );
+      }
     }
-    // 步枪 60m 躯干已进入下限：20 × 0.5 = 10 点（旧口径只有 4 点）
-    expect(damageFor(WEAPONS.rifle, HIT_PART.torso, 60, false, 0).hpDamage).toBeCloseTo(10, 10);
+    // 衰减公式本身仍在（只是斜率为 0）：下限常数不会被触发
+    expect(FALLOFF_MIN_MULTIPLIER).toBeLessThan(1);
+    for (const name of ['pistol', 'rifle', 'shotgun'] as const) {
+      expect(WEAPONS[name].falloffPerM).toBe(0);
+    }
   });
 
   it('护甲先扣 60% 且吸收量等于护甲损耗', () => {

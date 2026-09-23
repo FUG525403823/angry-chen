@@ -20,6 +20,10 @@ export const TORSO_MIN_HEIGHT_RATIO = 0.4;
 export const ARMOR_ABSORB_RATIO = 0.6;
 export const ARMOR_MAX = 50;
 export const HEALTH_MAX = 100;
+/**
+ * 距离衰减的下限倍率。三把武器当前 `falloffPerM = 0`（距离完全不衰减），
+ * 该值只在重新打开衰减时生效（三轮试玩追加反馈：射击有效距离还是太近）。
+ */
 export const FALLOFF_MIN_MULTIPLIER = 0.5;
 export const FRIENDLY_FIRE = false;
 

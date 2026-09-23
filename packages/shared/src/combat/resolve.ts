@@ -37,7 +37,12 @@ import { activateRage, addKillRage, isRageActive, noteCombat, updateRage } from 
 import { createRayHit, rayVsAabb, rayVsCapsule } from './raycast.ts';
 import { activeWeaponDef, switchSlot, tryFire, tryStartReload, updateWeapon } from './weapon.ts';
 
-export const SHOT_MAX_DISTANCE_M = 100;
+/**
+ * 射线最大距离（米）。竞技场 80×80、对角线 ≈113 m，所以 160 m 在场景内等价于"没有射程上限"，
+ * 但仍然是一个有限值（避免把"打不到"的边界推到无穷后无法复现问题）。
+ * 三轮试玩追加反馈：射击有效距离太近 —— 距离衰减已整体关闭（见 WEAPONS.falloffPerM）。
+ */
+export const SHOT_MAX_DISTANCE_M = 160;
 export const DEG_TO_RAD = Math.PI / 180;
 export const PITCH_LIMIT_RAD = 1.5533;
 

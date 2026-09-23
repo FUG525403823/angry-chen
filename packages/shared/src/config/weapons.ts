@@ -33,7 +33,9 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 1400,
     spreadDeg: 0.8,
     falloffStartM: 30,
-    falloffPerM: 0.04,
+    // 0 = 不随距离衰减：三轮试玩追加反馈「射击有效距离还是太近」，三把武器整表关闭距离衰减。
+    // 想重新打开只改这个数（公式与下限 FALLOFF_MIN_MULTIPLIER 都还在，见 docs/plans/P06-战斗系统与武器.md §5.4）。
+    falloffPerM: 0,
     headshotMultiplier: 2.0,
   },
   rifle: {
@@ -45,7 +47,7 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 2000,
     spreadDeg: 1.4,
     falloffStartM: 40,
-    falloffPerM: 0.03,
+    falloffPerM: 0, // 无距离衰减
     headshotMultiplier: 2.0,
   },
   shotgun: {
@@ -57,7 +59,7 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     reloadMs: 2600,
     spreadDeg: 4.0,
     falloffStartM: 12,
-    falloffPerM: 0.075,
+    falloffPerM: 0, // 无距离衰减
     headshotMultiplier: 2.0,
   },
 });

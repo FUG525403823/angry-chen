@@ -11,6 +11,8 @@ import { createRayHit, rayVsAabb, rayVsCapsule } from './raycast.ts';
 import { HIT_PART, partForHeight, partForThresholds, type HitPart } from '../config/combat.ts';
 import { SHEEP_HIT, SHEEP_ORDER } from '../config/sheep.ts';
 import { applySheepKind } from '../ai/sheepBrain.ts';
+import { ARENA } from '../config/arena.ts';
+import { damageFor } from './damage.ts';
 import { SHOT_MAX_DISTANCE_M, createShotTrace, traceRay, type ShotTrace } from './resolve.ts';
 import {
   createPoseHistory,
@@ -472,5 +474,34 @@ describe('羊的命中体 = 渲染盒体（真人试玩：受击体积太小、�
     expect(out.hit).toBe(true);
     expect(out.part).toBe(HIT_PART.head);
     expect(SHEEP_HIT.king.topM).toBeGreaterThan(1.5);
+  });
+
+  it('120m 外仍能命中且伤害不衰减（三轮追加反馈：射击有效距离还是太近）', () => {
+    // 车道选在 x = -20：避开场地中央的谷仓（|x| ≤ 4、|z| ≤ 4，射线起点落在里面会整段被挡）
+    const world = createWorld(12, bareConfig);
+    const shooter = spawnEntity(world, 'player', -20, 0, 6);
+    if (!shooter.ok) throw new Error('shooter spawn failed');
+    const sheep = spawnEntity(world, 'sheep', -20, 0, 126);
+    if (!sheep.ok) throw new Error('sheep spawn failed');
+    const entity = getEntity(world, sheep.id);
+    if (entity === undefined) throw new Error('sheep missing');
+    applySheepKind(entity, 'grunt');
+    entity.yaw = Math.PI;
+
+    const out = createShotTrace();
+    // 起点高度 0.5m：落在咩咩兵躯干带（0.34–0.68m）内，既不从头顶飞过也不打到头盒。
+    traceRay(world, null, shooter.id, -20, 0.5, 6, 0, 0, 1, SHOT_MAX_DISTANCE_M, 0, out);
+    expect(out.hit).toBe(true);
+    expect(out.part).toBe(HIT_PART.torso);
+    // 射程上限必须覆盖整个竞技场（对角线），否则"场地对角线的敌人"天生打不到
+    expect(out.distanceM).toBeGreaterThan(100);
+    expect(out.distanceM).toBeLessThan(SHOT_MAX_DISTANCE_M);
+    expect(SHOT_MAX_DISTANCE_M).toBeGreaterThan(Math.hypot(ARENA.width, ARENA.depth));
+    // 满伤害：步枪 120m 躯干 = 20 点（旧口径 45m 就只剩 17、100m 封顶打不到）
+    expect(damageFor(WEAPONS.rifle, out.part, out.distanceM, false, 0).hpDamage).toBeCloseTo(
+      WEAPONS.rifle.damage,
+      10,
+    );
+    expect(damageFor(WEAPONS.pistol, HIT_PART.head, 300, false, 0).hpDamage).toBeCloseTo(50, 10);
   });
 });
