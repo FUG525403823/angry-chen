@@ -35,6 +35,17 @@ const DEFAULT_CDP_PORT = 9333;
 const DEFAULT_GAME_PORT = 8787;
 const SHEEP_PROBE =
   '(() => { const out = []; window.__ac.view.forEachVisible((e) => { if (e.kind === 1) out.push([e.id, Math.round(e.pos.x * 100) / 100, Math.round(e.pos.z * 100) / 100]); }); return out; })()';
+// 曳光 mesh 的 count = min(容量, spawn 次数)，因此可直接当"生成了几条"的累加计数器用。
+const TRACER_COUNT_PROBE =
+  '(() => { const t = window.__ac.scene.getObjectByName("tracers"); return t ? t.count : -1; })()';
+// 准星四条臂与中心的实测几何（旧 CSS 的 calc 类型错误会让上/左两臂堆在中心）。
+const CROSSHAIR_PROBE =
+  '(() => { const host = document.querySelector(".hud-crosshair"); if (host === null) return null;' +
+  ' const rect = host.getBoundingClientRect(); const center = { x: rect.left, y: rect.top }; const arms = {};' +
+  ' for (const side of ["top", "bottom", "left", "right"]) {' +
+  ' const el = document.querySelector(".hud-crosshair-" + side); if (el === null) return null;' +
+  ' const r = el.getBoundingClientRect(); arms[side] = { cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; }' +
+  ' return { center, arms, spread: getComputedStyle(host).getPropertyValue("--spread-px") }; })()';
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -546,6 +557,49 @@ async function main() {
           projected.applied.toFixed(3),
       );
     }
+
+    // —— 准星真的是十字（旧 CSS 在 calc 里做「数字 − 长度」+ 裸数字 translateY ⇒ 上/左臂堆在中心）——
+    const crosshair = await evaluate(CROSSHAIR_PROBE);
+    if (crosshair === null) {
+      check(
+        '准星是十字：四臂各在正确一侧且到中心对称',
+        false,
+        '未找到 .hud-crosshair / .hud-crosshair-* 元素',
+      );
+    } else {
+      const tol = 0.75;
+      const { center, arms, spread } = crosshair;
+      const topGap = center.y - arms.top.cy;
+      const bottomGap = arms.bottom.cy - center.y;
+      const leftGap = center.x - arms.left.cx;
+      const rightGap = arms.right.cx - center.x;
+      const ok =
+        Math.abs(arms.top.cx - center.x) < tol &&
+        Math.abs(arms.bottom.cx - center.x) < tol &&
+        Math.abs(arms.left.cy - center.y) < tol &&
+        Math.abs(arms.right.cy - center.y) < tol &&
+        topGap > 0 &&
+        bottomGap > 0 &&
+        leftGap > 0 &&
+        rightGap > 0 &&
+        Math.abs(topGap - bottomGap) < tol &&
+        Math.abs(leftGap - rightGap) < tol &&
+        spread.trim().endsWith('px');
+      check(
+        '准星是十字：四臂各在正确一侧、到中心对称、扩散值带长度单位',
+        ok,
+        '上 ' +
+          topGap.toFixed(1) +
+          'px / 下 ' +
+          bottomGap.toFixed(1) +
+          'px / 左 ' +
+          leftGap.toFixed(1) +
+          'px / 右 ' +
+          rightGap.toFixed(1) +
+          'px，--spread-px=' +
+          spread.trim(),
+      );
+    }
   }
 
   // —— 指针锁定（客户端预测与开火以它为闸门）——
@@ -633,7 +687,6 @@ async function main() {
 
     // —— 开火：曳光存在且起点偏离眼位 ——
     const eye = await evaluate('window.__ac.camera.position.toArray()');
-    await evaluate('window.__ac.__maxTracer = 0');
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x: box.x,
@@ -693,6 +746,33 @@ async function main() {
     if (firstAim === null) {
       check('开火命中最近的羊（服务端 HP 下降）', false, '场上没有羊可打');
     } else {
+      // —— 一次开火只画一条曳光（旧实现每条命中事件还会补一条：手枪翻倍、霰弹 8 发弹丸最多 9 条 ⇒「一条正常一条随机」）——
+      // 曳光 mesh 的 count = 累计生成条数（min(容量, cursor)），所以 1 秒的增量就是"这段时间画了几条"。
+      const tracersBefore = await evaluate(TRACER_COUNT_PROBE);
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: box.x,
+        y: box.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await sleep(1000);
+      await cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: box.x,
+        y: box.y,
+        button: 'left',
+        clickCount: 1,
+      });
+      await sleep(250); // 等最后一发的权威命中事件到达（旧实现正是在这里补画）
+      const tracersAfter = await evaluate(TRACER_COUNT_PROBE);
+      const spawned = tracersAfter - tracersBefore;
+      check(
+        '连射 1 秒的曳光条数不超过射速上限（手枪 300rpm ⇒ 最多 6 条；旧实现命中翻倍会到 ~10 条）',
+        spawned >= 1 && spawned <= 6,
+        '曳光 +' + String(spawned) + ' 条（上限 6：1s ÷ 200ms + 1）',
+      );
+
       await cdp.send('Input.dispatchMouseEvent', {
         type: 'mousePressed',
         x: box.x,
@@ -737,6 +817,57 @@ async function main() {
           (hp === null ? '已消灭' : hp.toFixed(3)),
       );
     }
+
+    // —— 空弹匣：按住左键不再产生弹道（旧实现曳光在 onFire 判定之外，按 30Hz 采样速率刷弹道）——
+    // 空弹匣状态与曳光条数在同一次求值里读出，避免两个采样点之间的竞态。
+    const EMPTY_PROBE =
+      '(() => { const box = document.querySelector(".hud-ammo"); const text = document.querySelector(".hud-ammo-text");' +
+      ' const t = window.__ac.scene.getObjectByName("tracers");' +
+      ' return { empty: box !== null && box.classList.contains("hud-ammo-empty"),' +
+      ' mag: text === null ? "?" : text.textContent, spawns: t ? t.count : -1 }; })()';
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    let emptySamples = 0;
+    let magWhenEmpty = '?';
+    let extraWhileEmpty = 0;
+    let previous = await evaluate(EMPTY_PROBE);
+    for (let i = 0; i < 45; i += 1) {
+      await sleep(100);
+      const sample = await evaluate(EMPTY_PROBE);
+      if (sample.empty) {
+        emptySamples += 1;
+        magWhenEmpty = sample.mag;
+        // 相邻两次采样都处于空弹匣，中间却多出曳光 ⇒ 空弹匣仍画了弹道
+        if (previous.empty && sample.spawns > previous.spawns) {
+          extraWhileEmpty += sample.spawns - previous.spawns;
+        }
+      }
+      previous = sample;
+      if (emptySamples >= 8) break;
+    }
+    await cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    check(
+      '空弹匣按住左键不再产生弹道（连续两次采样都在空弹匣状态时不得新增曳光）',
+      emptySamples >= 3 && extraWhileEmpty === 0,
+      '空弹匣采样 ' +
+        String(emptySamples) +
+        ' 次（显示 ' +
+        String(magWhenEmpty) +
+        '），空弹匣期间新增曳光 ' +
+        String(extraWhileEmpty) +
+        ' 条',
+    );
   }
 
   if (!locked) {

@@ -1,4 +1,11 @@
-import { CONFIG, createCommand, type Command } from '@ac/shared';
+import {
+  CONFIG,
+  SERVER_TICK_MS,
+  createCommand,
+  stepLocalPlayer,
+  type Command,
+  type MoveState,
+} from '@ac/shared';
 import { describe, expect, it } from 'vitest';
 import { createErrorSmoother, SMOOTHING_EPSILON_M } from '../render/errorSmoother.ts';
 import { createCommandBuffer, seqDiff } from './commandBuffer.ts';
@@ -65,6 +72,96 @@ describe('预测器子步', () => {
     const out = predictor.renderPosition({ x: 0, y: 0, z: 0 });
     expect(out.z).toBeGreaterThan(before);
     expect(predictor.state.pos.z).toBe(before);
+  });
+});
+
+describe('渲染节拍（60fps 渲染 + 30Hz 采样 + 20Hz 和解）', () => {
+  // 复刻 main.ts 的逐帧循环：采样 → 预测子步 → 渲染位置 → 误差平滑 → 20Hz 和解。
+  // ackLag = 客户端命令被确认的滞后条数（0 = 本机对局，1 = 100ms 下行延迟）。
+  function cadence(ackLag: number): {
+    frozen: number;
+    spikes: number;
+    ahead: number;
+    hard: number;
+  } {
+    const predictor = createPredictor(moveConfig);
+    const buffer = createCommandBuffer();
+    const smoother = createErrorSmoother();
+    const reconciler = createReconciler();
+    const authority = createLocalAuthority();
+    // 服务器侧独立状态：与预测器同用固定 50ms 子步
+    const server: MoveState = {
+      pos: { x: 0, y: 0, z: 20 },
+      vel: { x: 0, y: 0, z: 0 },
+      yaw: 0,
+      pitch: 0,
+    };
+
+    const dtMs = 1000 / 60;
+    const expected = CONFIG.player.moveSpeed * (dtMs / 1000);
+    predictor.setAuthoritative(0, 0, 20, 0, 0);
+
+    const render = { x: 0, y: 0, z: 0 };
+    let command = moveCommand(0, 1);
+    let seq = 0;
+    let presented = 0;
+    let frozen = 0;
+    let spikes = 0;
+    for (let frame = 0; frame < 120; frame += 1) {
+      if (frame % 2 === 0) {
+        // 30Hz 采样：与 main.ts 的采样器同频，命令数多于 tick 数
+        seq += 1;
+        command = moveCommand(seq, 1);
+        buffer.push(command);
+      }
+      predictor.advance(dtMs, command);
+      predictor.renderPosition(render);
+      smoother.decay(dtMs);
+      const next = render.z + smoother.z; // main.ts：相机 = 预测位置 + 误差平滑
+      const delta = frame > 0 ? next - presented : expected;
+      presented = next;
+      if (frame > 0) {
+        if (delta < expected * 0.5) frozen += 1;
+        if (delta > expected * 1.5) spikes += 1;
+      }
+
+      if (frame % 3 === 2) {
+        stepLocalPlayer(server, command, moveConfig, SERVER_TICK_MS);
+        authority.found = true;
+        authority.x = server.pos.x;
+        authority.y = server.pos.y;
+        authority.z = server.pos.z;
+        authority.yaw = 0;
+        authority.pitch = 0;
+        authority.lastAckedSeq = Math.max(0, command.seq - ackLag);
+        reconciler.reconcile(authority, buffer, predictor, smoother);
+      }
+    }
+    return {
+      frozen,
+      spikes,
+      ahead: predictor.state.pos.z - server.pos.z,
+      hard: reconciler.hardCorrectCount,
+    };
+  }
+
+  it('本机对局（零延迟确认）逐帧推进：没有停住的帧，也没有 20Hz 的整段跳变', () => {
+    // 旧实现：setAuthoritative 清零累加器与速度 ⇒ 每次和解后的两帧渲染位置原地不动，
+    // 相机每 3 帧才挪一次（真人试玩反馈的"人物移动画面卡顿"）。
+    const stats = cadence(0);
+    expect(stats.frozen).toBe(0);
+    expect(stats.spikes).toBe(0);
+    expect(stats.hard).toBe(0);
+    // 零延迟：确认到最新命令 ⇒ 预测与权威同节拍，不应漂移
+    expect(Math.abs(stats.ahead)).toBeLessThan(0.05);
+  });
+
+  it('100ms 下行延迟（每次和解回滚重放）同样逐帧推进', () => {
+    const stats = cadence(1);
+    expect(stats.frozen).toBe(0);
+    expect(stats.spikes).toBe(0);
+    expect(stats.hard).toBe(0);
+    expect(stats.ahead).toBeGreaterThan(0);
   });
 });
 

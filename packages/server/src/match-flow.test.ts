@@ -66,6 +66,29 @@ describe('对局流程', () => {
     await harness.close();
   });
 
+  it('大厅选的武器在开局后仍是所选槽位（不被实体旧槽位回写覆盖）', async () => {
+    const harness = createHarness();
+    const host = harness.connect();
+    host.join('host', NEW_ROOM_CODE);
+    const code = host.welcome()?.roomCode ?? '';
+    const pid = host.welcome()?.pid ?? 0;
+    const room = harness.game.rooms.rooms.get(code);
+    if (room === undefined) throw new Error('room missing');
+
+    const size = encodeReady({ ready: true, weapon: 1 }, scratch);
+    host.send(scratch.subarray(0, size));
+    expect(host.matchState()?.players[0]?.weapon).toBe(1);
+
+    sendSimple(host, OPCODE.startMatch);
+    harness.advance(1600);
+    expect(host.matchState()?.phase).toBe(MATCH_PHASE.playing);
+    // 旧实现：handleReady 后 broadcastMatchState 用实体旧槽位（0）回写 session.weapon，
+    // 抢在应用循环之前，于是大厅选了步枪、开局拿到手枪。
+    expect(host.matchState()?.players[0]?.weapon).toBe(1);
+    expect(getEntity(room.world, pid)?.weapon.activeSlot).toBe(1);
+    await harness.close();
+  });
+
   it('ping 回显 clientTimeMs 并返回快照速率', async () => {
     const harness = createHarness();
     const alice = harness.connect();

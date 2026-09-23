@@ -12,7 +12,7 @@ export const MAX_BANNER_EVENTS = 3;
 export const STATS_REFRESH_MS = 250;
 export const CROSSHAIR_MIN_DEG = 0.5;
 export const CROSSHAIR_MAX_DEG = 5;
-export const CROSSHAIR_MIN_PX = 4;
+export const CROSSHAIR_MIN_PX = 2;
 export const CROSSHAIR_MAX_PX = 24;
 export const HEALTH_AFTERIMAGE_MS = 800;
 export const HEALTH_AFTERIMAGE_TIME_CONSTANTS = 3;
@@ -485,7 +485,8 @@ export function createCombatHud(root: HTMLElement): CombatHud {
       const spreadPx = round1(crosshairSpreadPx(sample.spreadDeg));
       if (spreadPx !== crosshairPx) {
         crosshairPx = spreadPx;
-        crosshair.style.setProperty('--spread-px', spreadPx.toFixed(1));
+        // 必须带长度单位：CSS 侧用 calc(长度 + 长度) 算臂位，裸数字在 calc 里是无效类型组合。
+        crosshair.style.setProperty('--spread-px', String(spreadPx) + 'px');
       }
 
       if (sample.wave !== lastWave) {

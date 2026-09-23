@@ -36,7 +36,7 @@ import {
   flockForce,
   gatherNeighbors,
 } from './flocking.ts';
-import { applySheepKind } from './sheepBrain.ts';
+import { SHEEP_ALERT_MS, applySheepKind } from './sheepBrain.ts';
 import { arrive, createSteeringOut, separation } from './steering.ts';
 
 const bareConfig = {
@@ -296,5 +296,33 @@ describe('king phases', () => {
     king.hp = king.maxHp * 0.2;
     for (let tick = 0; tick < 20; tick += 1) stepWorld(world, [], 50, null);
     expect(king.ai.phase).toBe(3);
+  });
+});
+
+describe('羊警戒→追击（真人试玩：羊不会动）', () => {
+  it('警戒计时只武装一次，到期后转追击并真的靠近玩家', () => {
+    const world = bareWorld(17);
+    const player = addPlayer(world, 0, 20);
+    const sheep = addSheep(world, 'grunt', 0, 25);
+    const distanceTo = (): number =>
+      Math.hypot(sheep.pos.x - player.pos.x, sheep.pos.z - player.pos.z);
+    const startDistance = distanceTo();
+    expect(startDistance).toBeCloseTo(5, 6);
+
+    stepWorld(world, [], 50, null);
+    expect(sheep.state).toBe(SHEEP_STATE.alert);
+    const armed = sheep.ai.timerMs;
+    expect(armed).toBe(SHEEP_ALERT_MS);
+
+    stepWorld(world, [], 50, null);
+    // 旧实现：setSheepState(alert) 同态转换返回 true ⇒ 每 tick 重新武装计时，
+    // 警戒永不结束、else 分支（→chase）是死代码，羊定在原地。
+    expect(sheep.state).toBe(SHEEP_STATE.alert);
+    expect(sheep.ai.timerMs).toBeLessThan(armed);
+    expect(distanceTo()).toBeCloseTo(startDistance, 6);
+
+    for (let tick = 0; tick < 12; tick += 1) stepWorld(world, [], 50, null);
+    expect(sheep.state).toBe(SHEEP_STATE.chase);
+    expect(startDistance - distanceTo()).toBeGreaterThan(0.5);
   });
 });

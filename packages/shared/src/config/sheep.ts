@@ -27,6 +27,29 @@ export const SHEEP: Readonly<Record<SheepKind, SheepDef>> = Object.freeze({
   king: { hp: 2400, speed: 2.0, damage: 30, price: 20, radiusM: 1.6, heightM: 2.4 },
 });
 
+export interface SheepHitProfile {
+  readonly radiusM: number;
+  readonly topM: number;
+  readonly headMinM: number;
+  readonly torsoMinM: number;
+}
+
+/**
+ * 命中体口径（竖直胶囊 + 高度阈值），与客户端渲染模型 render/sheepModel.ts 对齐：
+ * 躯干 1.1×0.72×0.72 @ y=0.62、头盒 0.44×0.44×0.5 @ (0, 0.90, 0.66)，整体乘 SHEEP_FORM_SCALE(1/1.06/1.12/1.6)。
+ * radiusM = 体宽一半（向上取整到 cm，浮点比较必须 ≥ 渲染体半宽）、topM = 头顶（留少量余量）、
+ * headMinM = 头盒下沿附近、torsoMinM = 腿/躯干分界。
+ * 注意：SHEEP.radiusM/heightM 仍是移动与碰撞口径（分离、攻击距离），不要拿来做命中判定；
+ * 旧实现两种口径共用 0.5/0.9，于是"描羊头打不到、描羊王只有一半体积算命中"（真人试玩反馈）。
+ * 客户端 render/sheepHit.test.ts 守这条不漂移。
+ */
+export const SHEEP_HIT: Readonly<Record<SheepKind, SheepHitProfile>> = Object.freeze({
+  grunt: { radiusM: 0.55, topM: 1.15, headMinM: 0.78, torsoMinM: 0.34 },
+  ram: { radiusM: 0.59, topM: 1.22, headMinM: 0.83, torsoMinM: 0.36 },
+  elite: { radiusM: 0.62, topM: 1.29, headMinM: 0.87, torsoMinM: 0.38 },
+  king: { radiusM: 0.89, topM: 1.84, headMinM: 1.25, torsoMinM: 0.54 },
+});
+
 export const SHEEP_AI = Object.freeze({
   sightM: 35,
   attackRangeM: 1.4,

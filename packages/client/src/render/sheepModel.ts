@@ -44,6 +44,36 @@ export const CORPSE_SHRINK = 0.72;
 export const CORPSE_SINK_M = 0.16;
 export const CORPSE_DARKEN = 0.62;
 export const SHEEP_BODY_HEIGHT_M = 0.62;
+
+/** 渲染盒口径（未乘 SHEEP_FORM_SCALE）：命中体 SHEEP_HIT 必须跟着它走。 */
+export interface SheepBox {
+  readonly sizeX: number;
+  readonly sizeY: number;
+  readonly sizeZ: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
+/** 躯干盒：1.1×0.72×0.72 @ (0, 0.62, 0)。 */
+export const SHEEP_BODY_BOX: SheepBox = Object.freeze({
+  sizeX: 1.1,
+  sizeY: 0.72,
+  sizeZ: 0.72,
+  x: 0,
+  y: SHEEP_BODY_HEIGHT_M,
+  z: 0,
+});
+
+/** 头盒：0.44×0.44×0.5 @ (0, 0.90, 0.66)。 */
+export const SHEEP_HEAD_BOX: SheepBox = Object.freeze({
+  sizeX: 0.44,
+  sizeY: 0.44,
+  sizeZ: 0.5,
+  x: 0,
+  y: 0.9,
+  z: 0.66,
+});
 export const WOOL_CLUSTER_RADIUS_M = 0.21;
 export const EMBLEM_HEAD_OFFSET = Object.freeze({ y: 0.9, z: 0.92 });
 export const EMBLEM_LOCAL_SCALE: readonly number[] = Object.freeze(
@@ -130,14 +160,18 @@ function mergeParts(parts: readonly BufferGeometry[]): BufferGeometry {
   return merged ?? new BoxGeometry(1, 1, 1);
 }
 
+function boxFrom(spec: SheepBox, shade: number): BufferGeometry {
+  return box(spec.sizeX, spec.sizeY, spec.sizeZ, spec.x, spec.y, spec.z, shade);
+}
+
 function buildBodyGeometry(form: number): BufferGeometry {
   const parts: BufferGeometry[] = [
-    box(1.1, 0.72, 0.72, 0, SHEEP_BODY_HEIGHT_M, 0, 1),
+    boxFrom(SHEEP_BODY_BOX, 1),
     box(0.16, 0.52, 0.16, 0.36, 0.26, 0.24, 0.55),
     box(0.16, 0.52, 0.16, -0.36, 0.26, 0.24, 0.55),
     box(0.16, 0.52, 0.16, 0.36, 0.26, -0.24, 0.55),
     box(0.16, 0.52, 0.16, -0.36, 0.26, -0.24, 0.55),
-    box(0.44, 0.44, 0.5, 0, 0.9, 0.66, 0.62),
+    boxFrom(SHEEP_HEAD_BOX, 0.62),
     box(0.22, 0.08, 0.16, 0.3, 0.99, 0.6, 0.5),
     box(0.22, 0.08, 0.16, -0.3, 0.99, 0.6, 0.5),
     box(0.12, 0.2, 0.12, 0, 0.72, -0.4, 0.5),

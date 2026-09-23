@@ -288,6 +288,12 @@ describe('HUD 战斗层渲染（P09 §5.2）', () => {
       const crosshair = collect(root, 'hud-crosshair');
       expect(crosshair.length).toBe(1);
       expect(collect(root, 'hud-crosshair-arm').length).toBe(4);
+      // 扩散值必须以长度（px）写进自定义属性：CSS 侧用 calc(长度 + 长度) 算臂位，
+      // 裸数字会让整条 calc 失效、上/左两臂堆在中心（"不是十字准星"）。
+      const crosshairNode = crosshair[0] as unknown as FakeNode;
+      expect(crosshairNode.style.getPropertyValue('--spread-px')).toBe(
+        String(CROSSHAIR_MAX_PX) + 'px',
+      );
       const ammo = collect(root, 'hud-ammo')[0];
       expect(ammo?.classList.contains('hud-ammo-empty')).toBe(true);
       expect(ammo?.classList.contains('hud-ammo-low')).toBe(false);

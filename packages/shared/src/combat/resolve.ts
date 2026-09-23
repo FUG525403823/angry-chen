@@ -6,9 +6,11 @@ import {
   REVIVE,
   SHEEP_ELITE_STATE,
   partForHeight,
+  partForThresholds,
   type HitPart,
 } from '../config/combat.ts';
 import { BUTTON } from '../config/input.ts';
+import { SHEEP_HIT, SHEEP_ORDER } from '../config/sheep.ts';
 import { signedJitter, type WeaponDef } from '../config/weapons.ts';
 import { createVec3, wrapAngle, yawPitchToDirection } from '../math.ts';
 import { HIT_FLAG } from '../net/protocol.ts';
@@ -149,8 +151,11 @@ export function traceRay(
       }
     }
 
-    const radius = radiusByKind[target.kind];
-    const height = heightByKind[target.kind];
+    // 命中体口径：羊用 SHEEP_HIT（与渲染模型对齐的胶囊 + 高度阈值），玩家沿用 ENTITY 的半径/身高。
+    const sheepProfile =
+      target.kind === 'sheep' ? SHEEP_HIT[SHEEP_ORDER[target.ai.sheepKind] ?? 'grunt'] : undefined;
+    const radius = sheepProfile === undefined ? radiusByKind[target.kind] : sheepProfile.radiusM;
+    const height = sheepProfile === undefined ? heightByKind[target.kind] : sheepProfile.topM;
     // 廉价早退（不改变命中结果）：胶囊竖直，水平距离 > 半径必然打不中；
     // 最近可能命中参数 minAlong - radius 已超过当前最优命中时也不可能反超。
     if (horizontalSq > 1e-12) {
@@ -185,7 +190,10 @@ export function traceRay(
     out.hit = true;
     out.targetId = target.id;
     out.targetKind = target.kind;
-    out.part = partForHeight(ty, height, targetHitScratch.y);
+    out.part =
+      sheepProfile === undefined
+        ? partForHeight(ty, height, targetHitScratch.y)
+        : partForThresholds(ty, sheepProfile.headMinM, sheepProfile.torsoMinM, targetHitScratch.y);
     out.distanceM = targetHitScratch.t;
     out.x = targetHitScratch.x;
     out.y = targetHitScratch.y;

@@ -197,9 +197,13 @@ export function updateSheepIntent(
   const targetZ = target.pos.z;
 
   if (entity.state === SHEEP_STATE.graze || entity.state === SHEEP_STATE.alert) {
-    if (setSheepState(entity, SHEEP_STATE.alert)) {
+    if (entity.state === SHEEP_STATE.graze) {
+      // 只在"从吃草进入警戒"这一帧武装计时。旧实现用 setSheepState(...alert) 的返回值判断，
+      // 而同态转换返回 true ⇒ 每 tick 都重新武装 timerMs 且永远走不到 else 分支，
+      // 羊于是永远停在警戒、一动不动（真人试玩反馈「羊不会动」）。
+      setSheepState(entity, SHEEP_STATE.alert);
       ai.timerMs = SHEEP_ALERT_MS;
-    } else {
+    } else if (ai.timerMs <= 0) {
       setSheepState(entity, SHEEP_STATE.chase);
     }
     out.speed = 0;

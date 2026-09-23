@@ -8,7 +8,9 @@ import { stepWorld } from '../sim.ts';
 import { createWorld, getEntity, spawnEntity, type World } from '../world.ts';
 import { createCombatContext } from './resolve.ts';
 import { createRayHit, rayVsAabb, rayVsCapsule } from './raycast.ts';
-import { partForHeight } from '../config/combat.ts';
+import { HIT_PART, partForHeight, partForThresholds } from '../config/combat.ts';
+import { SHEEP_HIT, SHEEP_ORDER } from '../config/sheep.ts';
+import { applySheepKind } from '../ai/sheepBrain.ts';
 import { SHOT_MAX_DISTANCE_M, createShotTrace, traceRay, type ShotTrace } from './resolve.ts';
 import {
   createPoseHistory,
@@ -170,8 +172,13 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
           tz = pose.z;
         }
       }
-      const radius = radiusByKind[target.kind];
-      const height = heightByKind[target.kind];
+      // 命中体选择必须与 traceRay 完全一致，否则对拍会假红
+      const sheepProfile =
+        target.kind === 'sheep'
+          ? SHEEP_HIT[SHEEP_ORDER[target.ai.sheepKind] ?? 'grunt']
+          : undefined;
+      const radius = sheepProfile === undefined ? radiusByKind[target.kind] : sheepProfile.radiusM;
+      const height = sheepProfile === undefined ? heightByKind[target.kind] : sheepProfile.topM;
       const hit = createRayHit();
       rayVsCapsule(
         ox,
@@ -195,7 +202,10 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
       out.hit = true;
       out.targetId = target.id;
       out.targetKind = target.kind;
-      out.part = partForHeight(ty, height, hit.y);
+      out.part =
+        sheepProfile === undefined
+          ? partForHeight(ty, height, hit.y)
+          : partForThresholds(ty, sheepProfile.headMinM, sheepProfile.torsoMinM, hit.y);
       out.distanceM = hit.t;
       out.x = hit.x;
       out.y = hit.y;
@@ -319,5 +329,64 @@ describe('对拍：早退优化不改变 ShotTrace（O04 §4 任务 6/11）', ()
       if (rewound.hit) hits += 1;
     }
     expect(hits).toBeGreaterThan(0);
+  });
+});
+describe('羊的命中体与渲染模型对齐（真人试玩：描头打不出有效伤害、羊王只有一半体积算命中）', () => {
+  const DISTANCES = [4, 10, 20];
+
+  for (const kind of SHEEP_ORDER) {
+    it(kind + '：按 SHEEP_HIT 阈值判头/躯干/四肢，头顶之上为 miss', () => {
+      const profile = SHEEP_HIT[kind];
+      // 站位要在谷仓 AABB（x∈[-4,4], z∈[-4,4]）之外，否则射线先打墙、羊永远排在墙后
+      const world = createWorld(11, bareConfig);
+      const shooter = spawnEntity(world, 'player', 0, 0, 6);
+      if (!shooter.ok) throw new Error('shooter spawn failed');
+      const sheep = spawnEntity(world, 'sheep', 0, 0, 26);
+      if (!sheep.ok) throw new Error('sheep spawn failed');
+      const entity = getEntity(world, sheep.id);
+      if (entity === undefined) throw new Error('sheep missing');
+      applySheepKind(entity, kind);
+
+      const out = createShotTrace();
+      // 正对轴线水平照射：入射点高度 = 瞄准高度，因此 part 完全由高度阈值决定
+      const shotAt = (distance: number, height: number, offsetX: number): number | string => {
+        entity.pos.x = 0;
+        entity.pos.y = 0;
+        entity.pos.z = 6 + distance;
+        traceRay(world, null, shooter.id, offsetX, height, 6, 0, 0, 1, SHOT_MAX_DISTANCE_M, 0, out);
+        return out.hit ? out.part : 'miss';
+      };
+      const partAt = (distance: number, height: number): number | string =>
+        shotAt(distance, height, 0);
+
+      for (const distance of DISTANCES) {
+        expect(partAt(distance, profile.topM - 0.05)).toBe(HIT_PART.head);
+        expect(partAt(distance, (profile.headMinM + profile.topM) / 2)).toBe(HIT_PART.head);
+        expect(partAt(distance, (profile.torsoMinM + profile.headMinM) / 2)).toBe(HIT_PART.torso);
+        expect(partAt(distance, profile.torsoMinM - 0.1)).toBe(HIT_PART.limb);
+        expect(partAt(distance, profile.topM + 0.1)).toBe('miss');
+        // 侧向偏移把胶囊半径也钉住：半径内算命中、半径外落空
+        const torsoMid = (profile.torsoMinM + profile.headMinM) / 2;
+        expect(shotAt(distance, torsoMid, profile.radiusM - 0.05)).toBe(HIT_PART.torso);
+        expect(shotAt(distance, torsoMid, profile.radiusM + 0.1)).toBe('miss');
+      }
+    });
+  }
+
+  it('命中体已按羊形放大：旧口径（0.5/0.9 通用）在头顶与羊王身上会整段落空', () => {
+    const world = createWorld(11, bareConfig);
+    const shooter = spawnEntity(world, 'player', 0, 0, 6);
+    if (!shooter.ok) throw new Error('shooter spawn failed');
+    const sheep = spawnEntity(world, 'sheep', 0, 0, 16);
+    if (!sheep.ok) throw new Error('sheep spawn failed');
+    const entity = getEntity(world, sheep.id);
+    if (entity === undefined) throw new Error('sheep missing');
+    applySheepKind(entity, 'king');
+
+    const out = createShotTrace();
+    traceRay(world, null, shooter.id, 0, 1.5, 6, 0, 0, 1, SHOT_MAX_DISTANCE_M, 0, out);
+    expect(out.hit).toBe(true);
+    expect(out.part).toBe(HIT_PART.head);
+    expect(SHEEP_HIT.king.topM).toBeGreaterThan(1.5);
   });
 });

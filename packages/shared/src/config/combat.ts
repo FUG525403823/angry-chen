@@ -55,6 +55,23 @@ export function partForHeight(baseY: number, height: number, hitY: number): HitP
   return HIT_PART.limb;
 }
 
+/**
+ * 显式高度阈值版本（单位：米）：命中体与渲染体分离的目标（羊，见 SHEEP_HIT）用固定阈值，
+ * 而不是按身高比例切分——旧的比例口径（0.85/0.4 × 0.9m）把"描头"判成躯干。
+ * partForHeight 保持原样（逐位不变），玩家口径不受影响。
+ */
+export function partForThresholds(
+  baseY: number,
+  headMinM: number,
+  torsoMinM: number,
+  hitY: number,
+): HitPart {
+  const local = hitY - baseY;
+  if (local >= headMinM) return HIT_PART.head;
+  if (local >= torsoMinM) return HIT_PART.torso;
+  return HIT_PART.limb;
+}
+
 export function partMultiplier(part: HitPart, headshotMultiplier: number): number {
   if (part === HIT_PART.head) return headshotMultiplier;
   if (part === HIT_PART.torso) return BODY_PART_MULTIPLIER.torso;

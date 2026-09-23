@@ -254,6 +254,8 @@ export function boot(): void {
       if ((predictCommand.buttons & BUTTON.fire) !== 0) {
         // 与服务器射线共用同一函数：客户端准星方向 = 权威命中方向。
         yawPitchToDirection(forwardScratch, sampler.state.yaw, sampler.state.pitch);
+        // 曳光与枪口火焰同门：只有真的打出一发（onFire 为真）才产生弹道。
+        // 空弹匣 / 换弹中 / 射速节流内点左键都不该有弹道（真人试玩反馈「没子弹还有弹道」）。
         if (localWeapon.onFire(performance.now())) {
           ammoLedger.noteLocalShot(predictCommand.seq, weaponSlot);
           viewModel.triggerFire();
@@ -268,20 +270,19 @@ export function boot(): void {
             forwardScratch.z,
           );
           fx.triggerShake(0.03);
+          tracerEnd.x = fireOriginScratch.x + forwardScratch.x * TRACER_RANGE_M;
+          tracerEnd.y = fireOriginScratch.y + forwardScratch.y * TRACER_RANGE_M;
+          tracerEnd.z = fireOriginScratch.z + forwardScratch.z * TRACER_RANGE_M;
+          fx.spawnTracer(
+            fireOriginScratch.x,
+            fireOriginScratch.y,
+            fireOriginScratch.z,
+            tracerEnd.x,
+            tracerEnd.y,
+            tracerEnd.z,
+            true,
+          );
         }
-        muzzleOrigin(fireOriginScratch, camera, forwardScratch);
-        tracerEnd.x = fireOriginScratch.x + forwardScratch.x * TRACER_RANGE_M;
-        tracerEnd.y = fireOriginScratch.y + forwardScratch.y * TRACER_RANGE_M;
-        tracerEnd.z = fireOriginScratch.z + forwardScratch.z * TRACER_RANGE_M;
-        fx.spawnTracer(
-          fireOriginScratch.x,
-          fireOriginScratch.y,
-          fireOriginScratch.z,
-          tracerEnd.x,
-          tracerEnd.y,
-          tracerEnd.z,
-          true,
-        );
       }
     },
     getTick: () => view.getAppliedTick(),
@@ -510,17 +511,10 @@ export function boot(): void {
         combatHud.pushDamage(event.x, event.y, event.z, event.value, headshot);
         fx.spawnImpact(event.x, event.y, event.z);
         views.flashHit(event.targetId);
-        camera.getWorldDirection(forwardScratch);
-        muzzleOrigin(fireOriginScratch, camera, forwardScratch);
-        fx.spawnTracer(
-          fireOriginScratch.x,
-          fireOriginScratch.y,
-          fireOriginScratch.z,
-          event.x,
-          event.y,
-          event.z,
-          false,
-        );
+        // 一次开火只画一条曳光（弹道由开火路径的本地预测曳光负责）。此处曾再补一条权威命中曳光，
+        // 于是同一发子弹出现两条线：起点用事件到达时的相机重算、终点是模拟命中体入射点（比渲染体小），
+        // 再叠加弹丸散布，看起来就是「一条正常一条随机」（真人试玩反馈）。
+        // 命中反馈交给命中标记 / 伤害数字 / 弹着点，不再补画曳光。
         return;
       }
       if (event.targetId === mine) {

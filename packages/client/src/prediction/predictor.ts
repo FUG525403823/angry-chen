@@ -1,5 +1,6 @@
 import {
   SERVER_TICK_MS,
+  applyCommandToState,
   stepLocalPlayer,
   type Command,
   type MoveConfig,
@@ -53,7 +54,8 @@ export function createPredictor(config: MoveConfig): Predictor {
       state.vel.z = 0;
       state.yaw = yaw;
       state.pitch = pitch;
-      accumulatorMs = 0;
+      // 刻意不清零 accumulatorMs：它是"渲染节拍余量"，不是模拟状态。
+      // 清零会让 20Hz 和解后的两帧渲染位置原地不动（相机每 3 帧才挪一次 = 画面一顿一顿）。
     },
     stepWith(command: Command | undefined): void {
       stepLocalPlayer(state, command, activeConfig, PREDICTION_SUBSTEP_MS);
@@ -68,6 +70,9 @@ export function createPredictor(config: MoveConfig): Predictor {
         steps += 1;
       }
       if (accumulatorMs > PREDICTION_SUBSTEP_MS) accumulatorMs = PREDICTION_SUBSTEP_MS;
+      // 本帧没攒够子步时也要把渲染速度刷成当前意图：renderPosition 用 state.vel 做子步内线性外推，
+      // 速度为 0 的帧渲染位置完全不动（顿挫的另一半根因）。
+      if (steps === 0) applyCommandToState(state, command, activeConfig.player);
       return steps;
     },
     renderPosition(out: PredictedPosition): PredictedPosition {

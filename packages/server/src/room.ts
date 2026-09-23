@@ -747,7 +747,9 @@ export function broadcastMatchState(room: Room): void {
     entry.reviveRatio255 = alive
       ? Math.min(255, Math.round(reviveRatio(entity.combat.downed) * 255))
       : 0;
-    if (alive) session.weapon = entity.weapon.activeSlot;
+    // 只有「待选槽位已落到实体上」之后才用实体回写会话：
+    // 否则大厅刚选的武器会在下一个 tick 应用之前就被实体旧槽位覆盖（选步枪开局变手枪）。
+    if (alive && session.weaponApplied) session.weapon = entity.weapon.activeSlot;
   }
   state.players.length = sessions.length;
   if (sessions.length === 0) return;

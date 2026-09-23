@@ -546,13 +546,19 @@ body {
   background: var(--hud-danger);
 }
 
+/* 准星 = 四条臂 + 中心点，臂位由 --spread-px（**长度**）推出。
+   --spread-px 必须带单位：calc() 只能做 长度±长度 / 长度×数字，裸数字与长度相减
+   属于无效类型组合，整条 transform 会被丢弃，上/左两臂就堆在中心，
+   看起来"不是十字准星"（真人试玩缺陷）。 */
 .hud-crosshair {
   position: absolute;
   left: 50%;
   top: 50%;
   width: 0;
   height: 0;
-  --spread-px: 6;
+  --spread-px: 2px;
+  --arm-len: 8px;
+  --arm-thick: 2px;
 }
 
 .hud-crosshair::after {
@@ -575,20 +581,20 @@ body {
 
 .hud-crosshair-top,
 .hud-crosshair-bottom {
-  width: 2px;
-  height: 7px;
-  left: -1px;
+  width: var(--arm-thick);
+  height: var(--arm-len);
+  left: calc(var(--arm-thick) / -2);
 }
 
 .hud-crosshair-left,
 .hud-crosshair-right {
-  width: 7px;
-  height: 2px;
-  top: -1px;
+  width: var(--arm-len);
+  height: var(--arm-thick);
+  top: calc(var(--arm-thick) / -2);
 }
 
 .hud-crosshair-top {
-  transform: translateY(calc(var(--spread-px) * -1 - 7px));
+  transform: translateY(calc((var(--spread-px) + var(--arm-len)) * -1));
 }
 
 .hud-crosshair-bottom {
@@ -596,7 +602,7 @@ body {
 }
 
 .hud-crosshair-left {
-  transform: translateX(calc(var(--spread-px) * -1 - 7px));
+  transform: translateX(calc((var(--spread-px) + var(--arm-len)) * -1));
 }
 
 .hud-crosshair-right {
