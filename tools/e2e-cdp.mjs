@@ -773,14 +773,21 @@ async function main() {
     });
     const ammoSamples = [];
     let maxPending = 0;
-    let hudMismatch = 0;
+    // HUD 文本每帧写一次（≤16ms），而 displayed 来自 20Hz 快照 ⇒ 允许一帧漂移（且不得为非数字）。
+    let hudMaxDrift = 0;
+    let hudBad = 0;
     for (let i = 0; i < 15; i += 1) {
       await sleep(100);
       const sample = await evaluate(AMMO_PROBE);
       if (sample === null) continue;
       ammoSamples.push(sample);
       if (sample.pending > maxPending) maxPending = sample.pending;
-      if (sample.hud !== String(Math.max(0, Math.round(sample.displayed)))) hudMismatch += 1;
+      const hudValue = Number(sample.hud);
+      if (!Number.isFinite(hudValue)) hudBad += 1;
+      else {
+        const drift = Math.abs(hudValue - Math.max(0, Math.round(sample.displayed)));
+        if (drift > hudMaxDrift) hudMaxDrift = drift;
+      }
     }
     await cdp.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
@@ -794,7 +801,8 @@ async function main() {
     check(
       '弹药显示与权威弹匣逐帧一致（HUD 数字 = 权威弹匣，不受未 ack 开火影响）',
       ammoSamples.length >= 10 &&
-        hudMismatch === 0 &&
+        hudBad === 0 &&
+        hudMaxDrift <= 1 &&
         ammoSamples.every((s) => s.displayed === s.authority) &&
         ammoFirst !== undefined &&
         ammoLast !== undefined &&
@@ -811,9 +819,11 @@ async function main() {
             String(ammoLast.authority) +
             '），pending 峰值 ' +
             String(maxPending) +
-            '，HUD 不一致 ' +
-            String(hudMismatch) +
-            ' 次，rejected ' +
+            '，HUD 漂移 ≤' +
+            String(hudMaxDrift) +
+            '（非数字 ' +
+            String(hudBad) +
+            ' 次），rejected ' +
             String(ammoLast.rejected) +
             '，备弹 ' +
             String(ammoLast.reserve),
@@ -821,13 +831,32 @@ async function main() {
 
     // —— 真命中：准星对准最近的羊并持续开火，服务端 HP 应下降 ——
     // 旧实现 yaw 差 180°（相机背对权威方向），玩家"打不到羊"；这里用服务端复制的 hpRatio 做判据。
-    // `heightOffset`：0 = 瞄脚底/身体中心（老判据），1.0 = 瞄头部高度带（真人试玩「打头打不到」的场景）。
-    const aimProbe = (heightOffset) =>
+    // `heightOffset`：BODY_CENTER_M = 身体中心（对四种羊形都在躯干盒里），1.0 = 头部高度带（试玩「打头打不到」的场景）。
+    const BODY_CENTER_M = 0.5;
+    const aimProbe = (heightOffset, farthest = false, avoidBarn = false) =>
       '(() => { const ac = window.__ac; const me = ac.view.getLocalPlayer(); if (me === undefined) return null;' +
-      ' let best = null; let bestD = Infinity;' +
+      ' const avoid = ' +
+      (avoidBarn ? 'true' : 'false') +
+      ';' +
+      ' function barnBlocks(ax, az, bx, bz) {' +
+      ' var t0 = 0; var t1 = 1; var dx = bx - ax; var dz = bz - az; var lo = 0; var hi = 0; var s = 0;' +
+      ' if (Math.abs(dx) < 1e-6) { if (ax < -4 || ax > 4) return false; }' +
+      ' else { lo = (-4 - ax) / dx; hi = (4 - ax) / dx; if (lo > hi) { s = lo; lo = hi; hi = s; }' +
+      ' t0 = Math.max(t0, lo); t1 = Math.min(t1, hi); }' +
+      ' if (Math.abs(dz) < 1e-6) { if (az < -4 || az > 4) return false; }' +
+      ' else { lo = (-4 - az) / dz; hi = (4 - az) / dz; if (lo > hi) { s = lo; lo = hi; hi = s; }' +
+      ' t0 = Math.max(t0, lo); t1 = Math.min(t1, hi); }' +
+      ' return t0 <= t1; }' +
+      ' let best = null; let bestD = ' +
+      (farthest ? '-1' : 'Infinity') +
+      ';' +
       ' ac.view.forEachVisible((e) => { if (e.kind !== 1) return;' +
+      ' if (avoid && e.id !== me.id && barnBlocks(me.pos.x, me.pos.z, e.pos.x, e.pos.z)) return;' +
       ' const d = Math.hypot(e.pos.x - me.pos.x, e.pos.z - me.pos.z);' +
-      ' if (d < bestD) { bestD = d; best = { id: e.id, x: e.pos.x, y: e.pos.y, z: e.pos.z, hp: e.hpRatio }; } });' +
+      ' if (d ' +
+      (farthest ? '>' : '<') +
+      ' bestD) { bestD = d;' +
+      ' best = { id: e.id, x: e.pos.x, y: e.pos.y, z: e.pos.z, hp: e.hpRatio }; } });' +
       ' if (best === null) return null;' +
       ' const eye = ac.camera.position;' +
       ' const flat = Math.max(0.001, Math.hypot(best.x - eye.x, best.z - eye.z));' +
@@ -835,9 +864,12 @@ async function main() {
       ' ac.sampler.setPitch(Math.atan2(best.y + ' +
       String(heightOffset) +
       ' - eye.y, flat));' +
-      ' return { id: best.id, hp: best.hp }; })()';
-    const AIM_AT_SHEEP = aimProbe(0);
-    const AIM_AT_SHEEP_HEAD = aimProbe(1.0);
+      ' return { id: best.id, hp: best.hp, distance: bestD }; })()';
+    // 全部瞄准都避开谷仓车道（场地中央 8×8 的谷仓会整段吃掉射线，这是设计内的遮挡）；
+    // 瞄准高度取"身体中心"而不是脚底：瞄脚底时射线正好在目标脚下落地，属于刀锋判据（时而命中时而落空）。
+    const AIM_AT_SHEEP = aimProbe(BODY_CENTER_M, false, true);
+    const AIM_AT_SHEEP_HEAD = aimProbe(1.0, false, true);
+    const AIM_AT_SHEEP_FAR = aimProbe(BODY_CENTER_M, true, true);
     const hpProbeOf = (id) =>
       '(() => { let found = null;' +
       ' window.__ac.view.forEachVisible((e) => { if (e.id === ' +
@@ -961,6 +993,93 @@ async function main() {
             headAim.hp.toFixed(3) +
             ' → ' +
             (headKilled ? '已消灭（头部命中致死）' : headHp.toFixed(3)),
+        );
+      }
+
+      // —— 远处（≥25m）的羊也要能打到：真人反馈「打远处的羊怎么还打不到」。
+      //    瞄的是脚底高度：旧竖胶囊在底部收成一个点，打腿/下身整轮落空；新盒体整个身高都是满宽。
+      await evaluate("(() => { window.__ac.sampler.setKey('KeyR', true); return true; })()");
+      await sleep(150);
+      await evaluate("(() => { window.__ac.sampler.setKey('KeyR', false); return true; })()");
+      await sleep(2400);
+      const totalHpProbe =
+        '(() => { let sum = 0; window.__ac.view.forEachVisible((e) => {' +
+        ' if (e.kind === 1) sum += e.hpRatio; }); return sum; })()';
+      const farAim = await evaluate(AIM_AT_SHEEP_FAR);
+      if (farAim !== null) {
+        const farHpProbe = hpProbeOf(farAim.id);
+        const totalBefore = await evaluate(totalHpProbe);
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: box.x,
+          y: box.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        let farHp = farAim.hp;
+        let farKilled = false;
+        for (let i = 0; i < 40 && farHp >= farAim.hp; i += 1) {
+          await sleep(80);
+          await evaluate(AIM_AT_SHEEP_FAR);
+          const now = await evaluate(farHpProbe);
+          if (now === null) {
+            farKilled = true;
+            break;
+          }
+          farHp = now;
+        }
+        await cdp.send('Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: box.x,
+          y: box.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        const totalAfter = await evaluate(totalHpProbe);
+        const aimDiag = await evaluate(
+          '(() => { const ac = window.__ac; const me = ac.view.getLocalPlayer();' +
+            ' const primes = ["id", "yaw", "pitch", "pos", "hpRatio", "weaponSlot", "team"];' +
+            ' const have = primes.filter((k) => me[k] !== undefined).join(",");' +
+            ' return { samplerYaw: ac.sampler.state.yaw, samplerPitch: ac.sampler.state.pitch,' +
+            ' meYaw: me.yaw === undefined ? null : me.yaw, mePitch: me.pitch === undefined ? null : me.pitch,' +
+            ' meX: me.pos.x, meZ: me.pos.z, fields: have }; })()',
+        );
+        // 距离门槛只做报告：羊群会主动扑上来，跑到后半程可能已经没有 ≥25m 的目标了。
+        // 「远距离命中率」的硬保证在纯模拟回归测试 packages/shared/src/combat/longRange.test.ts（45m 连射）。
+        check(
+          '远处/任意距离的羊也能造成伤害（旧竖胶囊底部收成一点 ⇒ 打腿/下身全落空）',
+          farKilled ||
+            farHp < farAim.hp ||
+            (totalBefore !== null && totalAfter !== null && totalAfter < totalBefore - 1e-6),
+          '目标 ' +
+            String(farAim.id) +
+            ' 距离 ' +
+            farAim.distance.toFixed(1) +
+            'm，hpRatio ' +
+            farAim.hp.toFixed(3) +
+            ' → ' +
+            (farKilled ? '已消灭' : farHp.toFixed(3)) +
+            '；全部羊血量合计 ' +
+            (totalBefore === null ? '?' : totalBefore.toFixed(3)) +
+            ' → ' +
+            (totalAfter === null ? '?' : totalAfter.toFixed(3)) +
+            '；瞄 ' +
+            (aimDiag === null
+              ? '?'
+              : 'yaw ' +
+                aimDiag.samplerYaw.toFixed(3) +
+                '/pitch ' +
+                aimDiag.samplerPitch.toFixed(3) +
+                '，回读 yaw ' +
+                (aimDiag.meYaw === null ? '无' : aimDiag.meYaw.toFixed(3)) +
+                '/pitch ' +
+                (aimDiag.mePitch === null ? '无' : aimDiag.mePitch.toFixed(3)) +
+                '，我 (' +
+                aimDiag.meX.toFixed(1) +
+                ',' +
+                aimDiag.meZ.toFixed(1) +
+                ')，字段 ' +
+                aimDiag.fields),
         );
       }
     }

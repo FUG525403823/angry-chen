@@ -45,7 +45,9 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
     auto: true,
     mag: 30,
     reloadMs: 2000,
-    spreadDeg: 1.4,
+    // 三轮追加反馈「远处打不到」：步枪是远距离主力，基础散布从 1.4° 收到 0.6°
+    // （1.4° 在 45m 处就是 ±1.1m，已经比羊身还宽）。
+    spreadDeg: 0.6,
     falloffStartM: 40,
     falloffPerM: 0, // 无距离衰减
     headshotMultiplier: 2.0,
@@ -65,8 +67,11 @@ export const WEAPONS: Readonly<Record<WeaponSlot, WeaponDef>> = Object.freeze({
 });
 
 export const RESERVE_AMMO_INITIAL = 120;
-export const SPREAD_GROWTH_PER_SHOT_DEG = 0.6;
-export const SPREAD_MAX_DEG = 3.0;
+// 连射散布累积：三轮追加反馈「射击有效距离还是太近 / 打远处的羊怎么还打不到」。
+// 原值 +0.6°/发、上限 3.0° 在 45m 处是 ±2.4m 的圆锥，按住不放时命中率只剩 ~20%（见 combat/longRange.test.ts），
+// 玩家感知就是"射程不够"。现在上限 0.25°，45m 处最多 ±0.2m，连射不再把弹着点推出目标。
+export const SPREAD_GROWTH_PER_SHOT_DEG = 0.1;
+export const SPREAD_MAX_DEG = 0.25;
 export const SPREAD_DECAY_DELAY_MS = 350;
 export const SPREAD_DECAY_PER_SECOND_DEG = 6.0;
 export const RECOIL_PITCH_PER_SHOT_DEG = 0.35;
