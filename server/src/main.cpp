@@ -104,12 +104,21 @@ int runServe(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     const std::size_t eq = arg.find('=');
-    if (eq == std::string_view::npos) continue;
-    const std::string_view key = arg.substr(0u, eq);
-    const std::string value(arg.substr(eq + 1u));
+    // §6/§9 的计划命令是空格分隔（`--http-port 8787 --data-dir build/acvar`）；与三个工具一样两种写法都收。
+    std::string_view key = arg;
+    std::string value;
+    if (eq != std::string_view::npos) {
+      key = arg.substr(0u, eq);
+      value = std::string(arg.substr(eq + 1u));
+    } else if (i + 1 < argc && argv[i + 1][0] != '-') {
+      value = std::string(argv[++i]);
+    } else {
+      continue;
+    }
     if (key == "--minutes") minutes = std::atof(value.c_str());
     else if (key == "--udp-port") config.udpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
     else if (key == "--http-port") config.httpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
+    else if (key == "--data-dir") config.dataDir = value;
     else if (key == "--seed") config.seed = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
   }
 

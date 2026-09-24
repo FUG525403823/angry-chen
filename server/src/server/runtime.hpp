@@ -39,6 +39,8 @@ struct RuntimeConfig {
   std::uint32_t seed = 20260101u;
   std::int32_t sheepTarget = 60;  // 合成负载：常驻羊数（0 = 不补）
   bool isHttpEnabled = true;
+  // S15 §6-2 的 `--data-dir`：留空则回落到 `AC_DATA_DIR` 的环境默认值（见 persist::dataDirFromEnv）。
+  std::string dataDir{};
   bool isAutoReady = true;  // 机器人不走大厅：连上即 ready 并开局
 };
 

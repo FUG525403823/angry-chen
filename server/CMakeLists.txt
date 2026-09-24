@@ -8,6 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(AC_WERROR "把编译警告当错误（CI 恒为 ON）" ON)
 
+# S15 §3/§5：发布版号由构建注入。它同时是 --version 行与 /metrics 的 ac_server_version 标签的唯一来源。
+set(AC_SERVER_VERSION "0.1.0" CACHE STRING "服务端语义化版本（MAJOR.MINOR.PATCH，无前缀）")
+
 if(MSVC)
   add_compile_options(/W4 /permissive- /fp:strict)
   if(AC_WERROR)
@@ -30,6 +33,7 @@ list(REMOVE_ITEM AC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
 add_library(ac_core STATIC ${AC_CORE_SOURCES})
 target_include_directories(ac_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(ac_core PUBLIC AC_SERVER_VERSION="${AC_SERVER_VERSION}")
 
 # S04 §5.7：WinSock2 需要显式链接 ws2_32（POSIX 侧无需额外库）。
 if(WIN32)
@@ -38,6 +42,11 @@ endif()
 
 add_executable(ac_server "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 target_link_libraries(ac_server PRIVATE ac_core)
+
+# S15 §5 目录布局：安装出来就叫 angry-chen-server（/opt/angry-chen/bin/ 下的唯一可执行文件）。
+# 用 install(PROGRAMS ...) 而不是 set_target_properties(OUTPUT_NAME)：后者连构建产物一起改名，
+# 会打断 build.ps1 的产物断言与计划 §6-1 的 `server/build/ac_server --version`。
+install(PROGRAMS $<TARGET_FILE:ac_server> DESTINATION bin RENAME angry-chen-server)
 
 # S14 §3：压测与门禁工具（tools/ 在 src/ 之外，不会被 ac_core 的 glob 吸进去）。
 foreach(AC_TOOL IN ITEMS bot bench gate)

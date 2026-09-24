@@ -7,8 +7,13 @@
 
 namespace ac::version {
 
+// S15 §5：版本号由构建注入（CMake 的 AC_SERVER_VERSION）；未注入时回落到这里的默认值。
+#ifndef AC_SERVER_VERSION
+#define AC_SERVER_VERSION "0.1.0"
+#endif
+
 inline constexpr std::string_view kName = "ac_server";
-inline constexpr std::string_view kVersion = "0.1.0";
+inline constexpr std::string_view kVersion = AC_SERVER_VERSION;
 inline constexpr std::uint32_t kProtocol = 1u;
 inline constexpr std::uint32_t kTickMs = 50u;
 

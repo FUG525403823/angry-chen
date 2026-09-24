@@ -61,7 +61,7 @@ bool Runtime::start(const RuntimeConfig& config, std::string* error) {
     if (error != nullptr) *error = "winsock init failed";
     return false;
   }
-  dataDir_ = ac::persist::dataDirFromEnv();
+  dataDir_ = config_.dataDir.empty() ? ac::persist::dataDirFromEnv() : config_.dataDir;
   store_ = ac::persist::openMatchStore(dataDir_, error);
   if (store_ == nullptr) return false;
 

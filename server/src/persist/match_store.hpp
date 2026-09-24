@@ -145,7 +145,8 @@ class SqliteMatchStore final : public MatchStore {
 // 工厂（§9）：构造 + open；失败返回 nullptr 并把原因写进 *error（可为 nullptr）。
 std::unique_ptr<MatchStore> openMatchStore(std::string dataDir, std::string* error = nullptr);
 
-// §5「<dataDir> 即 AC_DATA_DIR」：环境变量未设或为空时回落到 "data"。
+// §5「<dataDir> 即 AC_DATA_DIR」：环境变量未设或为空时回落到平台默认值
+// （Windows `data`，POSIX `/var/lib/angry-chen`；见 README §18.8-1）。
 std::string dataDirFromEnv();
 
 // S10 结算记录 -> 战绩记录：定长字符数组按字节长度取（可能没有 NUL），playerCount 夹到 0…4，

@@ -1,5 +1,8 @@
 # server —— C++ 权威服务器
 
+**当前发布版号：`0.1.0`（`--version` → `ac_server 0.1.0 protocol=1 tick=50ms`）；协议版本：`1`**（独立于语义化版本）。
+版号由构建注入 `AC_SERVER_VERSION`（见 §18、`server/CMakeLists.txt`）。
+
 本目录是 v2 重构后的**服务端工程根**。它与 `client/`（Unity 客户端）**完全分离**，两者只通过 [ADR-009](../docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md) 冻结的 UDP 协议通信，不共享源码。
 
 | 入口                                 | 位置                                                         |
@@ -879,7 +882,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 11. **`bytesPerClientMaxKbps` 的单位是 KB/s（1024 B）**：字段名逐字沿用计划文本，未改名为 KiB/s。
 12. **运行时只支持一间房**：门禁场景是 4 人一房；`RoomRegistry` 的多房能力（建房/回收）由 S10 用例覆盖，本批不做多房调度。
 13. **`ac_server --serve` 是本批补的最小前置**：`--minutes/--udp-port/--http-port/--seed` 加环境变量 `AC_UDP_PORT/AC_HTTP_PORT/AC_DATA_DIR`，systemd 单元与 `deploy/` 仍属 S15。
-14. **数据目录沿用 S13 的 `AC_DATA_DIR`**（无变量时 `data`）：S15 的 `/var/lib/angry-chen` 由部署单元注入，代码里不硬编码。
+14. **数据目录沿用 S13 的 `AC_DATA_DIR`**：S15 起未设时的回落按平台分叉（POSIX `/var/lib/angry-chen`、Windows `data`），部署单元显式注入 POSIX 路径 —— 本条原写「代码里不硬编码」，已被 S15 更正（见 §18.8-1）。
 15. **工具参数一律 `--key=value`**：PowerShell 下 `--key value` 会被拆成两个 argv（本批实测踩过）。
 16. **`ac_bench` 的前 100 tick 是预热**，不进分位（首次 tick 带分配开销）。
 17. **CPU/RSS 采样的是 gate 进程自己**（= 服务器进程）：Windows 用 `GetProcessTimes`/`GetProcessMemoryInfo`，POSIX 用 `/proc/self/{stat,statm}`；机器人是独立进程，因此不计入（§8）。
@@ -936,8 +939,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 ## 17. 当前状态
 
-**S01–S14 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12：每客户端基线镜像与 40 tick 强制全量、差分编码与移除列表、64 KiB 队列预算与 60 帧慢客户端断开、200/150/100 档位状态机与 3000 ms 升档、tick 绝对时刻自校正与 8 ms 工作量预算（让出 ≠ 丢 tick）、6 个量值指标与 4 个追加计数、报告门禁，见 §13）、持久化与可观测出口（S13：追加式战绩存储（NDJSON + `AC_WITH_SQLITE=0` 的 sqlite 缝）与 10 万行上界、`{ts,level,evt,room,tick,pid,detail}` 事件行与 19 个事件名、46 行 `/metrics` 名字表（27 计数 + 12 量值 + 7 进程字段）、8 组单局诊断报告与 `reports/` 保留 200 份、四个 HTTP 端点的纯处理层与 30 次/分钟读限流 + 60 s 读缓存，见 §14）就位。S14–S15（压测基准与性能守门、5 分钟 soak 与端口/监听接线）由后续各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S15 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12：每客户端基线镜像与 40 tick 强制全量、差分编码与移除列表、64 KiB 队列预算与 60 帧慢客户端断开、200/150/100 档位状态机与 3000 ms 升档、tick 绝对时刻自校正与 8 ms 工作量预算（让出 ≠ 丢 tick）、6 个量值指标与 4 个追加计数、报告门禁，见 §13）、持久化与可观测出口（S13：追加式战绩存储（NDJSON + `AC_WITH_SQLITE=0` 的 sqlite 缝）与 10 万行上界、`{ts,level,evt,room,tick,pid,detail}` 事件行与 19 个事件名、46 行 `/metrics` 名字表（27 计数 + 12 量值 + 7 进程字段）、8 组单局诊断报告与 `reports/` 保留 200 份、四个 HTTP 端点的纯处理层与 30 次/分钟读限流 + 60 s 读缓存，见 §14）就位。S14–S15（压测基准与性能守门、发布运维与验收）已完成，见 §15 与 §18。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -1089,4 +1092,137 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | 全量回归（S14 后） | `server/build/ac_tests.exe` 末行 `TESTS 468/468`（S13 的 446 + 本批 22：listener 7 + threshold 10 + runtime 5）；32 组冻结 `--filter` 与 S13 逐组同数 |
 | 两轴评审（S14，固定点 `1a4fcb7`） | §15.4 记录：**已修 19 类**（A1–A19：G6 替代判据条件化与口径、G8 两项假绿、调度记账口径、漂移基准与 tick 基准同源、会话存活与命令校验解耦、机器人取权威 tick、快照均值口径、档位信号、HTTP 写失败记账、阈值死亡分支、CLI 空格写法、bot 30Hz/对称 RTT、bench 投影段、CI 三连）；**登记 6 项**（D1–D6：`connectTcp` 超时、三份百分位实现、`--serve` 选项序与信号、具名常量/裸 `-1`/每包 vector/`nowMs` 四份、G2 分桶、note 字段名撞车） |
 | 计划偏差清单（S14） | §15.3 的二十四条（监听层归属待裁决、机器人不走大厅、命令不重传、延迟场景墙钟/回滚判定留在 S07/S11、G2 通道口径、慢消费者停发、Fragment 不收、CLI 空格写法、G7 1s 采样、漂移基准同源 等） |
+| Release 版号注入（S15 §3/§5） | `AC_SERVER_VERSION` 缓存变量 → `AC_SERVER_VERSION` 编译宏 → `core/version.hpp::kVersion`；`ac_server --version` 逐字输出 `ac_server 0.1.0 protocol=1 tick=50ms`（退出码 0）；`install(PROGRAMS $<TARGET_FILE:ac_server> DESTINATION bin RENAME angry-chen-server)` |
+| 部署单元与反代（S15 §3/§5） | `deploy/angry-chen-server.service`（§5 的 Unit/Service 字段逐条对齐）、`deploy/Caddyfile`、`deploy/nginx.conf`；§6-4 的禁用字符串计数 **0**，`AC_UDP_PORT\|8788` 三处齐全 |
+| 运维段（S15 §3 任务 5/6） | `server/README.md` §18：目录布局、端口与端点、环境变量、日志轮转（64MB/7 份）、五条排障命令、退役判定清单 6 条、Linux 部署步骤 |
+| 验收与验证（S15 §6/§7） | §6 验证 1–6 全过（`--version` 逐字、`/health` 200、`/metrics` 200、`/nope` 404、禁用字符串 0、端口三处一致、`check-docs`/`check-assets` 退出码 0）；`docs/evidence/server-v2-acceptance.md` 落盘 |
+| 计划偏差清单（S15） | §18.8 的八条（`AC_DATA_DIR` 平台默认值、版本注入方式、安装名与目标名、单元里 env 与 CLI 双写、反代监听端口未冻结、本机无法跑 systemd/反代语法校验、退役清单 ①③⑤⑥ 未验证、`--serve` 顺序） |
+## 18. 发布、运维与验收（S15 §5 冻结）
+
+当前发布版号 **0.1.0**（`--version` 行：`ac_server 0.1.0 protocol=1 tick=50ms`），协议版本 **1**（独立于语义化版本，不随发布变动）。版号的唯一来源是构建期注入的 `AC_SERVER_VERSION`（`server/CMakeLists.txt`，同时供 `/metrics` 的 `ac_server_version` 标签）。
+
+### 18.1 目录布局
+
+| 路径 | 内容 |
+|---|---|
+| `/opt/angry-chen/bin/angry-chen-server` | 唯一可执行文件（`cmake --install` 装出来的名字；源目标叫 `ac_server`） |
+| `/etc/angry-chen/server.env` | `AC_*` 环境变量（不含任何密钥） |
+| `/var/lib/angry-chen/matches.ndjson` | 战绩（追加式，永不截断） |
+| `/var/lib/angry-chen/reports/` | 单局诊断报告，保留最近 200 份 |
+| `/var/log/angry-chen/server.log` | 结构化 JSON 行日志 |
+
+### 18.2 端口与端点
+
+| 面 | 端口 / 路径 | 说明 |
+|---|---|---|
+| UDP 游戏流量 | `8788`（`AC_UDP_PORT`） | 客户端/机器人直连，**不经反代**；反代不代管 UDP |
+| HTTP | `8787`（`AC_HTTP_PORT`） | `GET /health` 200；`GET /metrics` 200（`text/plain; version=0.0.4`）；`GET /api/leaderboard?limit=` 200/429；`GET /api/matches/recent?limit=` 200/429；其它 404 |
+| 反代 | `deploy/Caddyfile` / `deploy/nginx.conf` | 只转发上面四个 HTTP 端点，不含任何静态资源托管指令 |
+
+### 18.3 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AC_UDP_PORT` | `8788` | UDP 游戏面端口（`--udp-port=` 可覆盖） |
+| `AC_HTTP_PORT` | `8787` | HTTP 端点端口（`--http-port=` 可覆盖） |
+| `AC_DATA_DIR` | `/var/lib/angry-chen`（Windows 上 `data`） | 战绩与报告落盘根目录（平台差异见 §18.8-1） |
+| `AC_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`，按数值过滤 |
+| `AC_LOG_FILE` | 未设 | 设了就把日志改写到该文件（S13 的出口） |
+
+`/etc/angry-chen/server.env` 示例：`AC_UDP_PORT=8788` / `AC_HTTP_PORT=8787` / `AC_DATA_DIR=/var/lib/angry-chen` / `AC_LOG_LEVEL=info`。
+
+### 18.4 日志轮转
+
+每日一次，或单文件 ≥ **64 MB** 立即轮转；保留 **7** 份、压缩存储。战绩与报告**不轮转、不截断**（报告按份数保留 200 份，战绩靠内存侧常驻上限 10000 条约束）。
+
+```
+# /etc/logrotate.d/angry-chen
+/var/log/angry-chen/*.log {
+    daily
+    rotate 7
+    compress
+    copytruncate
+    missingok
+    notifempty
+}
+```
+
+### 18.5 排障命令
+
+1. `systemctl status angry-chen-server`；`journalctl -u angry-chen-server -n 100`
+2. `curl -s localhost:8787/health`（期望 200）；`curl -s localhost:8787/metrics | grep -E 'ac_grace_active|ac_players'`
+3. `tail -n 50 /var/log/angry-chen/server.log | jq -c 'select(.level != "info")'`
+4. `wc -l < /var/lib/angry-chen/matches.ndjson`；`ls /var/lib/angry-chen/reports | wc -l`
+5. `ss -lunp | grep 8788`（UDP 在听）与 `ss -ltnp | grep 8787`
+
+### 18.6 旧 Node 服务器退役判定清单（6 条全满足才停止维护 `packages/server`）
+
+① v2 服务器 + v2 客户端完成一次 ≥30 分钟联合对局（含一次断线重连与一次波间跳过）
+② 性能门槛 8 条全绿（S14 §5 的 8 条阈值；实测见 `docs/evidence/server-perf-4p2min.md`）
+③ 对拍向量仍逐位复现（`packages/shared` 冻结不删）
+④ `node tools/check-docs.mjs`、`node tools/check-assets.mjs` 退出码 0，且 `packages/server` 测试仍全绿
+⑤ 生产部署连续 7 天无未捕获异常、无战绩写失败
+⑥ 回滚演练：旧 Node 服务器 + 旧客户端可在 5 分钟内恢复服务
+
+状态：②④ 已满足；①③⑤⑥ **未满足**（① 等 v2 客户端批次，③ 见 §17 的对拍行，⑤ 需要真实 7 天运行，⑥ 需要一次演练）。
+`packages/` 作为冻结对照保留，不删 —— 注：`packages/` **不在本仓库**，退役对照以 `D:\projects\tmp\angry-chen-bak` 为准（计划 §1/§2-5 的旧单元在其 `deploy/angry-chen.service`）。
+
+### 18.7 部署步骤（Linux）
+
+```bash
+cmake -S server -B server/build -DCMAKE_BUILD_TYPE=Release -DAC_WERROR=ON -DAC_SERVER_VERSION=0.1.0
+cmake --build server/build -j
+sudo cmake --install server/build --prefix /opt/angry-chen      # -> /opt/angry-chen/bin/angry-chen-server
+sudo useradd --system --home /opt/angry-chen --shell /usr/sbin/nologin angrychen
+sudo install -d -o angrychen -g angrychen /var/lib/angry-chen /var/log/angry-chen /etc/angry-chen
+sudo install -m 0640 /dev/null /etc/angry-chen/server.env   # 按 §18.3 填；EnvironmentFile 缺失时 systemd 会直接启动失败
+sudo install -m 0640 deploy/angry-chen-server.service /etc/systemd/system/angry-chen-server.service
+# /etc/angry-chen/server.env 按 §18.3 填；反代取 deploy/Caddyfile 或 deploy/nginx.conf
+sudo systemctl daemon-reload && sudo systemctl enable --now angry-chen-server
+sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
+```
+
+### 18.8 计划文本纠正与已声明偏差（S15）
+
+1. **`AC_DATA_DIR` 的默认值按平台分叉**：§5 冻结 `/var/lib/angry-chen`，但 Windows（本机开发与 CI）上会在 D: 盘造一棵 `/var/lib` 树，所以 `#if defined(_WIN32)` 回落 `data`（本条即登记；§14.1 第 14 条原写「代码里不硬编码」已按本条更正）；部署单元里显式注入 `/var/lib/angry-chen`，Linux 行为与 §5 完全一致。
+2. **版本注入方式**：`--version` 行与 `/metrics` 的 `ac_server_version` 标签共用 `core/version.hpp` 的 `kVersion`，而它现在读构建期宏 `AC_SERVER_VERSION`（CMake 缓存变量，默认 `0.1.0`）——**发布口径**只由 CMake 注入决定；`version.hpp` 的 `#ifndef` 回落只服务 g++ 直编兜底路径（`build.ps1` 的工具链不可用分支），两者需同改。
+3. **安装名与目标名不同**：CMake 目标沿用 `ac_server`（历史名，`ac_tests`/`ac_bot`/`ac_gate`/`ac_bench` 同族），`cmake --install` 后是 `/opt/angry-chen/bin/angry-chen-server`（§5 只冻结了安装后的路径）。
+4. **单元里同时给了环境变量与 CLI 端口**：`EnvironmentFile` 提供 `AC_*`，`ExecStart` 又显式写 `--udp-port=8788 --http-port=8787`（§5 的默认值）；两者一致，但**改端口时要同时改**，否则 CLI 参数赢。
+5. **反代监听端口未冻结**：§5 只规定「只转发 HTTP 面」，两份片段按 `:80` 写（Caddy 的 `:80`、Nginx 的 `listen 80`），TLS 终结留给部署方。
+6. **`systemd-analyze verify` 与 `caddy validate`/`nginx -t` 在本机（Windows）不可执行**：单元逐字段对照 §5、反代按 `Select-String` 静态校验（§6-4 计数 0），真实语法校验留给 Linux 部署。
+7. **退役清单 ①③⑤⑥ 未验证**（如实登记）：① 需要 v2 客户端批次的 ≥30 分钟联合对局，③ 需要跑对拍链路，⑤ 需要真实 7 天观察窗，⑥ 需要一次回滚演练；本步只交付可执行的部署单元与验收口径，见 `docs/evidence/server-v2-acceptance.md` §5。
+8. **运行期产物不入库**：默认落点 `data/` 未被任何 .gitignore 覆盖（S13 起的既有遗漏），本步产生的 `data/matches.ndjson` 已删除；后续批次补 ignore 或改默认落点。
+10. **`--serve` 的空格写法与 `--data-dir` 是本步补的**：S14 只给 bot/gate/bench 补了空格写法，`--serve` 仍只认 `--k=v` 且没有 `--data-dir`（计划 §6-2 的命令两种都用了）→ 本步补齐并实测（`--http-port 8799 --data-dir build/acvar` 生效，见验收报告 §2）。
+11. **计划 §6-4/§6-5 的 `Select-String` 模式写成了 `'file_server\|try_files\|root '` 与 `'AC_UDP_PORT\|8788'`**：在 .NET 正则里 `\|` 是**字面竖线**，这两条检查恒为 0 命中（假绿）。本步按 `|` 复跑：§6-4 = 0（结论不变）、§6-5 = 17（service 2 / nginx 3 / README 12），并在验收报告里抄了修正后的模式。
+12. **`--serve` 仍需排在其它选项之前**（S14 已登记、S15 未收敛）：§9 的命令就是 `--serve` 打头，单元里也这么写；把选项解析做成顺序无关与 SIGTERM 收尾在 §15.4 D3 里挂着。
+
+### 18.9 两轴评审（S15，固定点 `cdf1353`）
+
+方式同 S09–S14：`code-review` 技能，**规格轴**与**规范轴**各一个只读子代理并行跑，范围 `git diff cdf1353 -- server deploy docs/evidence/server-v2-acceptance.md`。
+
+| # | 轴 | 发现 | 处置 |
+|---|---|---|---|
+| S1 | 规范 | `install(TARGETS ... RENAME ...)` 的 `RENAME` 不是 `install(TARGETS)` 的关键字（只在 FILES/PROGRAMS 里）⇒ 配置期即错、CI Configure 红，而 README/证据已按「已生效」陈述 | **已修**：改 `install(PROGRAMS $<TARGET_FILE:ac_server> DESTINATION bin RENAME angry-chen-server)`，并真的跑了一次 `cmake --install`（产出 `bin/angry-chen-server`） |
+| S2 | 规范 | `set(AC_SERVER_VERSION ...)` 连注释整块重复两遍 | **已修**：删重复块 |
+| S3 | 规范+规格 | POSIX 侧默认值改成 `/var/lib/angry-chen`，但 `store_data_dir_env_fallback` 仍断言字面量 `"data"` ⇒ ubuntu `ctest` 必红 | **已修**：用例按平台断言（`#if defined(_WIN32)`），Windows/Linux 都成立（`--filter=store` 17/17） |
+| S4 | 规范 | 幽灵交叉引用「§16.1 声明的平台差异」（§16 无 16.1，也无该声明） | **已修**：README 两处改引 §18.8-1，验收报告两处同步 |
+| S5 | 规范 | `match_store.hpp` 的公开契约注释仍写回落 `"data"`，与实现相反 | **已修** |
+| S6 | 规范 | 版本字面量从 1 处变 3 处，文档仍称「唯一来源」 | **已修**：改为「CMake 注入是**发布口径**的唯一来源；`version.hpp` 的 `#ifndef` 回落只服务 g++ 直编兜底路径，两者需同改」 |
+| S7 | 规范 | `#ifdef _WIN32` 与仓库既有的 `#if defined(_WIN32)` 风格不一致 | **已修** |
+| S8 | 规格 | 证据记的验证命令用了空格写法与 `--data-dir`，而 `--serve` 只认 `--k=v` 且没有 `--data-dir` ⇒ 命令被静默忽略（正是计划 §6-2 写的失败含义「端口参数未生效」） | **已修**：`runServe` 补齐空格写法与 `--data-dir`（新增 `RuntimeConfig::dataDir`），并用**非默认端口**复测 `--http-port 8799 --udp-port 8798` 证明生效 |
+| S9 | 规格 | `set_target_properties(OUTPUT_NAME ...)` 连构建产物一起改名，打断 `build.ps1` 的产物断言与计划 §6-1 的 `server/build/ac_server --version` | **已修**：回退 `OUTPUT_NAME`，只改安装名 |
+| S10 | 规格 | 计划 §6-4/§6-5 的 `Select-String` 模式里 `\|` 是 .NET 正则的**字面竖线** ⇒ 两条检查恒 0 命中（假绿） | **已修**：按 `|` 复跑（§6-4 = 0 结论不变；§6-5 = 17），计划文本缺陷登记进 §18.8-11 |
+| S11 | 规范 | §17 首段仍写「S01–S14 已完成」「S14–S15 不预先存在」，且缺「全量回归（S15 后）」行 | **已修**：首段更新为 S01–S15，§17 补 S15 行 |
+| S12 | 规格 | 验收报告称 `/health` 含 `version` 键（实际只有 `protocolVersion`） | **已修** |
+| S13 | 规格 | G6 行把限值写成 8 ms，而报告里该行 `limit` 是替代判据的 2 ms、`metrics.scheduleErrorP95Ms` 是严格口径的 78 ms 原值 | **已修**：报告注明两个口径与放行依据（§15.4 A1） |
+| S14 | 规范 | 工作区遗留未跟踪 `data/`（无 .gitignore 覆盖） | **已修**：删除目录并登记（§18.8-8，S13 起的既有遗漏） |
+| S15 | 规范 | §18.7 未给创建 `/etc/angry-chen/server.env` 的命令（缺文件时 systemd 直接启动失败） | **已修** |
+| D1 | 规格 | `MS15` 标签未打（`git tag -l 'MS*'` 只到 MS08；S09–S14 也未打） | 本步补 `MS15`；MS09–MS14 缺失如实登记 |
+| D2 | 规格 | 单元 ExecStart 比 §5 表格多 `--serve --udp-port --http-port`；反代监听端口 §5 未冻结 | 登记（§18.8-4/5） |
+| D3 | 规范 | `packages/` 不在本仓库，退役对照实际是 `angry-chen-bak` | 登记并改验收报告路径（§18.6 已注明） |
+
+**重测（修复后）**：`ac_server --version` = `ac_server 0.1.0 protocol=1 tick=50ms`（exit 0）；非默认端口实测 `health=200`/`metrics=200`（8799）且 `build/acvar` 创建；`cmake --install --prefix build/acprefix` → `bin/angry-chen-server`；`--filter=store` 17/17；全量 `TESTS 468/468`；`check-docs`/`check-assets` 退出码 0。
+
+## 19. 已知环境边界（构建期，与 §18 的发布/运维无关）
+
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

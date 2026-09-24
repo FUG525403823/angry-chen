@@ -622,7 +622,15 @@ MatchResultRecord toStoredRecord(const ac::room::MatchResultRecord& record) {
 
 std::string dataDirFromEnv() {
   const char* value = std::getenv("AC_DATA_DIR");
-  if (value == nullptr || value[0] == '\0') return std::string("data");
+  if (value == nullptr || value[0] == '\0') {
+    // S15 §5 冻结的部署默认值是 /var/lib/angry-chen；Windows（本机开发与 CI）用仓库根下的 data/，
+    // 免得在 D: 盘上凭空造一个 /var/lib 树（§16.1 已声明这条平台差异）。
+#if defined(_WIN32)
+    return std::string("data");
+#else
+    return std::string("/var/lib/angry-chen");
+#endif
+  }
   return std::string(value);
 }
 

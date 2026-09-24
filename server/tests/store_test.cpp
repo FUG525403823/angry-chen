@@ -301,14 +301,28 @@ AC_TEST(store_data_dir_env_fallback) {
   AC_CHECK_EQ(ac::test::setDataDirEnv("D:/ac-s13-data"), true);
   AC_CHECK_EQ(ac::persist::dataDirFromEnv(), std::string("D:/ac-s13-data"));
   AC_CHECK_EQ(ac::test::clearDataDirEnv(), true);
-  AC_CHECK_EQ(ac::persist::dataDirFromEnv(), std::string("data"));
+  // S15：未设 AC_DATA_DIR 时回落**平台默认值**（Windows data / POSIX /var/lib/angry-chen），见 README §18.8-1。
+  AC_CHECK_EQ(ac::persist::dataDirFromEnv(), [] {
+#ifdef _WIN32
+    return std::string("data");
+#else
+    return std::string("/var/lib/angry-chen");
+#endif
+  }());
   if (previousDataDir != nullptr) {
     AC_CHECK_EQ(ac::test::setDataDirEnv(savedDataDir), true);
   } else {
     AC_CHECK_EQ(ac::test::clearDataDirEnv(), true);
   }
   AC_CHECK_EQ(ac::persist::dataDirFromEnv(),
-              savedDataDir.empty() ? std::string("data") : savedDataDir);
+              savedDataDir.empty() ? [] {
+#ifdef _WIN32
+                return std::string("data");
+#else
+                return std::string("/var/lib/angry-chen");
+#endif
+              }()
+                                    : savedDataDir);
 }
 
 AC_TEST(store_hundred_thousand_lines_stay_bounded) {

@@ -1,0 +1,33 @@
+# S15 §3/§5：v2 服务端的 systemd 单元（UDP 8788 + HTTP 8787、日志落盘、加固）。
+[Unit]
+Description=angry-chen v2 dedicated server
+Documentation=https://github.com/FUG525403823/angry-chen/blob/main/server/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=angrychen
+Group=angrychen
+WorkingDirectory=/opt/angry-chen
+EnvironmentFile=/etc/angry-chen/server.env
+ExecStart=/opt/angry-chen/bin/angry-chen-server --serve --udp-port=8788 --http-port=8787
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# 日志落盘（§5）：二选一 —— 要改走 journald 就删掉下面两行，别同时启用。
+StandardOutput=append:/var/log/angry-chen/server.log
+StandardError=append:/var/log/angry-chen/server.err.log
+
+# 加固（§5 冻结字段）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/angry-chen /var/log/angry-chen
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
