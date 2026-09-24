@@ -57,6 +57,42 @@ function sectionOf(text, heading) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
+// v2 元规则：可机器判定的命令与结构约束（见 docs/evidence/plan-audit.md 的 G12）
+const BANNED_IN_PLANS = [
+  [/\bctest[^\n]*\s-R\b/, 'ctest -R（S01 只注册了 unit；改用 server/build/ac_tests.exe --filter=<子串>）'],
+  [/\bpwsh\s+-/, 'pwsh（本机只有 Windows PowerShell 5.1；改写为 powershell -NoProfile）'],
+  [/--suite=/, '--suite=（统一为 --filter=）'],
+  [/-runTests|-testPlatform/, '-runTests / -testPlatform（唯一入口是 -executeMethod Ac.Tests.SuiteRegistry.RunAll）'],
+];
+
+function checkPlanHygiene(rel, text) {
+  for (const m of text.matchAll(/Select-String -Path\s+([^\s|\x60]+)/g)) {
+    for (const raw of m[1].split(',')) {
+      const target = raw.trim().replace(/^["']|["']$/g, '');
+      if (!target || target.includes('*') || target.startsWith('<')) continue;
+      const abs = resolve(ROOT, target);
+      if (existsSync(abs) && statSync(abs).isDirectory()) {
+        fail(rel + '：Select-String -Path ' + target + ' 指向目录（会报 Access denied；改为 Get-ChildItem … | Select-String）');
+      }
+    }
+  }
+  for (const [re, why] of BANNED_IN_PLANS) {
+    if (re.test(text)) fail(rel + '：出现 ' + why);
+  }
+  const s4 = sectionOf(text, '## 4. 任务清单');
+  if (s4 !== null && !/- \[ \]/.test(s4)) fail(rel + '：§4 任务清单未使用 - [ ] 复选框');
+  const s2 = sectionOf(text, '## 2. 入口条件') ?? '';
+  const nums = [...s2.matchAll(/^\|\s*(\d+)\s*\|/gm)].map((m) => Number(m[1]));
+  if (nums.length > 0 && nums.some((n, i) => n !== i + 1)) {
+    fail(rel + '：§2 入口条件表行号不连续（' + nums.join(',') + '）');
+  }
+  const s6 = sectionOf(text, '## 6. 验证');
+  if (s6 !== null) {
+    const gateRows = (s6.match(/^\| \x60node tools\/check-docs\.mjs\x60/gm) ?? []).length;
+    if (gateRows > 1) fail(rel + '：§6 门禁行重复（check-docs 出现 ' + gateRows + ' 次）');
+  }
+}
+
 function walk(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -134,6 +170,7 @@ function checkPlansV2() {
       const inMatch = sec2.match(/\*\*入口条件\*\*：\s*(HANDOFF-[SC]\d{2})/);
       if (!inMatch) fail(rel + '：§2 缺少入口条件标记');
       else if (inMatch[1] !== expectIn) fail(rel + '：入口条件应为 ' + expectIn + '，实际 ' + inMatch[1]);
+      checkPlanHygiene(rel, text);
       if (/\bTBD\b|待定/.test(text)) warnings.push(rel + '：正文出现 TBD/待定');
     }
   }
