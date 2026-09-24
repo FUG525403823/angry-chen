@@ -2,6 +2,10 @@
 
 本文件是《愤怒的陈sir vs 发疯的羊群》项目的**唯一术语来源**。代码标识符、协议字段、文档正文、测试用例名一律使用本表左列术语；禁止同义词混用（例如不得把"波次"写成"关卡"、把"命令"写成"输入包"）。
 
+## 0. 范围说明（v1 / v2 标注约定）
+
+本文件同时保留 v1 与 v2 的术语。**v2 是当前唯一有效口径**；标【v1 历史】的行只用于阅读冻结备份 `D:\projects\tmp\angry-chen-bak`，不得作为 v2 施工依据。v2 的运行时实现是 `server/`（C++20）与 `client/`（团结引擎 + C#），仓库内不再有 TypeScript 源码。
+
 ## 1. 玩法域术语
 
 | 术语 | 标识符 | 定义 |
@@ -41,30 +45,30 @@
 | 快照 | `Snapshot` | 某一 tick 的世界的可渲染可传输投影。是**投影**，不是世界本身。 |
 | 基线 | `baseline` | 差分快照所依赖的、服务器确认客户端已持有的那个 tick。 |
 | tick | `tick` | 服务器固定步长单位，50ms。真实时间不是 tick。 |
-| 模拟内核 | `@ac/shared` 的 `sim` 模块 | 不依赖 three/DOM/Node 的纯逻辑模拟。 |
+| 模拟内核 | `server/src/sim/`；客户端对应 `client/Assets/Scripts/Sim/` | 权威模拟的唯一实现；客户端预测按 ADR-010 逐位复现同一规则。【v1 历史】`@ac/shared` 的 `sim` 模块 |
 | 视图 | `SnapshotView` | 客户端持有的只读快照集合与插值结果。客户端**只**能读它。 |
 | 预测 | `prediction` | 客户端在本地提前步进自己的命令。只预测本机玩家，不预测羊。 |
 | 和解 | `reconciliation` | 收到权威快照后回滚重放未确认命令，修正本地预测位置的过程。 |
 | 回滚 | `rewind` | 服务器为命中判定把目标姿态回退到玩家开火时刻的行为。 |
 | 回滚上限 | `rewindLimit` | 允许回滚的最大时长，200ms。超过则不回滚，按当下姿态判定。 |
-| 传送 | `Transport` | 一个缝：`send` / `onMessage` / `close`。生产适配器是 WebSocket，测试适配器是内存队列。 |
+| 传送 | `Transport` | 一个缝：`send` / `onMessage` / `close`。v2 的生产实现是 `UdpTransport`（自研 UDP 可靠性层，ADR-009）；测试实现是内存队列。【v1 历史】生产适配器是 WebSocket |
 | 会话 | `Session` | 服务器侧一个连接的全部状态。 |
 | 房间 | `Room` | 一个独立对局的容器。由房间码寻址。 |
 | 房间码 | `roomCode` | 4 位大写字符，用于加入房间。排除易混淆字符（0/O/1/I/L）。 |
 | 权威 | `authoritative` | 只有服务器产生既定事实。客户端的一切状态都是推测。 |
 | 宽限期 | `graceperiod` | 玩家断线后保留其位置与名额的时长，30 秒。 |
 | 对局状态机 | `MatchPhase` | `lobby → loading → playing → intermission → ended`。 |
-| 质量门 | `node tools/check-docs.mjs` | typecheck + lint + test + 文档链校验。任何提交必须通过。 |
+| 质量门 | `node tools/check-docs.mjs` + `node tools/check-assets.mjs` | v2 的两条 Node 门禁：文档链与链接校验、零素材与依赖白名单。任何提交必须两者都退出码 0。【v1 历史】typecheck + lint + test |
 
 ## 3. 硬约束词汇（出现即表示不可违反）
 
 | 词 | 含义 |
 |---|---|
-| **纯净性** | `@ac/shared` 不得 import `three`、DOM API、`node:*`、`Math.random`、`Date.now`。 |
-| **同源模拟** | 服务器权威、客户端预测、无头机器人必须调用**同一个** `stepWorld`，不得各自实现一份。 |
+| **纯净性** | 【v1 历史】`@ac/shared` 不得 import `three`、DOM API、`node:*`、`Math.random`、`Date.now`。v2 的对应约束是「服务端无第三方运行时库、客户端只用白名单官方包」（工程约定 §4）。 |
+| **同源模拟** | 服务器权威、客户端预测、无头机器人必须依据**同一份**冻结规则（v2：`stepWorld` 只在 `server/` 实现，客户端按 ADR-010 的受限算子逐位复现，不得各自发明规则）。 |
 | **零外部素材** | 仓库不含任何第三方模型/贴图/音频二进制。所有视听内容在运行时程序化生成。 |
-| **可擦除语法** | 只使用可被类型剥离的 TypeScript 语法（禁 `enum`、禁参数属性、禁 `namespace`）。 |
-| **线性文档链** | 计划文档 P01→P10 顺序执行，每份的入口条件等于上一份的移交物。 |
+| **可擦除语法** | 【v1 历史】只使用可被类型剥离的 TypeScript 语法（禁 `enum`、禁参数属性、禁 `namespace`）。 |
+| **线性文档链** | v2 有两条各自线性的链：`S01→S15` 与 `C01→C15`；每份的入口条件等于同链上一份的移交物，跨链只允许引用推荐交错顺序（`plans-v2/README.md` 的 `order`）里更早的计划。【v1 历史】P01→P10 单链 |
 
 ## 4. v2 术语（重构期新增，标识符与 v1 同名者语义不变）
 
@@ -81,3 +85,4 @@
 | 移交物 | `HANDOFF-S<nn>` / `HANDOFF-C<nn>` | v2 两条链的移交物 ID（v1 的 `HANDOFF-H<nn>` 仅用于 P01–P10）。 |
 | 硬约束：跨语言确定性 | — | 权威模拟与客户端预测只用 `+ - * / sqrt` 与整数运算；禁用超越函数与 fast-math。 |
 | 硬约束：双端分离 | — | `server/` 与 `client/` 不共享源码，只共享 ADR-009 冻结的协议与 ADR-010 冻结的运算子集。 |
+| 证据目录 | `docs/evidence/` | v2 的入库证据根：`fixtures/`（对拍向量）与各步的验收/审计报告。与 v1 已移出的 `evidence/` 无关。 |
