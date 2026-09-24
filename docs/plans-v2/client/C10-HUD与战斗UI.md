@@ -31,7 +31,7 @@
 | `client/Assets/Scripts/UI/RevivePrompt.cs` | 新建 | 救援提示与 3 秒进度 |
 | `client/Assets/Scripts/UI/WaveBanner.cs` | 新建 | 波次横幅、波间倒计时、波次刻度 |
 | `client/Assets/Scripts/UI/KillFeed.cs` | 新建 | 击杀记录（含爆头样式）与队伍状态行 |
-| `client/Assets/Tests/hud_test.cs` | 新建 | 元素映射、节流、准星、安全区、可见性断言 |
+| `client/Assets/Tests/HudSuite.cs` | 新建 | 元素映射、节流、准星、安全区、可见性断言（C03 起测试文件名统一 `*Suite.cs`） |
 
 ## 4. 任务清单
 
@@ -42,7 +42,7 @@
 - [ ] 5. 写 `client/Assets/Scripts/UI/RageBar.cs`：取 `MatchStatePlayer.rage`（满值 `RageFull = 100`）与 `rageLeft100Ms`，满值时显示可激活提示，狂暴期间显示剩余时间。
 - [ ] 6. 写 `client/Assets/Scripts/UI/DownedOverlay.cs` 与 `client/Assets/Scripts/UI/RevivePrompt.cs`：可见性条件见 §5(e)；救援进度 = `reviveRatio255 / 255`，总时长 3000ms，进度事件步长 5%。
 - [ ] 7. 写 `client/Assets/Scripts/UI/WaveBanner.cs` 与 `client/Assets/Scripts/UI/KillFeed.cs`：横幅 4500ms / 队列 3、波次刻度 10 段（Boss 波间隔 5）、波间倒计时读 `intermissionMs`；击杀记录 3000ms / 上限 6 / 渐隐 600ms，爆头条目单独样式。
-- [ ] 8. 写 `client/Assets/Tests/hud_test.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期；用例注册进 `Ac.Tests.SuiteRegistry.RunAll`（`hud.*`）。
+- [ ] 8. 写 `client/Assets/Tests/HudSuite.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期；用例注册进 `Ac.Tests.SuiteRegistry.RunAll`（`hud.*`）。
 
 ## 5. 冻结契约
 
@@ -52,18 +52,20 @@
 
 | 元素 | 来源 | 字段 |
 |---|---|---|
-| 血量 / 护甲 | 快照 + S10 `MatchState` 单播 | `SnapshotEntity.hpRatio`、`MatchStatePlayer.hpRatio` |
+| 血量 / 护甲 | 快照 + S10 `MatchState` 单播 | `SnapshotEntity.hpRatio`、`MatchStatePlayer.hpRatio`；**护甲顺延**：`MatchStatePayload` / `SnapshotCodec` / `codec.cpp` 目前都没有 armor 字段，本层不猜（2026-04 审查实查后修订） |
 | 弹药 / 备弹 | S10 `MatchState` 单播 + 本地账 | `MatchStatePlayer.mag` / `reserve`、`AmmoLedger.mag` / `gateMag` |
 | 换弹环 | S10 `MatchState` 单播 | `MatchStatePlayer.reloadLeft10Ms`（1/10 ms） |
 | 怒气 / 狂暴剩余 | S10 `MatchState` 单播 | `MatchStatePlayer.rage` / `rageLeft100Ms` |
-| 倒地 / 狂暴位域 | 快照 | `SNAPSHOT_FLAG.downed = 1` / `rageMode = 2` / `reloading = 4` / `charging = 8` |
+| 倒地 / 狂暴位域 | 快照 | `SNAPSHOT_FLAG.downed = 1` / `rageMode = 2` / `reloading = 4` / `charging = 8`（掩码以 `Ac.Net.SnapshotCodec` 为准） |
+
+> 阶段码以 S10 `MatchPhase` 为权威：`lobby = 0` / `loading = 1` / `playing = 2` / `intermission = 3` / `ended = 4`。**不要**按「playing = 1」猜——那样 playing 时 HUD 会全不可见、loading 时反而可见（2026-04 审查实查后修订）。
 | 受伤与命中 | 事件 | `EVENT_TYPE.playerHit = 1` + `HIT_FLAG.headshot = 1` / `killed = 4` |
 | 击杀记录 | 事件 | `EVENT_TYPE.sheepKilled = 2` |
 | 波次横幅 | 事件 | `EVENT_TYPE.waveStart = 3` / `waveClear = 4` |
 | 波次与波间 | S10 `MatchState` 单播 | `MatchState.phase` / `wave` / `intermissionMs` |
 | 救援提示 | 事件 + S10 `MatchState` 单播 | `EVENT_TYPE.reviveProgress = 6` / `reviveDone = 7`、`MatchStatePlayer.reviveRatio255` |
 
-`MatchStatePlayer.*` / `MatchState.*` 的字段（`mag` / `reserve` / `rage` / `rageLeft100Ms` / `reloadLeft10Ms` / `reviveRatio255` / `phase` / `wave` / `intermissionMs` / `aliveMs`）与 S10 §5 的字段逐名一致，**全部由 S10 的 `MatchState` 单播提供**（本步只读，不走快照通道）。
+`MatchStatePlayer.*` / `MatchState.*` 的字段（`mag` / `reserve` / `rage` / `rageLeft100Ms` / `reloadLeft10Ms` / `reviveRatio255` / `phase` / `wave` / `intermissionMs`；`aliveMs` 顺延——单播里还没有这个字段）与 S10 §5 的字段逐名一致，**全部由 S10 的 `MatchState` 单播提供**（本步只读，不走快照通道）。
 
 **(b) 刷新节流（继承 `O06`）**
 
@@ -92,9 +94,9 @@
 | 项 | 值 / 定义 |
 |---|---|
 | 字号 | 主数值 `32px`、标签 `18px`、击杀记录 `16px`、波次横幅 `48px` |
-| 字体 | 「唯一来源」`Font.CreateDynamicFontFromOSFont("Microsoft YaHei", size)`（系统字体），回退 `Segoe UI` → `Arial`；**禁用 `TextMeshPro` / `TMPro` 与任何字体素材文件** |
+| 字体 | 「唯一来源」`Font.CreateDynamicFontFromOSFont(string[], size)`（系统字体，数组重载本身就是回退链）入库名 `Microsoft YaHei → Segoe UI → Arial`；**禁用 `TextMeshPro` / `TMPro` 与任何字体素材文件**（2026-04 修订：调用形式按实现） |
 | 安全区 | `SafeAreaPercent = 0.04`（1080p 下内缩 ≥ `43px`） |
-| 层级 | HUD 在视图模型之上；所有 UI 元素不接收射线，不拦截输入 |
+| 层级 | HUD 在视图模型之上；所有 UI 元素不接收射线，不拦截输入（渲染层装配在场景装配步骤落地；本层把参数、可见性与映射冻住并断言） |
 
 **(e) 可见性与时长**
 
@@ -122,7 +124,7 @@
 
 ## 7. DoD（验收标准）
 
-- [ ] §5(a) 每个 HUD 元素在 `hud_test.cs` 里都有"字段 → 显示"用例
+- [ ] §5(a) 每个 HUD 元素在 `HudSuite.cs` 里都有"字段 → 显示"用例
 - [ ] 数值类刷新 ≤ 10Hz（100ms 窗口内多次 `Tick` 只写一次），状态类事件驱动立即刷新
 - [ ] 准星形状、尺寸映射（`0.5°→2px`、`5°→24px`）与四色表与 §5(c) 一致
 - [ ] 字号四档（32/18/16/48）与安全区 4% 生效；倒地与救援提示可见性条件被断言
@@ -139,20 +141,24 @@
 | UI 抢输入 | 鼠标点击被 HUD 吃掉 | 所有 HUD 元素禁用射线目标，输入只由指针锁定层处理 |
 | 文本重建触发 GC | 每帧托管分配 > 0B | `HudSample` 复用 + 脏检查；事件文本入环形池而非新建对象 |
 
-**回滚目标**：删除 9 个 `UI` 文件与 `hud_test.cs`，回到 `HANDOFF-C09` 状态（无 HUD，渲染与模拟不受影响）。
+**回滚目标**：删除 9 个 `UI` 文件与 `HudSuite.cs`，回到 `HANDOFF-C09` 状态（无 HUD，渲染与模拟不受影响）。
 
 ## 9. 移交物
 **移交物 ID**：HANDOFF-C10
 
 稳定接口清单：
 
-- `Hud`：`Apply(in HudSample)` / `PushEvent(in SimEventView)` / `Tick(float dtMs)`
-- `UiThrottle`：`ShouldWrite(int roundedValue)` / `NumericRefreshMs` / `StatsRefreshMs`
-- `Crosshair`：`SetSpread(float spreadDeg)` / `SetState(CrosshairState)`
-- `AmmoCounter`：`Set(int mag, int reserve, int reloadLeft10Ms)`
+- `Hud`：`Apply(in HudSample)` / `PushEvent(in HudEvent)` / `Tick(float dtMs)` / `CreateFont(int)` / `FontPx(role)` / `SafeAreaInsetPx(int)` / `CombatUiVisible(phase)` / `CrosshairVisible(in HudSample)` / `AmmoVisible(in HudSample)`
+  - 事件视图用本层的 `HudEvent`（`Type` / `HitFlags` / `Wave` / `ReviveRatio255` / `Enemy`）+ `HudEventType` 常量；S10 的 `SimEventView` 交付后再换成它（2026-04 修订，值先按 S08/S10 事件表：playerHit=1 / sheepKilled=2 / waveStart=3 / waveClear=4 / reviveProgress=6 / reviveDone=7）
+  - 数值类是一个组：一个 100ms 窗口写一次，脏检查的键是整组数值的组合值；状态类走 `PushEvent` 立即刷新
+- `UiThrottle`：`ShouldWrite(int)` / `ShouldWriteStats(int)` / `NoteEventWrite()` / `NumericWrites` / `StatsWrites` / `SkippedWrites`
+- `Crosshair`：`SetSpread(float)` / `SetState(CrosshairState)` / `MarkHurt()` / `SizePx` / `CurrentColor`
+- `AmmoCounter`：`Set(int, int, int)` / `IsLow` / `Color` / `ReloadRingMs` / `MagazineSize`
+- `RageBar`：`Set(int, int, bool)` / `CanActivate` / `RageFull` / `RageLeftMs` / `Fill01`
+- `RevivePrompt`：`SetVisible(bool)` / `SetProgress(float)` / `SetFromRatio255(int)` / `RemainingMs` / `CanPrompt(bool, float)` / `RangeM` / `ProgressStep`
+- `DownedOverlay`：`Update(bool downed, byte phase)` / `SetVisible(bool)`
+- `WaveBanner`：`ShowWave(int)` / `SetIntermission(int)` / `IsBossWave(int)` / `TickIndex(int)` / `QueueCapacity` / `OverflowCount`
+- `KillFeed`：`Push(in KillEntry)` / `Tick(float)` / `Alpha(float)` / `ColorOf(bool)` / `Entries` / `Remaining`
 - `RageBar`：`Set(int rage, int rageLeft100Ms, bool rageMode)`
-- `KillFeed`：`Push(in KillEntry)` / `Tick(float dtMs)`
-- `WaveBanner`：`ShowWave(int wave)` / `SetIntermission(int ms)`
-- `RevivePrompt` / `DownedOverlay`：`SetVisible(bool)` / `SetProgress(float ratio)`
 
 已验证能力清单：见 §7（元素映射、10Hz 节流、准星、字号与安全区、可见性、零分配）。
