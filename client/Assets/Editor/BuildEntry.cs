@@ -13,6 +13,26 @@ namespace Ac.Editor
     // 退出码：0 = 出包成功；1 = 构建失败。
     public static class BuildEntry
     {
+        // C15 §5：IL2CPP（x64）为发布通道，Mono 仅兜底。Unity 在缺 IL2CPP 变体时会直接抛错，
+        // 所以这里只负责"表达意图"并如实记录，实际可用性由调用方（build.ps1）探测。
+        private static void ApplyBackend(string requested)
+        {
+            var wanted = string.IsNullOrEmpty(requested) ? "il2cpp" : requested.ToLowerInvariant();
+            var impl = wanted == "mono" ? ScriptingImplementation.Mono2x : ScriptingImplementation.IL2CPP;
+            try
+            {
+                PlayerSettings.SetScriptingBackend(BuildTargetGroup.Standalone, impl);
+                Debug.Log("[build] backend=" + impl);
+            }
+            catch (Exception ex)
+            {
+                // 缺 win64_il2cpp 变体时退到 Mono，并让这一行出现在构建日志里以便验收核对。
+                Debug.LogWarning("[build] backend=" + impl + " unavailable (" + ex.Message + "), falling back to Mono2x");
+                PlayerSettings.SetScriptingBackend(BuildTargetGroup.Standalone, ScriptingImplementation.Mono2x);
+                Debug.Log("[build] backend=" + ScriptingImplementation.Mono2x);
+            }
+        }
+
         private const string Windows64 = "Windows64";
         private const string DefaultOutput = "Build/Windows64";
         private const string ExecutableName = "angry-chen.exe";
@@ -32,6 +52,8 @@ namespace Ac.Editor
                 EditorApplication.Exit(1);
                 return;
             }
+
+            ApplyBackend(GetArgument("-backend"));
 
             var pipeline = RenderPipelineSetup.Ensure();
             Debug.Log("[build] urp=" + AssetDatabase.GetAssetPath(pipeline));

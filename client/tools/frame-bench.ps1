@@ -1,4 +1,4 @@
-<#
+﻿<#
   C14 frame benchmark gate (plan section 5 / section 6).
   Rules: never pass -nographics (section 5 measurement rule 1). A machine without a graphics
   device cannot produce the section 5 numbers, so it must end in exit code 2 - never PASS.
