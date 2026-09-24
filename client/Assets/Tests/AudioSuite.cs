@@ -22,6 +22,22 @@ namespace Ac.Tests
             SelfTest.Add("audio.layers", ChecksLayers);
             SelfTest.Add("audio.subtitles", ChecksSubtitles);
             SelfTest.Add("audio.assembly_direction", ChecksDirection);
+            SelfTest.Add("audio.combat_flags", ChecksCombatFlags);
+        }
+
+        // C11 的命中位与总线数是跨层共享常量：这里直接对权威值下断言，
+        // 否则 server/src/config/combat.hpp:18-20 改了值全仓也不会红。
+        private static void ChecksCombatFlags()
+        {
+            SelfTest.Equal(1, (long)CombatFlags.HitFlagHeadshot);
+            SelfTest.Equal(2, (long)CombatFlags.HitFlagDowned);
+            SelfTest.Equal(4, (long)CombatFlags.HitFlagKilled);
+            SelfTest.Equal(0, (long)(CombatFlags.HitFlagHeadshot & CombatFlags.HitFlagDowned));
+            SelfTest.Equal(0, (long)(CombatFlags.HitFlagDowned & CombatFlags.HitFlagKilled));
+            SelfTest.True((CombatFlags.HitFlagHeadshot | CombatFlags.HitFlagKilled) == 5, "命中位与击杀位可以同时置（0b101）", (CombatFlags.HitFlagHeadshot | CombatFlags.HitFlagKilled).ToString());
+            SelfTest.Equal(4, (long)BusCount.MixBusCount);
+            SelfTest.True((int)MixBus.Master != (int)MixBus.Subtitle, "首尾总线不是同一条", ((int)MixBus.Master).ToString());
+            SelfTest.True((int)MixBus.Subtitle < BusCount.MixBusCount && (int)MixBus.Master >= 0, "总线下标落在 MixBusCount 之内", ((int)MixBus.Subtitle).ToString());
         }
 
         private static void ChecksConstants()

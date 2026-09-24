@@ -16,6 +16,8 @@ namespace Ac.Tests
             SelfTest.Add("view.interp_100ms", ChecksInterp100Ms);
             SelfTest.Add("view.jitter_50ms", ChecksJitter50Ms);
             SelfTest.Add("view.hard_correct_1m", ChecksHardCorrect);
+            SelfTest.Add("view.mirror_queries", ChecksMirrorQueries);
+            SelfTest.Add("view.spawn_pose", ChecksSpawnPose);
         }
 
         private static SnapshotFrame MakeFrame(uint tick, uint serverTimeMs, uint baselineTick)
@@ -45,6 +47,82 @@ namespace Ac.Tests
         }
 
         // §6 第 2 条：喂入 tick 20, 19, 21, 21, 23 → 只应用 20/21/23，两个计数都为 0。
+        // 审计 M1：差分帧只带**变化过的**记录 ⇒ 站着不动的实体在"最新帧"里没有条目。
+        // TryGetEntity 只扫最新帧，就会让 TryGetLocalAuthority 返回 false，Reconciler.cs:61 每次和解都早退
+        // （ack 裁剪 / 命令重放 / 误差平滑全部停摆）。权威状态必须以镜像为准。
+        // 审计 M7：插值窗口比最新帧落后一个 DelayMs（100ms），所以"在最新帧里刚出现"的实体
+        // 不在插值用的 newer 差分记录里；而可见性是按**镜像**判定的 ⇒ 它会以默认 (0,0,0)
+        // 在场地中心渲染若干帧。修复后这类实体必须在 MarkVisible 里就从镜像吸附姿态。
+        private static void ChecksSpawnPose()
+        {
+            var view = new SnapshotView();
+            var views = new EntityViews();
+            var clock = new Interpolation.RenderClock();
+
+            var f1 = MakeFrame(1, 1000, 0);
+            PutEntity(ref f1, 7, 1.0, 0.0, 0.0);
+            SelfTest.True(view.ApplyFrame(f1), "帧 1 应用", "被丢弃");
+            clock.OnSnapshot(1000, 0.0);
+            views.SyncFrame(view, clock, 8.0);
+
+            for (uint tick = 2; tick <= 3; tick++)
+            {
+                var step = MakeFrame(tick, 1000 + (tick - 1) * 50, tick - 1);
+                PutEntity(ref step, 7, 1.0 + 0.1 * (tick - 1), 0.0, 0.0);
+                SelfTest.True(view.ApplyFrame(step), "帧 " + tick + " 应用", "被丢弃");
+                clock.OnSnapshot(1000 + (tick - 1) * 50, 50.0);
+                views.SyncFrame(view, clock, 8.0);
+            }
+
+            // 帧 4：实体 9 第一次出现。渲染时刻 = 1150 - DelayMs(100) = 1050，
+            // 插值窗口是 (1050,1100)，里面没有 9；但镜像里已经有它了。
+            var f4 = MakeFrame(4, 1150, 3);
+            PutEntity(ref f4, 7, 1.3, 0.0, 0.0);
+            PutEntity(ref f4, 9, 5.0, -2.0, 0.7);
+            SelfTest.True(view.ApplyFrame(f4), "帧 4 应用", "被丢弃");
+            clock.OnSnapshot(1150, 50.0);
+            views.SyncFrame(view, clock, 8.0);
+
+            EntityView spawned;
+            SelfTest.True(views.TryGet(9, out spawned), "新生实体必须被创建", "缺失");
+            SelfTest.True(spawned.Visible, "新生实体可见", "不可见");
+            // 旧实现这里是 0：姿态要等渲染时刻追赶到帧 4 才被写上。
+            SelfTest.True(Math.Abs(spawned.X - 5.0) < 0.05, "新生实体必须带镜像姿态出场", spawned.X.ToString("R"));
+            SelfTest.True(Math.Abs(spawned.Z + 2.0) < 0.05, "新生实体 Z 同样来自镜像", spawned.Z.ToString("R"));
+        }
+
+        private static void ChecksMirrorQueries()
+        {
+            var view = new SnapshotView();
+            view.SetLocalPlayer(1);
+            var full = MakeFrame(10, 1000, 0);
+            PutEntity(ref full, 1, 12.5, 0.0, -3.0);
+            PutEntity(ref full, 7, 2.0, 0.0, 0.0);
+            SelfTest.True(view.ApplyFrame(full), "全量帧必须应用", "被丢弃");
+
+            var hit = default(FrameEntity);
+            SelfTest.True(view.TryGetEntity(1, out hit), "全量帧之后本机可取", "取不到");
+            SelfTest.Equal(1250, (long)hit.XCm);
+
+            // 下一帧只带 7（本机没动）：镜像里本机仍在，最新帧的差分记录里没有它。
+            var delta = MakeFrame(11, 1050, 10);
+            PutEntity(ref delta, 7, 2.2, 0.0, 0.0);
+            SelfTest.True(view.ApplyFrame(delta), "差分帧必须应用", "被丢弃");
+            SelfTest.True(view.TryGetEntity(1, out hit), "本机没变化时仍必须从镜像取到", "只查最新帧就会失败");
+            SelfTest.Equal(1250, (long)hit.XCm);
+            FrameEntity authority;
+            SelfTest.True(view.TryGetLocalAuthority(out authority), "本地权威姿态必须可用（否则 Reconciler 早退）", "取不到");
+            SelfTest.Equal(1250, (long)authority.XCm);
+
+            // 逐帧历史语义不受影响：最新帧里确实没有本机这条记录。
+            FrameEntity inFrame;
+            SelfTest.True(!view.TryGetEntityInFrame(0, 1, out inFrame), "最新帧的差分记录里没有本机", "居然有");
+
+            var seenLocal = false;
+            view.ForEachVisible((ushort id, in FrameEntity e) => { if (id == 1) seenLocal = true; });
+            SelfTest.True(seenLocal, "遍历与查询必须同源（都读镜像）", "不一致");
+        }
+
         private static void ChecksTickMonotonic()
         {
             var view = new SnapshotView();

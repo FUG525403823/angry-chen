@@ -132,7 +132,17 @@ namespace Ac.Sim
             return count;
         }
 
-        public bool TryGetEntity(ushort id, out FrameEntity entity) { return TryGetEntityInFrame(0, id, out entity); }
+        // 镜像才是"当前权威状态"：差分帧只带**变化过的**记录，站着不动的实体在最新帧里根本没有条目，
+        // 而走这条查询的正是"本地玩家权威姿态"（每次和解都要用）。只查最新帧会让 Reconciler.cs:61 的
+        // authority.Found 早退：ack 裁剪、命令重放、误差平滑全部静默停摆，直到本机状态再次变化时
+        // 一次性重放 ~40 条命令（硬纠正与橡皮筋的来源）。逐帧历史语义仍归 TryGetEntityInFrame(age, ...)。
+        public bool TryGetEntity(ushort id, out FrameEntity entity)
+        {
+            entity = default(FrameEntity);
+            if (id > MaxEntities || !_present[id]) return false;
+            entity = _entities[id];
+            return true;
+        }
 
         public bool TryGetEntityInFrame(int age, ushort id, out FrameEntity entity)
         {

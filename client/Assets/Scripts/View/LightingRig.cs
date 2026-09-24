@@ -12,6 +12,8 @@ namespace Ac.View
         public const float AmbientIntensity = 0.45f;
         public const float FogStartM = 42f;
         public const float FogEndM = 138f;
+        // 注意：C08 冻结单值 60m，C14 §5 冻结「20 / 35 / 50（按画质档）」——互斥，登记待裁决，
+        // 这里同样保持 C08 的值，不自签。
         public const float ShadowDistanceM = 60f;
         public const int ShadowResolutionPixels = 2048;
         public const int ShadowCascades = 2;

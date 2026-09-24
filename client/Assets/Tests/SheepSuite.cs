@@ -17,6 +17,56 @@ namespace Ac.Tests
             SelfTest.Add("sheep.emblem", ChecksEmblem);
             SelfTest.Add("sheep.state_map", ChecksStateMap);
             SelfTest.Add("sheep.culling", ChecksCulling);
+            SelfTest.Add("sheep.pool_reset_multiform", ChecksPoolResetMultiForm);
+            SelfTest.Add("sheep.visuals_begin_frame", ChecksVisualsBeginFrame);
+        }
+
+        // 审计 A8：下标是 form*256+cursor，Reset 只清连续前缀会留下跨步区间的幽灵实例。
+        // 审计 M6：池的"每帧 Reset"契约此前没有任何调用者 —— 同形态累计到 PerFormCapacity(256)
+        // 之后 TryAcquire 恒返 -1，羊会静默消失。BeginFrame 必须把游标复位。
+        private static void ChecksVisualsBeginFrame()
+        {
+            var pool = new SheepInstancePool();
+            var visuals = new SheepVisuals(pool);
+            for (var frame = 0; frame < 3; frame++)
+            {
+                visuals.BeginFrame();
+                for (var i = 0; i < 200; i++) { int index; pool.TryAcquire(0, out index); }
+                // 旧实现（BeginFrame 不 Reset）到这里游标会是 200/400/600，第二帧起就红。
+                SelfTest.Equal(200, (long)pool.CursorOf(0));
+                SelfTest.Equal(200, (long)pool.Count);
+            }
+            SelfTest.Equal(0, (long)pool.OverflowCount);
+            SelfTest.Equal(0, (long)visuals.SkippedCount);
+            SelfTest.Equal(0, (long)visuals.CorpseCount);
+
+            // 反证：不逐帧复位时，单形态累计 256 之后必定饱和 —— 这正是 M6 里羊会静默消失的结局。
+            var saturated = new SheepInstancePool();
+            for (var i = 0; i < 300; i++) { int index; saturated.TryAcquire(0, out index); }
+            SelfTest.True(saturated.OverflowCount > 0, "不复位必然饱和", saturated.OverflowCount.ToString());
+        }
+
+        private static void ChecksPoolResetMultiForm()
+        {
+            var pool = new SheepInstancePool();
+            SelfTest.Equal(256, (long)SheepInstancePool.PerFormCapacity);
+            SelfTest.Equal(1024, (long)SheepInstancePool.EntityCapacity);
+            // 第一帧：10 只 grunt + 100 只 elite
+            for (var i = 0; i < 10; i++) { int idx; pool.TryAcquire(0, out idx); pool.Instances[idx].Visible = true; }
+            for (var i = 0; i < 100; i++) { int idx; pool.TryAcquire(2, out idx); pool.Instances[idx].Visible = true; }
+            SelfTest.Equal(110, (long)pool.Count);
+            SelfTest.True(pool.Instances[512].Visible && pool.Instances[611].Visible, "elite 落在跨步区间 512..611", "没落进去");
+            pool.Reset();
+            SelfTest.Equal(0, (long)pool.Count);
+            var ghost = 0;
+            for (var i = 0; i < SheepInstancePool.EntityCapacity; i++) if (pool.Instances[i].Visible) ghost += 1;
+            SelfTest.Equal(0, (long)ghost);
+            // 第二帧只有 10 只 grunt：elite 区间的旧记录不许复活
+            for (var i = 0; i < 10; i++) { int idx; pool.TryAcquire(0, out idx); pool.Instances[idx].Visible = true; }
+            SelfTest.Equal(10, (long)pool.Count);
+            var stillGhost = 0;
+            for (var i = 256; i < SheepInstancePool.EntityCapacity; i++) if (pool.Instances[i].Visible) stillGhost += 1;
+            SelfTest.Equal(0, (long)stillGhost);
         }
 
         private static void ChecksGeometry()

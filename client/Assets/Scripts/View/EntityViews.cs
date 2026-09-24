@@ -224,12 +224,19 @@ namespace Ac.View
             _seen[id] = _seenToken;
             var target = Get(id);
             if (target == null) return;
+            // 本帧是否"新出现"必须在置 Visible 之前取：它决定要不要在这里吸附姿态。
+            var wasVisible = target.Visible;
             target.Visible = true;
             target.Kind = (byte)(entity.KindFlags & EntityRecord.KindMask);
             target.Flags = entity.KindFlags;
             target.HpRatio = Quantize.DequantizeRatio(entity.HpRatioUnits);
             target.State = entity.State;
-            if (id != LocalPlayerId || target.HasPrediction) return;
+            // 姿态只能有两个来源：①本地玩家无预测值 ⇒ 按最新帧吸附（原有语义）；
+            // ②**本帧新出现**的实体 ⇒ 同样必须在这里吸附。最新帧是**差分**帧，没变化过的实体
+            //   根本不在它的记录里，而下面的插值循环只遍历差分记录 ⇒ 不吸附就会以 (0,0,0)
+            //   在场地中心渲染若干帧（100–250ms）才被覆盖（审计 M7）。
+            var snapFromMirror = id != LocalPlayerId ? !wasVisible : !target.HasPrediction;
+            if (!snapFromMirror) return;
             target.X = Quantize.DequantizePosition(entity.XCm);
             target.Y = Quantize.DequantizePosition(entity.YCm);
             target.Z = Quantize.DequantizePosition(entity.ZCm);

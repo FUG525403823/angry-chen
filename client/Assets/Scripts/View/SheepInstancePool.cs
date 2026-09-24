@@ -33,8 +33,11 @@ namespace Ac.View
         public void Reset()
         {
             for (var i = 0; i < FormCount; i++) _cursor[i] = 0;
-            // 上一帧写过的记录必须显式失活：Culling 只看 Visible，不清就会留幽灵羊
-            for (var i = 0; i < Count; i++) _instances[i].Visible = false;
+            // 上一帧写过的记录必须显式失活：Culling 只看 Visible，不清就会留幽灵羊。
+            // 下标是 form * PerFormCapacity + cursor 的跨步布局，按 Count 清连续前缀会漏掉跨步区间
+            // （例：10 只 grunt + 100 只 elite 之后只画 50 只 elite，512..611 里的旧记录还挂着 Visible）。
+            // 必须整池失活：1024 次 bool 写入远小于一帧的绘制成本。
+            for (var i = 0; i < EntityCapacity; i++) _instances[i].Visible = false;
             Count = 0;
         }
 

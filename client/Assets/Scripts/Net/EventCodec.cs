@@ -93,7 +93,6 @@ namespace Ac.Net
         {
             entries = null;
             droppedDuplicates = 0;
-            var ids = tracker ?? new EventIdTracker();
             var kept = new List<EventEntry>(count);
             for (var i = 0; i < count; i++)
             {
@@ -107,8 +106,13 @@ namespace Ac.Net
                 var payloadFailure = ReadPayload(reader, ref entry);
                 if (payloadFailure != DecodeFailure.Ok) return payloadFailure;
 
-                // 重复或回退的 eventId 静默丢弃（幂等键，S03 §5.4）：字节已经消费掉，条目不入结果。
-                if (!ids.IsNew(entry.EventId))
+                // 幂等键（S03 §5.4）由**调用方持有**的 tracker 承担：服务端两侧解码都写的是
+                // `tracker != nullptr && !tracker->isNew(...)`（server/src/net/codec.cpp:442 与 :548），
+                // tracker 为空时**完全不去重**。客户端此前在为空时自建 tracker，于是同一段字节经两个
+                // 重载解出不同条目数；而且自建的 tracker 每帧都是新的，跨帧幂等键等于不存在
+                // （重传/重放的事件会被二次投递）。现在与服务端逐字对齐：没有 tracker 就不去重，
+                // 需要跨帧幂等的一方自己持有长期 tracker。
+                if (tracker != null && !tracker.IsNew(entry.EventId))
                 {
                     droppedDuplicates++;
                     continue;

@@ -20,11 +20,19 @@ namespace Ac.Tests
         {
             var directory = FixtureLoader.DefaultDirectory();
 
-            // C02 尚无模拟器，用 fixture 自身的 expected 当 actual：验证加载、逐位比较与首个差异定位这条管线。
-            // C06 起 actualOf 换成模拟器输出，其余不变。
-            var mismatches = FixtureLoader.CompareAll(directory, vector => vector.Root.Get(FixtureLoader.ExpectedKey));
+            // C02 尚无模拟器，用 fixture 自身的 expected 当 actual：验证加载、逐帧比较与首个差异定位这条管线。
+            // C06 起 actualOfTick 换成模拟器输出，其余不变。
+            // 审计 M9：目录为空或被全部判成"不是 fixture"时 CompareAll 返回 0 ⇒ 恒绿，所以先钉住加载本身。
+            var vectors = FixtureLoader.Load(directory);
+            SelfTest.True(vectors.Count >= 4, "至少加载到 4 份 fixture 向量", vectors.Count.ToString());
+            var frames = 0;
+            foreach (var vector in vectors) frames += vector.TickCount;
+            SelfTest.True(frames >= 1000, "四份 fixture 合计帧数（400+400+60+240）", frames.ToString());
+            var mismatches = FixtureLoader.CompareAll(directory, (vector, tick) => vector.ExpectedOfTick(tick));
             SelfTest.Equal(0, mismatches);
-            SelfTest.Equal(mismatches, FixtureLoader.CompareAll(directory, vector => vector.Root.Get(FixtureLoader.ExpectedKey)));
+            // 判别性：每份向量只把第 1 帧的"实际输出"抹掉，必须恰好报"向量数"帧不一致。
+            // 旧实现（0 份向量，或顶层 expected 恒为 null）在这里恒返回 0，必红。
+            SelfTest.Equal((long)vectors.Count, (long)FixtureLoader.CompareAll(directory, (vector, tick) => tick == 1 ? null : vector.ExpectedOfTick(tick)));
 
             // 反向探针：扰动一个数字必须被定位成首个差异。
             var expected = MiniJson.Parse("{\"entities\":[{\"id\":3,\"xCm\":150}],\"rngState\":\"0x11223344\"}");

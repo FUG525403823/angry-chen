@@ -42,7 +42,7 @@ namespace Ac.Core
         private int _pendingCount;
 
         private bool _injected;
-        private readonly bool[] _keys = new bool[11];
+        private readonly bool[] _keys = new bool[12];
         private double _mouseDx;
         private double _mouseDy;
 
@@ -286,6 +286,7 @@ namespace Ac.Core
                 case KeyCode.R: return 8;
                 case KeyCode.E: return 9;
                 case KeyCode.F: return 10;
+                case KeyCode.Q: return 11;      // 换武器：漏了它 SetKey(Q) 会被静默丢弃，switchTo 在注入/回放路径永不可达
                 default: return -1;
             }
         }

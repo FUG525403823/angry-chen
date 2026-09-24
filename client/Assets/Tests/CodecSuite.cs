@@ -257,10 +257,24 @@ namespace Ac.Tests
                 (long)EventCodec.DecodeFrame(
                     Concat(BuildEventFrame(100u, PlayerHitEntry(1u, 3, 17, 25, 5, 120, 100, -250)), new byte[] { 0 }), out frame));
 
+            // 无 tracker 时**不去重**：服务端两侧解码都写的是 `tracker != nullptr && !tracker->isNew(...)`
+            // （server/src/net/codec.cpp:442 与 :548）。客户端原先在为空时自建 tracker，于是同一段字节
+            // 经"带 tracker"与"不带 tracker"两个重载解出**不同条目数**（审计 M2）。
             var duplicate = PlayerHitEntry(1u, 3, 17, 25, 5, 120, 100, -250);
             SelfTest.Equal((long)DecodeFailure.Ok,
                 (long)EventCodec.DecodeFrame(BuildEventFrame(100u, duplicate, duplicate), out frame));
+            SelfTest.Equal(2, frame.Entries.Length);
+            SelfTest.Equal(0, frame.DroppedDuplicates);
+
+            // 只有调用方传了 tracker 才去重，且跨帧有效（S03 §5.4 幂等键）。
+            var dupTracker = new EventIdTracker();
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)EventCodec.DecodeFrame(BuildEventFrame(100u, duplicate, duplicate), dupTracker, out frame));
             SelfTest.Equal(1, frame.Entries.Length);
+            SelfTest.Equal(1, frame.DroppedDuplicates);
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)EventCodec.DecodeFrame(BuildEventFrame(101u, duplicate), dupTracker, out frame));
+            SelfTest.Equal(0, frame.Entries.Length);
             SelfTest.Equal(1, frame.DroppedDuplicates);
 
             // 跨帧幂等键（S03 §5.4）：同一个 tracker 下重复的 eventId 在第二帧被丢弃。

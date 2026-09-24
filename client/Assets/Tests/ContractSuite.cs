@@ -24,8 +24,17 @@ namespace Ac.Tests
             { "Ac.Tests", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio" } },
         };
 
+        internal static void CheckGateFailsOnDemand()
+        {
+            if (Environment.GetEnvironmentVariable("AC_SELFTEST_SELFPROBE") != "1") return;
+            SelfTest.True(false, "反向自检：被 AC_SELFTEST_SELFPROBE=1 触发时必须失败", "没失败");
+        }
+
         public static void Register()
         {
+            // 反向自检：门禁必须会因为失败而变红。默认通过；设 AC_SELFTEST_SELFPROBE=1 时本用例故意失败，
+            // 用来证明 SelfTest.RunAll(false) → EditorApplication.Exit(1) 这条链真的会给出非 0 退出码。
+            SelfTest.Add("c01.gate.fail_probe", CheckGateFailsOnDemand);
             SelfTest.Add("c01.assemblies.references", CheckAssemblyReferences);
             SelfTest.Add("c01.project.identity", CheckIdentity);
             SelfTest.Add("c01.project.serialization", CheckSerialization);

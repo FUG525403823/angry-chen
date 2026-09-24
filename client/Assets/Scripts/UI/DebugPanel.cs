@@ -31,8 +31,10 @@ namespace Ac.UI
         public const float LossWarnPercent = 5f;
         public const float InboundWarnBytesPerSec = 40960f;
         public const float OutboundWarnBytesPerSec = 8192f;
-        public const float P95WarnMs = 20f;
-        public const float MaxWarnMs = 33f;
+        // C14 §5 的帧预算是唯一真相（Ac.Core.FrameBudget）；这两条只是面板上的告警阈值别名，
+        // 之前是第二份硬编码 20/33，改预算表不会带着它们一起动（C14 标准轴必改项 1）。
+        public const float P95WarnMs = Ac.Core.FrameBudget.FrameP95BudgetMs;
+        public const float MaxWarnMs = Ac.Core.FrameBudget.FrameP99BudgetMs;
         public const float SnapshotRateWarnHz = 10f;
 
         private readonly string[] _lines = new string[FieldCount];

@@ -35,6 +35,16 @@ namespace Ac.View
 
         public SheepVisuals(SheepInstancePool pool) { _pool = pool; }
 
+        // 每帧入口（必须在当帧所有 Write 之前调用一次）：复位池游标与逐帧计数。
+        // 审计 M6：池的"每帧 Reset"契约此前**没有任何调用者** —— Write 只管取槽位，
+        // 同形态累计到 PerFormCapacity(256) 之后 TryAcquire 恒返 -1，羊会静默消失。
+        public void BeginFrame()
+        {
+            _pool.Reset();
+            SkippedCount = 0;
+            CorpseCount = 0;
+        }
+
         public static double EmblemIntensity(double hpRatio)
         {
             var health = hpRatio < 0.0 ? 0.0 : (hpRatio > 1.0 ? 1.0 : hpRatio);

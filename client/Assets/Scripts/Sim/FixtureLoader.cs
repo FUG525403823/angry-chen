@@ -26,7 +26,15 @@ namespace Ac.Sim
         public int Seed { get; private set; }
         public string ConfigHash { get; private set; }
 
-        public int TickCount { get { return Root.Get("ticks").Count; } }
+        public int TickCount { get { return Root.Get(FixtureLoader.TicksKey).Count; } }
+
+        // C06 起 expected 在每帧内部；顶层 expected 是 C02 的占位格式，两种都认。
+        public JsonValue ExpectedOfTick(int tick)
+        {
+            var ticks = Root.Get(FixtureLoader.TicksKey);
+            if (ticks == null || tick < 0 || tick >= ticks.Count) return null;
+            return ticks[tick].Get(FixtureLoader.ExpectedKey);
+        }
     }
 
     // ADR-010 的对拍 fixture（docs/evidence/fixtures/*.json）加载与逐位比较。
@@ -77,7 +85,12 @@ namespace Ac.Sim
         {
             if (root == null || root.Kind != JsonKind.Object) return false;
             JsonValue ignored;
-            return root.TryGet(TicksKey, out ignored) && root.TryGet(ExpectedKey, out ignored);
+            if (!root.TryGet(TicksKey, out ignored)) return false;
+            if (root.TryGet(ExpectedKey, out ignored)) return true;
+            // 顶层 expected 是 C02 的占位格式；C06 产出的是"每帧一个 expected"。
+            // 只认顶层的话，4 份真 fixture 全被判成"不是 fixture" ⇒ CompareAll 见 0 份向量直接返回 0 ⇒ 门禁恒绿。
+            var ticks = root.Get(TicksKey);
+            return ticks != null && ticks.Kind == JsonKind.Array && ticks.Count > 0 && ticks[0].TryGet(ExpectedKey, out ignored);
         }
 
         public static Difference FirstDifference(JsonValue expected, JsonValue actual)
@@ -98,10 +111,10 @@ namespace Ac.Sim
             return false;
         }
 
-        // actualOf 提供被测实现的输出文档；返回不一致的 fixture 数（目录为空时返回 0）。
-        // 比较根是 expected 子树，所以上下文 tick 传 0——若调用方比较整篇 fixture 根（ticks 在内），
-        // 差异路径落在 $.ticks[i] 时会被反推成真实 tick 序号。
-        public static int CompareAll(string directory, Func<FixtureVector, JsonValue> actualOf)
+        // actualOfTick 按帧给出被测实现的输出文档；返回不一致的帧数。
+        // 目录为空或没有可比较帧时返回 0 —— 调用方**必须**另断言加载到几份向量，否则 0 帧会被读成"全部一致"。
+        // 比较根是 ticks[i].expected；差异路径若落在 $.ticks[j] 上会被 TickOfPath 反推成真实 tick，否则用上下文 tick i。
+        public static int CompareAll(string directory, Func<FixtureVector, int, JsonValue> actualOfTick)
         {
             var vectors = Load(directory);
             if (vectors.Count == 0)
@@ -111,12 +124,20 @@ namespace Ac.Sim
             }
 
             var mismatches = 0;
+            var compared = 0;
             foreach (var vector in vectors)
             {
-                var expected = vector.Root.Get(ExpectedKey);
-                var actual = actualOf(vector);
-                if (!Compare(vector.Name, 0, expected, actual)) mismatches++;
+                var count = vector.TickCount;
+                for (var i = 0; i < count; i++)
+                {
+                    var expected = vector.ExpectedOfTick(i);
+                    if (expected == null) continue;
+                    compared += 1;
+                    var actual = actualOfTick(vector, i);
+                    if (!Compare(vector.Name, i, expected, actual)) mismatches++;
+                }
             }
+            Debug.Log("[fixture] " + vectors.Count + " 份 / " + compared + " 帧");
             return mismatches;
         }
 

@@ -7,7 +7,8 @@ namespace Ac.Net
     public static class PacketWriter
     {
         // 通用包头里 type 的偏移：积压队列要按类型挑出快照，读侧与写侧共用同一个常量。
-        public const int TypeOffset = 1;
+        public const int TypeOffset = 1;      // version(u8) 之后是 type(u8)
+        public const int FlagsOffset = 2;     // 再往后是 flags(u16，小端：低位在 FlagsOffset)
 
         public static int Size(in PacketHeader header)
         {

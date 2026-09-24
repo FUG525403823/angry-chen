@@ -297,12 +297,13 @@ namespace Ac.Core
             if (!File.Exists(path))
             {
                 _snapshot = SettingsDefaults.Default();
+                ReadOnlyFile = false;            // 文件不在了就没有"高版本只读"这回事，否则落盘会被静默丢弃
                 ApplyVolumesToAudio();
                 return;
             }
             string text;
             try { text = File.ReadAllText(path, Encoding.UTF8); }
-            catch (IOException) { _snapshot = SettingsDefaults.Default(); return; }
+            catch (IOException) { _snapshot = SettingsDefaults.Default(); ReadOnlyFile = false; return; }
 
             SettingsSnapshot parsed;
             int sourceVersion;
@@ -319,6 +320,7 @@ namespace Ac.Core
                 catch (IOException) { }
                 _snapshot = SettingsDefaults.Default();
                 _dirty = true;
+                ReadOnlyFile = false;            // 坏文件已经改名备份，之后必须能正常落盘
                 ApplyVolumesToAudio();
                 return;
             }

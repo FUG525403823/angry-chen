@@ -452,40 +452,64 @@ namespace Ac.Net
         private bool Enqueue(List<byte[]> datagrams)
         {
             if (datagrams.Count == 0) return false;
+            var bytes = 0;
+            foreach (var datagram in datagrams) bytes += datagram.Length;
+            // §5.1：超上限先丢最旧的快照腾地方；连快照都没有就**拒收**（不入队、返回 false）。
+            // 旧实现写着"拒收"却恒返回 true，命令流的积压因此可以无限增长。
+            if (_backlogBytes + bytes > OutboundBacklogBytes && !MakeRoom(bytes)) return false;
             foreach (var datagram in datagrams)
             {
                 _backlog.Enqueue(datagram);
                 _backlogBytes += datagram.Length;
             }
-            TrimBacklog();
             FlushBacklog();
             return true;
         }
 
-        // §5.1：积压超上限先丢最旧的快照（事件与命令不丢）；连快照都没有时拒收，由调用方处理。
-        private void TrimBacklog()
+        // 丢最旧的快照，直到能装下这一批 bytes；一个都丢不动（全是命令/事件/可靠分片）时返回 false。
+        private bool MakeRoom(int bytes)
         {
-            while (_backlogBytes > OutboundBacklogBytes && _backlog.Count > 0)
+            while (_backlogBytes + bytes > OutboundBacklogBytes)
             {
-                if (!DropOldestSnapshot()) return;   // 没有快照可丢时停手：命令与事件不丢
+                if (!DropOldestSnapshot()) return false;   // 命令与事件不丢
             }
+            return true;
         }
+
+        // 保序重建：旧实现把非快照数据报 Enqueue 回**队尾**，于是 [cmd1, snap, cmd2] 会被旋转成
+        // [cmd2, cmd1] —— 同通道命令乱序，服务端按 seq 判定会直接丢掉旧命令（validate.cpp 的 kStaleTick）。
+        // 暂存队列是常驻字段，稳态下不分配。
+        private readonly Queue<byte[]> _scratch = new Queue<byte[]>();
 
         private bool DropOldestSnapshot()
         {
-            var count = _backlog.Count;
-            for (var i = 0; i < count; i++)
+            _scratch.Clear();
+            var dropped = false;
+            while (_backlog.Count > 0)
             {
                 var datagram = _backlog.Dequeue();
-                if (datagram[PacketWriter.TypeOffset] == (byte)PacketType.Snapshot)
+                if (!dropped && IsDroppableSnapshot(datagram))
                 {
                     _backlogBytes -= datagram.Length;
                     Stats.OnDroppedSnapshot();
-                    return true;
+                    dropped = true;
+                    continue;
                 }
-                _backlog.Enqueue(datagram);
+                _scratch.Enqueue(datagram);
             }
-            return false;
+            while (_scratch.Count > 0) _backlog.Enqueue(_scratch.Dequeue());
+            return dropped;
+        }
+
+        // 快照本体（type 5）与**不可靠通道**的分片（type 9 且可靠位未置）都可丢：
+        // 丢一片等于丢整条快照，这正是快照通道允许的补偿；可靠分片（命令/事件）永不丢。
+        private static bool IsDroppableSnapshot(byte[] datagram)
+        {
+            var type = datagram[PacketWriter.TypeOffset];
+            if (type == (byte)PacketType.Snapshot) return true;
+            if (type != (byte)PacketType.Fragment) return false;
+            // flags 是 u16 小端：Reliable 等低位就在 FlagsOffset 那个字节上。
+            return (datagram[PacketWriter.FlagsOffset] & (byte)PacketFlags.Reliable) == 0;
         }
 
         private void FlushBacklog()
@@ -509,7 +533,7 @@ namespace Ac.Net
             }
             _backlog.Enqueue(datagram);
             _backlogBytes += datagram.Length;
-            TrimBacklog();
+            MakeRoom(0);
         }
 
         private void TickChannels(double now)

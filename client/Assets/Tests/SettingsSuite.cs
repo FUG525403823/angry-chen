@@ -43,6 +43,36 @@ namespace Ac.Tests
             SelfTest.Add("settings.escaped_keynames", ChecksEscapedKeyNames);
             SelfTest.Add("settings.truncated_json", ChecksTruncatedJson);
             SelfTest.Add("settings.readonly_survives_reset", ChecksReadOnlySurvivesReset);
+            SelfTest.Add("settings.readonly_resets_across_loads", ChecksReadOnlyResetsAcrossLoads);
+        }
+
+        // 审计：Load 的提前返回不复位 ReadOnlyFile → 装过 v3 之后所有落盘被静默丢弃。
+        private static void ChecksReadOnlyResetsAcrossLoads()
+        {
+            var dir = TempDir();
+            Clean(dir);
+            File.WriteAllText(Path.Combine(dir, SettingsStore.FileName), "{\"schemaVersion\": 3}");
+            var store = new SettingsStore();
+            store.Load(dir);
+            SelfTest.True(store.ReadOnlyFile, "v3 只读", "没标记");
+            var empty = Path.Combine(dir, "empty");
+            Directory.CreateDirectory(empty);
+            Clean(empty);
+            store.Load(empty);                                     // 文件不存在
+            SelfTest.True(!store.ReadOnlyFile, "换成空目录后不再只读", "还是只读");
+            store.SetFov(70f);
+            SelfTest.True(store.FlushIfDirty(empty, true), "之后必须能落盘", "落盘被丢弃");
+            SelfTest.True(File.Exists(Path.Combine(empty, SettingsStore.FileName)), "文件真的写出来了", "没写");
+            File.WriteAllText(Path.Combine(dir, "bad.json"), "x");
+            var second = new SettingsStore();
+            second.Load(dir);                                      // v3 → 只读
+            var badDir = Path.Combine(dir, "bad");
+            Directory.CreateDirectory(badDir);
+            Clean(badDir);
+            File.WriteAllText(Path.Combine(badDir, SettingsStore.FileName), "{坏");
+            second.Load(badDir);                                   // 坏 JSON 分支
+            SelfTest.True(!second.ReadOnlyFile, "坏 JSON 分支之后也不再只读", "还是只读");
+            Clean(dir);
         }
 
         private static void ChecksDefaults()

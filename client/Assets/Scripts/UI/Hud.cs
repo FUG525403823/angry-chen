@@ -145,6 +145,9 @@ namespace Ac.UI
                 _rageWritten = sample.Rage;
                 _waveWritten = sample.Wave;
                 _intermissionWritten = sample.IntermissionMs;
+                // 审计 A1：上面算了 intermission 的脏检查、这里写了显示镜像，横幅却从来没被喂过，
+                // 倒计时恒 0（SetIntermission 全仓零运行时调用者）。显示镜像与渲染源必须同一次写入。
+                _banner.SetIntermission(sample.IntermissionMs);
             }
 
             // 状态类：每帧都跟（不建对象、不写文本，只写结构体字段）
@@ -163,8 +166,10 @@ namespace Ac.UI
                 _crosshair.SetState(CrosshairState.Hidden);
             }
 
-            _revive.SetVisible(combat && !sample.Downed && _revive.CanPrompt(false, sample.NearestAllyDistanceM));
-            _revive.SetFromRatio255(sample.ReviveRatio255);
+            _revive.SetVisible(combat && !sample.Downed && _revive.CanPrompt(sample.Downed, sample.NearestAllyDistanceM));
+            // 快照里的 ReviveRatio255 是**自己**的救援进度（自己没倒地时恒 0，见 server/src/room/room.cpp:361），
+            // 而事件通道写的是正在被救的队友的进度。无条件用采样覆盖，会让事件通道形同虚设（审计 A4）。
+            if (sample.Downed) _revive.SetFromRatio255(sample.ReviveRatio255);
 
             if (sample.Charging && ChargeWarningRemainingMs <= 0f) ChargeWarningRemainingMs = ChargeWarningMs;
         }

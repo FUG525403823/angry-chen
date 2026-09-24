@@ -5,6 +5,9 @@ namespace Ac.View
     // C08 §5(e)：6 平面视锥 + 距离 + 屏幕占比三级剔除；输出复用调用方给的索引缓冲（零分配）。
     public static class Culling
     {
+        // 注意：C08 §5(e) 冻结 90m，C14 §5 冻结「羊 60m / 场地 80m」——两份计划互斥，
+        // 不能在代码里自己拍板（审查已两次判定"实现方不得自签规格"）。保持 C08 的值，
+        // 冲突登记在 docs/evidence/client-v2-frame.md §4，等人类裁决后一次改齐。
         public const double CullDistanceM = 90.0;
         public const double CullMinScreenRatio = 0.0015;
         public const int PlaneCount = 6;

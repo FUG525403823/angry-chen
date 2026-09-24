@@ -17,12 +17,53 @@ namespace Ac.Tests
             SelfTest.Add("net.retransmit_rto", ChecksRetransmitRto);
             SelfTest.Add("net.fragment_1200", ChecksFragment1200);
             SelfTest.Add("net.stats_p99", ChecksStatsP99);
+            SelfTest.Add("net.backlog_cap", ChecksBacklogCap);
         }
 
         // ---- 1. 握手与状态机（真套接字回环）----------------------------------------------------------
 
         // 服务端桩件直接用生产侧的 UdpTransport.RealUdpSocket（不 connect，靠 SendTo/ReceiveFrom 回环对话）：
         // 测试不再自带一份套接字实现，避免桩件与生产路径各走一套语义。
+
+        // 审计 M8：积压超上限且无快照可丢时，Send 恒 true、积压无限增长（与自己 :470 的注释相反）。
+        private static void ChecksBacklogCap()
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            var peer = new MiniPeer(link.Create(2));
+            peer.Attach(link);
+            peer.Start();
+            link.Pump();
+            client.Connect("mem", 0);
+
+            // 先无丢包跑通握手；否则 Send 会因为"未连接"返回 false，测出来的拒收是假的。
+            for (var i = 0; i < 40 && client.State != ConnectionState.Connected; i++)
+            {
+                clock.Advance(50.0);
+                link.NowMs = clock.NowMs;
+                client.Poll(UdpTransport.MaxInboundPacketsPerPoll);
+                peer.Pump(link.NowMs);
+                link.Pump();
+            }
+            SelfTest.True(client.State == ConnectionState.Connected, "握手必须先成功", client.State.ToString());
+
+            // 之后发送永远失败：积压只增不减。**不推进时钟**，避免把状态推成 Reconnecting
+            // 而让"拒收"来自别的原因。纯命令载荷：没有任何可丢的快照。
+            link.FailSends = true;
+            var payload = new byte[1000];
+            var accepted = 0;
+            var rejected = 0;
+            for (var i = 0; i < 200; i++)
+            {
+                if (client.Send(PacketType.Command, payload)) accepted += 1;
+                else rejected += 1;
+            }
+            SelfTest.True(accepted > 0, "封顶之前必须受理", accepted.ToString());
+            // 旧实现这里 rejected == 0（恒 true），积压会一路涨到 200KB 以上。
+            SelfTest.True(rejected > 0, "无快照可丢时必须拒收", rejected.ToString());
+            SelfTest.True(client.State == ConnectionState.Connected, "拒收必须来自封顶而不是断开", client.State.ToString());
+        }
 
         private static void ChecksHandshake()
         {
@@ -710,6 +751,7 @@ namespace Ac.Tests
 
             internal double NowMs;
             internal double LossRate;
+            internal bool FailSends;      // 硬失败：Send 返回 false（socket 不可用的场景）
             internal double LatencyMs;
             internal double JitterMs;
             internal int Dropped;
@@ -795,6 +837,7 @@ namespace Ac.Tests
 
                 public bool Send(byte[] datagram, int length)
                 {
+                    if (_link.FailSends) return false;
                     var copy = new byte[length];
                     Array.Copy(datagram, copy, length);
                     _link.Transmit(_id, copy);

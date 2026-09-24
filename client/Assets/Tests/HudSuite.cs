@@ -19,6 +19,9 @@ namespace Ac.Tests
             SelfTest.Add("hud.ammo_rage", ChecksAmmoRage);
             SelfTest.Add("hud.visibility", ChecksVisibility);
             SelfTest.Add("hud.wave_killfeed", ChecksWaveKillFeed);
+            SelfTest.Add("hud.intermission_wiring", ChecksIntermissionWiring);
+            SelfTest.Add("hud.stats_throttle", ChecksStatsThrottle);
+            SelfTest.Add("hud.revive_event_vs_sample", ChecksReviveEventVsSample);
             SelfTest.Add("hud.text_and_font", ChecksTextAndFont);
             SelfTest.Add("hud.revive_step", ChecksReviveStep);
             SelfTest.Add("hud.zero_alloc", ChecksZeroAlloc);
@@ -42,6 +45,74 @@ namespace Ac.Tests
             return sample;
         }
 
+        // 审计 A1：Apply 算了 intermission 的脏检查、写了 _intermissionWritten 显示镜像，
+        // 却从不喂给真正渲染倒计时的横幅 ⇒ 波间倒计时恒 0。
+        // 审计 A7（C10 §9 冻结接口）：统计行必须有独立的 250ms 窗口与 StatsWrites，
+        // 且不许吃掉数值类的 100ms 窗口。
+        // 审计 A4：事件通道写的队友救援进度被每帧采样无条件覆盖；默认样本（距离 0 = 没有测量）又让提示常显。
+        private static void ChecksReviveEventVsSample()
+        {
+            var hud = new Hud();
+            var sample = default(HudSample);
+            sample.Phase = Hud.PhasePlaying;
+
+            var progress = default(HudEvent);
+            progress.Type = EventType.ReviveProgress;
+            progress.ReviveRatio255 = 128;
+            SelfTest.True(hud.PushEvent(progress), "救援进度事件必须被受理", "被拒");
+            SelfTest.True(hud.Revive.Visible, "事件让提示可见", "不可见");
+            SelfTest.True(Math.Abs(hud.Revive.Progress - 128f / 255f) < 1e-5f, "事件进度 128/255（不量化）", hud.Revive.Progress.ToString("R"));
+
+            // 自己没倒地的采样（reviveRatio255 恒 0）不许把队友的进度抹掉
+            hud.Apply(sample);
+            SelfTest.True(Math.Abs(hud.Revive.Progress - 128f / 255f) < 1e-5f, "采样不许覆盖事件进度", hud.Revive.Progress.ToString("R"));
+            // 距离 0 表示这一帧没有测量：不许常显（旧实现 0 <= 2.0 判定为可见）
+            SelfTest.True(!hud.Revive.Visible, "无测量时提示不许常显", "常显了");
+
+            // 自己倒地时，采样里"自己的"进度才生效，且不提示救援
+            var selfDowned = default(HudSample);
+            selfDowned.Phase = Hud.PhasePlaying;
+            selfDowned.Downed = true;
+            selfDowned.ReviveRatio255 = 51;
+            hud.Apply(selfDowned);
+            SelfTest.True(Math.Abs(hud.Revive.Progress - 51f / 255f) < 1e-5f, "自己倒地时采样进度生效", hud.Revive.Progress.ToString("R"));
+            SelfTest.True(!hud.Revive.Visible, "自己倒地不提示救援", "提示了");
+        }
+
+        private static void ChecksStatsThrottle()
+        {
+            var throttle = new UiThrottle();
+            SelfTest.True(throttle.ShouldWriteStats(1), "统计首窗立即放行", "被跳过");
+            SelfTest.True(throttle.ShouldWrite(5), "统计窗口不许吃数值窗口", "被吃掉");
+            SelfTest.Equal(1, (long)throttle.NumericWrites);
+            SelfTest.True(!throttle.ShouldWriteStats(2), "250ms 未到不放行", "提前写了");
+            throttle.Tick(249f);
+            SelfTest.True(!throttle.ShouldWriteStats(2), "249ms 不放行", "提前写了");
+            throttle.Tick(1f);
+            SelfTest.True(throttle.ShouldWriteStats(2), "到 250ms 放行", "没放行");
+            SelfTest.Equal(2, (long)throttle.StatsWrites);
+            SelfTest.Equal(0, (long)throttle.EventWrites);
+            SelfTest.True(throttle.SkippedWrites >= 2, "跳过要有计数", throttle.SkippedWrites.ToString());
+        }
+
+        private static void ChecksIntermissionWiring()
+        {
+            var hud = new Hud();
+            var sample = default(HudSample);
+            sample.Phase = Hud.PhasePlaying;
+            sample.Wave = 3;
+            sample.IntermissionMs = 12000;
+            hud.Apply(sample);
+            SelfTest.Equal(12000, (long)hud.Banner.IntermissionMs);      // 旧代码恒 0
+            SelfTest.Equal(12000, (long)hud.DisplayedIntermissionMs);    // 显示镜像与横幅同源
+            var zero = new Hud();
+            var fresh = default(HudSample);
+            fresh.Phase = Hud.PhasePlaying;
+            fresh.IntermissionMs = 0;
+            zero.Apply(fresh);
+            SelfTest.Equal(0, (long)zero.Banner.IntermissionMs);
+        }
+
         private static void ChecksElementMap()
         {
             var hud = new Hud();
@@ -60,7 +131,10 @@ namespace Ac.Tests
             SelfTest.Equal(60, (long)hud.Rage.Rage);
             SelfTest.True(hud.Rage.RageLeftMs == 250f, "狂暴剩余 = rageLeft100Ms/100", hud.Rage.RageLeftMs.ToString("R"));
             SelfTest.Equal((long)CrosshairState.Target, (long)hud.Crosshair.State);   // 采样 → 准星可命中态
-            SelfTest.True(Math.Abs(hud.Revive.Progress - 0.50196f) < 1e-4f, "救援进度 ← reviveRatio255/255（不量化）", hud.Revive.Progress.ToString("R"));
+            // 权威：快照的 reviveRatio255 是**该玩家自己**的倒地救援进度（server/src/room/room.cpp:361-362
+            // 取 entity->downed 的 reviveRatio，未倒地恒 0），不能当"正在被救的队友"的提示进度 ——
+            // 那是 ReviveProgress 事件通道的事。这条断言以前测的是"采样覆盖事件之后"的值（审计 A4）。
+            SelfTest.True(Math.Abs(hud.Revive.Progress) < 1e-6f, "自己未倒地时采样不驱动提示进度", hud.Revive.Progress.ToString("R"));
 
             // 事件 → 元素（走 Hud.PushEvent，不是直接调元素）
             var hit = default(HudEvent);

@@ -24,6 +24,7 @@ namespace Ac.Tests
             AudioSuite.Register();
             LobbySuite.Register();
             SettingsSuite.Register();
+            PerfSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();
