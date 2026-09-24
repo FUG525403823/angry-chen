@@ -1,0 +1,19 @@
+{
+    "name": "Ac.UI",
+    "rootNamespace": "Ac.UI",
+    "references": [
+        "Ac.Core",
+        "Ac.Sim",
+        "Ac.Net",
+        "Ac.View"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

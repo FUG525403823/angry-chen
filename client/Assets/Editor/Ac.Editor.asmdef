@@ -1,0 +1,25 @@
+{
+    "name": "Ac.Editor",
+    "rootNamespace": "Ac.Editor",
+    "references": [
+        "Ac.Core",
+        "Ac.Sim",
+        "Ac.Net",
+        "Ac.View",
+        "Ac.UI",
+        "Ac.Audio",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

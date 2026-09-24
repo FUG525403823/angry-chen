@@ -1,0 +1,23 @@
+{
+    "name": "Ac.Tests",
+    "rootNamespace": "Ac.Tests",
+    "references": [
+        "Ac.Core",
+        "Ac.Sim",
+        "Ac.Net",
+        "Ac.View",
+        "Ac.UI",
+        "Ac.Audio"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
