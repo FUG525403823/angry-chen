@@ -65,9 +65,10 @@ namespace Ac.Tests
 
         private static void ChecksPanelBudgetSingleSource()
         {
-            SelfTest.True(Ac.UI.DebugPanel.P95WarnMs == FrameBudget.FrameP95BudgetMs, "面板 P95 阈值同源", Ac.UI.DebugPanel.P95WarnMs.ToString("R"));
-            SelfTest.True(Ac.UI.DebugPanel.MaxWarnMs == FrameBudget.FrameP99BudgetMs, "面板 Max 阈值同源", Ac.UI.DebugPanel.MaxWarnMs.ToString("R"));
+            // 旧的"面板阈值 == FrameBudget"是常量别名比较，构造上恒真（把 DebugPanel 改回硬编码 20f 也照样绿），
+            // 已删除。真正要守的是**预算表本身**：它一旦被动过，下面这条会红。
             SelfTest.True(FrameBudget.FrameP95BudgetMs == 20f && FrameBudget.FrameP99BudgetMs == 33f, "预算表本身是 20/33", FrameBudget.FrameP95BudgetMs.ToString("R"));
+            SelfTest.True(FrameBudget.ManagedAllocBudgetBytes == 0 && FrameBudget.Gc0DeltaBudget == 0, "稳态零分配/零 GC0 是硬预算", FrameBudget.ManagedAllocBudgetBytes.ToString());
         }
 
         private static void ChecksConstants()

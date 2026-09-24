@@ -34,12 +34,20 @@ namespace Ac.Tests
             var args = Environment.GetCommandLineArgs();
             var scene = Arg(args, "-frameBenchScene", "bench-4p60sheep");
             var outPath = Arg(args, "-frameBenchOut", "");
-            var warmup = ArgInt(args, "-frameBenchWarmup", 120);
-            var sample = ArgInt(args, "-frameBenchSample", 600);
+            var warmup = ArgInt(args, "-frameBenchWarmup", FrameBudget.WarmupFrames);
+            var sample = ArgInt(args, "-frameBenchSample", FrameBudget.SampleFrames);
+            var runs = ArgInt(args, "-frameBenchRuns", FrameBudget.Runs);
             var tier = ArgInt(args, "-frameBenchQuality", -1);
             if (tier >= 0) Batching.SetQualityTier(tier);
-            var entityCount = 64;                    // 4 玩家 + 60 羊
-            if (scene != null && scene.IndexOf("4p60sheep", StringComparison.Ordinal) < 0) entityCount = 64;
+            // 只认自己真的能造出来的负载；未知场景一律拒绝（原来的 if 两个分支同值是死代码）。
+            if (scene == null || scene.IndexOf("4p60sheep", StringComparison.Ordinal) < 0)
+            {
+                Console.Out.WriteLine("ENV: scene '" + scene + "' cannot be built by this harness");
+                Console.Out.Flush();
+                EditorApplication.Exit(2);
+                return;
+            }
+            const int entityCount = 64;              // 4 玩家 + 60 羊
 
             var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
             loop.LocalPlayerId = 1;
@@ -88,7 +96,7 @@ namespace Ac.Tests
             Meta(sb, "scene", scene);
             Meta(sb, "warmupFrames", warmup.ToString(CultureInfo.InvariantCulture));
             Meta(sb, "sampleFrames", measureFrames.ToString(CultureInfo.InvariantCulture));
-            Meta(sb, "runs", "1");
+            Meta(sb, "runs", runs.ToString(CultureInfo.InvariantCulture));
             Meta(sb, "commit", Safe(delegate { return GitCommit(); }, "unknown"));
             Meta(sb, "verdict", cpuPass ? "cpu-pass" : "fail");
 Meta(sb, "verdictNote", "headless: CPU frame path only (sync/predict/view/HUD); drawCalls/triangles/particles/materials need a graphics device, reported as -1 and judged FAIL");

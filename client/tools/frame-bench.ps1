@@ -43,7 +43,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $json = (Get-Location).Path + "/" + $OutDir + "/run-$stamp-$i.json"
     $tierArg = @()
     if ($QualityTier -ge 0) { $tierArg = @("-frameBenchQuality", $QualityTier) }
-    & $Unity -batchmode -projectPath $Project -logFile (Join-Path $OutDir "run-$stamp-$i.log") -executeMethod Ac.Tests.FrameBench.Run -frameBenchScene $Scene -frameBenchOut $json -frameBenchWarmup $WarmupFrames -frameBenchSample $Frames @tierArg
+    & $Unity -batchmode -projectPath $Project -logFile (Join-Path $OutDir "run-$stamp-$i.log") -executeMethod Ac.Tests.FrameBench.Run -frameBenchScene $Scene -frameBenchOut $json -frameBenchWarmup $WarmupFrames -frameBenchSample $Frames -frameBenchRuns $Runs @tierArg
     # 没有数字就谈不上"超预算"：这在 §9 里是"环境不可用"（2），不是 FAIL（1）。
     if (-not (Test-Path $json)) { Write-Host "ENV: run $i produced no JSON (editor could not run the bench - no verdict is possible)"; exit 2 }
     try { $sample = Get-Content -Raw -Encoding UTF8 $json | ConvertFrom-Json } catch { Write-Host "FAIL: run $i JSON parse error"; exit 1 }
