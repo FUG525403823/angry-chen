@@ -48,6 +48,8 @@ target_link_libraries(ac_tests PRIVATE ac_core)
 
 # fixture 目录用绝对路径注入：ctest 的工作目录是构建目录，相对路径找不到 server/tests/fixtures（S03 §5.5）。
 target_compile_definitions(ac_tests PRIVATE "AC_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures\"")
+# S07 §5.5：对拍向量在 docs/evidence/fixtures（仓库根的 docs，不在 server/ 下），同样注入绝对路径。
+target_compile_definitions(ac_tests PRIVATE "AC_EVIDENCE_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../docs/evidence/fixtures\"")
 
 enable_testing()
 add_test(NAME unit COMMAND ac_tests)

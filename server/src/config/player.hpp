@@ -47,6 +47,28 @@ inline constexpr uint8_t kButtonRage = 32u;
 inline constexpr uint8_t kButtonSwitchWeapon = 64u;
 inline constexpr uint8_t kButtonReady = 128u;
 
+// §5.6：输入域常量（v1 input.ts）——configHash 的 input 组成员
+inline constexpr double kMoveAxisLimit = 1.0;
+inline constexpr double kPitchLimitRad = kPi / 2.0;
+
+// §5.6：kind -> 基础属性（v1 entity.ts baseStats，下标 = EntityKind）。
+// 玩家两项与 kMaxHp/kMaxArmor 同源；其余三行的值抄 v1 entity.ts，S08/S09 落地时若计划另有数值须先改契约。
+struct BaseStats {
+  int32_t hp;
+  int32_t armor;
+};
+inline constexpr std::array<BaseStats, 4> kKindBaseStats{{
+    {kMaxHp, kMaxArmor},
+    {60, 0},
+    {1, 0},
+    {1, 0},
+}};
+static_assert(kKindBaseStats[0].hp == kMaxHp && kKindBaseStats[0].armor == kMaxArmor,
+              "§5.6：玩家基础属性与玩家表同源");
+// 羊形/投射物/掉落物的 hp/armor 抄 v1 entity.ts（60/0、1/0、1/0）。这三个值今天没有第二个真实来源可
+// 锚定，所以不写「把字面量再抄一遍」的 static_assert（它永远不会失败）——S09 落地羊形表时改成引用 S09 的表。
+static_assert(kMoveAxisLimit == 1.0 && kPitchLimitRad == kPi / 2.0, "§5.6：输入域常量抄 v1 input.ts");
+
 // §5.1/§5.6 固定步长；§5.1 阶段 7 的救援速度上限
 inline constexpr uint32_t kStepDtMs = 50u;
 inline constexpr double kRescueSpeedClampMps = 1.5;

@@ -113,7 +113,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 - fixture 格式：`#` 注释；`# expect: key=value`（值用 `0x` 前缀大写十六进制，**键名一律小写**）；其余行是大写十六进制、单空格分组、按行序拼接。§6 的字符门禁只允许 `[0-9A-F #a-z=_,.:()-]`，所以注释与 expect 行里不能出现大写字母、`+` 或中文。
 - 握手令牌：`reconnectToken` 的值是 u32（S04 §5.5：`salt ^ clientNonce`），**线上是 8 位小写十六进制 ASCII**（ADR-009「握手时序」+ C03 §5.5）；解码遇到大写或非十六进制字符按 `kBadValue` 拒收。所以 Hello 载荷 12 字节、Resume 载荷 8 字节。
 - KeepAlive 更严：ADR-009 只说“每 500ms 一次、`flags.ackOnly` 时无载荷”，本实现要求 flags **恰好** `reliable|ackOnly`（0x5）且载荷 0 字节（§5.1 的类型映射），多置一位即 `kBadValue`。
-- `ac_tests` 通过编译期宏 `AC_FIXTURE_DIR` 拿 fixture 绝对路径（CMake 注入；直编兜底时回退到相对路径 `server/tests/fixtures`，需在仓库根运行）。
+- `ac_tests` 通过编译期宏 `AC_FIXTURE_DIR` 拿 fixture 绝对路径（CMake 注入；直编兜底时回退到相对路径 `server/tests/fixtures`，需在仓库根运行）。S07 起另有 `AC_EVIDENCE_FIXTURE_DIR` 指向仓库根的 `docs/evidence/fixtures`（跨语言对拍向量，不在 `server/` 下），兜底同样回退到仓库根相对路径。
 
 ### 4.1 fixture 清单（10 个，`server/tests/fixtures/`）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §9 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §10 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -280,7 +280,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 8 | `collideStatic`（谷仓推离 → 栅栏夹取，见 §7.2） | 已实现 |
 | 9 | 重建网格 + `separateEntities`，每趟分离后重跑 `collideStatic` | 已实现（1 趟） |
 | 10 | `resolveCombat` | 空实现；签名按 S08 §9 冻结（`CombatContext*` 前置声明） |
-| 11 | `resolveSheepAttacks` / `resolveEliteFire` / `advanceProjectiles` / `updateSheepKing` | 空实现；等 S08 / S09 |
+| 11 | `resolveSheepAttacks` / `resolveEliteFire` / `advanceProjectiles` / `updateKing` | 空实现（签名按 S09 §9，`updateKing` 暂无调用点，见 §7.5 第 10 条） |
 | 12 | `updateWorldStats`（`stats.aliveSheep`） | 复用 S05 |
 | 13 | `recordPoseHistory` | S05 §5.3 的"每 tick 末尾"，追加在末尾（见 §7.5 第 2 条） |
 
@@ -335,20 +335,62 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 9. §5.1 的 13 个空实现阶段签名一次冻结，能查到下游冻结的就逐字照抄：`updateAiIntents`（`(World&, uint32_t dtMs, const EntityId*, uint32_t, const SpatialGrid&)`）与 `applyAiIntents` 按 S09 §9，`resolveCombat` 按 S08 §9（`CombatContext*` 前置声明），`int resolveSheepAttacks(World&, const EntityId*, uint32_t)` / `int advanceProjectiles(World&, uint32_t dtMs, ...)` / `int updateKing(World&, Entity&, uint32_t dtMs)` 按 S09 §9（返回值 = 落地条数，本份恒 0）。S09 §9 只钉住 `int resolveEliteFire(...)` 与 `advanceProjectiles` 的前缀，本份就**只实现被钉住的部分**（`resolveEliteFire(World&)`、`advanceProjectiles(World&, uint32_t)`），不替下游猜参数。
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
-10. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-12. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §9 表格的实测行为准。
+12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §10 表格的实测行为准。
 
-## 8. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 8. 跨语言对拍（S07 §5 冻结）
+
+对拍向量的唯一真值是**冻结的 v1 实现**（`D:\projects\tmp\angry-chen-bak`，**全程只读**）：`tools/export-fixtures.mjs` 在可写派生副本（默认 `D:\projects\tmp\angry-chen-fixture`，缺失时从只读源复制、排除 `node_modules`/`.git`）上把 v1 的 `Math.sin/cos/atan2/asin` 换成 `docs/evidence/fixtures/trig-table.json` 的共享整数表，逐 tick 投影实体/事件/RNG 状态写成纯文本 JSON 入库；`server/tests/fixture_io.cpp` + `fixture_test.cpp` 用同一批向量逐位复现，**首个**差异以 `DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>` 报出。
+
+| 命令（工作目录 = 仓库根） | 作用 |
+| --- | --- |
+| `node tools/export-fixtures.mjs` | 写盘（自动派生副本；`--root`/`--out` 可覆盖） |
+| `node tools/export-fixtures.mjs --check` | 幂等校验：与盘上逐字节比较，不写盘 |
+| `node tools/export-fixtures.mjs --list` | 清单：`name bytes sha256`，并打印 `configHash` 覆盖组 |
+| `server/build/ac_tests.exe --filter=fixture` | C++ 侧逐 tick 逐字段逐位复现（S07 §6） |
+
+清单、世界初态约定、再生成与判读流程、以及尚未交付场景的所有者表都在 [`docs/evidence/fixtures/README.md`](../docs/evidence/fixtures/README.md)。
+
+### 8.1 覆盖范围与链序冲突（**需裁决**）
+
+§5.3 列了 14 个场景，其中 10 个（连射/霰弹/倒地救援、四种羊形 AI、羊王、波次导演、快照 round-trip、三流归属）依赖 **S08/S09/S12** 才存在的能力；§5.6 的 `configHash` 还覆盖「武器表与散布常量、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则」这些 C++ 侧此刻并不存在的常量表 → 任何 14 场景的 `configHash` 都不可能通过。本份只交付**移动类 4 份**（§5.3 前 4 行）与完整管线（导出脚本、schema 读取、`configHash` 重算、逐位比较、DIFF 报告、自检），其余 10 份随各自拥有其行为的计划一起导出：**导出时刻就有消费者，才能验证一份向量到底在测什么**，避免把没人验证过的语义猜测冻成真值。
+
+### 8.2 实测（`--filter=fixture` = 6/6）
+
+- 4 份向量（`still-60t` 60 tick、`straight-line-240t` 240 tick、`barn-collision-400t` 400 tick、`fence-bounds-400t` 400 tick）**逐 tick 逐字段逐位一致**：1100 tick × 4 实体 × 9 字段 + 事件条数 + `rngState` 三流；`configHash = 96d1d5fe` 两侧相同。
+- 自检（§6 DoD）：把最后一个 tick 的 `entities[0].pos.z` 改动 1 ULP → 报出 `DIFF fence-bounds-400t tick=400 field=entities[0].pos.z expected=0x4043acccccccccce actual=0x4043accccccccccd`；改 `configHash` → 报出 `field=configHash` 且 `comparedTicks=0`（**不跑 tick**）。
+- 移动类向量的事件恒 0、三流抽取次数恒 0、`flags` 恒 0 → 与 S06 的"纯移动"内核语义一致（也说明这批向量没有偷偷消费 RNG）。
+
+### 8.3 计划文本纠正与已声明偏差（S07，十五条）
+
+1. 场景数 14 → 4（见 8.1，**需裁决**）；`--filter=fixture` 相应是 `TESTS 6/6`（4 份向量 + 2 条自检）而不是 §6 的 14/14。
+2. §5.1 的示例把 `expected` 写成单对象，但 §5.4 要求"每个 tick 都必须有期望投影，禁止抽样跳过" → 本份把它放进每个 tick 项里（`ticks[i].expected.{entities,events,rngState}`），字段与含义不变；**ADR-010 §6 的 schema 描述需要回写**（ADR 文件与客户端链并行维护，本份不直接改）。
+3. §5.1 的 `commands[]` 比 v1 `Command` 多一个 `id`：v1 用**槽位**语义（第 k 条命令给升序第 k 名玩家），写盘时记录 id 供 C++ 侧校验槽位映射。
+4. 事件只比较**条数**：C++ 的 `World::Event` 目前只有 S05 冻结的条目头（`eventId`/`type`），载荷由 S08/S09 追加；本批向量 events 恒 0（条数比较等价于全等），载荷比较随 S08/S09 补齐。
+5. `flags` 位表：C++ 侧（`fixture_io.hpp` 的 `kFlag*`）今天只有 bit5 `idle` 有来源（`entity.idle`）；导出侧（`export-fixtures.mjs` 的 `FLAGS`）按 v1 语义映射 bit0 `downed`/bit1 `rageMode`/bit2 `reloading`/bit5 `idle`，bit3 `charging`/bit4 `fading` 只出现在 v1 的快照位表（`net.ts`）→ 本批 `flags` 恒 0，各位的映射随 S08/S09/S12 补齐。
+6. C++ 的生成走显式 `SpawnParams.hp/armor`（S05 §5.2），v1 的 `spawnEntity` 则从 `entity.baseStats[kind]` 取 → 对拍用例显式传 `kKindBaseStats`。这条差异本身是真实的跨语言语义差：**S08 起的每条生成路径都必须显式给基础属性**，否则初态就不一致（第一 tick 就会以 `entities[i].hp expected=100 actual=0` 失败）。
+7. `config/player.hpp` 追加 `kMoveAxisLimit`/`kPitchLimitRad`/`kKindBaseStats`（§5.6 的 hash 要覆盖输入域与四类基础属性；羊形/投射物/掉落物的 hp/armor 抄 v1 `entity.ts`，S09 若另有数值须先改契约）。
+8. `sim/arena.hpp` 第 10 个生成点的 z 由 `0.0` 改为 `-0.0`：v1 的字面量是 `{ x: -38, z: -0 }`，而 §5.4 规定 `-0.0` 与 `0.0` **不等** → `configHash`（`%.17g` 文本）会区分两者。**这是对拍机制抓到的第一处真实漂移**（此前只被 `== 0.0` 的数值断言掩盖）；**S05 §5.4 的表需要回写**（计划文本冻结、不回收写，本份只改代码并把纠正记在这里）。
+9. 体积门冲突（**需裁决**）：§5.5/ADR-010 的体积门是"14 份 < 2 MB"，但按 §5.1 冻结的"每 tick 全量投影 + `%.17g`"写法，4 份移动向量已占 1 446 500 B（69%）。更麻烦的是 §6 的取证命令 `Get-ChildItem docs/evidence/fixtures -Recurse -File | Measure-Object Length -Sum` 是**目录口径**：实测 2 163 463 B（含 S02 的 `trig-table.json` 709 640 B 与本目录 `README.md`），即今天就已经超门限 66 311 B——而它数的对象（目录内所有文件）与 §5.5 说的"14 份 fixture"并不是一回事。要么把浮点格式放宽为最短往返表示（仍无损，但不再是 §5.1 的冻结格式），要么按里程碑分档抬高门限，或把口径从"目录内所有文件"改回"对拍向量文件"。
+10. `--filter=fixture` 的汇总行：§5.4 的示例写作 `fixtures: N/14 passed, 1 failed`，本份按仓库冻结的输出契约交回框架自己的 `TESTS p/t`（`tiny_test.hpp`）+ 每用例一行 `fixture <name> ticks=<n> ...`——不另写一个只有这个测试文件才认识的汇总格式。
+11. §4 写"注册进 `main_test.cpp`"：S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp` → 本份照旧只新增 `tests/fixture_io.{hpp,cpp}` 与 `tests/fixture_test.cpp`，不改任何清单；向量目录由新宏 `AC_EVIDENCE_FIXTURE_DIR` 注入（直编兜底回退到仓库根相对路径）。
+12. 比较器在被冻结字段之外还查 4 个内部不变量：`commands[i].id`（校验槽位映射）、`entities.count`、`world.tick`、`world.timeMs`。它们失败时 `field=` 会是 schema 之外的路径——这是**刻意的**（§5.1 冻结的是字段与比较顺序，没有禁止多查），但确实是 §5.1 之外的额外形状。
+13. §5.2 的"计数包装 + 重放推导"本批**没有被任何向量执行**：移动路径零 RNG 抽取（4 份都是 `draws=ai:0,spawn:0,fx:0`），首个真实消费者是 S08/S09 把 spawn/fx 流拉进来的场景。今天验证到的是"初值派生 + 每 tick 读 `World::rng.<stream>.a`"这一层（`mulberry32` 的抽取序列本身由 S02 的 `rng_*` 用例覆盖）。
+14. §4 的"用共享整数表替换 v1 的 `Math.sin/cos/atan2/asin`"实现为**进程内替换**（`patchMath`，在 import v1 之前打补丁），不往任何磁盘写补丁 → §7 的"补丁只打在可写派生副本上"以更强的形式成立（两侧磁盘都不动）。副作用是替换面覆盖 v1 的全部调用点（不止移动路径），这正是对拍要的：C++ 侧同样只走整数表。
+15. 导出脚本的基线纪律做成可判定：默认拒绝 `--root` 指向只读源；启动时逐文件比对派生副本与只读源（`packages/shared/src`，不一致直接失败，除非显式 `--allow-patched-copy`）；结束时比对只读源的 (文件数, 总字节, 最新 mtime) 指纹，被写入即报错；`--list` 缺文件由"打印 missing"改为**失败**；体积门移到写盘**之前**（门失败时不留下超限生成物）；CRC32C 与角度表常量改为 import `tools/lib/trig-table.mjs` 的唯一实现。
+
+## 9. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 9. 当前状态
+## 10. 当前状态
 
-**S01–S06 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）与模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）就位；战斗、AI、房间、持久化由 S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S07 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）就位；战斗、AI、房间、持久化由
+S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -369,7 +411,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 每通道序号（§5.2） | `ChannelSeq` u16 回绕、重复/过期包判旧（`reliability_duplicate_is_ignored`） |
 | 心跳与断线实测 | 50s 内恰好 100 次心跳、相邻间隔恒 500ms；最后一个合法包后 3000ms 判断线并进入 30s 宽限期 |
 | `Get-ChildItem server/src/net -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::pow","exp\(","\b0\.0[0-9]* \* pow"` | 0 命中 |
-| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 136/136`（含真实 UDP 回环那条；**S05 时点值**，S06 后为 156/156，见下方 S06 行） |
+| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 136/136`（含真实 UDP 回环那条；**S05 时点值**，S06 后为 156/156、S07 后为 162/162，见下方各行） |
 | `server/build/ac_tests.exe --filter=rng` / `--filter=quantize` / `--filter=math` / `--filter=trig` | 末行依次 `TESTS 6/6`、`TESTS 10/10`、`TESTS 8/8`、`TESTS 4/4`，退出码全 0 |
 | `server/build/ac_tests.exe --filter=trig` 的打印行 | `sin crc=0x8BD9F737 atan crc=0x197C3A8D asin crc=0xAD2BD35E` |
 | `--filter=codec` | 末行 `TESTS 14/14`，退出码 0 |
@@ -420,6 +462,15 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | `Select-String server/src/sim` 扫描 `\bnew\b` / `malloc` / `realloc` / `std::vector` / `std::string` | 0 命中（热路径零堆分配由 `alloc_test.cpp` 的计数版全局 `operator new` 断言） |
 | `--filter=world` 的打印行（S06 后） | `worldBytes=115840 entityBytes=96 poseBytes=7688 gridBytes=3652 eventBytes=8`（`timeMs` u32 + `eventCursor` u16 + 2 填充 = +8） |
 | g++ 直编兜底（新增 `server/src/sim/*.cpp`） | `TESTS 156/156`，退出码 0（与 cmake 分支同数） |
-| 计划偏差清单（S06） | §7.5 的十二条（含 2 条**待裁决**：S10 §5 的 3 参草图、投射物是否参与静态碰撞） |
+| 计划偏差清单（S06） | §7.5 的十三条（含 2 条**待裁决**：S10 §5 的 3 参草图、投射物是否参与静态碰撞） |
+| `node tools/export-fixtures.mjs`（S07 后） | 从只读源自动派生副本后写出 4 份向量，总体积 1 446 500 B（体积门 2 097 152 B）；`configHash = 96d1d5fe` |
+| `node tools/export-fixtures.mjs --check` / `--list` | `check ok：4/4 与盘上逐字节一致`（幂等）；`本批 4 份 = 1446500 B（体积门 2097152 B）`；`--out 目录合计 = 2163463 B / 6 个文件`（§6 的同一条命令，超出 66311 B）；`只读源未写入：packages/shared/src 62 文件 / 317509 B`；清单 4 行 `name bytes sha256`（见 `docs/evidence/fixtures/README.md` §1） |
+| 导出侧自检（S07 §5.2/§6） | `crc32c('123456789') == 0xe3069283`；`%.17g` 11 条 **C 侧实测**向量（含 tie 例 `0x42f8ceb15abbf812 → 436416285491073.12`）；启动时派生副本与只读源逐文件一致 |
+| `server/build/ac_tests.exe --filter=fixture` | 末行 `TESTS 6/6`，退出码 0：4 份向量逐 tick 逐字段**逐位**一致（1100 tick × 4 实体 × 9 字段 + 事件条数 + 三流 RNG 状态） |
+| `--filter=fixture` 的自检（§6） | 改最后 tick 的 `entities[0].pos.z` 一位 → `DIFF fence-bounds-400t tick=400 field=entities[0].pos.z expected=0x4043acccccccccce actual=0x4043accccccccccd`；改 `configHash` → `field=configHash` 且 `comparedTicks=0`（不跑 tick） |
+| `server/build/ac_tests.exe`（S07 后） | 末行 `TESTS 162/162`，退出码 0（S01 18 + S02 28 + S03 40 + S04 24 + S05 26 + S06 20 + S07 6） |
+| 22 组 `--filter` 计数（S07 后） | 与 S06 逐组同数（size 4/4、math 8/8、trig 4/4、rng 6/6、quantize 10/10、codec 14/14、hex 10/10、fuzz 3/3、wire 3/3、match 6/6、transport 8/8、reliability 5/5、fragment 4/4、grace 4/4、memory 2/2、world 6/6、entity 7/7、pose 5/5、grid 4/4、alloc 4/4、step 20/20）+ 新增 `fixture 6/6` |
+| g++ 直编兜底（S07 后，不加 `AC_EVIDENCE_FIXTURE_DIR`） | `TESTS 162/162`，退出码 0（对拍向量按仓库根相对路径读取） |
+| 计划偏差清单（S07） | §8.3 的十五条（含 3 条**需裁决**：14 场景 → 4、事件载荷比较、体积门与 `%.17g` 不相容；这 3 条已登记为 `docs/02-需求分析.md` 的 OQ-07…OQ-09） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
