@@ -1,3 +1,4 @@
+using Ac.Core;
 using Ac.Net;
 using UnityEngine;
 
@@ -175,7 +176,7 @@ namespace Ac.UI
             {
                 case Ac.Net.EventType.PlayerHit:
                     _crosshair.MarkHurt();
-                    if ((hudEvent.HitFlags & 4) != 0) PushKill(hudEvent);
+                    if ((hudEvent.HitFlags & CombatFlags.HitFlagKilled) != 0) PushKill(hudEvent);
                     _throttle.NoteEventWrite();
                     return true;
                 case Ac.Net.EventType.SheepKilled:
@@ -204,7 +205,7 @@ namespace Ac.UI
         {
             var entry = default(KillEntry);
             entry.VictimId = hudEvent.Wave;
-            entry.Headshot = (hudEvent.HitFlags & 1) != 0;
+            entry.Headshot = (hudEvent.HitFlags & CombatFlags.HitFlagHeadshot) != 0;
             _feed.Push(entry);
         }
 

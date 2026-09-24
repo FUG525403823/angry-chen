@@ -21,6 +21,7 @@ namespace Ac.Tests
             SheepSuite.Register();
             EffectsSuite.Register();
             HudSuite.Register();
+            AudioSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();
