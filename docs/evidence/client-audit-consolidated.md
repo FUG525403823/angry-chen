@@ -33,7 +33,7 @@
 | H3 | `UI/Hud.cs:124-148` | `Hud.Apply` 从不调 `_banner.SetIntermission` ⇒ 波间倒计时恒 0 | **本轮已修**（脏检查写 `_intermissionWritten` 的同一次写入里补 `_banner.SetIntermission`）+ 用例 `hud.intermission_wiring`（旧代码断言 `Banner.IntermissionMs == 12000` 必红） |
 | H4 | `UI/Hud.cs:158` | `_crosshair.SetSpread(_crosshair.SpreadDeg)` 自赋值 + `HudSample` 无散布字段 ⇒ `SizePx` 恒 2px，C10 §5(c) 的 0.5°→2px / 5°→24px 映射**不可达** | audit-ui-view |
 | H5 | `UI/Crosshair.cs:57-65` | C13 §5 的 `crosshairColor` / `colorblindSafe` 只写不读（`SettingsPanel.cs:52-60` 是唯一非测试引用）⇒ 设置生效点缺失 | audit-ui-view |
-| H6 | `client/Assets` 全树 + `ProjectSettings/EditorBuildSettings.asset:7` | `m_Scenes: []`、0 MonoBehaviour、0 `.unity/.prefab`、无 `RuntimeInitializeOnLoadMethod` ⇒ **客户端无运行期装配根**；C10/C12/C13 验收把接线推给不存在的"场景装配步骤" | audit-crosscut |
+| H6 | `client/Assets` 全树 + `ProjectSettings/EditorBuildSettings.asset:7` | `m_Scenes: []`、0 MonoBehaviour、0 `.unity/.prefab`、无 `RuntimeInitializeOnLoadMethod` ⇒ **客户端无运行期装配根**；C10/C12/C13 验收把接线推给不存在的"场景装配步骤" | **已解决（本轮）**：新增组合根程序集 `Ac.Boot`（`GameLoop` 不依赖 UnityEngine，帧基准与游戏共用同一条回路；`GameBootstrap` 用 `RuntimeInitializeOnLoadMethod` 自举，不依赖场景内容），并补上 `EventEntry → HudEvent` 这条此前只存在于测试里的接线。C01 §5.2 的引用白名单相应扩充 `Ac.Boot`（理由见 `docs/evidence/client-v2-frame-acceptance.md`）。实测：帧回路端到端用例 + 稳态零分配用例常驻通过，`Ac.Tests.FrameBench.Run` 产出 §9 的 JSON |
 | H7 | `client/Assets/Scripts/Core/SelfTest.cs:26-31,79` + `Tests/SuiteRegistry.cs:34` + `Logs/selftest*.cmd` | 契约要求"失败退出码 1"（C02 §9:182），但 Core 入口无 `EditorApplication.Exit`、cmd 不校验 errorlevel ⇒ 注册期异常可能让门禁恒绿（尚无失败运行的证据） | audit-core |
 
 ### 2.2 中

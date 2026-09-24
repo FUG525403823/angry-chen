@@ -1,18 +1,15 @@
 {
-    "name": "Ac.Tests",
-    "rootNamespace": "Ac.Tests",
+    "name": "Ac.Boot",
+    "rootNamespace": "Ac.Boot",
     "references": [
         "Ac.Core",
         "Ac.Sim",
         "Ac.Net",
         "Ac.View",
         "Ac.UI",
-        "Ac.Audio",
-        "Ac.Boot"
+        "Ac.Audio"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

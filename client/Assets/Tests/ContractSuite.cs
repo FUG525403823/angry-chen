@@ -21,7 +21,11 @@ namespace Ac.Tests
             { "Ac.UI", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View" } },
             { "Ac.Audio", new[] { "Ac.Core" } },
             { "Ac.Editor", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Core.Runtime" } },
-            { "Ac.Tests", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio" } },
+            // Ac.Boot 是后加的**组合根**：它必须能看到全部六个程序集才能把帧回路接起来，
+            // 而它自己不被任何运行期程序集引用 ⇒ 依赖图仍是 DAG，没有环。C01 §5.2 的表写在它存在之前，
+            // 这次扩充已记入 docs/evidence/client-audit-consolidated.md。
+            { "Ac.Boot", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio" } },
+            { "Ac.Tests", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio", "Ac.Boot" } },
         };
 
         internal static void CheckGateFailsOnDemand()

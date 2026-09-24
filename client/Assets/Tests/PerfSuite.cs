@@ -17,6 +17,7 @@ namespace Ac.Tests
             SelfTest.Add("perf.budget_flags", ChecksBudgetFlags);
             SelfTest.Add("perf.stage_names", ChecksStageNames);
             SelfTest.Add("perf.panel_budget_single_source", ChecksPanelBudgetSingleSource);
+            SelfTest.Add("batch.script_budget_single_source", ChecksBenchScriptBudget);
             SelfTest.Add("batch.decide", ChecksBatchDecide);
             SelfTest.Add("batch.quality_tier", ChecksBatchQualityTier);
             SelfTest.Add("batch.cull", ChecksBatchCull);
@@ -27,6 +28,23 @@ namespace Ac.Tests
 
         // C14 标准轴必改项 1：面板的 20/33ms 告警阈值曾经是第二份硬编码。
         // C14 §9 冻结接口：SetQualityTier / DrawCallLimit / CullDistanceMeters(int kind)。
+        // C14 标准轴必改项：ps1 里那张预算表是 FrameBudget 之外的第二份。这条用例直接读脚本，
+        // 把两份钉在一起——改了一边不改另一边就红。
+        private static void ChecksBenchScriptBudget()
+        {
+            // 编辑器进程的工作目录是工程目录（client/），相对路径会指错地方：两个候选都试。
+            var path = System.IO.Path.Combine("client", "tools", "frame-bench.ps1");
+            if (!System.IO.File.Exists(path)) path = System.IO.Path.Combine("..", "client", "tools", "frame-bench.ps1");
+            if (!System.IO.File.Exists(path)) { SelfTest.True(false, "帧基准脚本必须存在", System.IO.Path.GetFullPath(path)); return; }
+            var text = System.IO.File.ReadAllText(path);
+            SelfTest.True(text.Contains("frameP95Ms = " + FrameBudget.FrameP95BudgetMs.ToString("R", System.Globalization.CultureInfo.InvariantCulture)), "ps1 的 P95 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.Contains("frameP99Ms = " + FrameBudget.FrameP99BudgetMs.ToString("R", System.Globalization.CultureInfo.InvariantCulture)), "ps1 的 P99 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.Contains("drawCalls = " + FrameBudget.DrawCallBudget), "ps1 的 drawCalls 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.Contains("triangles = " + FrameBudget.TriangleBudget), "ps1 的 triangles 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.Contains("particles = " + FrameBudget.ParticleBudget), "ps1 的 particles 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.Contains("materials = " + FrameBudget.MaterialBudget), "ps1 的 materials 预算与 FrameBudget 同源", "不一致");
+        }
+
         private static void ChecksFrozenApi()
         {
             Batching.SetQualityTier(2);
