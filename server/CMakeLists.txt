@@ -34,7 +34,10 @@ target_include_directories(ac_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 add_executable(ac_server "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 target_link_libraries(ac_server PRIVATE ac_core)
 
-add_executable(ac_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/main_test.cpp")
+# tests/ 下的每个 .cpp 都是 ac_tests 的翻译单元；入口 main() 只在 main_test.cpp，
+# 后续计划的测试文件只写 AC_TEST 用例（§9 消费约定）。
+file(GLOB AC_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+add_executable(ac_tests ${AC_TEST_SOURCES})
 target_include_directories(ac_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_link_libraries(ac_tests PRIVATE ac_core)
 
