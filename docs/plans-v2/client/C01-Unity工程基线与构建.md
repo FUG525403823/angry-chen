@@ -158,7 +158,7 @@
 | 接口 | 位置 | 约定 |
 |---|---|---|
 | 构建入口 | `client/build.ps1` | 参数 `-Target Windows64`、`-Output <目录或 .exe 路径>`（缺省 `client/Build/Windows64`）；退出码 `0` = 出包成功、`1` = 构建失败、`2` = 编辑器缺失；产物 `Build/Windows64/angry-chen.exe`（相对 `client/`） |
-| 引导场景 | `Assets/__BuildEntryTemp/Boot.unity`（临时） | 由 `Ac.Editor.BuildEntry.BuildWindows64()` 在无启用场景时生成并即时删除；C02 落地真实场景后不再使用 |
+| 引导场景 | `Assets/__BuildEntryTemp/Boot.unity`（临时） | 由 `Ac.Editor.BuildEntry.BuildWindows64()` 在无启用场景时生成并即时删除；C07 落地程序化场地与真实场景后不再使用（C02 交付物不含场景资产） |
 | 素材门 | `client/tools/verify-assets.ps1` | 无参数；退出码 `0` 代表零素材，退出码 `1` 代表命中黑名单 |
 | 程序集 | `Ac.Core`、`Ac.Sim`、`Ac.Net`、`Ac.View`、`Ac.UI`、`Ac.Audio`、`Ac.Editor`、`Ac.Tests` | 新代码只能落在 §5.3 的目录内，依赖方向见 §5.2 |
 | 自检入口名 | `Ac.Core.SelfTest.Run`、`Ac.Tests.SuiteRegistry.RunAll` | 名字与输出格式在本份冻结 |

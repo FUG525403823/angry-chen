@@ -13,6 +13,24 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("quantize.edge", ChecksEdges);
+            SelfTest.Add("quantize.rounding", ChecksRoundHalfUp);
+        }
+
+        // §5.4 的取整是「四舍五入、.5 朝 +∞」（不是对称的 away-from-zero）：负半值向 0 收。
+        private static void ChecksRoundHalfUp()
+        {
+            SelfTest.BitEqual(1.0, Quantize.RoundHalfUp(0.5));
+            SelfTest.BitEqual(3.0, Quantize.RoundHalfUp(2.5));
+            SelfTest.BitEqual(0.0, Quantize.RoundHalfUp(-0.5));
+            SelfTest.BitEqual(-2.0, Quantize.RoundHalfUp(-2.5));
+            SelfTest.BitEqual(-1.0, Quantize.RoundHalfUp(-1.5));
+            SelfTest.BitEqual(0.0, Quantize.RoundHalfUp(-0.0));
+
+            // 量化入口与 RoundHalfUp 绑在同一口径上：0.005 m = 0.5 cm 进位，-0.005 m 同规则落在 0。
+            SelfTest.Equal(1, Quantize.QuantizePosition(0.005));
+            SelfTest.Equal(0, Quantize.QuantizePosition(-0.005));
+            SelfTest.Equal(1, Quantize.QuantizeRatio(0.5 / 255.0));
+            SelfTest.Equal(0, Quantize.QuantizeRatio(0.49 / 255.0));
         }
 
         private static void ChecksEdges()

@@ -67,27 +67,27 @@ namespace Ac.Net
         {
             header = default(PacketHeader);
             byte version;
-            if (!reader.TryReadU8(out version)) return DecodeFailure.Truncated;
-            header.Version = version;
-            if (version != ProtocolVersion) return DecodeFailure.BadVersion;
-
             byte type;
-            if (!reader.TryReadU8(out type)) return DecodeFailure.Truncated;
-            if (type < (byte)PacketType.Hello || type > (byte)PacketType.MatchState) return DecodeFailure.BadType;
-            header.Type = (PacketType)type;
-
             ushort flags;
-            if (!reader.TryReadU16(out flags)) return DecodeFailure.Truncated;
-            header.Flags = (PacketFlags)flags;
-            if (!IsFlagsValidForType(header.Type, flags)) return DecodeFailure.BadValue;
-
             ushort session;
-            if (!reader.TryReadU16(out session)) return DecodeFailure.Truncated;
-            header.Session = session;
-
             ushort seq;
+            // 通用包头 8 字节先整块读完，再判 version / type / flags：与服务端 decodePacket 同序
+            //（包头截断优先于取值非法），同一畸形帧两侧给同样的失败码。
+            if (!reader.TryReadU8(out version)) return DecodeFailure.Truncated;
+            if (!reader.TryReadU8(out type)) return DecodeFailure.Truncated;
+            if (!reader.TryReadU16(out flags)) return DecodeFailure.Truncated;
+            if (!reader.TryReadU16(out session)) return DecodeFailure.Truncated;
             if (!reader.TryReadU16(out seq)) return DecodeFailure.Truncated;
+
+            header.Version = version;
+            header.Type = (PacketType)type;
+            header.Flags = (PacketFlags)flags;
+            header.Session = session;
             header.Seq = seq;
+
+            if (version != ProtocolVersion) return DecodeFailure.BadVersion;
+            if (type < (byte)PacketType.Hello || type > (byte)PacketType.MatchState) return DecodeFailure.BadType;
+            if (!IsFlagsValidForType(header.Type, flags)) return DecodeFailure.BadValue;
 
             if (header.IsReliable)
             {
@@ -143,7 +143,7 @@ namespace Ac.Net
     // C02 §9：小端顺序读取器。任何越界立即返回失败，不补 0 后继续解析。
     public sealed class PacketReader
     {
-        private static readonly byte[] Empty = new byte[0];
+        private static readonly byte[] _empty = new byte[0];
 
         private readonly byte[] _buffer;
         private int _position;
@@ -151,7 +151,7 @@ namespace Ac.Net
         // C02 §9：解码入口只返回失败码、不抛异常，null 载荷按空缓冲处理（后续读取一律 Truncated）。
         public PacketReader(byte[] buffer)
         {
-            _buffer = buffer ?? Empty;
+            _buffer = buffer ?? _empty;
         }
 
         public int Position { get { return _position; } }

@@ -17,6 +17,7 @@ namespace Ac.Sim
         public const int MaxEntityId = 1024;
         public const double PitchLimitRad = 1.5707963267948966;  // π/2
 
+        // §5.4 的取整口径只有这一处实现：五个量化入口都调它，改口径只改一行。
         public static double RoundHalfUp(double value)
         {
             return Math.Floor(value + 0.5);
@@ -27,7 +28,7 @@ namespace Ac.Sim
         public static double WrapAngle(double radians)
         {
             if (double.IsNaN(radians) || double.IsInfinity(radians)) return 0.0;
-            var turns = Math.Floor(radians / TrigTable.TwoPi + 0.5);
+            var turns = RoundHalfUp(radians / TrigTable.TwoPi);
             var a = radians - TrigTable.TwoPi * turns;
             if (a > TrigTable.Pi)
             {
@@ -44,7 +45,7 @@ namespace Ac.Sim
         public static short QuantizePosition(double meters)
         {
             if (double.IsNaN(meters) || double.IsInfinity(meters)) return 0;
-            var centimeters = Math.Floor(meters * CentimeterPerMeter + 0.5);
+            var centimeters = RoundHalfUp(meters * CentimeterPerMeter);
             return (short)Clamp(centimeters, MinPositionCm, MaxPositionCm);
         }
 
@@ -57,7 +58,7 @@ namespace Ac.Sim
         public static ushort QuantizeAngle(double radians)
         {
             var wrapped = WrapAngle(radians);
-            var units = (long)Math.Floor(wrapped / TrigTable.TwoPi * AngleUnits + 0.5);
+            var units = (long)RoundHalfUp(wrapped / TrigTable.TwoPi * AngleUnits);
             var a = units % AngleUnits;
             if (a < 0) a += AngleUnits;
             return (ushort)a;
@@ -71,7 +72,7 @@ namespace Ac.Sim
         public static sbyte QuantizeAxis(double axis)
         {
             if (double.IsNaN(axis) || double.IsInfinity(axis)) return 0;
-            var steps = Math.Floor(axis * MoveAxisScale + 0.5);
+            var steps = RoundHalfUp(axis * MoveAxisScale);
             return (sbyte)Clamp(steps, -MoveAxisScale, MoveAxisScale);
         }
 
@@ -84,7 +85,7 @@ namespace Ac.Sim
         public static byte QuantizeRatio(double ratio)
         {
             if (double.IsNaN(ratio) || double.IsInfinity(ratio)) return 0;
-            var steps = Math.Floor(ratio * HpUnits + 0.5);
+            var steps = RoundHalfUp(ratio * HpUnits);
             return (byte)Clamp(steps, 0, HpUnits);
         }
 

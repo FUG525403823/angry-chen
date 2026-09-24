@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Ac.Core;
-using UnityEngine;
 
 namespace Ac.Sim
 {

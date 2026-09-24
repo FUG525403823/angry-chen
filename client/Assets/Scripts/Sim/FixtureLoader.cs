@@ -93,12 +93,14 @@ namespace Ac.Sim
                 Debug.Log("[fixture] " + name + " OK");  // §5.7 冻结的通过行
                 return true;
             }
-            Debug.Log("[fixture] " + name + " tick=" + TickOfPath(difference.Path) + " field=" + difference.Path +
+            Debug.Log("[fixture] " + name + " tick=" + TickOfPath(difference.Path, tick) + " field=" + difference.Path +
                 " expected=" + difference.Expected + " actual=" + difference.Actual);
             return false;
         }
 
         // actualOf 提供被测实现的输出文档；返回不一致的 fixture 数（目录为空时返回 0）。
+        // 比较根是 expected 子树，所以上下文 tick 传 0——若调用方比较整篇 fixture 根（ticks 在内），
+        // 差异路径落在 $.ticks[i] 时会被反推成真实 tick 序号。
         public static int CompareAll(string directory, Func<FixtureVector, JsonValue> actualOf)
         {
             var vectors = Load(directory);
@@ -185,16 +187,16 @@ namespace Ac.Sim
         }
 
         // 只有落在 $.ticks[i] 上的差异才能反推出 tick 序号；entities / events 的下标是实体与事件序号，
-        // 不是 tick，所以那种路径一律退回调用方给的 tick（整篇比较时为 0）。
-        private static int TickOfPath(string path)
+        // 不是 tick，所以那种路径退回调用方给的上下文 tick（整篇比较时为 0）。
+        private static int TickOfPath(string path, int fallback)
         {
             var prefix = "$." + TicksKey + "[";
-            if (!path.StartsWith(prefix, StringComparison.Ordinal)) return 0;
+            if (!path.StartsWith(prefix, StringComparison.Ordinal)) return fallback;
             var close = path.IndexOf(']', prefix.Length);
-            if (close < 0) return 0;
+            if (close < 0) return fallback;
             int index;
             return int.TryParse(path.Substring(prefix.Length, close - prefix.Length), NumberStyles.Integer,
-                CultureInfo.InvariantCulture, out index) ? index : 0;
+                CultureInfo.InvariantCulture, out index) ? index : fallback;
         }
     }
 }

@@ -112,7 +112,11 @@ namespace Ac.Core
 
         private static string Describe(Exception error)
         {
-            return error is SelfTestFailure ? error.Message : error.GetType().Name + ": " + error.Message;
+            // §5.7 只冻结 expected=/actual= 一种形状：用例里抛出的非断言异常也包装成同一形状，
+            // 否则 grep 类门禁必须为「另一种 FAIL 行」开特例。
+            return error is SelfTestFailure
+                ? error.Message
+                : "expected=" + error.GetType().Name + " actual=" + error.Message;
         }
 
         private static string Hex(long value)

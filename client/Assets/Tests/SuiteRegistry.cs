@@ -12,6 +12,7 @@ namespace Ac.Tests
         {
             SelfTest.Reset();
             ContractSuite.Register();
+            Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();
             CodecSuite.Register();

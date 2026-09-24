@@ -59,7 +59,7 @@ namespace Ac.Net
             reader.TryReadU16(out command.Seq);
             reader.TryReadU32(out command.ClientTick);
 
-            // 非法的武器槽回落 0（手枪），不判失败：这是 §5.2 冻结的写端口径。
+            // 非法的武器槽回落 0（手枪），不判失败：§5.2 对读写两侧只定一条规则。
             if (command.SwitchTo > (byte)WeaponSlot.Shotgun) command.SwitchTo = (byte)WeaponSlot.Pistol;
             return DecodeFailure.Ok;
         }
@@ -75,7 +75,8 @@ namespace Ac.Net
             payload[4] = (byte)(command.Pitch & 0xFF);
             payload[5] = (byte)(command.Pitch >> 8);
             payload[6] = command.Buttons;
-            payload[7] = command.SwitchTo;
+            // 写侧同样回落，保证 Encode 产出的字节一定落在 §5.2 的合法域内。
+            payload[7] = command.SwitchTo > (byte)WeaponSlot.Shotgun ? (byte)WeaponSlot.Pistol : command.SwitchTo;
             payload[8] = (byte)(command.Seq & 0xFF);
             payload[9] = (byte)(command.Seq >> 8);
             payload[10] = (byte)(command.ClientTick & 0xFF);

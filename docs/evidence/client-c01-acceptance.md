@@ -42,6 +42,8 @@ Ac.Tests   refs=[Ac.Core, Ac.Sim, Ac.Net, Ac.View, Ac.UI, Ac.Audio]             
 | 临时引导场景不留痕 | 构建后 `Test-Path client/Assets/__BuildEntryTemp` | `False` | PASS |
 | 产物构成 | `Get-ChildItem client/Build/Windows64` | `angry-chen.exe`（464384 B）、`angry-chen_Data/`、`TuanjiePlayer.dll`、`MonoBleedingEdge/`、`TuanjieCrashHandler64.exe` | PASS |
 
+> 注（C02 修订）：自检末行格式已由 C02 §5.7 扩充为 `SELFTEST OK cases=<n>`（见 [client-c02-acceptance.md](client-c02-acceptance.md) §3.3）。上表记录的是 C01 当时的实测输出；复跑时按新格式判读，`PASS c01.*` 五条不变。
+
 ## 3. 施工偏差（计划文档 vs 实测）
 
 计划文档按施工纪律同步改写；下表是「改了什么、为什么」的账。

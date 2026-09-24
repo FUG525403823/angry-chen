@@ -177,13 +177,5 @@ namespace Ac.Net
             }
         }
 
-        private static bool Contains(List<EventEntry> entries, uint eventId)
-        {
-            for (var i = 0; i < entries.Count; i++)
-            {
-                if (entries[i].EventId == eventId) return true;
-            }
-            return false;
-        }
     }
 }

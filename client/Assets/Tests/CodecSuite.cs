@@ -53,9 +53,7 @@ namespace Ac.Tests
             if (expect.TryGetValue("failure", out expectedFailure))
             {
                 expect.Remove("failure");
-                SelfTest.Equal(expectedFailure, (long)failure);
-                CommandPayload ignored;
-                SelfTest.Equal(expectedFailure, (long)CommandCodec.Decode(Slice(fixture.Bytes, reader.Position), out ignored));
+                SelfTest.Equal(expectedFailure, (long)failure);  // 该 fixture 的失败发生在包头阶段（载荷切片为空）
                 SelfTest.Equal(0, expect.Count);
                 Debug.Log("[codec] " + name + " 按期望失败");
                 return;
@@ -207,6 +205,45 @@ namespace Ac.Tests
             SelfTest.Equal((long)DecodeFailure.Truncated,
                 (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.KeepAlive, 5, 0, 0, 0, 0, 0 }), out header));
 
+            // 包头完整（20B）而命令载荷只有 13B：本端判 Truncated，而服务端 codec.cpp 的
+            // `payloadBytes != 14 → BadLength` 判 BadLength——这是两侧唯一没有共享 fixture 覆盖的分歧点
+            // （见 docs/evidence/client-c02-acceptance.md §3.4），在这里钉住本端口径。
+            var shortPayloadFrame = new byte[20 + 13];
+            shortPayloadFrame[0] = 1;
+            shortPayloadFrame[1] = (byte)PacketType.Command;
+            shortPayloadFrame[2] = 1;  // flags = reliable
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)PacketHeader.Read(new PacketReader(shortPayloadFrame), out header));
+            SelfTest.Equal(20, new PacketReader(shortPayloadFrame).Length - 13);
+            SelfTest.Equal((long)DecodeFailure.Truncated,
+                (long)CommandCodec.Decode(Slice(shortPayloadFrame, 20), out command));
+
+            // 分片包（type 9）的例外规则与 §5.1 的类型表：reliable 由被分片通道决定，多余位一律 BadValue。
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1 }), out header));
+            SelfTest.Equal(1, header.FragCount);
+            SelfTest.Equal(0, header.FragIndex);
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)PacketHeader.Read(new PacketReader(new byte[]
+                {
+                    1, (byte)PacketType.Fragment, 3, 0, 0, 0, 0, 0,
+                    1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0,
+                    9, 0, 1, 2,
+                }), out header));
+            SelfTest.Equal(2, header.FragCount);
+            SelfTest.Equal(1, header.FragIndex);
+            SelfTest.Equal((long)DecodeFailure.BadValue,  // 分片包带了多余位（ackOnly）
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 6, 0, 0, 0, 0, 0 }), out header));
+            SelfTest.Equal((long)DecodeFailure.BadValue,  // fragCount = 0
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+            SelfTest.Equal((long)DecodeFailure.BadValue,  // fragCount = 9 > 8
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 9 }), out header));
+            SelfTest.Equal((long)DecodeFailure.BadValue,  // fragIndex >= fragCount
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 1, 1 }), out header));
+            SelfTest.Equal((long)DecodeFailure.Ok,  // type 8 / type 10 的包头正例
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Disconnect, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.MatchState, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+
             SelfTest.Equal((long)DecodeFailure.Truncated, (long)CommandCodec.Decode(null, out command));  // null 载荷不抛异常
             SelfTest.Equal((long)DecodeFailure.Truncated, (long)CommandCodec.Decode(new byte[13], out command));
             SelfTest.Equal((long)DecodeFailure.BadLength, (long)CommandCodec.Decode(new byte[15], out command));
@@ -248,6 +285,28 @@ namespace Ac.Tests
             SelfTest.Equal((long)DecodeFailure.Truncated,
                 (long)SnapshotCodec.Decode(Slice(full, full.Length - 1), out snapshot));
 
+            // 快照内嵌事件块（§5.2：事件块恒在载荷末尾）：条目内容、DroppedDuplicates 与 tracker 重载都要覆盖，
+            // 否则事件块偏移漂移不会有任何断言挡住。
+            var embedded = BuildSnapshotPayload(BuildEntityRecord(1, 0, 150, 0, -200, 16384, 0, 128, 0), new ushort[0],
+                Concat(new byte[] { 1 }, PlayerHitEntry(9u, 3, 17, 25, 5, 120, 100, -250)));
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)SnapshotCodec.Decode(embedded, out snapshot));
+            SelfTest.Equal(1, snapshot.Events.Length);
+            SelfTest.Equal(0, snapshot.DroppedDuplicates);
+            SelfTest.Equal(9, snapshot.Events[0].EventId);
+            SelfTest.Equal((long)Ac.Net.EventType.PlayerHit, (long)snapshot.Events[0].Type);
+            SelfTest.Equal(3, snapshot.Events[0].SubjectId);
+            SelfTest.Equal(-250, snapshot.Events[0].HitZ);
+
+            var snapshotTracker = new EventIdTracker();
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)SnapshotCodec.Decode(embedded, snapshotTracker, out snapshot));
+            SelfTest.Equal(1, snapshot.Events.Length);
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)SnapshotCodec.Decode(embedded, snapshotTracker, out snapshot));
+            SelfTest.Equal(0, snapshot.Events.Length);       // 跨帧重复的 eventId 被同一 tracker 丢掉
+            SelfTest.Equal(1, snapshot.DroppedDuplicates);
+
+            SelfTest.Equal((long)DecodeFailure.BadLength,    // 事件块之后还有尾随字节
+                (long)SnapshotCodec.Decode(Concat(embedded, new byte[] { 0 }), out snapshot));
+
             var tooManyRecords = (byte[])full.Clone();
             tooManyRecords[14] = 129;  // recordCount 在载荷偏移 14
             SelfTest.Equal((long)DecodeFailure.BadValue, (long)SnapshotCodec.Decode(tooManyRecords, out snapshot));
@@ -277,6 +336,17 @@ namespace Ac.Tests
             SelfTest.Equal(3, state.Players[0].Kills);
             SelfTest.Equal("玩家一", state.Players[1].Name);
             SelfTest.Equal(3000, state.IntermissionMs);
+
+            // 边界正例：4 名玩家（上限）与 12 字节名（上限）都要能过。
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)MatchStateCodec.Decode(BuildMatchState(2, 3, 1000,
+                    BuildPlayer(1, "abcdefghijkl", 0, 1), BuildPlayer(2, "b", 1, 0),
+                    BuildPlayer(3, "c", 2, 0), BuildPlayer(4, "d", 0, 0)), out state));
+            SelfTest.Equal(4, state.Players.Length);
+            SelfTest.Equal(12, state.Players[0].Name.Length);
+            SelfTest.Equal("abcdefghijkl", state.Players[0].Name);
+            SelfTest.True(state.Players[0].Ready, "ready=1 解为 true", "解为 false");
+            SelfTest.Equal(1000, state.IntermissionMs);
 
             SelfTest.Equal((long)DecodeFailure.BadValue,
                 (long)MatchStateCodec.Decode(BuildMatchState(1, 1, 0,
@@ -347,13 +417,7 @@ namespace Ac.Tests
 
         private static string FixtureDirectory()
         {
-            var dataParent = Path.GetDirectoryName(Application.dataPath);
-            if (!string.IsNullOrEmpty(dataParent))
-            {
-                var candidate = Path.GetFullPath(Path.Combine(dataParent, "..", "server", "tests", "fixtures"));
-                if (Directory.Exists(candidate)) return candidate;
-            }
-            return Path.GetFullPath(Path.Combine("server", "tests", "fixtures"));
+            return RepoPaths.Locate(Path.Combine("server", "tests", "fixtures"));
         }
 
         private static HexFixture ReadFixture(string directory, string name)

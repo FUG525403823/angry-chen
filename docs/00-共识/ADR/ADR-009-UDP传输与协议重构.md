@@ -46,7 +46,9 @@
 | 12 | `ackBase` | u32 | 已收到的最大 `msgId` |
 | 16 | `ackBits` | u32 | `ackBase` 之前的 32 位位图（1 = 已收到） |
 
-### 分片头（`flags.moreFragments = 1` 或 `fragCount > 1` 时紧随通用包头，4 字节）
+### 分片头（`flags.moreFragments = 1` 时紧随通用包头，4 字节）
+
+> 勘误（C02 施工时发现，2026-09-24）：原表述的第二个条件「或 `fragCount > 1`」不可判定——读通用包头时还看不到 `fragCount`，条件自相矛盾；与 S03 §5.1 的 `payloadOffset` 公式、`wire.hpp` 与客户端 `PacketReader.Read` 的实现（只看 `flags` 位 1）均不符，故删去。
 
 | 偏移 | 字段 | 类型 | 说明 |
 |---|---|---|---|

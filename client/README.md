@@ -43,7 +43,7 @@
 5. 生成目录不入库：`git status --porcelain -uall client` → 逐个列出的都是 C01 §3 的文件；出现 `Library/`、`Temp/`、`Logs/`、`Build/`、`UserSettings/` 下任何文件即失败。
 6. 仓库质量门：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 
-自检入口 `Ac.Tests.SuiteRegistry.RunAll` 注册的用例：C01 的 `c01.assemblies.references`、`c01.project.identity`、`c01.project.serialization`、`c01.build.backend`、`c01.render.pipeline`，加上 C02 的 `rng.streams`、`quantize.edge`、`codec.roundtrip`、`fixtures.loader`。
+自检入口 `Ac.Tests.SuiteRegistry.RunAll` 注册的用例：C01 的 `c01.assemblies.references`、`c01.project.identity`、`c01.project.serialization`、`c01.build.backend`、`c01.render.pipeline`，加上 C02 的 `vec3.ops`、`rng.streams`、`quantize.edge`、`quantize.rounding`、`codec.roundtrip`、`fixtures.loader`。
 
 ## 验证（C02 §6 六条命令）
 
@@ -51,7 +51,7 @@
 
 1. 角度表：`node tools/export-trig-table.mjs --check` → `trig-table.json OK (65536 entries) sin=0x8BD9F737 atan=0x197C3A8D asin=0xAD2BD35E`。
 2. 核心自检：`& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Core.SelfTest.Run -logFile -` → 末行 `SELFTEST OK cases=<n>`。
-3. 禁超越函数扫描：`Get-ChildItem client/Assets/Scripts/Sim, client/Assets/Scripts/Net -Recurse -Include *.cs | Select-String -Pattern 'Math\.(Sin|Cos|Tan|Exp|Log|Pow|Atan|Atan2|Asin|Acos|Hypot)'` → 无输出；`client/Assets/Scripts/Sim/` 与 `Net/` 内角度只能经 `TrigTable`。
+3. 禁超越函数扫描：`Get-ChildItem client/Assets/Scripts/Sim, client/Assets/Scripts/Net -Recurse -Include *.cs | Select-String -Pattern '(Math|MathF)\.(Sin|Cos|Tan|Sinh|Cosh|Tanh|Asin|Acos|Atan|Atan2|Exp|ExpM1|Log|Log2|Log10|Log1p|Pow|Cbrt|Hypot)'` → 无输出；`client/Assets/Scripts/Sim/` 与 `Net/` 内角度只能经 `TrigTable`。
 4. 分组自检：第 2 条的 `-executeMethod` 换成 `Ac.Tests.SuiteRegistry.RunAll` → 含 `PASS codec.roundtrip`、`PASS quantize.edge`、`PASS rng.streams`、`PASS fixtures.loader` 与末行 `SELFTEST OK cases=<n>`。
 5. 仓库门禁：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 6. 构建不回归：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`、末行 `Build succeeded`。
