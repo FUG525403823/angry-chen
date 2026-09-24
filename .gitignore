@@ -1,2 +1,5 @@
 # S12 §4-9：复制/调度报告与构建产物落在仓库根的 build/（server/.gitignore 只覆盖 server/build/）
 /build/
+
+# S15 登记：AC_DATA_DIR 未设时的默认落点（测试与 --serve 都会写），属运行期产物
+/data/

@@ -1223,6 +1223,8 @@ sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 
 **重测（修复后）**：`ac_server --version` = `ac_server 0.1.0 protocol=1 tick=50ms`（exit 0）；非默认端口实测 `health=200`/`metrics=200`（8799）且 `build/acvar` 创建；`cmake --install --prefix build/acprefix` → `bin/angry-chen-server`；`--filter=store` 17/17；全量 `TESTS 468/468`；`check-docs`/`check-assets` 退出码 0。
 
+**干净构建全量复检**（删 `server/build` 与 `data/` 后从零跑）：构建 exit 0、五个产物齐全、468/468、`ctest` 1/1、41 组 `--filter` 计数全对、fixture 门 `retained=10000 corrupt=0`、微基准 26303 ticks/s、四个门禁场景 `pass/fail(仅 G3)/pass/pass` 且 `dropped=0 skips=0`、两份文档门 exit 0 —— 明细见 `docs/evidence/server-v2-acceptance.md` §8。
+
 ## 19. 已知环境边界（构建期，与 §18 的发布/运维无关）
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
