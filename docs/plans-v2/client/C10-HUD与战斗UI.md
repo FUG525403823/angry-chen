@@ -31,7 +31,7 @@
 | `client/Assets/Scripts/UI/RevivePrompt.cs` | 新建 | 救援提示与 3 秒进度 |
 | `client/Assets/Scripts/UI/WaveBanner.cs` | 新建 | 波次横幅、波间倒计时、波次刻度 |
 | `client/Assets/Scripts/UI/KillFeed.cs` | 新建 | 击杀记录（含爆头样式）与队伍状态行 |
-| `client/Tests/hud_test.cs` | 新建 | 元素映射、节流、准星、安全区、可见性断言 |
+| `client/Assets/Tests/hud_test.cs` | 新建 | 元素映射、节流、准星、安全区、可见性断言 |
 
 ## 4. 任务清单
 
@@ -42,7 +42,7 @@
 - [ ] 5. 写 `client/Assets/Scripts/UI/RageBar.cs`：取 `MatchStatePlayer.rage`（满值 `RageFull = 100`）与 `rageLeft100Ms`，满值时显示可激活提示，狂暴期间显示剩余时间。
 - [ ] 6. 写 `client/Assets/Scripts/UI/DownedOverlay.cs` 与 `client/Assets/Scripts/UI/RevivePrompt.cs`：可见性条件见 §5(e)；救援进度 = `reviveRatio255 / 255`，总时长 3000ms，进度事件步长 5%。
 - [ ] 7. 写 `client/Assets/Scripts/UI/WaveBanner.cs` 与 `client/Assets/Scripts/UI/KillFeed.cs`：横幅 4500ms / 队列 3、波次刻度 10 段（Boss 波间隔 5）、波间倒计时读 `intermissionMs`；击杀记录 3000ms / 上限 6 / 渐隐 600ms，爆头条目单独样式。
-- [ ] 8. 写 `client/Tests/hud_test.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期；用例注册进 `Ac.Tests.SuiteRegistry.RunAll`（`hud.*`）。
+- [ ] 8. 写 `client/Assets/Tests/hud_test.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期；用例注册进 `Ac.Tests.SuiteRegistry.RunAll`（`hud.*`）。
 
 ## 5. 冻结契约
 

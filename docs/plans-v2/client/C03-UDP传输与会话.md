@@ -30,7 +30,7 @@
 | `client/Assets/Scripts/Net/KeepAlive.cs` | 【新建】 | 500ms 心跳与 3s 断线判定，驱动状态机 |
 | `client/Assets/Scripts/Net/NetStats.cs` | 【新建】 | §5.4 全部字段的采样与窗口统计 |
 | `client/Assets/Scripts/UI/NetworkPanel.cs` | 【新建】 | 网络面板的数据面：把 `NetStats` 渲染成文本行（视觉部分不属本份） |
-| `client/Tests/transport_test.cs` | 【新建】 | 回环用例：握手、丢包重传、1200B 分片重组、p99 统计 |
+| `client/Assets/Tests/transport_test.cs` | 【新建】 | 回环用例：握手、丢包重传、1200B 分片重组、p99 统计 |
 
 ## 4. 任务清单
 
@@ -41,7 +41,7 @@
 - [ ] 5. 写 `client/Assets/Scripts/Net/KeepAlive.cs` 与状态机：按 §5.3 的转移表驱动连接状态，超时进入宽限期并尝试 `Resume`。
 - [ ] 6. 写 `client/Assets/Scripts/Net/NetStats.cs`：按 §5.4 采集字段，1s 窗口，p99 用环形缓冲的就地插入排序取分位。
 - [ ] 7. 写 `client/Assets/Scripts/UI/NetworkPanel.cs` 的数据面：输出 `rtt`、`p99`、`丢包`、`收/发` 四行文本，供面板与调试命令复用。
-- [ ] 8. 写 `client/Tests/transport_test.cs`：两个 `UdpTransport` 实例回环对拍，注入 20% 丢包与 50±10ms 延迟，断言 §6 第 2 条的用例全绿。
+- [ ] 8. 写 `client/Assets/Tests/transport_test.cs`：两个 `UdpTransport` 实例回环对拍，注入 20% 丢包与 50±10ms 延迟，断言 §6 第 2 条的用例全绿。
 
 ## 5. 冻结契约
 
@@ -125,7 +125,7 @@ S->C  Disconnect{ reason u8 }                                type=8, 可靠
 | 分片重组内存吃满 | `invalidPackets` 持续增长 | 重组超时按 S04 的 60 tick（3s）执行，并限制同时活跃的 `fragId` 数量不超过 16 |
 | 令牌泄露或被复用 | 重连后身份错乱 | 令牌只存本地，`Resume` 失败即清空并回退到新会话握手 |
 
-回滚目标：回到 HANDOFF-C02（只有 codec 与自检，无网络层），删除本份新增的 `Net/` 传输文件、`UI/NetworkPanel.cs` 与 `client/Tests/transport_test.cs`。
+回滚目标：回到 HANDOFF-C02（只有 codec 与自检，无网络层），删除本份新增的 `Net/` 传输文件、`UI/NetworkPanel.cs` 与 `client/Assets/Tests/transport_test.cs`。
 
 ## 9. 移交物
 
@@ -137,6 +137,6 @@ S->C  Disconnect{ reason u8 }                                type=8, 可靠
 | 会话状态 | `UdpTransport.State` 与 `KeepAlive.cs` | 五态枚举见 §5.3；状态变化通过事件回调上报 |
 | 统计 | `client/Assets/Scripts/Net/NetStats.cs` | 字段与 §5.4 同名同义；`Snapshot()` 返回只读快照 |
 | 面板数据面 | `client/Assets/Scripts/UI/NetworkPanel.cs` | `BuildLines(NetStats)` 返回 `rtt`、`p99`、`丢包`、`收/发` 四行文本 |
-| 回环测试 | `client/Tests/transport_test.cs` | 可在无服务器环境下注入丢包与延迟，供后续计划回归 |
+| 回环测试 | `client/Assets/Tests/transport_test.cs` | 可在无服务器环境下注入丢包与延迟，供后续计划回归 |
 
 已验证能力清单：非阻塞 UDP 收发；握手与令牌重连；ack 去重与 RTO 重传；分片重组；心跳与断线判定；网络统计字段可读。
