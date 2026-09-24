@@ -78,9 +78,10 @@ namespace Ac.Core
         }
 
         public static int ClampTier(int value) { return value < QualityTierMin ? QualityTierMin : (value > QualityTierMax ? QualityTierMax : value); }
-        public static float ClampVolume(float value) { return value < VolumeMin ? VolumeMin : (value > VolumeMax ? VolumeMax : value); }
-        public static float ClampSensitivity(float value) { return value < SensitivityMin ? SensitivityMin : (value > SensitivityMax ? SensitivityMax : value); }
-        public static float ClampFov(float value) { return value < FovMin ? FovMin : (value > FovMax ? FovMax : value); }
+        // NaN 与任何比较都是 false，会直接穿透 clamp 并被写进文件 → 一律回落默认值（"类型不符用默认值"）
+        public static float ClampVolume(float value) { return float.IsNaN(value) ? MasterVolume : (value < VolumeMin ? VolumeMin : (value > VolumeMax ? VolumeMax : value)); }
+        public static float ClampSensitivity(float value) { return float.IsNaN(value) ? Sensitivity : (value < SensitivityMin ? SensitivityMin : (value > SensitivityMax ? SensitivityMax : value)); }
+        public static float ClampFov(float value) { return float.IsNaN(value) ? Fov : (value < FovMin ? FovMin : (value > FovMax ? FovMax : value)); }
 
         public static bool IsAllowedCrosshairColor(int color)
         {
@@ -128,14 +129,21 @@ namespace Ac.Core
 
         public event Action<SettingsKey> Changed;
 
-        public SettingsSnapshot Get() { return _snapshot; }
+        // §5：Get() 只给不可变快照。键位数组是引用类型，这里克隆一份，外部改不到内部状态。
+        public SettingsSnapshot Get()
+        {
+            var copy = _snapshot;
+            var keys = _snapshot.KeyBindings ?? SettingsDefaults.KeyBindings;
+            copy.KeyBindings = (string[])keys.Clone();
+            return copy;
+        }
 
         public static string PathOf(string directory)
         {
             return Path.Combine(string.IsNullOrEmpty(directory) ? "." : directory, FileName);
         }
 
-        public static string TempPathOf(string directory) { return PathOf(directory) + ".tmp"; }
+        public static string TempPathOf(string directory) { return Path.Combine(string.IsNullOrEmpty(directory) ? "." : directory, TempName); }
         public static string BadPathOf(string directory) { return Path.Combine(string.IsNullOrEmpty(directory) ? "." : directory, BadName); }
 
         // ---- 写入 ----
@@ -229,8 +237,7 @@ namespace Ac.Core
         {
             _snapshot = SettingsDefaults.Default();
             _dirty = true;
-            ReadOnlyFile = false;
-            ApplyVolumesToAudio();
+            ApplyVolumesToAudio();      // ReadOnlyFile 不动：高版本文件任何时候都不许被写回
             var handler = Changed;
             if (handler != null) handler(SettingsKey.QualityTier);
         }
@@ -267,12 +274,17 @@ namespace Ac.Core
         public void Save(string directory)
         {
             var path = PathOf(directory);
-            var temp = path + ".tmp";
+            var temp = TempPathOf(directory);
             var json = Serialize(_snapshot);
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllText(temp, json, new UTF8Encoding(false));
-            if (File.Exists(path)) File.Replace(temp, path, null);
-            else File.Move(temp, path);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(temp, json, new UTF8Encoding(false));
+                if (File.Exists(path)) File.Replace(temp, path, null);
+                else File.Move(temp, path);
+            }
+            catch (IOException) { return; }                 // 磁盘满/被占用：设置仍在内存里生效，不崩
+            catch (UnauthorizedAccessException) { return; }
             _dirty = false;
             _flushedThisFrame = true;
             FlushCount += 1;
@@ -293,7 +305,8 @@ namespace Ac.Core
             catch (IOException) { _snapshot = SettingsDefaults.Default(); return; }
 
             SettingsSnapshot parsed;
-            if (!TryParse(text, out parsed))
+            int sourceVersion;
+            if (!TryParse(text, out parsed, out sourceVersion))
             {
                 // §5：解析失败 → 备份 + 回落默认值，游戏不崩
                 try
@@ -311,11 +324,11 @@ namespace Ac.Core
             }
 
             _snapshot = parsed;
-            ReadOnlyFile = parsed.SchemaVersion > SettingsDefaults.SchemaVersion;
-            if (!ReadOnlyFile && parsed.SchemaVersion < SettingsDefaults.SchemaVersion)
+            ReadOnlyFile = sourceVersion > SettingsDefaults.SchemaVersion;
+            if (!ReadOnlyFile && sourceVersion < SettingsDefaults.SchemaVersion)
             {
                 _snapshot.SchemaVersion = SettingsDefaults.SchemaVersion;
-                _dirty = true;                                   // 迁移后立即写回
+                _dirty = true;                                   // 迁移后立即写回（v1 或没有版本号）
             }
             ApplyVolumesToAudio();
         }
@@ -341,9 +354,43 @@ namespace Ac.Core
             for (var i = 0; i < keys.Length; i++)
             {
                 if (i > 0) builder.Append(", ");
-                builder.Append('"').Append(keys[i]).Append('"');
+                builder.Append('"').Append(Escape(keys[i])).Append('"');
             }
             builder.Append("]\n}\n");
+            return builder.ToString();
+        }
+
+        // 键位名是玩家可改的字符串：不转义就会写出非法 JSON，下次启动整份被当成坏文件
+        private static string Escape(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            var builder = new StringBuilder(text.Length + 4);
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (c == '"' || c == '\\') builder.Append('\\');
+                builder.Append(c);
+            }
+            return builder.ToString();
+        }
+
+        private static string Unescape(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.IndexOf('\\') < 0) return text;
+            var builder = new StringBuilder(text.Length);
+            for (var i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '\\' && i + 1 < text.Length)
+                {
+                    i += 1;
+                    var escape = text[i];
+                    if (escape == 'n') builder.Append('\n');
+                    else if (escape == 't') builder.Append('\t');
+                    else if (escape == 'r') builder.Append('\r');
+                    else builder.Append(escape);
+                }
+                else builder.Append(text[i]);
+            }
             return builder.ToString();
         }
 
@@ -354,11 +401,20 @@ namespace Ac.Core
 
         public static bool TryParse(string json, out SettingsSnapshot snapshot)
         {
+            int ignored;
+            return TryParse(json, out snapshot, out ignored);
+        }
+
+        // sourceVersion 是文件里原本的版本号（迁移判定必须用它，不能用出口快照里的 2）
+        public static bool TryParse(string json, out SettingsSnapshot snapshot, out int sourceVersion)
+        {
             snapshot = SettingsDefaults.Default();
+            sourceVersion = 1;
             Dictionary<string, string> flat;
             if (!TryReadFlat(json, out flat)) return false;
 
-            var version = ReadInt(flat, "schemaVersion", 1);
+            var version = ReadVersion(flat);
+            sourceVersion = version;
             if (version > SettingsDefaults.SchemaVersion)
             {
                 snapshot.SchemaVersion = version;
@@ -390,9 +446,20 @@ namespace Ac.Core
             {
                 var name = parts[i].Trim();
                 if (name.Length >= 2 && name[0] == '"' && name[name.Length - 1] == '"') name = name.Substring(1, name.Length - 2);
-                if (name.Length > 0) keys[i] = name;
+                if (name.Length > 0) keys[i] = Unescape(name);
             }
             return keys;
+        }
+
+        // 版本号按浮点读：合法的 2.0 / 2e0 不能被当成"缺版本号"（那会把 v2 文件当 v1 迁移并丢键）
+        private static int ReadVersion(Dictionary<string, string> flat)
+        {
+            string raw;
+            if (!flat.TryGetValue("schemaVersion", out raw)) return 1;
+            float value;
+            if (!float.TryParse(raw.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value)) return 1;
+            if (float.IsNaN(value) || value < 0f) return 1;
+            return (int)value;
         }
 
         private static int ReadInt(Dictionary<string, string> flat, string key, int fallback)
@@ -459,8 +526,16 @@ namespace Ac.Core
             i += 1;                                   // 跳过开引号
             while (i < json.Length && json[i] != '"')
             {
-                if (json[i] == '\\' && i + 1 < json.Length) i += 1;
-                builder.Append(json[i]);
+                if (json[i] == '\\' && i + 1 < json.Length)
+                {
+                    i += 1;
+                    var escape = json[i];
+                    if (escape == 'n') builder.Append('\n');
+                    else if (escape == 't') builder.Append('\t');
+                    else if (escape == 'r') builder.Append('\r');
+                    else builder.Append(escape);            // \" 与 \\ 还原成原字符
+                }
+                else builder.Append(json[i]);
                 i += 1;
             }
             i += 1;
@@ -487,6 +562,8 @@ namespace Ac.Core
                     else if (json[i] == '"') { ReadString(json, ref i); continue; }
                     i += 1;
                 }
+                if (i - start - 1 < 0 || json.Length == 0 || i == start) return false;   // 数组没闭合 → 坏 JSON，不许抛异常
+                if (i - start - 2 < 0) return false;
                 value = json.Substring(start + 1, i - start - 2).Trim();
                 return true;
             }

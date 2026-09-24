@@ -39,6 +39,10 @@ namespace Ac.Tests
             SelfTest.Add("settings.keybind_conflict", ChecksKeyConflict);
             SelfTest.Add("settings.audio_push", ChecksAudioPush);
             SelfTest.Add("settings.debug_panel", ChecksDebugPanel);
+            SelfTest.Add("settings.nan_and_version_forms", ChecksNanAndVersionForms);
+            SelfTest.Add("settings.escaped_keynames", ChecksEscapedKeyNames);
+            SelfTest.Add("settings.truncated_json", ChecksTruncatedJson);
+            SelfTest.Add("settings.readonly_survives_reset", ChecksReadOnlySurvivesReset);
         }
 
         private static void ChecksDefaults()
@@ -261,7 +265,7 @@ namespace Ac.Tests
             panel.Rebind(0, "E");
             SelfTest.True(panel.Hint.Length > 0, "面板给出冲突提示", "没提示");
             SelfTest.Equal(6, (long)panel.ConflictHintAction);
-            SelfTest.True(panel.Rebind(0, store.Get().KeyBindings[0]) == false, "同值重绑不算变化（面板不刷新）", "刷新了");
+            SelfTest.True(panel.Rebind(0, "E") == false, "同值重绑不算变化（面板不刷新）", "刷新了");
         }
 
         private static void ChecksAudioPush()
@@ -287,6 +291,83 @@ namespace Ac.Tests
             SelfTest.True(mixer.VolumeOf(MixBus.Sfx) == 0.45f, "面板改音量也推音频", mixer.VolumeOf(MixBus.Sfx).ToString("R"));
             SelfTest.True(panel.ApplyCount > 0, "面板记录应用次数", panel.ApplyCount.ToString());
             AudioSeam.Bind(null);
+        }
+
+        private static void ChecksNanAndVersionForms()
+        {
+            var store = new SettingsStore();
+            store.SetVolume(SettingsKey.MasterVolume, float.NaN);
+            store.SetSensitivity(float.NaN);
+            store.SetFov(float.NaN);
+            SelfTest.True(store.Get().MasterVolume == 0.80f, "NaN 音量回落默认", store.Get().MasterVolume.ToString("R"));
+            SelfTest.True(store.Get().Sensitivity == 1.00f, "NaN 灵敏度回落默认", store.Get().Sensitivity.ToString("R"));
+            SelfTest.True(store.Get().Fov == 75f, "NaN 视野回落默认", store.Get().Fov.ToString("R"));
+            SelfTest.True(SettingsStore.Serialize(store.Get()).IndexOf("NaN", StringComparison.Ordinal) < 0, "写出来的 JSON 不许含 NaN", "含 NaN");
+            var posInf = new SettingsStore();
+            posInf.SetVolume(SettingsKey.SfxVolume, float.PositiveInfinity);
+            SelfTest.True(posInf.Get().SfxVolume == 1f, "无穷大被 clamp 到上界", posInf.Get().SfxVolume.ToString("R"));
+
+            SettingsSnapshot dotted;
+            SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 2.0, \"qualityTier\": 0}", out dotted), "2.0 能读", "读失败");
+            SelfTest.Equal(0, (long)dotted.QualityTier);                 // 被判成 v1 就会丢成默认 2
+            SettingsSnapshot exponent;
+            SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 2e0, \"qualityTier\": 0, \"musicVolume\": 0.1}", out exponent), "2e0 能读", "读失败");
+            SelfTest.Equal(0, (long)exponent.QualityTier);
+            SelfTest.True(exponent.MusicVolume == 0.1f, "2e0 不被当 v1（音乐音量不丢）", exponent.MusicVolume.ToString("R"));
+            int source;
+            SettingsSnapshot v1Form;
+            SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 1, \"fov\": 90}", out v1Form, out source), "v1 能读", "读失败");
+            SelfTest.Equal(1, (long)source);
+            SelfTest.Equal(2, (long)v1Form.SchemaVersion);
+        }
+
+        private static void ChecksEscapedKeyNames()
+        {
+            var store = new SettingsStore();
+            SelfTest.True(store.SetKeyBinding(0, "A\"B\\C"), "带引号与反斜杠的键名可以绑", "被拒");
+            var text = SettingsStore.Serialize(store.Get());
+            SelfTest.True(text.IndexOf("\\\"B", StringComparison.Ordinal) > 0, "引号被转义", "没转义");
+            SettingsSnapshot parsed;
+            SelfTest.True(SettingsStore.TryParse(text, out parsed), "转义过的文件还能读回来", "读失败");
+            SelfTest.True(parsed.KeyBindings[0] == "A\"B\\C", "转义往返一致", parsed.KeyBindings[0]);
+            SelfTest.Equal(14, (long)parsed.KeyBindings.Length);
+            SelfTest.True(parsed.KeyBindings[13] == "F3", "转义不影响其它键位", parsed.KeyBindings[13]);
+            SelfTest.True(parsed.KeyBindings[1] == "S", "转义不影响相邻键位", parsed.KeyBindings[1]);
+        }
+
+        private static void ChecksTruncatedJson()
+        {
+            var dir = TempDir();
+            Clean(dir);
+            SettingsSnapshot parsed;
+            SelfTest.True(!SettingsStore.TryParse("{\"keyBindings\": [", out parsed), "截断的数组判坏 JSON", "判成合法");
+            SelfTest.True(!SettingsStore.TryParse("{\"keyBindings\": [\"W\", ", out parsed), "数组中途结束也判坏", "判成合法");
+            SelfTest.True(!SettingsStore.TryParse("{\"fov\": ", out parsed), "值缺失判坏", "判成合法");
+            SelfTest.True(!SettingsStore.TryParse("{\"fov\": 1,", out parsed), "键后无值也判坏", "判成合法");
+            var path = Path.Combine(dir, SettingsStore.FileName);
+            File.WriteAllText(path, "{\"keyBindings\": [");
+            var store = new SettingsStore();
+            store.Load(dir);                                  // 不许抛异常
+            SelfTest.Equal(1, (long)store.BadFileCount);
+            SelfTest.True(store.Get().Fov == 75f, "截断文件回落默认值", store.Get().Fov.ToString("R"));
+            Clean(dir);
+        }
+
+        private static void ChecksReadOnlySurvivesReset()
+        {
+            var dir = TempDir();
+            Clean(dir);
+            var path = Path.Combine(dir, SettingsStore.FileName);
+            File.WriteAllText(path, "{\"schemaVersion\": 3, \"fov\": 90}");
+            var store = new SettingsStore();
+            store.Load(dir);
+            SelfTest.True(store.ReadOnlyFile, "v3 标记只读", "没标记");
+            store.Reset();                                    // Reset 不许解除只读
+            SelfTest.True(store.ReadOnlyFile, "Reset 之后仍然只读", "只读被解除");
+            store.SetFov(80f);
+            SelfTest.True(!store.FlushIfDirty(dir, true), "只读文件不落盘", "落盘了");
+            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 3") >= 0, "v3 文件原样保留", "被覆盖");
+            Clean(dir);
         }
 
         private static void ChecksDebugPanel()
@@ -352,7 +433,8 @@ namespace Ac.Tests
             throttled.Toggle();
             throttled.Tick(1f, sample);
             SelfTest.True(throttled.RefreshCount >= 3, "再次打开又能刷新", throttled.RefreshCount.ToString());
-            SelfTest.True(panel.LineAt(6).IndexOf("!", StringComparison.Ordinal) >= 0 || panel.LineAt(7).IndexOf("n/a", StringComparison.Ordinal) >= 0, "阈值标记只在有数据时出现", "标记错");
+            SelfTest.True(panel.LineAt(7) == "frameTimeMaxMs: n/a", "帧时间最大值未接线显示 n/a", panel.LineAt(7));
+            SelfTest.True(panel.LineAt(6).IndexOf('!') < 0, "n/a 的字段不许标超阈", panel.LineAt(6));
         }
     }
 }
