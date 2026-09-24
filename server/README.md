@@ -202,7 +202,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ## 6. 模拟数据布局（S05 §5 冻结）
 
 `server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`；S09 起 `entity_table.hpp` 为承载 §9 冻结的 `Entity::knock`/`Entity::ai` 而包含两份**纯数据**头 `combat/knockback.hpp`、`ai/sheep_state.hpp`，二者自身都不引 `sim/**`，因此不构成包含环 —— 见 §10.1-13），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §13 表格）。
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §14 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §13 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §14 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -336,7 +336,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §13 表格的实测行为准。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §14 表格的实测行为准。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -417,7 +417,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 - AI 模块（全部逐行照 v1 `packages/shared/src/ai/*.ts`）：`ai/steering.{hpp,cpp}`（`seek`/`arrive`/`normalize`/`separation`/`obstacleAvoid`）、`ai/flocking.{hpp,cpp}`（按 `(distanceSq, EntityId)` 有界插入的 12 邻居 + 分离/对齐/凝聚加权 + `0.5` 混合比）、`ai/targeting.{hpp,cpp}`（8 槽仇恨、每 tick `×0.98`、命中 `+20` 无上限、遮挡可见性、`score = aggro + 1/(1+d)` 与 `×1.5` 换目标阈值）、`ai/sheep_brain.{hpp,cpp}`（13 态转移表、四羊形行为分支、`updateAiIntents`/`applyAiIntents` 两趟结构）、`ai/sheep_attack.{hpp,cpp}`（撕咬 1.4+0.5+0.4、冲锋 0.5+0.4+0.15、精英问号弹、投射物推进与销毁）、`ai/king_phases.{hpp,cpp}`（`>0.66`/`>0.33` 三阶段 + 4 只咩咩兵召唤）。
 - 波次：`waves/director.{hpp,cpp}` 逐行照 v1 `ai/director.ts`（预算平面数组按 `grunt→ram→elite→king` 的 `cursor` 消耗、每 tick ≤8 个、出生点随机起点 + 只收 ≥15m 的点且 ≤3 个、±1.5m 抖动、清波与第 10 波结算）。`DirectorState` 是外部状态（§9 冻结签名），**未**接进 `stepWorld`（见 §10.1-3）。
 - 接线：`sim/step.cpp` 阶段 4/5 调 `ai::updateAiIntents`/`applyAiIntents`，阶段 11 调 `resolveEliteFire` → `advanceProjectiles` → `updateKings`；`combat/knockback.{hpp,cpp}` 的 `applyKnockback` 落在**阶段 6**（紧跟阶段 4/5 的 AI 意图之后，与 v1 `sim.ts:69-71` 同序）。阶段 1 另按 v1 `sim.ts:109-115` 补上 S08 §9.2-1 的救援者限速。`Entity` 追加 `knock{}` 与 `ai{}`，尺寸 232 → **960 B**、`World` → **1 010 824 B**。
-- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §13 表格。
+- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §14 表格。
 
 ### 10.1 计划文本纠正与已声明偏差（S09）
 
@@ -530,17 +530,83 @@ server/build/ac_tests.exe                       # TESTS 297/297
 
 **两轴合计**：Standards 轴 9 条（已修 7 + 判断 2）、Spec 轴 4 条（已修 3 + 声明 1）与上表 7 条未做/判断项。Standards 轴最重的是「框架静默丢用例」（已修，用例数 256 → 512）；Spec 轴最重的是「全体补给漏散布清零」（已修，且原用例确实是空断言）。
 
-## 12. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 12. 权威校验与硬纠正（S11 §5 冻结）
+
+**交付物**（§3 的四个模块 + 三份用例；另加一份 S13 需要的计数注册表）：
+
+| 文件 | 职责 |
+|---|---|
+| `security/validate.{hpp,cpp}` | 包长/载荷上限、客户端→服务器 opcode 白名单、tick 合法性（过期 / 未来）、§5 字段表夹取（NaN/±Inf 归零、`moveX/moveY` ±1、`yaw` 取模 [-π,π]、`pitch` ±π/2、`switchTo`∈{0,1,2}）、命令 `seq` 幂等窗口；非法输入只返回 `ValidateResult{ok, reason}` |
+| `security/rate_limit.{hpp,cpp}` | 两套 1s 滑动窗口（命令 30/s 只丢弃；消息 60/s 打击，第 3 次 `Disconnect(reason = 6)`）与 join 失败节流（5 次/10s）；算法逐字端口 v1 `checkRateLimit` / `createJoinThrottle`（含「窗口内 0 条则清零打击」） |
+| `security/pose_validation.{hpp,cpp}` | §5 冻结数值（0.36225 m / 5.52 m/s / 1.15 / 0.543375 m）与四态处置，含 v1 `isLegalPosition` 的栅栏 / 谷仓判定与「位置非法优先」 |
+| `security/rewind.{hpp,cpp}` | `rewindMs(rttMs) = min(rttMs / 2, 200)`；复用 S05 `samplePoseAgo` 取回退姿态，越限（`rttMs / 2 > 200`）返回 `ok = false` 并按当下姿态判定（不回滚），`clamped` 只作诊断计数 |
+| `metrics/counters.{hpp,cpp}` | **§3 未列**（见 §12.1-1）：定长计数注册表（名字表 + 9 个计数 + 取值口），零分配、无字符串拼接；S13 的 `metrics.cpp` 在其上做 Prometheus 渲染 |
+| `tests/security_test.cpp` | 恶意输入矩阵 **12 类 × 3 变体 = 36 条**（用例名同时含 `security` 与 `malicious`）+ 窗口 / 节流 / 幂等 / 计数接线，共 51 条 |
+| `tests/pose_validation_test.cpp` | 冻结数值、边界两侧、派生预算可解释、位置合法性优先级、垂直违规、同跑次 `pose_suspect ≥ hard_correct`，共 13 条（用例名前缀 `motion_authority_`，避免冲掉 S05 冻结的 `--filter=pose` 门禁） |
+| `tests/rewind_test.cpp` | `min(rttMs/2, 200)` 边界、越限不回滚、空环 / 未知实体 / 环内过期、`ms = 0` 取当下姿态，共 9 条 |
+
+**处置优先级（§5，逐字继承 v1 `applyPoseValidation`）**：位置非法 → `Rejected`（计 `ac_pose_rejected_total` + `ac_hard_correct_total`，回退到 tick 前位置）；垂直违规或超出 `(limit + 派生预算) × 1.5` → `Corrected`（计 `ac_hard_correct_total`）；位移超过 `limit + 派生预算` 但可解释性判定为「不可解释」时 → `Suspect`（只计 `ac_pose_suspect_total`，**不改姿态**）；否则 `Accept`。任一「速度/垂直」违规另计 `ac_speed_violations_total`。
+
+**运行命令（可直接复制）**：
+
+```powershell
+server/build/ac_tests.exe --filter=security      # TESTS 51/51（含矩阵 36 条）
+server/build/ac_tests.exe --filter=malicious     # TESTS 36/36（矩阵地板，§6-3 的计数门禁）
+server/build/ac_tests.exe --filter=pose          # TESTS 5/5（S05 冻结门禁：本批用例名刻意不含 pose，见 §12.1-12）
+server/build/ac_tests.exe --filter=motion_authority  # TESTS 13/13（本批姿态处置用例）
+server/build/ac_tests.exe --filter=rewind        # TESTS 12/12（本批 9 + 矩阵 12a–12c）
+server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：硬纠正不进权威模拟路径）
+1..20 | ForEach-Object { server/build/ac_tests.exe --filter=malicious > $null }   # 20 轮退出码全 0
+```
+
+### 12.1 计划文本纠正与已声明偏差（S11）
+
+1. **§3 未列 `server/src/metrics/counters.{hpp,cpp}`**：§4-7 / §6-4 / §7 要求「5 个新计数已接线注册」，而 `server/src/metrics/` 在本步之前并不存在（S13 才建 `metrics/metrics.cpp`）→ 本批新建最小注册表（名字表 + 定长计数数组 + `counterValue` / `isCounterRegistered`），S13 的 Prometheus 渲染与 `/metrics` 出口直接在其上做。
+2. **§6-3 的末行 `malicious cases=36 failures=0` 不可得**：S01 冻结的输出契约是「每例一行 `PASS/FAIL` + 末行 `TESTS x/y`」，退出码 = 失败用例数 → 实际末行是 `TESTS 36/36`（退出码 0）。矩阵地板的**计数语义**由用例数守住（§7 DoD 照旧满足）。
+3. **§4-8 / §4-9 的写盘目标 `docs/evidence/gate-selfcheck.md` 不存在**（`docs/evidence/` 下只有 client-c01…c08 验收、env-bootstrap、plan-audit 与 fixtures）→ 按 S07–S10 的既有约定，本批的校验数值与对拍结论写进本文件 §12 与 §14 表格。
+4. **§5 的「派生预算只由权威模拟产生」在 v2 没有生产方**：v1 的 `Entity` 有 `derivedMoveX/Z`（`sim.ts:213-216` 累计、`world.ts:238-239` 每 tick 清零），而 S05–S09 冻结的 v2 `Entity` 没有这两个字段（全仓 grep `derivedMove` 无命中）→ 本批按 v1 `validateAdvance(..., derivedBudgetM = 0)` 的形状把派生预算做成**入参**（`PoseSample.derivedBudgetM`，默认 0），未来由模拟侧累加后传入；「在 sim 里加派生位移累加器」登记为后续裁决（它会改 `sizeof(Entity)` 与跨语言对拍向量）。
+5. **§8 风险表的「用构建目标的依赖方向拦截」在单一 `ac_core` 目标下无法表达**：`server/CMakeLists.txt` 只有 `ac_core`（`src/**.cpp` 一次 glob）+ `ac_server` + `ac_tests` → 本批以「源码约定 + 审查期 grep」替代（sim/ai/combat/waves 无一处 include `security/` 或 `metrics/`，见 §14 表格）；要硬拦截需先拆目标或加一次源文件扫描门禁。
+6. **§9 的 `rewind_ms` 写成 `rewindMs`**：按仓库既有命名（`samplePoseAgo` / `horizontalLimitM`）与工程约定的 camelCase，语义一致（`min(rttMs / 2, 200)`，整数除法）。
+7. **§5「重复 msgId（重传）」是两层去重**：线上重复包由 S04 的 `ackOnReceive(state, msgId)`（ADR-009 可靠扩展 `msgId` u32 + 32 位 ack 位图）去重；矩阵 8 针对的是**应用层幂等**（同一命令 `seq` 不得被应用两次），窗口 64 条（`kDedupWindow`）。
+8. **§5「命令载荷上限 64 B」是上限而非实际长度**：ADR-009 §5.2 的命令载荷固定 14 B（包头 8 + 可靠扩展 12 = 34 B 起）→ `validatePayloadSize` 按 64 B 拒绝**超长帧**，不是把 14 B 当契约。
+9. **矩阵 5 的「>60/s」落在消息窗口**：命令窗口（30/s）只丢弃、不产生打击（矩阵 4「不断开」），打击与 `Disconnect(reason = 6)` 由消息窗口（60/s）累计 3 次触发 —— 与 §8 风险表「命令与消息两套窗口分离计数」一致。
+10. **矩阵 11 的「负 tick」在 v2 不可表示**：ADR-009 §5.2 的 `clientTick` 是 u32 → 「负」只能以 `0xFFFFFFFF` 出现，命中「未来 tick 丢弃」（用例 11b 照此钉住）。
+11. **边界等值比较的浮点事实（实测）**：计算值 `kHorizontalLimitM = 0.36224999999999996` 而字面量 `0.36225 = 0.36225000000000002`；`kHardCorrectLimitM = 0.54337499999999994` 而字面量 `0.543375 = 0.54337500000000005`。因此冻结数值在 `pose_validation_frozen_values` 里以 **1e-12** 容差钉住，而「恰好等于边界」的判定用 **±1e-9 相对带**的两侧（等值比较会被 1 ulp 翻面 —— 这是浮点契约，不是实现偏差）。§7「六个数值以具名常量出现」满足：`0.36225` / `5.52` / `1.15` / `0.543375` 都在 `static_assert` 锚点里，`200` / `30` / `60` / `3` 是 `rewind` / `rate_limit` 的具名常量。
+12. **门禁子串与用例命名（评审后收口）**：`--filter=X` 是子串匹配，所以本批新用例名刻意避开已占用的 `pose`（S05 冻结 5/5）：姿态处置 13 条用前缀 `motion_authority_`、回退 9 条用 `rewind_`（原 `rewind_*_pose` 改名）、计数接线 1 条改名 `security_five_authority_counters_registered`。收口后 `--filter=pose` 仍为 **5/5**；新增组 `security` 51/51、`malicious` 36/36、`motion_authority` 13/13、`rewind` 12/12（= 本批 9 + 矩阵 12a–12c）。计划只给了矩阵地板（36），没给这几组的数量。
+13. **本批不接线到运行路径**：§3 的交付物只有 `security/` 四个模块与三份用例，没有 `room/`、`net/` 或 `main.cpp` 的改动 → 上行路径的接线（收包循环 → `validate` → `rate_limit` → `pose_validation`）需要 S12 的复制/调度循环与第 4 条的派生位移累加器，`main.cpp` 一行未动。§1 的「对每条上行命令与每一帧姿态都有可执行的信任边界」在本批的含义是「边界函数可执行、被 36 条矩阵钉住、且不进入模拟热路径」。
+
+14. **§5 的 `ac_speed_violations_total` 计数口径含 Suspect**：v1 `applyPoseValidation` 里 `if (speed || vertical) speedViolations += 1` 发生在「是否硬纠正」判定之前，所以被判 `Suspect`（不改姿态）的那一帧同样计入。本批逐字继承 v1（§12.2 的 Spec 轴也把这条列为「需声明口径」），因此 `pose_suspect` 与 `speed_violations` 会同时增长 —— 这是口径，不是重复计数。
+15. **§9 只冻结了四个公开名字**：`ValidateResult{isOk, reason}`、`RateVerdict{Ok, Limited, Disconnect}`、`PoseVerdict{Accept, Suspect, Corrected, Rejected}`、`SnapshotBaseline`。实现另加了 `ClampReport`（夹取诊断位）、`PoseOutcome`（判定明细与回退目标）、`RewindOutcome`、`ValidateReason`、`CommandDedup` 与 `isRewindOverLimit`：它们是 §4 任务清单里「判定与计数」的载体，不是给未来预留的钩子（无未使用参数、无抽象基类），据此登记。
+16. **§9 未冻结的 `metrics/counters.{hpp,cpp}` 名字**：§4-7/§6-4 只要求「5 个新计数已接线注册」，本批按 S13 §5 的 9 个名字建表（含 4 个帧处置计数），并在 `counters.cpp` 里用 `static_assert` 钉住「名字表顺序 = `CounterId` 顺序」。
+
+### 12.2 两轴评审（Standards + Spec 并行，固定点 `7df72bf`）
+
+**Standards 轴（摘录）**
+- 硬违规 1：工程约定 §6「布尔 is/has/can 前缀」——`ValidateResult::ok`、`ClampReport{moveX, moveY, yaw, pitch, switchTo, nonFinite}`、`PoseOutcome{speed, vertical, position, rolledBack}`、`RewindOutcome.clamped` 与同一提交里的 `isOk` 自相矛盾（先例：§6.5-2、§7.5-5、S09 §10.1-14 的 `ok→isOk` 回改）。
+- 硬违规 2：README §4.2-7/§5.3-7「命名新用例前先对照已占用门禁子串」——13 条 `pose_validation_*` 把 S05 冻结的 `--filter=pose` 5/5 冲成 22/22。
+- 判断题：`validate.cpp` 的 `std::fmod` 与 README §3「不用库函数」及 `core/math.hpp` 的 `ac::wrapAngle` 两套边界语义；`rewind.cpp` 重复实现 `rttMs/2 > 200`；`horizontalDistanceM` 四个裸 `double`（数据团）；`security::kMaxPacketBytes` 与 `net::kMaxPacketBytes` 同值两名；四文件重复 `counters != nullptr` 样板；`ValidateReason` 两处 `switch`。
+- 核对通过：9 个指标名与 S13 §5 逐字一致；`sim/ai/combat/waves` 零 `include "security/"`·`"metrics/"`；定长数组、无 `string/vector/function`；`static_assert` 锚点与 §引用齐备；370 条 < `kMaxCases 512`；末行用框架 `TESTS 36/36` 符合 S01 输出契约。
+
+**Spec 轴（摘录）**
+- 缺失/半成品 3 条：运行路径未接线（§3 交付物无 `room/`·`net/`）；§5 行 79 的派生预算无生产方；§4-8/§4-9 的 `docs/evidence/gate-selfcheck.md` 不存在。
+- 规格没要求 3 条：自建 `metrics/counters.*`；`kDedupWindow = 64` 的 seq 幂等窗口（线上重传已由 S04 `msgId` 位图覆盖）；§9 未冻结的辅助类型。
+- 与规格不符 1 条：§5 行 80「不取整，越限 `rttMs/2 > 200`」被实现成整数除法 → `rttMs = 401` 误判为「未越限」；另 §5 的 `ac_speed_violations_total` 含 `Suspect` 需声明口径；§6-3 末行契约差异已知（§12.1-2）。
+- 核实为真实约束、成立的偏差：1 ulp 边界用 ±1e-9 带、负 tick = `0xFFFFFFFF`、单一 `ac_core` 目标下无构建级依赖拦截、`rewindMs` 命名。
+
+**处置（本提交内已改）**：布尔前缀全量回改（`isOk` / `isMoveXClamped` / `isMoveYClamped` / `isYawWrapped` / `isPitchClamped` / `isSwitchToReset` / `isNonFinite` / `hasAnyAdjustment()` / `isSpeedViolation` / `isVerticalViolation` / `isPositionIllegal` / `isRolledBack` / `isClamped` / `isFound`）；新用例改名（`motion_authority_*` / `rewind_*`）把 `--filter=pose` 收回 **5/5**；`std::fmod` 换成 `ac::wrapAngle`（§5.1 冻结的左开右闭，无循环）；越限判定改**精确比较** `rttMs > 400`（新增 `isRewindOverLimit`，函数与采样共用，消掉重复）；删掉 `security::kMaxPacketBytes` 同值别名；四文件的判空样板收敛为 `metrics::bumpCounter`。
+**处置（判断项，保留并说明）**：`horizontalDistanceM(prevX, prevZ, x, z)` 是两点水平距离原语（四个坐标就是它的定义域，没有更小的领域类型可替）；`ValidateReason` 的两处 `switch` 是两个不同映射（名字表 / 计数映射）；「本批不接线运行路径」与「派生预算入参化」按 §12.1-4/§12.1-13 登记为后续裁决；`gate-selfcheck.md` 缺失按 §12.1-3 写回本文件；`Suspect` 同计 `speed_violations` 按 §12.1-14 声明；§3 未列的 `metrics/counters.*` 按 §12.1-1/§12.1-16 保留（S13 的渲染依赖它）。
+
+## 13. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 13. 当前状态
+## 14. 当前状态
 
-**S01–S10 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）就位；权威校验与硬纠正（S11）、复制调度与背压（S12）由
+**S01–S11 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12）由
 后续各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
@@ -652,5 +718,15 @@ server/build/ac_tests.exe                       # TESTS 297/297
 | `node tools/check-assets.mjs`（S10 后） | 退出码 0：341 个受控文件、二进制嗅探 341 个、零素材类扩展名；Unity 依赖 34 个全在白名单；`C++ 构建清单：未发现第三方依赖引入` |
 | 计划偏差清单（S10） | §11.1 的二十条（`--filter=match` 子串口径、同态转移按 v1 幂等返回 true、50ms 切片 vs 真实 elapsed、`hostId` 重算、世界只在 playing 步进、量化与向下取整口径、`matchEnded.flags` 放不下 durationMs、快照缝与单播编码归 S12、签名补发、令牌归握手层、200 房受 64 上限、`Session::kills` 恒 0、昵称剔除集、用例容量 512、fixture 6/6、自动注册、保留码分支防御性、房间码 RNG 独立实例） |
 | 两轴评审（S10，Standards + Spec 并行） | §11.2 记录：已修 10 类（补给漏散布清零、结算用例同义反复、死写入、空昵称兜底、`pid` 宽度、死声明、只写不读的 `seed`、布尔前缀、框架用例容量、README 缺章节）；未做/判断项 7 条（fixture 向量数、阶段时钟口径、`Event.flags` 布局、S12 归属与 v1 遗留三项、重复扫描循环与同形 switch、数据团形状、`const_cast` 转发） |
+| 校验与频率（S11） | `--filter=security` 末行 `TESTS 51/51`，退出码 0（恶意输入矩阵 36 条 + 窗口/节流/幂等/计数接线 15 条） |
+| 恶意输入矩阵（S11 §5/§6-3） | `--filter=malicious` 末行 `TESTS 36/36`（12 类 × 3 变体：超长包、超限移动、瞬移、命令洪泛、消息洪泛、非法 opcode、半包/截断、重复 seq、客户端 tick 非法、NaN/±Inf、字段越界、回退越限）；`1..20 | ForEach-Object { server/build/ac_tests.exe --filter=malicious }` 20 轮退出码全 0 |
+| 姿态处置（S11 §5） | `--filter=motion_authority` 末行 `TESTS 13/13`：冻结数值（0.36225 / 5.52 / 1.15 / 0.543375）、边界两侧（±1e-9 相对带）、派生预算可解释、位置非法优先于速度、垂直违规、同跑次 `pose_suspect(4) ≥ hard_correct(2)` |
+| 回退上限（S11 §5） | `--filter=rewind` 末行 `TESTS 12/12`：`rewindMs` 在 0/1/200/400/401/600/0xFFFFFFFF 上的值、400 恰好在上限内、**401 越限**（精确比较，不取整）不回滚、空环/未知实体/环内过期都按当下姿态判定并计 `ac_rewind_clamped_total` |
+| 硬纠正单点与依赖方向（S11 §6/§8） | `Select-String -Path server/src/security/pose_validation.cpp,server/src/security/rewind.cpp -Pattern 'RewindClamped|isRolledBack|kCorrected'`：唯一硬纠正写入点是 `pose_validation.cpp` 的 `out.isRolledBack`；`sim/ai/combat/waves` 对 `#include "security/`、`#include "metrics/` 命中 **0** |
+| 全量回归（S11 后） | `server/build/ac_tests.exe` 末行 `TESTS 370/370`（S01–S10 的 297 + S11 的 73：security 51 + motion_authority 13 + rewind 9）；`ctest --test-dir server/build -C Release` → `100% tests passed, 0 tests failed out of 1` |
+| `--filter` 计数（S11 后） | 既有冻结计数**无一变动**（`pose` 5/5、`world` 6/6、`step` 27/27、`combat` 45/45、`ai_` 30/30、`waves` 16/16、`match` 53/53、`codec` 15/15、`fixture` 6/6、`alloc` 6/6 …）+ 新增 `security` 51/51、`malicious` 36/36、`motion_authority` 13/13、`rewind` 12/12（本批用例名刻意不含 `pose`，见 §12.1-12） |
+| `node tools/check-docs.mjs` / `check-assets.mjs`（S11 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 58 个文档、169 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。` |
+| 计划偏差清单（S11） | §12.1 的十六条（metrics 注册表未在 §3 列、§6-3 末行口径、`gate-selfcheck.md` 不存在、派生预算无生产方、构建目标拦截不可表达、`rewindMs` 命名、两层去重、64 B 是上限、打击落在消息窗口、负 tick 不可表示、边界 1 ulp 实测、门禁子串与用例命名、本批不接线运行路径、`speed` 计数含 Suspect、§9 未冻结的辅助类型、`counters` 名字表） |
+| 两轴评审（S11，Standards + Spec 并行） | §12.2 记录：已修 5 类（布尔前缀回改、`--filter=pose` 门禁收口、`std::fmod` → `ac::wrapAngle`、越限判定改精确比较、同值常量与判空样板）；未做/判断项 5 条（运行路径未接线、派生预算入参化、写盘目标缺失、数据团形状、两处 `switch`） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
