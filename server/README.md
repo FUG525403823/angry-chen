@@ -38,10 +38,10 @@ g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserv
 > 该行只编 `ac_server.exe`（与 S01 §5.3 字面量一致）。测试程序要**另起一条命令**，不要把 `server/src/main.cpp` 带进去（双 `main()` 链接失败）：
 
 ```powershell
-g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserver/src -Iserver/tests -o server/build/ac_tests_fallback.exe server/tests/*.cpp server/src/core/log.cpp server/src/net/*.cpp -lws2_32
+g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserver/src -Iserver/tests -o server/build/ac_tests_fallback.exe server/tests/*.cpp server/src/core/*.cpp server/src/net/*.cpp server/src/sim/*.cpp -lws2_32
 ```
 
-> 兜底版 fixture 走相对路径（见 §4），必须在仓库根运行；S04 起需要 `-lws2_32`（WinSock2）与 `server/src/net/*.cpp`。
+> 兜底版 fixture 走相对路径（见 §4），必须在仓库根运行；S04 起需要 `-lws2_32`（WinSock2）与 `server/src/net/*.cpp`；S05 起需要 `server/src/sim/*.cpp`（模拟层新增源文件时照抄本行）。
 
 | 产物 | 路径 | 说明 |
 | --- | --- | --- |
@@ -199,16 +199,78 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 8. **遗留项（本份未动）**：S02 的 `rng_ai_stream_bits` 含 `ai`，会让 S09 §6 的 `--filter=ai` 从 `TESTS 22/22` 变 23 条——名字本身没错（它就是 ai 流），**S09 立项时要先改名或改门禁**；另 S09 §7 第 9 条写的 `--filter=fixture` 在本套测试里是 `TESTS 0/0`（疑为 `--filter=codec` 之误，codec 恰为 14/14），S09 落地前需澄清。
 9. **`udp_socket_loopback_roundtrip` 不在 §6 的五组内**：那五组按固定条数（8/5/4/4/2）校验，套接字缝的真实回环收发单独一条用例覆盖（真 UDP、非阻塞、`poll` 超时）。POSIX 分支本机（Windows）跑不到，只在 WinSock2 分支上验证过。
 
-## 6. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 6. 模拟数据布局（S05 §5 冻结）
+
+`server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`、`ai/**`），热路径零堆分配：
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 115832` 字节 ≈ 113 KiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 96 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 8 字节（取证行见 §8 表格）。
+
+### 6.1 World 字段表（类型、顺序、容量不得改）
+
+| 字段 | 类型 | 容量 / 语义 |
+| --- | --- | --- |
+| `seed` | u32 | 三条 RNG 流的派生源（`createRng(seed, kAi/kSpawn/kFx)`） |
+| `tick` | u32 | 0 基；`timeMs = tick * 50`；`stepWorld` 先清事件缓冲、再 `++tick` |
+| `entities` | `Entity[1024]` | 下标 = `EntityId - 1`，**永不搬移**（跨 tick 持有的指针/引用仍有效） |
+| `activeIds` | u16[1024] + `activeCount` | **严格升序**；下游只准沿它遍历（唯一遍历入口） |
+| `freeIds` | u16[1024] + `freeCount` | 空闲栈，LIFO：最近释放的先复用 |
+| `highWater` | u16 | 历史最大 `EntityId`；`activeCount + freeCount == highWater` 恒成立 |
+| `rng` | `{ai, spawn, fx}` | 三条独立流，禁止跨流借数（ADR-010） |
+| `stats` | `{aliveSheep, eventsDropped}` | 前者每 tick 重算，后者只累加、不随 tick 清零 |
+| `poseHistory` | 见 §6.3 | 回滚命中用的姿态环 |
+| `grid` | 见 §6.4 | 每 tick 重建的派生结构（不是权威状态） |
+| `events` | `Event[256]` + `eventCount` | 每 tick 开头清零；满 256 丢**新**事件并 `++eventsDropped` |
+
+`eventCount` 的线上形是 u8（编码上限 255，S05 §5.1 原文），但**单帧事件预算是 ≤64**（ADR-009 / S03 §5.4），超出部分走 `EventChannel` 可靠通道补发 —— 256 是本进程的缓冲容量，不是每帧发送量。
+`Event` 目前只固定 S03 §5.4 冻结的条目头：`eventId` u32（从 1 起单调递增、全局唯一、幂等去重键）+ `type` u8（1..10，ADR-009）；各类型载荷（`subjectId`/`targetId`/`value`/`flags`/`hitX..` 等，字段名以 S03 字段表为准）由 S06 起**追加**在末尾。
+
+### 6.2 实体表不变量（100k 次 spawn/despawn 压测后仍成立）
+
+1. `activeCount + freeCount == highWater`；
+2. `activeIds` 严格升序且无重复；`freeIds[0..freeCount)` 无重复；每个 id 恰好属于二者之一；
+3. 分配：`freeCount > 0` 取栈顶，否则 `++highWater`；池与栈都空 → `SpawnResult{isOk=false, reason=kEntityPoolExhausted}` 且**不改任何状态**；
+4. 释放：只置 `active = false` 并入栈；**字段在分配时整体重置**（复用的槽不会留下上一轮的 `vel / aliveMs / idle`）；
+5. `Entity` 96 字节：`id` u16 + `active` bool + `kind` u8 = 4，+4 填充，`pos` 24、`vel` 24、`yaw` 8、`pitch` 8、`hp`/`maxHp`/`armor` 各 4、`state` 1、`team` 1、`ownerId` 2、`aliveMs` 4、`idle` 1、尾部填充 3 ⇒ 96；分配后 `maxHp = hp`；
+6. id 不保证递增（复用是 LIFO），所以 `activeIds` 才是排序视图，`activeIndexOf` 走二分。
+
+### 6.3 姿态环（§5.3）
+
+20 槽 × 8 玩家 × 48 字节（5 double + u16 id + 对齐）= **7680 字节**，只记 `kind == player`（计划 §7 写的 `static_assert(sizeof(PoseHistory)) == 7680` 在本份的冻结签名下不可实现：环必须自带 `newestTick`/`writeCount`，`samplePoseAgo` 才拿得到时间基准，故断言落在槽位区 `sizeof(PoseHistory::slots) == 7680`；实测 `sizeof(PoseHistory) = 7688`，见 §6.5）；
+`recordPoseHistory` 在每 tick 末尾写 `slots[tick % 20]`（并重写整槽，避免上一圈残留）。
+`samplePoseAgo(const PoseHistory& h, uint32_t ms, uint16_t id, SampledPose& out)`（`ms` 与 §5.3 的签名同型）：`ms > 200` → `isOk = false`（`clamped = true` 仅诊断，**不回滚**）；
+否则在 `newestTick - ms/50` 与它的前一个 tick 之间按 `alpha = 1 - (ms % 50) / 50` 插值，
+`alpha ∈ {0, 1}` 时直接返回端点（`ms = 0` 因此逐位等于最新槽位，无插值误差）；
+历史不足时夹到最老槽（`isOk` 仍为 true），只有该实体在两槽都无记录时才 `found = false`。
+插值只用 `+ - * /`（ADR-010）。
+
+### 6.4 空间网格（§5.4）
+
+4m 单元格、20×20 = 400 格，`cellStart[401]` + `cellItems[1024]`；每 tick 两趟计数排序按 `activeIds`
+升序重建，因此**每格内 `EntityId` 升序**；`kind == projectile` 不入网格；越界坐标按
+`clamp(floor((x + 40) / 4), 0, 19)` 夹到边界格（查询只会多访问、不会漏配对）；
+`forEachNeighbor` 的访问顺序是 `cz` 升序 → `cx` 升序 → 格内下标升序（确定性契约）。
+若遥测显示单次邻居查询经常超过 64 个实体，按 S05 §8 风险项改成 2m 格。
+
+### 6.5 计划文本纠正与已声明偏差（S05）
+
+1. §7 的 `static_assert(sizeof(PoseHistory)) == 7680` 在上一条的冻结签名下不可实现 → 断言改成 `sizeof(PoseHistory::slots) == 7680`（见 §6.3）。
+2. §5.1/§5.2/§9 的行内草图写 `{ok, id}` / `ok = false`，与工程约定 §6「布尔用 `is`/`has`/`can` 前缀」冲突 → 实现取名 `SpawnResult::isOk`、`SampledPose::isOk`（语义与取值同草图）；失败原因另立 `SpawnFailure{kNone, kEntityPoolExhausted}`，取值名沿用 §5.2。
+3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
+4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
+5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §8 表格的实测行为准。
+7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。
+
+## 7. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 7. 当前状态
+## 8. 当前状态
 
-**S01–S04 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）与 UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）就位；模拟/AI/房间/持久化由 S05 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S05 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）与模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）就位；模拟规则/AI/房间/持久化由 S06 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -217,7 +279,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | `g++ --version` | `g++.exe (x86_64-win32-seh-rev1, Built by MinGW-Builds project) 15.2.0` |
 | `powershell -NoProfile -File server/build.ps1 -Config Release` | 退出码 0，末行 `[build] ok ac_server.exe`；`[build] toolchain: cmake 4.2 + ninja + C:\\Program Files\\mingw64\\bin\\g++.exe` |
 | `server/build/ac_server.exe --version` | `ac_server 0.1.0 protocol=1 tick=50ms` |
-| `server/build/ac_tests.exe` | 末行 `TESTS 110/110`，退出码 0（S01 的 18 条 + S02 的 28 条 + S03 的 40 条 + S04 的 24 条） |
+| `server/build/ac_tests.exe` | 末行 `TESTS 136/136`，退出码 0（S01 的 18 条 + S02 的 28 条 + S03 的 40 条 + S04 的 24 条 + S05 的 26 条） |
 | `--filter=transport` / `--filter=reliability` / `--filter=fragment` / `--filter=grace` / `--filter=memory` | 末行依次 `TESTS 8/8`、`TESTS 5/5`、`TESTS 4/4`、`TESTS 4/4`、`TESTS 2/2`，退出码全 0 |
 | `server/build/ac_tests.exe --filter=reliability` 的打印行 | `rto=200,300,450,675,1000` |
 | 丢包 20% + 延迟 50ms(±10) + 乱序 10% 的 1000 tick 回环 | 50 条可靠消息全部到达、按 `msgId` 严格升序交付、重传表清空、`droppedCount() > 0`（`memory_reliable_delivery_in_order`） |
@@ -229,7 +291,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 每通道序号（§5.2） | `ChannelSeq` u16 回绕、重复/过期包判旧（`reliability_duplicate_is_ignored`） |
 | 心跳与断线实测 | 50s 内恰好 100 次心跳、相邻间隔恒 500ms；最后一个合法包后 3000ms 判断线并进入 30s 宽限期 |
 | `Get-ChildItem server/src/net -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::pow","exp\(","\b0\.0[0-9]* \* pow"` | 0 命中 |
-| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 110/110`（含真实 UDP 回环那条） |
+| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 136/136`（含真实 UDP 回环那条） |
 | `server/build/ac_tests.exe --filter=rng` / `--filter=quantize` / `--filter=math` / `--filter=trig` | 末行依次 `TESTS 6/6`、`TESTS 10/10`、`TESTS 8/8`、`TESTS 4/4`，退出码全 0 |
 | `server/build/ac_tests.exe --filter=trig` 的打印行 | `sin crc=0x8BD9F737 atan crc=0x197C3A8D asin crc=0xAD2BD35E` |
 | `--filter=codec` | 末行 `TESTS 14/14`，退出码 0 |
@@ -251,6 +313,17 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 备份仓库只读（S02/S03 DoD） | `angry-chen-bak` 无 `.git`（`git status` 取证无效），改用 mtime：`packages/shared/src` 最新改动 2026-09-22 17:26、`packages/**` 全量最新 2026-09-23 14:23（v1 运行期数据），均早于本次工作 |
 | `angleUnitsFromVector` 相对 `atan2` 的偏差（§5.4 上界 6 单位） | `dx=0.3, dz=0.7` 差 1 单位、`dx=-0.9, dz=0.2` 差 4 单位；遍历 20000 个方向最坏 5 单位 |
 | `ctest --test-dir server/build --output-on-failure` | `100% tests passed, 0 tests failed out of 1` |
+| `--filter=world` / `--filter=entity` / `--filter=pose` / `--filter=grid` | 末行依次 `TESTS 6/6`、`TESTS 7/7`、`TESTS 5/5`、`TESTS 4/4`，退出码全 0 |
+| `--filter=alloc` 的打印行 | `steadyStateAllocations=0`（另有 `spawnReleaseAllocations=0`、`neighborScanAllocations=0`、`tickLoopAllocations=0`；10 tick 预热 + 600 tick 稳态） |
+| 实体表容量与复用（§6.2） | 第 1025 次分配返回 `kEntityPoolExhausted` 且 `highWater`/`activeCount`/`activeIds` 均未变；LIFO 复用槽字段整体回初值（`entity_pool_exhaustion_keeps_state`、`entity_reuse_is_lifo_and_resets_fields`） |
+| 实体表 100k 次 spawn/despawn 压测 | `activeCount + freeCount == highWater` 恒成立、空闲栈无重复、`activeIds` 保持严格升序（`entity_churn_preserves_invariants`） |
+| 姿态环容量（§6.3） | `sizeof(PoseRecord) = 48`、`sizeof(PoseHistory::slots) = 7680`；`ms = 0` 逐位等于最新槽位、`ms = 75` 取 0 与 4 的中点 2、`ms > 200` 拒绝回滚（`pose_*` 五条） |
+| 空间网格（§6.4） | `cellStart[401]` + `cellItems[1024]`；投射物不入网格；越界坐标夹到边界格；每格内 EntityId 升序；全覆盖查询序列与手工扫描逐项一致（`grid_*` 四条） |
+| `Get-ChildItem server/src/sim -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "new ","malloc","realloc","std::vector","std::string"` | 0 命中 |
+| 模拟层依赖（§7 DoD） | `server/src/sim/**` 只 `#include` 标准库与 `core/**`（无 `net/`、`ai/`） |
+| `--filter=world` 的打印行 | `worldBytes=115832 entityBytes=96 poseBytes=7688 gridBytes=3652 eventBytes=8`（容量取证，README §6 引用本行） |
+| 场地点位（DoD §7） | 4 个出生点与 12 个生成点坐标逐位硬编码比对、环半径 38 ± 0.01、四种 kind 的半径/高度逐值比对（`world_create_initializes_defaults`） |
+| 计划偏差清单 | §6.5 的七条（`sizeof(PoseHistory)` 断言位置、`isOk` 命名、`Event` 收敛、255/64 澄清、实现落地位置、复选框不勾选、`stepWorld` 语义待裁决） |
 | `server/build/ac_server.exe --selftest-log \| ConvertFrom-Json` | 解析成功，键序 `ts,level,evt,version,protocol,tickMs` |
 | g++ 直编兜底（第三条命令 + 同开关 `-I server/tests`；S03 起还要加 `server/src/net/codec.cpp`） | `ac_server.exe` 与 `ac_tests.exe` 均编译成功、`--version` 与 cmake 分支一致，且兜底版 `ac_tests.exe` 末行同为 `TESTS 86/86`（走相对路径 fixture，需在仓库根运行） |
 | `Select-String -Path server/CMakeLists.txt,server/build.ps1 -Pattern 'ffast-math','-march=native','-mfma'` | 0 命中 |
