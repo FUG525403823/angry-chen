@@ -88,6 +88,7 @@ namespace Ac.Net
             step.Yaw = command.Yaw;
             step.Pitch = command.Pitch;
             step.Buttons = command.Buttons;
+            step.Seq = command.Seq;
             return step;
         }
 

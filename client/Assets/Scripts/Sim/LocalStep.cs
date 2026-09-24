@@ -9,6 +9,8 @@ namespace Ac.Sim
         public ushort Yaw;
         public ushort Pitch;
         public byte Buttons;
+        // C06 §5(a)：命令缓冲按 seq 裁剪，所以步进视图要带上序号（clientTick 只走线上载荷，步进用不到）。
+        public ushort Seq;
     }
 
     // C05 §5.3 的移动参数（与 S06 的 `config/player.hpp`、`config/arena.hpp` 逐条同值）。
