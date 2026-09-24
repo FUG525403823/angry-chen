@@ -34,14 +34,14 @@
 
 ## 4. 任务清单
 
-1. 写 `client/Assets/Scripts/Net/UdpTransport.cs`：`Socket.Blocking = false`，收发缓冲各 64 包，收到包先按 §5.2 校验 `version` 与 `session`。
-2. 写 `client/Assets/Scripts/Net/Reliability.cs`：实现 §5.1 的 RTO 与重传预算，ack 位图按 32 位窗口去重，重传超限回调状态机。
-3. 写 `client/Assets/Scripts/Net/Fragment.cs`：载荷超过 1200 字节减头部时按 8 片上限切分，入站按 `fragId` 重组，1s 未齐即丢弃整组。
-4. 写 `client/Assets/Scripts/Net/Handshake.cs`：实现 §5.2 的握手时序与 8 字节十六进制令牌的保存、复用与失效清理。
-5. 写 `client/Assets/Scripts/Net/KeepAlive.cs` 与状态机：按 §5.3 的转移表驱动连接状态，超时进入宽限期并尝试 `Resume`。
-6. 写 `client/Assets/Scripts/Net/NetStats.cs`：按 §5.4 采集字段，1s 窗口，p99 用环形缓冲的就地插入排序取分位。
-7. 写 `client/Assets/Scripts/UI/NetworkPanel.cs` 的数据面：输出 `rtt`、`p99`、`丢包`、`收/发` 四行文本，供面板与调试命令复用。
-8. 写 `client/Tests/transport_test.cs`：两个 `UdpTransport` 实例回环对拍，注入 20% 丢包与 50±10ms 延迟，断言 §6 第 2 条的用例全绿。
+- [ ] 1. 写 `client/Assets/Scripts/Net/UdpTransport.cs`：`Socket.Blocking = false`，收发缓冲各 64 包，收到包先按 §5.2 校验 `version` 与 `session`。
+- [ ] 2. 写 `client/Assets/Scripts/Net/Reliability.cs`：实现 §5.1 的 RTO 与重传预算，ack 位图按 32 位窗口去重，重传超限回调状态机。
+- [ ] 3. 写 `client/Assets/Scripts/Net/Fragment.cs`：载荷超过 1200 字节减头部时按 8 片上限切分，入站按 `fragId` 重组，60 tick（3s）未齐即丢弃整组（与 S04 的 `kFragmentTimeoutTicks` 同值）。
+- [ ] 4. 写 `client/Assets/Scripts/Net/Handshake.cs`：实现 §5.2 的握手时序，以及 u32 重连令牌（线上编码为 8 位小写十六进制 ASCII）的保存、复用与失效清理。
+- [ ] 5. 写 `client/Assets/Scripts/Net/KeepAlive.cs` 与状态机：按 §5.3 的转移表驱动连接状态，超时进入宽限期并尝试 `Resume`。
+- [ ] 6. 写 `client/Assets/Scripts/Net/NetStats.cs`：按 §5.4 采集字段，1s 窗口，p99 用环形缓冲的就地插入排序取分位。
+- [ ] 7. 写 `client/Assets/Scripts/UI/NetworkPanel.cs` 的数据面：输出 `rtt`、`p99`、`丢包`、`收/发` 四行文本，供面板与调试命令复用。
+- [ ] 8. 写 `client/Tests/transport_test.cs`：两个 `UdpTransport` 实例回环对拍，注入 20% 丢包与 50±10ms 延迟，断言 §6 第 2 条的用例全绿。
 
 ## 5. 冻结契约
 
@@ -58,17 +58,19 @@
 | `RtoInitialMs` / `RtoBackoff` / `RtoMaxMs` | `200` / `1.5` / `1000` |
 | `MaxRetransmits` | `5`（超限即转入重连） |
 | `MaxFragments` | `8` |
+| `FragmentTimeoutTicks` | `60`（分片组 3s/60 tick 未收齐即整组丢弃，与服务端 `kFragmentTimeoutTicks` 同值） |
 | `SeqModulo` / `AckBitsWidth` | `65536`（每通道独立回绕） / `32` |
 | 命令上行速率 / 快照速率 | `30` Hz / 自适应 `10..30` Hz |
 
 ### 5.2 包类型与握手时序
 ```text
 type: 1 Hello / 2 HelloAck / 3 Resume / 4 Command / 5 Snapshot / 6 Event / 7 KeepAlive / 8 Disconnect / 9 Fragment
-C->S  Hello     { version u8, clientNonce u32 }              type=1, session=0, 不可靠
-S->C  HelloAck  { session u16, serverTick u32, salt u32 }    type=2, 可靠
-C->S  Resume    { reconnectToken 8B ASCII 小写十六进制 }     type=3, 可靠，仅重连
+C->S  Hello     { clientNonce u32, reconnectToken u32 }      type=1, session=0, 不可靠（首次连接 reconnectToken 填 0）
+S->C  HelloAck  { serverTick u32, salt u32 }                 type=2, 可靠
+C->S  Resume    { reconnectToken u32 }                       type=3, 可靠，仅重连
 S->C  Disconnect{ reason u8 }                                type=8, 可靠
 ```
+`version`、`type`、`session` 都在 8 字节通用包头里，**不进载荷**；上面四行的载荷字段与 [S04](../server/S04-UDP传输与可靠性子层.md) §5.5 逐字相同。`reconnectToken` 是 u32，线上编码为 8 位小写十六进制 ASCII（8 字节）；`Disconnect.reason` 冻结枚举：1 versionMismatch / 2 tokenInvalid / 3 timeout / 4 serverShutdown / 5 malformedPacket / 6 rateLimited / 7 slowConsumer。
 
 ### 5.3 连接状态机
 | 状态 | 进入条件 | 离开条件 |
@@ -92,12 +94,12 @@ S->C  Disconnect{ reason u8 }                                type=8, 可靠
 
 ### 5.5 套接字与分片规则
 - 套接字必须非阻塞：`socket.Blocking = false`，禁止 `SendTimeout`、`ReceiveTimeout`、同步阻塞读；每帧最多处理 64 个入站包以防饥饿渲染循环。
-- 分片：`fragCount` 不超过 8，`fragIndex` 从 0 起连续；同一 `fragId` 1s 未收齐即整组丢弃并计 `invalidPackets`。
+- 分片：`fragCount` 不超过 8，`fragIndex` 从 0 起连续；同一 `fragId` 60 tick（3s）未收齐即整组丢弃并计 `invalidPackets`（与服务端分片组超时同值）。
 - 去重：可靠包按 `msgId` 去重，重复到达只更新 ack 位图并计 `duplicates`，不得二次投递。
 
 ## 6. 验证
 
-1. 分组自检：`& "$env:ProgramFiles\Unity\Hub\Editor\6000.0.32f1\Editor\Unity.exe" -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -` → 期望含 `PASS net.handshake`、`PASS net.retransmit_rto`、`PASS net.fragment_1200`、`PASS net.stats_p99` 与末行 `SELFTEST OK`；失败意味着 UDP 层与服务端传输规范不一致，联机必然握不上手。
+1. 分组自检：`& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -`（`AC_UNITY` 见 [C01](C01-Unity工程基线与构建.md) §5） → 期望含 `PASS net.handshake`、`PASS net.retransmit_rto`、`PASS net.fragment_1200`、`PASS net.stats_p99` 与末行 `SELFTEST OK`；失败意味着 UDP 层与服务端传输规范不一致，联机必然握不上手。
 2. 丢包回环：在 20% 丢包、50±10ms 延迟下跑 `PASS net.retransmit_rto` → 期望重传次数不超过 5 且消息不丢；失败意味着 ack 位图或 RTO 退避有误，丢包会升级成掉线。
 3. 非阻塞断言：`Select-String -Path client/Assets/Scripts/Net/UdpTransport.cs -Pattern "Blocking = false"` → 命中；`Select-String -Path client/Assets/Scripts/Net/*.cs -Pattern "SendTimeout|ReceiveTimeout"` → 无输出；失败意味着某个调用会阻塞主线程，帧时间出现尖刺。
 4. 依赖面：`Select-String -Path client/Packages/manifest.json -Pattern "transports|netcode"` → 无输出；失败意味着引入了第三方网络包，双端规范无法同名。
@@ -120,7 +122,7 @@ S->C  Disconnect{ reason u8 }                                type=8, 可靠
 |---|---|---|
 | 主线程被套接字阻塞 | 帧时间出现 10ms 以上尖刺 | 改回非阻塞并加每帧包数上限；用 §6 第 3 条扫描做回归门禁 |
 | 与服务端传输子层常量漂移 | 握手超时或 ack 始终不匹配 | 以本文件 §5 为单一来源逐条比对服务端传输子层的常量表，差异即改一侧并重跑回环用例 |
-| 分片重组内存吃满 | `invalidPackets` 持续增长 | 收紧重组超时到 1s 并限制同时活跃的 `fragId` 数量不超过 16 |
+| 分片重组内存吃满 | `invalidPackets` 持续增长 | 重组超时按 S04 的 60 tick（3s）执行，并限制同时活跃的 `fragId` 数量不超过 16 |
 | 令牌泄露或被复用 | 重连后身份错乱 | 令牌只存本地，`Resume` 失败即清空并回退到新会话握手 |
 
 回滚目标：回到 HANDOFF-C02（只有 codec 与自检，无网络层），删除本份新增的 `Net/` 传输文件、`UI/NetworkPanel.cs` 与 `client/Tests/transport_test.cs`。

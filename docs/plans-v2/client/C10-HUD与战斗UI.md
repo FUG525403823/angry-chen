@@ -12,9 +12,9 @@
 
 | # | 必须已成立的事实 | 验证命令 | 期望 |
 |---|---|---|---|
-| 1 | 权威对局状态字段可指认 | `Select-String -Path ../../../packages/shared/src/match/state.ts -Pattern 'reviveRatio255'` | 命中 `reviveRatio255: number` |
-| 2 | 事件表可指认 | `Select-String -Path ../../../packages/shared/src/net/protocol.ts -Pattern 'reviveProgress'` | 命中 `reviveProgress: 6` |
-| 3 | 阶段枚举可指认 | `Select-String -Path ../../../packages/shared/src/match/phase.ts -Pattern 'MATCH_PHASE'` | 命中 `MATCH_PHASE =` |
+| 1 | 权威对局状态字段可指认（冻结对照，备份仓库） | `Select-String -Path D:\projects\tmp\angry-chen-bak\packages\shared\src\match\state.ts -Pattern 'reviveRatio255'` | 命中 `reviveRatio255: number` |
+| 2 | 事件表可指认（备份仓库） | `Select-String -Path D:\projects\tmp\angry-chen-bak\packages\shared\src\net\protocol.ts -Pattern 'reviveProgress'` | 命中 `reviveProgress: 6` |
+| 3 | 阶段枚举可指认（备份仓库） | `Select-String -Path D:\projects\tmp\angry-chen-bak\packages\shared\src\match\phase.ts -Pattern 'MATCH_PHASE'` | 命中 `MATCH_PHASE =` |
 | 4 | 前一步交付在位 | `Test-Path client/Assets/Scripts/View/HitMarker.cs` | `True` |
 | 5 | 系统字体可用 | 编辑器内 `Font.CreateDynamicFontFromOSFont("Microsoft YaHei", 32)` 返回非空 | 非空（人工确认一次） |
 
@@ -42,7 +42,7 @@
 - [ ] 5. 写 `client/Assets/Scripts/UI/RageBar.cs`：取 `MatchStatePlayer.rage`（满值 `RageFull = 100`）与 `rageLeft100Ms`，满值时显示可激活提示，狂暴期间显示剩余时间。
 - [ ] 6. 写 `client/Assets/Scripts/UI/DownedOverlay.cs` 与 `client/Assets/Scripts/UI/RevivePrompt.cs`：可见性条件见 §5(e)；救援进度 = `reviveRatio255 / 255`，总时长 3000ms，进度事件步长 5%。
 - [ ] 7. 写 `client/Assets/Scripts/UI/WaveBanner.cs` 与 `client/Assets/Scripts/UI/KillFeed.cs`：横幅 4500ms / 队列 3、波次刻度 10 段（Boss 波间隔 5）、波间倒计时读 `intermissionMs`；击杀记录 3000ms / 上限 6 / 渐隐 600ms，爆头条目单独样式。
-- [ ] 8. 写 `client/Tests/hud_test.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期。
+- [ ] 8. 写 `client/Tests/hud_test.cs`：元素到字段的映射逐条断言、100ms 窗口内多次 `Tick` 只写一次、准星尺寸与颜色、安全区、倒地与救援可见性、击杀记录上限与过期；用例注册进 `Ac.Tests.SuiteRegistry.RunAll`（`hud.*`）。
 
 ## 5. 冻结契约
 
@@ -52,16 +52,18 @@
 
 | 元素 | 来源 | 字段 |
 |---|---|---|
-| 血量 / 护甲 | 快照 + 权威 | `SnapshotEntity.hpRatio`、`MatchStatePlayer.hpRatio` |
-| 弹药 / 备弹 | 权威 + 本地账 | `MatchStatePlayer.mag` / `reserve`、`AmmoLedger.mag` / `gateMag` |
-| 换弹环 | 权威 | `MatchStatePlayer.reloadLeft10Ms`（1/10 ms） |
-| 怒气 / 狂暴剩余 | 权威 | `MatchStatePlayer.rage` / `rageLeft100Ms` |
+| 血量 / 护甲 | 快照 + S10 `MatchState` 单播 | `SnapshotEntity.hpRatio`、`MatchStatePlayer.hpRatio` |
+| 弹药 / 备弹 | S10 `MatchState` 单播 + 本地账 | `MatchStatePlayer.mag` / `reserve`、`AmmoLedger.mag` / `gateMag` |
+| 换弹环 | S10 `MatchState` 单播 | `MatchStatePlayer.reloadLeft10Ms`（1/10 ms） |
+| 怒气 / 狂暴剩余 | S10 `MatchState` 单播 | `MatchStatePlayer.rage` / `rageLeft100Ms` |
 | 倒地 / 狂暴位域 | 快照 | `SNAPSHOT_FLAG.downed = 1` / `rageMode = 2` / `reloading = 4` / `charging = 8` |
 | 受伤与命中 | 事件 | `EVENT_TYPE.playerHit = 1` + `HIT_FLAG.headshot = 1` / `killed = 4` |
 | 击杀记录 | 事件 | `EVENT_TYPE.sheepKilled = 2` |
 | 波次横幅 | 事件 | `EVENT_TYPE.waveStart = 3` / `waveClear = 4` |
-| 波次与波间 | 权威 | `MatchState.phase` / `wave` / `intermissionMs` |
-| 救援提示 | 事件 + 权威 | `EVENT_TYPE.reviveProgress = 6` / `reviveDone = 7`、`MatchStatePlayer.reviveRatio255` |
+| 波次与波间 | S10 `MatchState` 单播 | `MatchState.phase` / `wave` / `intermissionMs` |
+| 救援提示 | 事件 + S10 `MatchState` 单播 | `EVENT_TYPE.reviveProgress = 6` / `reviveDone = 7`、`MatchStatePlayer.reviveRatio255` |
+
+`MatchStatePlayer.*` / `MatchState.*` 的字段（`mag` / `reserve` / `rage` / `rageLeft100Ms` / `reloadLeft10Ms` / `reviveRatio255` / `phase` / `wave` / `intermissionMs` / `aliveMs`）与 S10 §5 的字段逐名一致，**全部由 S10 的 `MatchState` 单播提供**（本步只读，不走快照通道）。
 
 **(b) 刷新节流（继承 `O06`）**
 
@@ -90,7 +92,7 @@
 | 项 | 值 / 定义 |
 |---|---|
 | 字号 | 主数值 `32px`、标签 `18px`、击杀记录 `16px`、波次横幅 `48px` |
-| 字体 | `Font.CreateDynamicFontFromOSFont("Microsoft YaHei", size)`，回退 `Segoe UI` → `Arial` |
+| 字体 | 「唯一来源」`Font.CreateDynamicFontFromOSFont("Microsoft YaHei", size)`（系统字体），回退 `Segoe UI` → `Arial`；**禁用 `TextMeshPro` / `TMPro` 与任何字体素材文件** |
 | 安全区 | `SafeAreaPercent = 0.04`（1080p 下内缩 ≥ `43px`） |
 | 层级 | HUD 在视图模型之上；所有 UI 元素不接收射线，不拦截输入 |
 
@@ -111,10 +113,10 @@
 
 | # | 命令 | 期望 | 失败意味着 |
 |---|---|---|---|
-| 1 | `& $env:UNITY_EDITOR -batchmode -quit -projectPath client -runTests -testPlatform EditMode -testResults client/Tests/results/c10.xml -logFile -` | `failed="0"` | 映射、节流或可见性断言不成立 |
-| 2 | `Select-String -Path client/Tests/results/c10.xml -Pattern 'hud_test'` | ≥ 6 条用例且无 `result="Failed"` | 覆盖不足（节流或可见性漏测） |
+| 1 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -` | 末行 `SELFTEST OK` 且全输出无 `FAIL` | 映射、节流或可见性断言不成立 |
+| 2 | 上条批处理命令的输出 | 含 `PASS hud.` 前缀的用例 ≥ 6 条 | 覆盖不足（节流或可见性漏测） |
 | 3 | `Select-String -Path client/Assets/Scripts/UI/UiThrottle.cs -Pattern 'NumericRefreshMs = 100'` | 命中 | 节流常量被改，数值刷新可能超过 10Hz |
-| 4 | `Select-String -Path client/Assets/Scripts/UI -Pattern 'TextMeshPro'` | **无输出** | 引用了 TMPro 素材包，违反零素材约束 |
+| 4 | `Get-ChildItem client/Assets/Scripts/UI -Recurse -Include *.cs \| Select-String -Pattern 'TextMeshPro'` | **无输出** | 引用了 TMPro 素材包，违反零素材约束 |
 | 5 | `node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` | 退出码 0 | 文档或素材门禁被拒 |
 | 6 | 人工：4 人局 + 40 羊，观察 60 秒 | 帧时间 P95 ≤ 20ms、每帧托管分配 `0B` | 节流或对象复用未生效 |
 
@@ -125,7 +127,7 @@
 - [ ] 准星形状、尺寸映射（`0.5°→2px`、`5°→24px`）与四色表与 §5(c) 一致
 - [ ] 字号四档（32/18/16/48）与安全区 4% 生效；倒地与救援提示可见性条件被断言
 - [ ] UI 无 TMPro / 素材依赖，文本全部系统字体；UI 元素不拦截输入
-- [ ] Unity EditMode `failed="0"`；`node tools/check-docs.mjs`、`node tools/check-assets.mjs` 退出码 0
+- [ ] 分组自检 `Ac.Tests.SuiteRegistry.RunAll` 无 `FAIL`、末行 `SELFTEST OK`；`node tools/check-docs.mjs`、`node tools/check-assets.mjs` 退出码 0
 
 ## 8. 风险与回滚
 
