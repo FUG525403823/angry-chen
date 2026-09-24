@@ -47,6 +47,17 @@ inline ReportState& report() {
   return instance;
 }
 
+// 外部夹具出口（S13 §6-2）：用例用 --fixture <path> 指定外部数据文件位置；没有就不传。
+struct FixtureState {
+  char path[512] = {};
+  bool isSet = false;
+};
+
+inline FixtureState& fixture() {
+  static FixtureState instance;
+  return instance;
+}
+
 struct CaseState {
   const char* name = nullptr;
   bool isFailed = false;
@@ -75,6 +86,24 @@ inline void registerCase(const char* name, CaseFn fn) {
 }
 
 inline const char* currentCase() noexcept { return detail::state().name; }
+
+inline void setFixturePath(const char* path) noexcept {
+  detail::FixtureState& state = detail::fixture();
+  state.path[0] = '\0';
+  state.isSet = false;
+  if (path == nullptr) return;
+  const std::size_t length = std::strlen(path);
+  const std::size_t limit = sizeof(state.path) - 1u;
+  const std::size_t copy = length < limit ? length : limit;
+  std::memcpy(state.path, path, copy);
+  state.path[copy] = '\0';
+  state.isSet = true;
+}
+
+// 用例侧读口：未传 --fixture 时返回 nullptr。
+inline const char* fixturePath() noexcept {
+  return detail::fixture().isSet ? detail::fixture().path : nullptr;
+}
 
 inline void setReportPath(const char* path) noexcept {
   detail::ReportState& state = detail::report();
@@ -165,6 +194,8 @@ inline int runAll(int argc, char** argv) {
     if (arg.rfind("--filter=", 0) == 0) filter = argv[i] + 9;
     if (arg == "--report" && i + 1 < argc) setReportPath(argv[++i]);
     if (arg.rfind("--report=", 0) == 0) setReportPath(argv[i] + 9);
+    if (arg == "--fixture" && i + 1 < argc) setFixturePath(argv[++i]);
+    if (arg.rfind("--fixture=", 0) == 0) setFixturePath(argv[i] + 10);
   }
 
   detail::Registry& registry = detail::registry();

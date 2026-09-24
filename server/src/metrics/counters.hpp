@@ -21,6 +21,21 @@ enum class CounterId : uint8_t {
   kSlowClientDrops,         // ac_slow_client_drops_total
   kRoomBudgetExceeded,      // ac_room_budget_exceeded_total
   kTickSkips,               // ac_tick_skips_total（S12 §8 风险判据；S13 §5 名单暂缺，见 README §13.1）
+  // S13 §5 追加（「复制与背压」「会话与房间」「流量与存储」三行；名字即契约）
+  kSnapshotsSent,      // ac_snapshots_sent_total
+  kSnapshotBytesTotal, // ac_snapshot_bytes_total
+  kGraceStarts,        // ac_grace_starts_total
+  kGraceReconnects,    // ac_grace_reconnects_total
+  kGraceTimeouts,      // ac_grace_timeouts_total
+  kBytesOut,           // ac_bytes_out_total
+  kBytesIn,            // ac_bytes_in_total
+  kFramesOut,          // ac_frames_out_total
+  kFramesIn,           // ac_frames_in_total
+  kEventsSent,         // ac_events_sent_total
+  kEventsDropped,      // ac_events_dropped_total
+  kCorruptLines,       // ac_corrupt_lines_total
+  kHttpRateLimited,    // ac_http_rate_limited_total
+  kHttpCacheHits,      // ac_http_cache_hits_total
   kCount,
 };
 

@@ -24,6 +24,20 @@ constexpr CounterDef kCounterDefs[] = {
     {CounterId::kSlowClientDrops, "ac_slow_client_drops_total"},
     {CounterId::kRoomBudgetExceeded, "ac_room_budget_exceeded_total"},
     {CounterId::kTickSkips, "ac_tick_skips_total"},
+    {CounterId::kSnapshotsSent, "ac_snapshots_sent_total"},
+    {CounterId::kSnapshotBytesTotal, "ac_snapshot_bytes_total"},
+    {CounterId::kGraceStarts, "ac_grace_starts_total"},
+    {CounterId::kGraceReconnects, "ac_grace_reconnects_total"},
+    {CounterId::kGraceTimeouts, "ac_grace_timeouts_total"},
+    {CounterId::kBytesOut, "ac_bytes_out_total"},
+    {CounterId::kBytesIn, "ac_bytes_in_total"},
+    {CounterId::kFramesOut, "ac_frames_out_total"},
+    {CounterId::kFramesIn, "ac_frames_in_total"},
+    {CounterId::kEventsSent, "ac_events_sent_total"},
+    {CounterId::kEventsDropped, "ac_events_dropped_total"},
+    {CounterId::kCorruptLines, "ac_corrupt_lines_total"},
+    {CounterId::kHttpRateLimited, "ac_http_rate_limited_total"},
+    {CounterId::kHttpCacheHits, "ac_http_cache_hits_total"},
 };
 constexpr std::size_t kCounterDefCount = sizeof(kCounterDefs) / sizeof(kCounterDefs[0]);
 static_assert(kCounterDefCount == kCounterCount, "每个计数恰好一条名字");

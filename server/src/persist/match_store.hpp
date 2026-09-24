@@ -17,6 +17,11 @@
 #define AC_WITH_SQLITE 0
 #endif
 
+// S10 的内存态结算记录（room/stats.hpp）；这里只前向声明，保持本头文件是纯 I/O 层。
+namespace ac::room {
+struct MatchResultRecord;
+}
+
 namespace ac::persist {
 
 inline constexpr std::size_t kMaxRecords = 10000u;              // §5 常驻上限
@@ -54,7 +59,8 @@ bool isSafeMatchId(std::string_view matchId) noexcept;
 bool isValidMatchRecord(const MatchResultRecord& record) noexcept;
 
 // 行编解码（与文件格式同源；报告与测试共用，避免第二套形状）。
-std::string encodeMatchRecordLine(const MatchResultRecord& record);
+std::string encodeMatchRecordObject(const MatchResultRecord& record);  // 无行尾换行（HTTP 响应体用）
+std::string encodeMatchRecordLine(const MatchResultRecord& record);    // NDJSON 行 = 对象 + '\n'
 bool decodeMatchRecordLine(std::string_view line, MatchResultRecord& out) noexcept;
 
 enum class RecordOrder : std::uint8_t { kTop = 0u, kRecent = 1u };
@@ -86,6 +92,8 @@ class MatchStore {
   virtual std::size_t recordCount() const noexcept = 0;
   virtual const MatchStoreStats& stats() const noexcept = 0;
   virtual bool isReady() const noexcept = 0;
+  virtual std::string_view path() const noexcept = 0;     // 落盘文件路径（运维自检要打印真实路径）
+  virtual std::string_view dataDir() const noexcept = 0;  // <dataDir>
 };
 
 // <dataDir>/matches.ndjson：只追加、永不截断。open() 流式加载（逐行解析，坏行只计数），
@@ -99,7 +107,8 @@ class NdjsonMatchStore final : public MatchStore {
   NdjsonMatchStore& operator=(const NdjsonMatchStore&) = delete;
 
   // 失败原因写进 *error（可为 nullptr）；失败后 isReady() 为 false。
-  bool open(std::string* error = nullptr) noexcept;
+  // 不做 noexcept：加载要建 records_/逐行 string，坏分配按「打开失败」处理而不是 terminate。
+  bool open(std::string* error = nullptr);
 
   bool append(const MatchResultRecord& record) noexcept override;
   std::vector<MatchResultRecord> listTop(std::size_t limit) const override;
@@ -110,8 +119,8 @@ class NdjsonMatchStore final : public MatchStore {
   const MatchStoreStats& stats() const noexcept override { return stats_; }
   bool isReady() const noexcept override { return isReady_; }
 
-  const std::string& path() const noexcept { return path_; }
-  const std::string& dataDir() const noexcept { return dataDir_; }
+  std::string_view path() const noexcept override { return path_; }
+  std::string_view dataDir() const noexcept override { return dataDir_; }
 
  private:
   std::vector<MatchResultRecord> list(std::size_t limit, RecordOrder order) const;
@@ -135,5 +144,12 @@ class SqliteMatchStore final : public MatchStore {
 
 // 工厂（§9）：构造 + open；失败返回 nullptr 并把原因写进 *error（可为 nullptr）。
 std::unique_ptr<MatchStore> openMatchStore(std::string dataDir, std::string* error = nullptr);
+
+// §5「<dataDir> 即 AC_DATA_DIR」：环境变量未设或为空时回落到 "data"。
+std::string dataDirFromEnv();
+
+// S10 结算记录 -> 战绩记录：定长字符数组按字节长度取（可能没有 NUL），playerCount 夹到 0…4，
+// 超宽字段夹到各自的宽度（durationMs 到 u32、waveReached 到 u16）。字段名与 §5 的 schema 一一对应。
+MatchResultRecord toStoredRecord(const ac::room::MatchResultRecord& record);
 
 }  // namespace ac::persist

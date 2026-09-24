@@ -33,16 +33,22 @@ struct OutboundBudget {
   std::size_t consecutiveDrops = 0u;     // 自上次真正排空以来丢掉的帧数
   std::size_t maxSnapshotBytes = 0u;
   std::size_t eventsQueued = 0u;
+  std::size_t recordsTotal = 0u;  // S13 §5 ac_snapshot_records_avg 的分子（与 snapshotCount 同口径）
 };
 
 // 超预算时先丢队列里的旧快照再收下最新帧；单帧超过 kMaxSnapshotBytes 时不收（编码器不会产出）。
+// recordCount 是这一帧的实体记录数（S13 §5 的 ac_snapshot_records_avg 用；省略即不记）。
+// S13 §5 的 ac_snapshots_sent_total / ac_snapshot_bytes_total 以「入队」为计数点（真正的写完成由
+// noteDrained 记账），两个计数都只在 kEnqueue 分支自增。
 QueueVerdict enqueueSnapshot(OutboundBudget& budget, std::size_t frameBytes,
                              ac::metrics::CounterRegistry* counters,
-                             ac::metrics::GaugeRegistry* gauges) noexcept;
+                             ac::metrics::GaugeRegistry* gauges,
+                             std::size_t recordCount = 0u) noexcept;
 void enqueueEvent(OutboundBudget& budget, std::size_t frameBytes) noexcept;  // 永不丢
 void noteDrained(OutboundBudget& budget, std::size_t bytes) noexcept;        // 套接字写完成
 bool isBacklogOverHalf(const OutboundBudget& budget) noexcept;
 double averageSnapshotBytes(const OutboundBudget& budget) noexcept;
+double averageSnapshotRecords(const OutboundBudget& budget) noexcept;
 void publishQueueGauges(const OutboundBudget& budget, ac::metrics::GaugeRegistry* gauges) noexcept;
 void resetOutboundBudget(OutboundBudget& budget) noexcept;
 

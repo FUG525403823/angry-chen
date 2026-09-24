@@ -24,12 +24,14 @@ void takeSnapshotBytes(OutboundBudget& budget, std::size_t bytes) noexcept {
   if (budget.queuedSnapshotBytes == 0u) budget.queuedSnapshotCount = 0u;
 }
 
-void acceptSnapshot(OutboundBudget& budget, std::size_t frameBytes) noexcept {
+void acceptSnapshot(OutboundBudget& budget, std::size_t frameBytes,
+                    std::size_t recordCount) noexcept {
   budget.queuedBytes += frameBytes;
   budget.queuedSnapshotBytes += frameBytes;
   ++budget.queuedSnapshotCount;
   budget.snapshotBytesTotal += frameBytes;
   ++budget.snapshotCount;
+  budget.recordsTotal += recordCount;
   if (frameBytes > budget.maxSnapshotBytes) budget.maxSnapshotBytes = frameBytes;
 }
 
@@ -37,7 +39,8 @@ void acceptSnapshot(OutboundBudget& budget, std::size_t frameBytes) noexcept {
 
 QueueVerdict enqueueSnapshot(OutboundBudget& budget, std::size_t frameBytes,
                              ac::metrics::CounterRegistry* counters,
-                             ac::metrics::GaugeRegistry* gauges) noexcept {
+                             ac::metrics::GaugeRegistry* gauges,
+                             std::size_t recordCount) noexcept {
   QueueVerdict verdict = QueueVerdict::kEnqueue;
 
   if (frameBytes > kMaxSnapshotBytes) {
@@ -62,7 +65,9 @@ QueueVerdict enqueueSnapshot(OutboundBudget& budget, std::size_t frameBytes,
       if (verdict == QueueVerdict::kEnqueue) noteDroppedFrames(budget, counters, 1u);
       verdict = QueueVerdict::kDisconnect;  // 慢客户端：Disconnect(reason = 7) + 30 s 宽限期
     } else if (verdict == QueueVerdict::kEnqueue) {
-      acceptSnapshot(budget, frameBytes);
+      acceptSnapshot(budget, frameBytes, recordCount);
+      ac::metrics::bumpCounter(counters, ac::metrics::CounterId::kSnapshotsSent);
+      ac::metrics::bumpCounter(counters, ac::metrics::CounterId::kSnapshotBytesTotal, frameBytes);
     }
   }
 
@@ -90,6 +95,11 @@ double averageSnapshotBytes(const OutboundBudget& budget) noexcept {
   return static_cast<double>(budget.snapshotBytesTotal) / static_cast<double>(budget.snapshotCount);
 }
 
+double averageSnapshotRecords(const OutboundBudget& budget) noexcept {
+  if (budget.snapshotCount == 0u) return 0.0;
+  return static_cast<double>(budget.recordsTotal) / static_cast<double>(budget.snapshotCount);
+}
+
 void publishQueueGauges(const OutboundBudget& budget, ac::metrics::GaugeRegistry* gauges) noexcept {
   ac::metrics::setGaugeIf(gauges, ac::metrics::GaugeId::kSendQueueBytes,
                           static_cast<double>(budget.queuedBytes));
@@ -97,6 +107,8 @@ void publishQueueGauges(const OutboundBudget& budget, ac::metrics::GaugeRegistry
                           averageSnapshotBytes(budget));
   ac::metrics::setGaugeIf(gauges, ac::metrics::GaugeId::kSnapshotBytesMax,
                           static_cast<double>(budget.maxSnapshotBytes));
+  ac::metrics::setGaugeIf(gauges, ac::metrics::GaugeId::kSnapshotRecordsAvg,
+                          averageSnapshotRecords(budget));
 }
 
 void resetOutboundBudget(OutboundBudget& budget) noexcept {

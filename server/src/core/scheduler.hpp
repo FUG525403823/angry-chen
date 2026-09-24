@@ -35,6 +35,14 @@ struct TickScheduler {
   double jitterMs[kScheduleSampleCount] = {};
   std::size_t jitterCount = 0u;
   std::size_t jitterNext = 0u;
+  // S13 §5「调度」行：tick 间隔误差与工作量也各自留一份样本环（同样的 64 格、同样的分位口径）。
+  std::uint64_t lastRunWallMs = 0u;  // 上一次 tick 的墙上时刻（u64 时钟，避免 ~49.7 天后截断）；间隔误差只在第二次 tick 起有定义
+  double intervalErrorMs[kScheduleSampleCount] = {};
+  std::size_t intervalCount = 0u;
+  std::size_t intervalNext = 0u;
+  double workMs[kScheduleSampleCount] = {};
+  std::size_t workCount = 0u;
+  std::size_t workNext = 0u;
 };
 
 // 已计 tick 数 = 执行过的 + 真正丢掉的（让出不计入丢 tick）。派生值，不另存一份状态。
@@ -55,6 +63,12 @@ int64_t noteSimClock(TickScheduler& scheduler, uint32_t worldTimeMs, uint64_t no
                      ac::metrics::GaugeRegistry* gauges = nullptr) noexcept;
 int64_t simDriftMs(const SimClock& clock, uint32_t worldTimeMs, uint64_t nowMs) noexcept;
 double tickScheduleErrorP95Ms(const TickScheduler& scheduler) noexcept;
+// S13 §5 的新分位：间隔误差与抖动取幅值（符号由 scheduleErrorMs 暴露），工作量取原值。
+double tickIntervalErrorP95Ms(const TickScheduler& scheduler) noexcept;
+double tickJitterP50Ms(const TickScheduler& scheduler) noexcept;
+double tickJitterP95Ms(const TickScheduler& scheduler) noexcept;
+double tickWorkP95Ms(const TickScheduler& scheduler) noexcept;
+double tickWorkP99Ms(const TickScheduler& scheduler) noexcept;
 double scheduleHeadTailGapMs(const TickScheduler& scheduler) noexcept;
 bool meetsScheduleBudget(const TickScheduler& scheduler) noexcept;
 void publishScheduleGauges(const TickScheduler& scheduler,

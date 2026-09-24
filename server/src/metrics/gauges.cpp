@@ -13,6 +13,12 @@ constexpr const char* kGaugeNames[kGaugeCount] = {
     "ac_send_queue_bytes",
     "ac_tick_schedule_error_ms_p95",
     "ac_sim_drift_ms",
+    "ac_snapshot_records_avg",
+    "ac_tick_interval_error_ms_p95",
+    "ac_tick_jitter_ms_p50",
+    "ac_tick_jitter_ms_p95",
+    "ac_tick_work_ms_p95",
+    "ac_tick_work_ms_p99",
 };
 
 static_assert(sizeof(kGaugeNames) / sizeof(kGaugeNames[0]) == kGaugeCount,

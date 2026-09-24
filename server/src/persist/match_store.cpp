@@ -1,7 +1,11 @@
 #include "persist/match_store.hpp"
 
+#include "core/json_text.hpp"
+#include "room/stats.hpp"
+
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -15,34 +19,9 @@ static_assert(!kSqliteEnabled, "S13 5: AC_WITH_SQLITE default 0; enabling needs 
 namespace {
 
 // ---------- JSON 文本 ----------
-// 只覆盖 §5 的记录形状（扁平对象 + players 数组）。转义口径与 core/log.cpp 相同
-// （\" 、\\ 、控制字符 \u00XX 大写十六进制），但不复用日志的 formatLine：那条路会把字段
-// 提到 ts/level/evt 之后的位置，是「日志行」而不是「嵌套数组的记录行」。
-void appendEscaped(std::string& out, std::string_view raw) {
-  out.push_back('"');
-  for (const char ch : raw) {
-    const auto value = static_cast<unsigned char>(ch);
-    switch (ch) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (value < 0x20u) {
-          char buffer[8];
-          std::snprintf(buffer, sizeof(buffer), "\\u%04X", static_cast<unsigned>(value));
-          out += buffer;
-        } else {
-          out.push_back(ch);
-        }
-        break;
-    }
-  }
-  out.push_back('"');
-}
+// 只覆盖 §5 的记录形状（扁平对象 + players 数组）。字符串转义复用 core/json_text.hpp 的
+// 唯一一份实现（quote/escape）；这里不复用日志的 formatLine：那条路会把字段提到 ts/level/evt
+// 之后的位置，是「日志行」而不是「嵌套数组的记录行」。
 
 void appendU64(std::string& out, std::uint64_t value) {
   char buffer[24];
@@ -437,9 +416,9 @@ bool isOrderedBefore(const MatchResultRecord& a, const MatchResultRecord& b, Rec
   return a.matchId < b.matchId;
 }
 
-std::string encodeMatchRecordLine(const MatchResultRecord& record) {
+std::string encodeMatchRecordObject(const MatchResultRecord& record) {
   std::string out = "{\"matchId\":";
-  appendEscaped(out, record.matchId);
+  out += ac::core::json::quote(record.matchId);
   out += ",\"startedAtMs\":";
   appendU64(out, record.startedAtMs);
   out += ",\"durationMs\":";
@@ -455,7 +434,7 @@ std::string encodeMatchRecordLine(const MatchResultRecord& record) {
     const PlayerResultRecord& player = record.players[i];
     if (i != 0u) out.push_back(',');
     out += "{\"name\":";
-    appendEscaped(out, player.name);
+    out += ac::core::json::quote(player.name);
     out += ",\"kills\":";
     appendU64(out, player.kills);
     out += ",\"headshots\":";
@@ -474,7 +453,14 @@ std::string encodeMatchRecordLine(const MatchResultRecord& record) {
     out += player.leftMidMatch ? "true" : "false";
     out.push_back('}');
   }
-  out += "]}\n";
+  out += "]}";
+  return out;
+}
+
+std::string encodeMatchRecordLine(const MatchResultRecord& record) {
+  // NDJSON 行 = 对象 + '\n'（HTTP 侧只取对象，见 encodeMatchRecordObject）。
+  std::string out = encodeMatchRecordObject(record);
+  out.push_back('\n');
   return out;
 }
 
@@ -500,7 +486,7 @@ NdjsonMatchStore::~NdjsonMatchStore() {
   }
 }
 
-bool NdjsonMatchStore::open(std::string* error) noexcept {
+bool NdjsonMatchStore::open(std::string* error) {
   records_.clear();
   stats_ = MatchStoreStats{};
   version_ = 0u;
@@ -593,6 +579,51 @@ std::unique_ptr<MatchStore> openMatchStore(std::string dataDir, std::string* err
   auto store = std::make_unique<NdjsonMatchStore>(std::move(dataDir));
   if (!store->open(error)) return nullptr;
   return store;
+}
+
+MatchResultRecord toStoredRecord(const ac::room::MatchResultRecord& record) {
+  const auto boundedText = [](const char* text, std::size_t capacity, std::size_t maxBytes) {
+    std::size_t length = 0u;
+    while (length < capacity && text[length] != '\0') ++length;
+    if (length > maxBytes) length = maxBytes;
+    return std::string(text, length);
+  };
+
+  MatchResultRecord out;
+  out.matchId = boundedText(record.matchId, sizeof(record.matchId), kMaxMatchIdLength);
+  out.startedAtMs = record.startedAtMs;
+  out.durationMs = record.durationMs > 0xFFFFFFFFull ? 0xFFFFFFFFu
+                                                     : static_cast<std::uint32_t>(record.durationMs);
+  out.waveReached = record.waveReached <= 0
+                        ? 0u
+                        : (record.waveReached > 0xFFFF ? static_cast<std::uint16_t>(0xFFFFu)
+                                                       : static_cast<std::uint16_t>(record.waveReached));
+  out.winnerTeam = record.winnerTeam;
+  const std::size_t playerCount = record.playerCount < kMaxPlayersPerMatch
+                                      ? static_cast<std::size_t>(record.playerCount)
+                                      : kMaxPlayersPerMatch;
+  out.players.resize(playerCount);
+  for (std::size_t i = 0u; i < playerCount; ++i) {
+    const ac::room::PlayerResult& source = record.players[i];
+    PlayerResultRecord& target = out.players[i];
+    target.name = boundedText(source.name, sizeof(source.name), kMaxPlayerNameBytes);
+    target.kills = source.kills;
+    target.headshots = source.headshots;
+    target.shotsFired = source.shotsFired;
+    target.hits = source.hits;
+    target.revives = source.revives;
+    target.downs = source.downs;
+    target.aliveMs = source.aliveMs > 0xFFFFFFFFull ? 0xFFFFFFFFu
+                                                    : static_cast<std::uint32_t>(source.aliveMs);
+    target.leftMidMatch = source.leftMidMatch;
+  }
+  return out;
+}
+
+std::string dataDirFromEnv() {
+  const char* value = std::getenv("AC_DATA_DIR");
+  if (value == nullptr || value[0] == '\0') return std::string("data");
+  return std::string(value);
 }
 
 }  // namespace ac::persist

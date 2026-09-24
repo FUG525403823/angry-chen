@@ -1,10 +1,14 @@
 #include "core/log.hpp"
 
+#include "core/json_text.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <limits>
+#include <filesystem>
+#include <system_error>
 
 namespace ac::log {
 namespace {
@@ -17,38 +21,60 @@ bool gIsSinkOwned = false;
 
 FILE* sink() { return gSink == nullptr ? stderr : gSink; }
 
-// 唯一的转义规则：把 s 转义后追加到 out。写满 maxOut 字节即停并把 isComplete 置 false，
-// 因此不会截在转义序列中间。
-void escapeInto(std::string& out, std::string_view s, std::size_t maxOut, bool& isComplete) {
-  isComplete = true;
-  for (const char raw : s) {
-    const unsigned char c = static_cast<unsigned char>(raw);
-    std::string piece;
-    if (c == '"') {
-      piece = "\\\"";
-    } else if (c == '\\') {
-      piece = "\\\\";
-    } else if (c < 0x20) {
-      char buf[8];
-      std::snprintf(buf, sizeof(buf), "\\u%04X", static_cast<unsigned>(c));
-      piece = buf;
-    } else {
-      piece.push_back(raw);
-    }
-    if (out.size() + piece.size() > maxOut) {
-      isComplete = false;
-      return;
-    }
-    out += piece;
-  }
+// 转义口径见 core/json_text.hpp（仓库唯一一份）。
+
+// S01 §5.4 与 S13 §5 共用的 double 口径：非有限值 -> null，否则 %.17g。
+std::string renderDouble(double value) {
+  if (!std::isfinite(value)) return std::string("null");
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%.17g", value);
+  return std::string(buf);
 }
 
-std::string escapeAll(std::string_view s) {
-  std::string out;
-  out.reserve(s.size() + 8);
-  bool isComplete = true;
-  escapeInto(out, s, std::numeric_limits<std::size_t>::max(), isComplete);
-  return out;
+std::string renderDetail(const DetailField& field) {
+  switch (field.kind) {
+    case DetailField::Kind::kString:
+      return "\"" + ac::core::json::escape(field.text) + "\"";
+    case DetailField::Kind::kInt:
+      return std::to_string(field.intValue);
+    case DetailField::Kind::kUint:
+      return std::to_string(field.uintValue);
+    case DetailField::Kind::kDouble:
+      return renderDouble(field.doubleValue);
+    case DetailField::Kind::kBool:
+      return field.boolValue ? std::string("true") : std::string("false");
+    case DetailField::Kind::kNull:
+      return std::string("null");
+    case DetailField::Kind::kStrings: {
+      std::string out = "[";
+      for (std::size_t i = 0u; i < field.stringItemCount; ++i) {
+        if (i != 0u) out += ',';
+        out += "\"" + ac::core::json::escape(field.stringItems[i]) + "\"";
+      }
+      out += ']';
+      return out;
+    }
+  }
+  return std::string("null");
+}
+
+// S13 §5 的事件名最小集。
+constexpr std::string_view kKnownEvents[] = {
+    "room.create",      "room.reclaim",     "session.join",    "session.leave",
+    "session.rate_limited", "grace.start",  "grace.reconnect", "grace.timeout",
+    "match.start",      "match.end",        "wave.start",      "wave.clear",
+    "anticheat.speed",  "store.error",      "report.write_failed",
+    "listening",        "shutdownRequested", "shutdownComplete", "error.uncaught",
+};
+constexpr std::size_t kKnownEventCount = sizeof(kKnownEvents) / sizeof(kKnownEvents[0]);
+
+Level gMinLevel = Level::info;
+
+void writeLine(const std::string& line) {
+  FILE* out = sink();
+  std::fwrite(line.data(), 1, line.size(), out);
+  std::fputc('\n', out);
+  std::fflush(out);
 }
 
 std::string renderValue(const FieldValue& value) {
@@ -56,16 +82,13 @@ std::string renderValue(const FieldValue& value) {
       [](auto&& arg) -> std::string {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string_view>) {
-          return "\"" + escapeAll(arg) + "\"";
+          return "\"" + ac::core::json::escape(arg) + "\"";
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
           return std::to_string(arg);
         } else if constexpr (std::is_same_v<T, std::uint64_t>) {
           return std::to_string(arg);
         } else if constexpr (std::is_same_v<T, double>) {
-          if (!std::isfinite(arg)) return std::string("null");
-          char buf[40];
-          std::snprintf(buf, sizeof(buf), "%.17g", arg);
-          return std::string(buf);
+          return renderDouble(arg);
         } else {
           return arg ? std::string("true") : std::string("false");
         }
@@ -140,13 +163,13 @@ std::string formatLine(std::int64_t epochMs, Level level, std::string_view evt,
   const std::size_t fixedBytes = head.size() + 1;  // 预留 evt 的收尾引号
   const std::size_t evtBudget = budget > fixedBytes ? budget - fixedBytes : 0;
   std::string line = head;
-  escapeInto(line, evt, evtBudget, isEvtComplete);
+  ac::core::json::appendEscaped(line, evt, evtBudget, isEvtComplete);
   line += '"';
   bool isTruncated = !isEvtComplete;
 
   const auto emit = [&](const Field& field) {
     if (isTruncated) return;
-    const std::string text = "\"" + escapeAll(field.key) + "\":" + renderValue(field.value);
+    const std::string text = "\"" + ac::core::json::escape(field.key) + "\":" + renderValue(field.value);
     if (line.size() + 1 + text.size() > budget) {
       isTruncated = true;
       return;
@@ -198,11 +221,164 @@ void close() {
 }
 
 void write(Level level, std::string_view evt, std::initializer_list<Field> fields) {
-  const std::string line = formatLine(nowMs(), level, evt, fields);
-  FILE* out = sink();
-  std::fwrite(line.data(), 1, line.size(), out);
-  std::fputc('\n', out);
-  std::fflush(out);
+  if (levelValue(level) < levelValue(gMinLevel)) return;
+  writeLine(formatLine(nowMs(), level, evt, fields));
+}
+
+int levelValue(Level level) noexcept {
+  switch (level) {
+    case Level::trace:
+      return kLevelTraceValue;
+    case Level::debug:
+      return kLevelDebugValue;
+    case Level::info:
+      return kLevelInfoValue;
+    case Level::warn:
+      return kLevelWarnValue;
+    case Level::error:
+      return kLevelErrorValue;
+  }
+  return kLevelInfoValue;
+}
+
+bool parseLevelName(std::string_view name, Level& out) noexcept {
+  if (name == "trace" || name == "5") {
+    out = Level::trace;
+    return true;
+  }
+  if (name == "debug" || name == "10") {
+    out = Level::debug;
+    return true;
+  }
+  if (name == "info" || name == "20") {
+    out = Level::info;
+    return true;
+  }
+  if (name == "warn" || name == "warning" || name == "30") {
+    out = Level::warn;
+    return true;
+  }
+  if (name == "error" || name == "40") {
+    out = Level::error;
+    return true;
+  }
+  return false;
+}
+
+Level minLevel() noexcept { return gMinLevel; }
+
+void setMinLevel(Level level) noexcept { gMinLevel = level; }
+
+bool setMinLevelFromEnv(const char* value) noexcept {
+  if (value == nullptr) return false;
+  const std::string_view text(value);
+  if (text.empty()) return false;
+  Level parsed = Level::info;
+  if (!parseLevelName(text, parsed)) return false;
+  gMinLevel = parsed;
+  return true;
+}
+
+void applyLogLevelFromEnv() {
+  const char* value = std::getenv("AC_LOG_LEVEL");
+  if (value != nullptr) setMinLevelFromEnv(value);
+}
+
+bool applyLogFileFromEnv() {
+  const char* value = std::getenv("AC_LOG_FILE");
+  if (value == nullptr || value[0] == '\0') return false;
+  // 运维给的是「日志落到哪里」；目录不存在时按需创建，打不开就保持当前 sink（不静默丢日志）。
+  const std::filesystem::path target(value);
+  if (target.has_parent_path()) {
+    std::error_code ignored;
+    std::filesystem::create_directories(target.parent_path(), ignored);
+  }
+  return useFile(value);
+}
+
+DetailField DetailField::null(std::string_view key) {
+  DetailField field(key, std::string_view{});
+  field.kind = Kind::kNull;
+  return field;
+}
+
+DetailField DetailField::array(std::string_view key, const std::string_view* items, std::size_t count) {
+  DetailField field(key, std::string_view{});
+  field.kind = Kind::kStrings;
+  field.stringItems = items;
+  field.stringItemCount = count;
+  return field;
+}
+
+std::string formatEventLine(Level level, std::string_view evt, const EventContext& ctx,
+                            std::initializer_list<DetailField> detail) {
+  const std::size_t budget = kMaxLineBytes - std::strlen(kTruncatedTail);
+  std::string line;
+  line.reserve(256u);
+  line += "{\"ts\":\"";
+  line += formatTimestamp(ctx.ts);
+  line += "\",\"level\":\"";
+  line += levelName(level);
+  line += "\",\"evt\":\"";
+  // ts/level/evt 之外的冻结骨架（room/tick/pid/detail 的花括号与键名）先留出预算。
+  const std::size_t skeleton = 96u;
+  const std::size_t evtBudget = budget > line.size() + skeleton ? budget - line.size() - skeleton : 0u;
+  bool isEvtComplete = true;
+  ac::core::json::appendEscaped(line, evt, evtBudget, isEvtComplete);
+  line += '"';
+  bool isTruncated = !isEvtComplete;
+
+  const auto emitNumber = [&line](const char* key, std::int64_t value) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%s%lld", key, static_cast<long long>(value));
+    line += buf;
+  };
+  emitNumber(",\"room\":", static_cast<std::int64_t>(ctx.room));
+  emitNumber(",\"tick\":", static_cast<std::int64_t>(ctx.tick));
+  emitNumber(",\"pid\":", static_cast<std::int64_t>(ctx.pid));
+  line += ",\"detail\":{";
+
+  bool isFirst = true;
+  for (const DetailField& field : detail) {
+    if (isTruncated) break;
+    const std::string text = "\"" + ac::core::json::escape(field.key) + "\":" + renderDetail(field);
+    const std::size_t separator = isFirst ? 0u : 1u;
+    if (line.size() + separator + text.size() + 1u > budget) {
+      isTruncated = true;
+      break;
+    }
+    if (!isFirst) line += ',';
+    line += text;
+    isFirst = false;
+  }
+  line += '}';
+  line += isTruncated ? kTruncatedTail : "}";
+  return line;
+}
+
+void event(Level level, std::string_view evt, const EventContext& ctx,
+           std::initializer_list<DetailField> detail) {
+  if (levelValue(level) < levelValue(gMinLevel)) return;
+  EventContext resolved = ctx;
+  if (resolved.ts == 0) resolved.ts = nowMs();
+  writeLine(formatEventLine(level, evt, resolved, detail));
+}
+
+void reportUncaught(std::string_view what, const EventContext& ctx) {
+  event(Level::error, "error.uncaught", ctx, {DetailField("what", what)});
+}
+
+std::size_t knownEventCount() noexcept { return kKnownEventCount; }
+
+std::string_view knownEvent(std::size_t index) noexcept {
+  return index < kKnownEventCount ? kKnownEvents[index] : std::string_view{};
+}
+
+bool isKnownEvent(std::string_view evt) noexcept {
+  for (const std::string_view candidate : kKnownEvents) {
+    if (candidate == evt) return true;
+  }
+  return false;
 }
 
 }  // namespace ac::log

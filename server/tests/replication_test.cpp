@@ -373,8 +373,11 @@ AC_TEST(replication_encode_delta_rejects_bad_input) {
 }
 
 AC_TEST(replication_metric_and_flag_names_hold) {
-  AC_CHECK_EQ(metrics::gaugeCount(), 6u);
-  AC_CHECK_EQ(metrics::counterCount(), 13u);  // 本批追加 4 条：S09–S11 的 9 条 + 复制/调度 4 条
+  // 名字表只追加（S12 §4-8 / S13 §5）：计数与量值都只断言下界，名字逐条断言。
+  // 名字逐条断言在上方；这里把总数钉成精确值（S13 后 27 计数 / 12 量值）——后续步骤若追加指标
+  // 必须同步改这两个数，不能悄悄放宽成 >=。
+  AC_CHECK_EQ(metrics::gaugeCount(), static_cast<std::size_t>(12));
+  AC_CHECK_EQ(metrics::counterCount(), static_cast<std::size_t>(27));
   AC_CHECK(metrics::isCounterRegistered("ac_snapshot_rate_downshifts_total"));
   AC_CHECK(metrics::isCounterRegistered("ac_slow_client_drops_total"));
   AC_CHECK(metrics::isCounterRegistered("ac_room_budget_exceeded_total"));

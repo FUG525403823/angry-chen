@@ -14,6 +14,13 @@ enum class GaugeId : uint8_t {
   kSendQueueBytes,          // ac_send_queue_bytes
   kTickScheduleErrorMsP95,  // ac_tick_schedule_error_ms_p95
   kSimDriftMs,              // ac_sim_drift_ms
+  // S13 §5 追加（「调度」「复制与背压」两行）
+  kSnapshotRecordsAvg,      // ac_snapshot_records_avg
+  kTickIntervalErrorMsP95,  // ac_tick_interval_error_ms_p95
+  kTickJitterMsP50,         // ac_tick_jitter_ms_p50
+  kTickJitterMsP95,         // ac_tick_jitter_ms_p95
+  kTickWorkMsP95,           // ac_tick_work_ms_p95
+  kTickWorkMsP99,           // ac_tick_work_ms_p99
   kCount,
 };
 
