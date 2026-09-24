@@ -9,7 +9,7 @@
 - 事实：包头/扩展头读写与命令包编解码可用。验证：`server/build/ac_tests.exe --filter=codec` → `TESTS 14/14`。
 - 事实：会话与重连的身份语义已冻结。验证：`Select-String -Path docs/00-共识/ADR/ADR-006-会话身份与重连令牌.md -Pattern "重连"` → 命中。
 - 事实：传输预算与常量来自 [ADR-009](../../00-共识/ADR/ADR-009-UDP传输与协议重构.md)。验证：`Select-String -Path docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md -Pattern "1200"` → 命中单包上限行。
-- 事实：构建与断言框架可用。验证：`pwsh -File server/build.ps1 -Config Release` → 末行 `[build] ok ac_server.exe`。
+- 事实：构建与断言框架可用。验证：`powershell -NoProfile -File server/build.ps1 -Config Release` → 末行 `[build] ok ac_server.exe`。
 - 跨链前置：无。
 
 ## 3. 交付物
@@ -41,8 +41,8 @@
 | `kInitialRtoMs` | 200 | 首次重传等待 |
 | `kRtoBackoff` | 1.5 | 退避倍数 |
 | `kMaxRtoMs` | 1000 | RTO 上限 |
-| `kMaxRetransmits` | 5 | 超过即判对端失联并进入宽限期 |
-| `kRtoTableMs[6]` | `{200, 300, 450, 675, 1000, 1000}` | 第 n 次重传的等待（`200 * 1.5^n` 取整后夹到 1000，禁 `pow`） |
+| `kMaxRetransmits` | 5 | 累计重传达 5 次即判对端失联并进入宽限期，即**第 6 次重传之前**判失联（与 `kRtoTableMs` 的 5 项同长） |
+| `kRtoTableMs[5]` | `{200, 300, 450, 675, 1000}` | 第 1–5 次重传的等待（`200 * 1.5^(n-1)` 取整，禁 `pow`）；表长恒等于 `kMaxRetransmits`，第 6 次重传不存在 |
 | `kKeepAliveMs` | 500 | 心跳周期 |
 | `kDisconnectMs` | 3000 | 未收到任何包即判断线 |
 | `kGraceMs` | 30000 | 宽限期，期间保留会话与房间名额 |
@@ -52,7 +52,7 @@
 | `kFragmentTimeoutTicks` | 60 | 分片组 3s（60 tick）未收齐即丢弃 |
 | `kOutboundBacklogBytes` | 65536 | 出站积压上限；达到时丢最旧快照，事件不丢 |
 | `kSnapshotBudgetBytes` | 1228 | 稳态快照目标上限 |
-| `kClientBandwidthBytesPerSec` | 40960 | 每客户端 40 KB/s |
+| `kClientBandwidthBytesPerSec` | 40960 | 每客户端 40 KB/s（口径 = 全部出站 UDP 载荷，含事件） |
 | `kSessions` | 256 | 同时在册会话上限（含宽限期会话） |
 
 ### 5.2 会话短 ID 与校验
@@ -71,7 +71,7 @@ struct ReliableState { uint32_t sendMsgId = 1; uint32_t ackBase = 0; uint32_t ac
 ```
 - bit i 表示 `msgId == ackBase - 1 - i` 已收到；`k >= 32` 时左移先清零（避免移位宽度未定义）。
 - 重复 `msgId`（位图已置位）直接丢弃，不计入错误；`msgId` 与通道 `seq` 相互独立：`seq` 用于丢旧快照与顺序诊断，`msgId` 用于去重与 ack。
-- 重传：仅 `flags.reliable = 1` 且载荷 > 0 的消息进重传表；第 n 次重传等待 `kRtoTableMs[n]`；累计重传 > 5 次 → 判失联 → 进入宽限期并回 `Disconnect(reason=3)`。
+- 重传：仅 `flags.reliable = 1` 且载荷 > 0 的消息进重传表；第 n 次重传等待 `kRtoTableMs[n-1]`（n = 1..5）；累计重传达到 `kMaxRetransmits = 5`（即第 6 次重传之前）→ 判失联 → 进入宽限期并回 `Disconnect(reason=3)`。
 - 收到 ack（`msgId` 被位图确认）即从重传表移除；`ackOnly` 包参与确认，自身不进重传表。
 
 ### 5.4 分片
@@ -83,12 +83,21 @@ struct ReliableState { uint32_t sendMsgId = 1; uint32_t ackBase = 0; uint32_t ac
 | 包 | type | 通道 | 载荷 |
 |---|---|---|---|
 | `Hello` | 1 | 不可靠，`session = 0` | `clientNonce` u32、`reconnectToken` u32（首次连接填 0） |
-| `HelloAck` | 2 | 可靠（`flags.reliable`） | `serverTick` u32、`salt` u32（`salt` 取自 `spawn` 流 `nextU32()`） |
+| `HelloAck` | 2 | 可靠（`flags.reliable`） | `serverTick` u32、`salt` u32（取自会话层**独立计数器**；不得消费 `ai`/`spawn`/`fx` 任一 RNG 流，否则对拍不可复现） |
 | `Resume` | 3 | 可靠 | `reconnectToken` u32 |
-| `Disconnect` | 8 | 可靠 | `reason` u8（1 versionMismatch / 2 tokenInvalid / 3 timeout / 4 serverShutdown / 5 malformedPacket / 6 rateLimited） |
+| `Disconnect` | 8 | 可靠 | `reason` u8（1 versionMismatch / 2 tokenInvalid / 3 timeout / 4 serverShutdown / 5 malformedPacket / 6 rateLimited / 7 slowConsumer），七个取值的语义见下 |
 
-时序（冻结）：客户端发 `Hello` 后启动 1s 定时器，未收到 `HelloAck` 则重发，累计 5 次后放弃并报错；服务器收到合法 `Hello` 立即分配会话 ID、记录 `clientNonce`、生成 `salt` 并回 `HelloAck`（`session` 填分配值）；客户端收到 `HelloAck` 才进入 `Connected`。
+时序（冻结）：客户端发 `Hello` 后启动 1s 定时器，未收到 `HelloAck` 则重发，累计 5 次后放弃并报错；服务器收到合法 `Hello` 立即分配会话 ID、记录 `clientNonce`、由会话层独立计数器生成 `salt`（不消费任何 RNG 流）并回 `HelloAck`（`session` 填分配值）；客户端收到 `HelloAck` 才进入 `Connected`。
 重连令牌规则：`reconnectToken = salt ^ clientNonce`（客户端本地计算，服务器按会话记录复算比对）；宽限期内 `Resume` 校验通过则恢复会话（服务器随后发一次 `baselineTick = 0` 的全量快照），失败或超期回 `Disconnect(reason=2)` 并释放名额。
+
+`Disconnect.reason` 语义（冻结 1–7，与客户端逐字一致）：
+- 1 `versionMismatch`：入站包 `version != 1`（§5.2）。
+- 2 `tokenInvalid`：`Resume` 的 `reconnectToken`（u32）与会话记录不符，或宽限期已过。
+- 3 `timeout`：可靠消息累计重传达到 `kMaxRetransmits = 5`（第 6 次重传之前）判失联（§5.3）。
+- 4 `serverShutdown`：对局结束或服务端停机。
+- 5 `malformedPacket`：解码失败（`kTruncated`/`kBadLength`/`kBadValue`/`kUnknownEvent`）计数达阈值后丢弃会话（工程约定 §7）。
+- 6 `rateLimited`：单位时间入站包数或字节数超过配额。
+- 7 `slowConsumer`：出站积压达到 `kOutboundBacklogBytes = 65536` 且已无可丢快照，主动断开会话（§5.1、§5.6）。
 
 ### 5.6 心跳、断线判定与宽限期
 - 每 500ms 发送一个 `KeepAlive`（`flags = reliable|ackOnly`，载荷 0 字节，不进重传表）；收到任意合法包即刷新 `lastRecvMs`。
@@ -114,22 +123,22 @@ class MemoryTransport {
 | 命令 | 期望输出 | 失败意味着什么 |
 |---|---|---|
 | `server/build/ac_tests.exe --filter=transport` | `TESTS 8/8` | 握手/重传/分片/心跳/宽限期任一环节不成立 |
-| `server/build/ac_tests.exe --filter=reliability` | 打印 `rto=200,300,450,675,1000,1000` 且 `TESTS 5/5` | RTO 序列偏离冻结值，重传节奏与客户端不一致 |
+| `server/build/ac_tests.exe --filter=reliability` | 打印 `rto=200,300,450,675,1000` 且 `TESTS 5/5` | RTO 序列偏离冻结值，重传节奏与客户端不一致 |
 | `server/build/ac_tests.exe --filter=fragment` | `TESTS 4/4`（5000B 消息重组、超 8 片拒绝、乱序收齐、60 tick 超时） | 分片重组有缺陷，大快照会丢包或挂起 |
 | `server/build/ac_tests.exe --filter=grace` | `TESTS 4/4`（3s 断线、30s 前 Resume 成功、30s 后释放、令牌错误拒绝） | 宽限期语义错误，重连丢位置或名额泄漏 |
 | `server/build/ac_tests.exe --filter=memory` | `TESTS 2/2`（丢包率生效：`dropped > 0`，可靠消息最终全部到达且顺序正确） | 测试适配器不真丢包，网络测试形同虚设 |
-| `Select-String -Path server/src/net -Pattern "\\b0\\.0[0-9]* \* pow|std::pow|exp\\("` | 0 命中 | RTO 退避用了超越函数，违反 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) 运算子集 |
-| `node tools/check-docs.mjs` | `OK：...` | 文档链被破坏 |
-| `node tools/check-docs.mjs` | 退出码 0 | v1 质量门被破坏 |
+| `Get-ChildItem server/src/net -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::pow","exp\(","\b0\.0[0-9]* \* pow"` | 0 命中 | RTO 退避用了超越函数，违反 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) 运算子集 |
+| `node tools/check-docs.mjs` | 末行以 `OK：` 开头，退出码 0 | 文档链或相对链接被破坏 |
+| `node tools/check-assets.mjs` | 退出码 0 | 引入了素材或白名单外的依赖 |
 
 ## 7. DoD（验收标准）
 - [ ] 五个模块（socket/reliability/fragment/handshake/keepalive）+ 内存适配器全部落地，`server/src/net/**` 无第三方 include。
 - [ ] `--filter=transport`、`reliability`、`fragment`、`grace`、`memory` 五组全绿，合计用例 ≥ 23。
 - [ ] 20% 丢包 + 50ms 延迟 + 10% 乱序下，1000 tick 的可靠消息全部到达且按 `msgId` 升序交付。
-- [ ] 重传序列打印为 `200,300,450,675,1000,1000`，第 6 次前进入宽限期。
+- [ ] 重传序列打印为 `200,300,450,675,1000`（5 项），第 6 次重传之前进入宽限期。
 - [ ] 5000 字节逻辑消息经 5 片重组成功；> 8 片被拒且不崩溃。
 - [ ] 心跳间隔实测 500ms（±1 tick），3s 无包判断线，30s 内 `Resume` 成功、超期释放。
-- [ ] `git status --short docs/00-共识/` 为空；`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
+- [ ] 本份未修改 `docs/00-共识/**`（共识层冻结，如需变更先走 ADR）；备份仓库 `D:\projects\tmp\angry-chen-bak` 全程只读；`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 
 ## 8. 风险与回滚
 | 风险 | 触发信号 | 对策 |
@@ -145,6 +154,6 @@ class MemoryTransport {
 ## 9. 移交物
 **移交物 ID**：HANDOFF-S04
 - 稳定接口：`ac::net::UdpSocket`；`ReliableState` 与 ack 位图算法；`Fragmenter`/`Reassembler`；`HandshakeState` 与四种握手包字段；`KeepAliveTimer`/宽限期状态；`MemoryTransport`（丢包/延迟/乱序可编程）。
-- 冻结数据：§5.1 常量表（RTO 表、心跳 500ms、断线 3s、宽限 30s、单包 1200B、分片上限 8、逻辑消息 ≤ 9408B）、§5.2 会话 ID 规则、§5.5 握手字段与重连令牌公式 `salt ^ clientNonce`、Disconnect reason 1–6。
+- 冻结数据：§5.1 常量表（RTO 表、心跳 500ms、断线 3s、宽限 30s、单包 1200B、分片上限 8、逻辑消息 ≤ 9408B）、§5.2 会话 ID 规则、§5.5 握手字段与重连令牌公式 `salt ^ clientNonce`、Disconnect reason 1–7。
 - 已验证能力：丢包/延迟/乱序下可靠交付、分片重组、心跳与断线、宽限期重连与令牌校验（§6 全部实测通过）。
 - 消费约定：客户端链按同一常量表与握手时序实现，并用同一套内存适配器参数复现；任何常量变更必须双端同步并重跑 §6。

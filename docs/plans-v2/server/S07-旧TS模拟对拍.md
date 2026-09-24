@@ -11,8 +11,8 @@
 
 | # | 必须已成立的事实 | 验证命令 | 期望 |
 |---|---|---|---|
-| 1 | 权威步进与共享角度表可用 | `pwsh -File server/build.ps1 -Config Release` 后 `server/build/ac_tests.exe --filter=trig` | 末行 `[build] ok`；`TESTS 6/6` |
-| 2 | v1 冻结实现可读（只读） | `Test-Path D:\projects\tmp\angry-chen-bak\packages\shared\src\index.ts` | `True` |
+| 1 | 权威步进与共享角度表可用 | `powershell -NoProfile -File server/build.ps1 -Config Release` 后 `server/build/ac_tests.exe --filter=trig` | 末行 `[build] ok`；`TESTS 4/4`（与 S02 §6 同数） |
+| 2 | v1 冻结实现可读：`D:\projects\tmp\angry-chen-bak` **全程只读**，打补丁与导出只在可写派生副本 `D:\projects\tmp\angry-chen-fixture` 上做 | `Test-Path D:\projects\tmp\angry-chen-bak\packages\shared\src\index.ts`；`Test-Path D:\projects\tmp\angry-chen-fixture\packages\shared\src\index.ts` | 两处都 `True` |
 | 3 | Node 能直接 import `.ts` 源码（类型剥离） | 在备份仓库根执行 `node -e "import('./packages/shared/src/index.ts').then(m=>console.log(m.SERVER_TICK_MS))"` | 打印 `50` |
 | 4 | 模拟内核可编译 | [server/README.md](../../../server/README.md) 的「构建」章节 | 产出服务器可执行文件 |
 | 5 | 零素材约束与确定性规则已冻结 | `ls docs/evidence`（`docs/evidence`）、[ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §6 | 目录存在；fixture schema 与逐位比较规则明确 |
@@ -23,14 +23,14 @@
 
 | 文件 | 状态 | 职责 |
 |---|---|---|
-| `tools/export-fixtures.mjs` | 新建 | 读冻结的 v1 `packages/shared`，导出 fixture JSON 与 `configHash`；`--check` 幂等校验、`--list` 清单 |
+| `tools/export-fixtures.mjs` | 新建 | 读 `--root` 指定的 v1 派生副本（`D:\projects\tmp\angry-chen-fixture`；只读源仓库 `angry-chen-bak` 不得写入），导出 fixture JSON 与 `configHash`；`--check` 幂等校验、`--list` 清单 |
 | `docs/evidence/fixtures/*.json`（14 份）+ `README.md` | 新建（入库） | 纯文本对拍向量（schema 见 §5.1）与清单/再生成说明 |
 | `server/tests/fixture_io.hpp/.cpp` | 新建 | 只认 §5.1 固定 schema 的极简 JSON 读取、`bit_cast` 比较、`DIFF` 报告、`configHash` 重算 |
 | `server/tests/fixture_test.cpp` + 构建脚本登记 | 新建/修改 | 逐 fixture、逐 tick、逐字段比较，任一不等即打印首个差异并退出 1 |
 
 ## 4. 任务清单
 
-- [ ] 写 `tools/export-fixtures.mjs`：先按 S02 的约定用共享整数表**替换** v1 侧的 `Math.sin/cos/atan2/asin`（表内容取自 `docs/evidence/fixtures/trig-table.json`），再用 v1 的 `createWorld/stepWorld/spawnEntity` 构造 §5.3 的 14 个场景并推进，按 §5.1 写出期望投影。
+- [ ] 写 `tools/export-fixtures.mjs`：先在可写派生副本 `D:\projects\tmp\angry-chen-fixture` 上按 S02 的约定用共享整数表**替换** v1 侧的 `Math.sin/cos/atan2/asin`（表内容取自 `docs/evidence/fixtures/trig-table.json`；`atan2`/`asin` 用 S02 的 `angleUnitsFromVector` / `angleUnitsFromRatio` 整数查表实现），再用 v1 的 `createWorld/stepWorld/spawnEntity` 构造 §5.3 的 14 个场景并推进（只读的 `angry-chen-bak` 全程不得写入），按 §5.1 写出期望投影。
 - [ ] 实现 §5.6 的 `configHash`（CRC32C、固定键序与 `%.17g` 格式）与 §5.2 的 RNG 计数包装与状态重放，两者都写在 `tools/export-fixtures.mjs` 里。
 - [ ] 写 `server/tests/fixture_io.cpp`：固定 schema 解析（键序固定、未知键即失败）、逐位比较、`DIFF` 单行报告、用 S02 的 `ac::crc32c` 重算 `configHash`。
 - [ ] 写 `server/tests/fixture_test.cpp` 并按 S01 的 `AC_TEST` 注册进 `main_test.cpp`：`configHash` → 逐 tick → 实体/事件/RNG 的比较顺序，首个差异即失败。
@@ -48,8 +48,8 @@
   "configHash": "8f2a41d0",
   "ticks": [
     { "dtMs": 50, "commands": [
-      { "id": 1, "seq": 0, "tick": 0, "moveX": 1.0, "moveY": 0.0,
-        "yawUnits": 0, "pitchUnits": 0, "buttons": 0, "switchTo": 0 } ] }
+      { "id": 1, "seq": 0, "clientTick": 0, "moveX": 1.0, "moveY": 0.0,
+        "yaw": 0.0, "pitch": 0.0, "buttons": 0, "switchTo": 0 } ] }
   ],
   "expected": {
     "entities": [ { "id": 1, "kind": "player", "pos": [0.0, 0.0, 0.0],
@@ -65,12 +65,12 @@
 |---|---|---|
 | `name` / `seed` | string / uint32 | 文件名 = `name + ".json"`（只含 `[a-z0-9-]`）；`seed` 与 v1 `createWorld(seed)` 一致 |
 | `configHash` | 8 位小写十六进制 | §5.6 的 CRC32C（S02 `ac::crc32c`）；不匹配则**不跑 tick** 直接失败 |
-| `ticks[]` | 对象数组 | 每项一个 tick；`dtMs` 恒为 50（其他值即 schema 失败）；`commands[]` 按实体 `id` 升序，字段与 S06 冻结的命令结构同名 |
+| `ticks[]` | 对象数组 | 每项一个 tick；`dtMs` 恒为 50（其他值即 schema 失败）；`commands[]` 按实体 `id` 升序，字段与 S06 冻结的命令结构同名（`clientTick` 即 v1 `Command.tick`，`yaw` / `pitch` 为 double 弧度） |
 | `expected.entities[]` | 对象数组 | 该 tick 结束时的活跃实体投影：`id`、`kind`、`pos`[3]、`yaw`、`pitch`、`hp`、`flags` |
 | `expected.events[]` | 对象数组 | 该 tick 入队的事件（按入队顺序）：`tick`、`type`、`flags`、`subjectId`、`targetId`、`value` |
 | `expected.rngState` | 对象 | 三条流的 `mulberry32` 内部状态 `a`（uint32），口径见 §5.2 |
-| `yaw` / `pitch` | double 弧度 | 写盘用 `%.17g` 可无损往返；与内部角度单位经 `fromUnits` 精确互换 |
-| `flags` | 位域 | bit0 `downed`、bit1 `dead`，其余保留为 0 |
+| `yaw` / `pitch` | double 弧度 | 写盘用 `%.17g` 可无损往返；与线上 u16 角度单位经 `quantizeAngle` / `radiansFromUnits` 精确互换（S02 §5.3、§5.4）；逐位比较的是弧度 double |
+| `flags` | 位域 | `expected.entities[]` 与 `expected.events[]` 共用同一张表：bit0 `downed`=1 / bit1 `rageMode`=2 / bit2 `reloading`=4 / bit3 `charging`=8 / bit4 `fading`=16 / bit5 `idle`=32（与 S03 §5.3 实体记录 `kindFlags` 的 flags 位完全一致），其余位保留为 0 |
 | 键序与格式 | — | 键序固定如本节的 JSON 示例；缩进 2 空格；整数不带小数点，浮点统一 `%.17g` |
 
 ### 5.2 RNG 状态口径
@@ -109,7 +109,7 @@ fixtures: 13/14 passed, 1 failed
 
 ### 5.5 再生成与入库纪律
 
-- 命令：`node tools/export-fixtures.mjs --out docs/evidence/fixtures`（写盘）、`--check`（只比较）、`--list`（清单）。
+- 命令（工作目录 = 仓库根 `D:\projects\tmp\angry-chen`）：`node tools/export-fixtures.mjs --root D:\projects\tmp\angry-chen-fixture --out docs/evidence/fixtures`（写盘）、`--check`（只比较）、`--list`（清单：`name`、字节数、SHA256）。`--root` 指向可写派生副本；`D:\projects\tmp\angry-chen-bak` 只读，不得作为补丁或导出目标。
 - fixture 是**生成物**：禁止手工编辑；数值规则变更必须先改 v1 或显式重建向量，再两侧同时改（ADR-010 §7）。
 - 体积门：14 份 fixture 总字节 < 2 MB（ADR-010 的复查触发条件）。
 
@@ -121,10 +121,10 @@ CRC32C（S02 `server/src/core/hash.hpp`，反射多项式 `0x82F63B78`，输出 
 
 | # | 命令 | 期望输出 | 失败意味着什么 |
 |---|---|---|---|
-| 1 | `node tools/export-fixtures.mjs --out docs/evidence/fixtures` | `exported 14 fixtures, bytes=…`，退出 0 | v1 冻结包被改动，或场景构造不符合 §5.3 |
-| 2 | `node tools/export-fixtures.mjs --check` 与 `--list` | `14/14 identical`；14 行场景名与 §5.3 逐字一致 | 导出存在非确定来源（时间、哈希序、locale）或场景缺失 |
-| 3 | `git status --porcelain docs/evidence/fixtures` | 首次入库后为空 | 有人在手工改生成物 |
-| 4 | `pwsh -File server/build.ps1 -Config Release` | 末行 `[build] ok ac_server.exe`，退出 0 | 读取器或内核接口未对齐，或 `AC_TEST` 未注册 |
+| 1 | `node tools/export-fixtures.mjs --root D:\projects\tmp\angry-chen-fixture --out docs/evidence/fixtures`（cwd = 仓库根） | `exported 14 fixtures, bytes=…`，退出 0 | v1 冻结包被改动，或场景构造不符合 §5.3 |
+| 2 | `node tools/export-fixtures.mjs --root D:\projects\tmp\angry-chen-fixture --check` 与 `--list` | `14/14 identical`；14 行场景名与 §5.3 逐字一致 | 导出存在非确定来源（时间、哈希序、locale）或场景缺失 |
+| 3 | `Get-ChildItem docs/evidence/fixtures -Recurse -File \| Get-FileHash -Algorithm SHA256`，与 `--list` 打印的 SHA256 清单逐条比对 | 14 行一致 | 有人在手工改生成物 |
+| 4 | `powershell -NoProfile -File server/build.ps1 -Config Release` | 末行 `[build] ok ac_server.exe`，退出 0 | 读取器或内核接口未对齐，或 `AC_TEST` 未注册 |
 | 5 | `server/build/ac_tests.exe --filter=fixture` | `TESTS 14/14` | 数值漂移，看首行 `DIFF` 定位字段 |
 | 6 | `Get-ChildItem docs/evidence/fixtures -Recurse -File \| Measure-Object Length -Sum`；`node tools/check-docs.mjs` | 总和 < 2097152；文档打印 `OK` | 向量过大（需按 ADR-010 复查条件抽样）；文档链或链接坏了 |
 
@@ -134,13 +134,13 @@ CRC32C（S02 `server/src/core/hash.hpp`，反射多项式 `0x82F63B78`，输出 
 - [ ] [工程约定](../../00-共识/工程约定.md) §5 的质量门 `node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 - [ ] 本份新增门：`--check` 幂等（连跑两次字节相同）；C++ 逐位比较 14/14 通过。
 - [ ] 本份新增门（反例自检，已记录在 `docs/evidence/fixtures/README.md`）：手工改一位数字能让测试以 `DIFF` 首行失败；改 `configHash` 能让比较在跑 tick 之前失败。
-- [ ] 14 份 fixture 入库；备份仓库的 v1 副本全程只读（生成前后 `packages/shared/src/index.ts` 的 `LastWriteTime` 不变）。
+- [ ] 14 份 fixture 入库；只读源仓库 `D:\projects\tmp\angry-chen-bak` 全程未被写入（生成前后 `packages/shared/src/index.ts` 的 `LastWriteTime` 不变），补丁只打在可写派生副本 `D:\projects\tmp\angry-chen-fixture` 上。
 
 ## 8. 风险与回滚
 
 | 风险 | 触发信号 | 对策 |
 |---|---|---|
-| v1 副本被无意写入导致基线漂移 | 备份副本文件的 `LastWriteTime` 变化 | 重新从 `angry-chen-bak` 取一份干净副本再导出；基线只认该副本 |
+| v1 副本被无意写入导致基线漂移 | 只读副本文件的 `LastWriteTime` 变化 | 从 `angry-chen-bak` 重新复制一份干净派生副本到 `D:\projects\tmp\angry-chen-fixture` 再导出；基线只认 `angry-chen-bak` |
 | 导出存在非确定来源（键序、locale、浮点格式） | `--check` 两次结果不同 | 数字固定 `%.17g`、只遍历数组与插入序、禁用 `toLocaleString` 与排序容器 |
 | C++ 读取器过宽，坏 fixture 也能通过 | 反例自检改一位后仍通过 | 未知键、未知 kind、缺失 tick 一律失败；反例自检进 README |
 | 14 份向量跑得过慢 | 单次 `--filter=fixture` > 30s | 先定位最慢场景；仅对超时场景抽样并记录覆盖率 |
@@ -152,6 +152,6 @@ CRC32C（S02 `server/src/core/hash.hpp`，反射多项式 `0x82F63B78`，输出 
 
 **移交物 ID**：HANDOFF-S07
 
-给下一步的稳定接口：`docs/evidence/fixtures/*.json`（14 份）与 §5.1 冻结 schema；`configHash`（CRC32C）定义见 §5.6；再生成命令 `--out` / 校验 `--check` / 清单 `--list`；`server/tests/fixture_io.hpp` 的读取与位型比较接口（供后续回归测试复用）；差异报告格式 `DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>`。
+给下一步的稳定接口：`docs/evidence/fixtures/*.json`（14 份）与 §5.1 冻结 schema；`configHash`（CRC32C）定义见 §5.6；再生成命令 `--root <派生副本>` / `--out` / 校验 `--check` / 清单 `--list`；`server/tests/fixture_io.hpp` 的读取与位型比较接口（供后续回归测试复用）；差异报告格式 `DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>`。
 
 已验证能力清单：静止、直线移动、谷仓碰撞、栅栏边界、连射命中、霰弹散布、倒地救援、四种羊形 AI、羊王阶段、波次导演、快照 round-trip、三流 RNG 共 14 个场景在 C++ 侧逐位复现；`configHash` 在数值漂移时先于 tick 比较失败；fixture 为纯文本、入库、可幂等再生成，总体积受 2 MB 门约束。

@@ -13,9 +13,9 @@
 |---|---|---|---|
 | 1 | 战斗结算与命中盒表已冻结 | 阅读 S08 §5.4 的羊形命中盒表 | 四种羊形的盒体参数齐备 |
 | 2 | 权威步进阶段 4/5/11 为空实现待填 | 阅读 S06 §5.1 的阶段表 | 阶段 4/5/11 存在且为空函数 |
-| 3 | 空间网格、邻居聚集入口与投射物生成可用 | `grep -n "spawnEntity" server/src/world.hpp` | 命中，且支持 `ownerId` |
-| 5 | v1 羊群与波次数值可查 | 阅读 `sheep.ts`、`waves.ts` | 与本份 §5.1、§5.2、§5.4 逐条一致 |
-| 6 | 三流 RNG 与对拍向量可用 | `server/build/ac_tests.exe --filter=fixture` | `TESTS 14/14` |
+| 3 | 空间网格、邻居聚集入口与投射物生成可用 | `Select-String -Path server/src/world.hpp -Pattern "spawnEntity"` | 命中，且支持 `ownerId` |
+| 4 | v1 羊群与波次数值可查 | 阅读 `sheep.ts`、`waves.ts` | 与本份 §5.1、§5.2、§5.4 逐条一致 |
+| 5 | 三流 RNG 与对拍向量可用 | `server/build/ac_tests.exe --filter=fixture` | `TESTS 14/14` |
 
 跨链前置：无（羊群只依赖本链已冻结的战斗与模拟契约）。
 
@@ -76,7 +76,7 @@
 - 吃草：无有效目标时回 `graze`，`timerMs <= 0` 时用 **`ai` 流** 在 `±6` m 内重选吃草点并重置 2500ms；吃草速度 = `speed * 0.4`。
 - 警戒：从 `graze` 进入 `alert` 的那一帧才武装 300ms 计时（同态转移不得重复武装，v1 曾因此"羊不会动"）。
 - 冲锋羊：距离 ≤ 12m 且可转移进 `windup` 时锁定方向（本 tick 归一化），1000ms 后进 `charge` 并计时 1600ms；撞到玩家或超时/进场/越界即进 `stagger` 1000ms。
-- 攻击：`grunt` / `king` 在 ≤ 1.4m 时进 `attack`（速度 0，朝向目标）；距离 > 1.4 × 1.4 时回 `chase`。
+- 攻击：`grunt` / `king` 在 ≤ 1.4m 时进 `attack`（速度 0，朝向目标用 `ac::angleUnitsFromVector(dx, dz)` 求角单位，需要弧度时走 `dequantizeAngle`，禁用 `atan2`）；距离 > 1.4 × 1.4 时回 `chase`。
 - 问界羊：< 15m 后退、> 25m 前进、15–25m 内按 `strafeSign` 侧移且每 1200ms 翻号；距离 ≤ 25m 时进 `ranged`。
 
 ### 5.4 波次与预算（抄 v1 `waves.ts` 与 `director.ts`）
@@ -86,7 +86,7 @@
 | 波次上限 | `WAVE_MAX = 10`；每 5 波为 Boss 波 |
 | 波间 | `WAVE_INTERMISSION_MS = 20000`，最短 5000ms（全员准备可跳过） |
 | 基础预算 | `round(6 + 3.2 * w + 0.18 * w * w)` ⇒ w=1..3、5、10 → 9 / 13 / 17 / 27 / 56 |
-| 人数缩放 | `budget = round(base * (1 + 0.35 * (players - 1)))`；`speedMult = 1 + 0.02 * (players - 1)` |
+| 人数缩放 | 取整次序固定：先 `base = round(6 + 3.2 * w + 0.18 * w * w)`，再乘人数系数后整体 `round`，即 `budget = round(base * (1 + 0.35 * (players - 1)))`（4 人 w=1：`base = 9` ⇒ `round(9 * 2.05) = 18`）；`speedMult = 1 + 0.02 * (players - 1)` |
 | 组队顺序 | 先羊王（Boss 波且预算 ≥ 20 → 1 只，扣 20）→ 问界羊（w ≥ 5，`cap = min(2 + floor(w/5), floor(剩/6))`，各扣 6）→ 冲撞羊（w ≥ 3，`cap = min(floor(剩/3), max(1, floor(w/3)))`，各扣 3）→ 余量全给咩咩兵（各扣 1） |
 | 生成节流 | 每 tick 最多 `8` 只；同时最多选 `3` 个出生点；每个出生点与最近玩家的距离必须 > `15` m；候选点取自 S05 冻结的 12 个 `spawnPoint` |
 | 抖动与流 | 出生点下标起点与位置抖动全部消耗 **`spawn` 流**（`±1.5` m） |
@@ -114,17 +114,18 @@
 
 ### 5.7 遍历顺序与 RNG 流归属
 
-- 实体遍历一律按 `activeIds` 的插入序（等价于 `EntityId` 升序，由空闲表维护）；禁止遍历 `unordered_map` 等哈希容器；邻居收集按 `(distanceSq, EntityId)` 排序破平局，保证结果与遍历顺序无关。
+- 实体遍历一律按 `activeIds` 的严格升序（S05 §5.1，由空闲表二分维护）；禁止遍历 `unordered_map` 等哈希容器；邻居收集按 `(distanceSq, EntityId)` 排序破平局，保证结果与遍历顺序无关。
 - 意图计算与落地分两趟：先按升序算全部意图（只读世界），再按升序写速度与朝向，避免"先动的羊影响后动的羊"。
 - 流归属（冻结）：**`ai` 流**只服务吃草点重选与任何单羊随机；**`spawn` 流**服务波次出生点选择、出生抖动、羊王召唤抖动；**`fx` 流**禁止被模拟读取，测试断言其抽取次数恒为 0。
 - 目标选择打分：`score = aggro[i] + 1 / (1 + distance)`，仅对 `sightM` 内且可见（谷仓遮挡判定通过）的玩家参与；现目标保留门槛为其 `aggro * 1.5`。
+- 角度与超越函数（S 条）：AI 需要的 `atan2` / `asin` 一律走 S02 的 `ac::angleUnitsFromVector(dx, dz)` / `ac::angleUnitsFromRatio(r)`（基于 `kAtanUnits` / `kAsinUnits` 查表，结果经 `dequantizeAngle` 变回 double 弧度）；`server/src/ai/**` 与 `server/src/waves/**` **禁用** `sin` / `cos` / `atan2` / `asin` / `exp` / `pow`（需要三角时用 S02 的 `sinUnits` / `cosUnits`）。
 
 ## 6. 验证
 
 | # | 命令 | 期望输出 | 失败意味着什么 |
 |---|---|---|---|
-| 1 | `pwsh -File server/build.ps1 -Config Release` 后运行 `server/build/ac_tests.exe --filter=ai` 与 `--filter=waves` | 末行 `[build] ok`；`TESTS 22/22`；`TESTS 16/16` | 常量头/签名与 §5 不符，或状态机、转向、目标选择、预算规则偏离 §5 |
-| 2 | 断言：预算公式的 5 个采样 | w=1/2/3/5/10 → 9 / 13 / 17 / 27 / 56；4 人 w=1 → 19；移速系数 1.06 | 预算公式或人数缩放错 |
+| 1 | `powershell -NoProfile -File server/build.ps1 -Config Release` 后运行 `server/build/ac_tests.exe --filter=ai` 与 `--filter=waves` | 末行 `[build] ok`；`TESTS 22/22`；`TESTS 16/16` | 常量头/签名与 §5 不符，或状态机、转向、目标选择、预算规则偏离 §5 |
+| 2 | 断言：预算公式的 5 个采样 | w=1/2/3/5/10 → 9 / 13 / 17 / 27 / 56；4 人 w=1 → 18（取整次序见 §5.4）；移速系数 1.06 | 预算公式或人数缩放错 |
 | 3 | 断言：`planWave(5, 1)` 的计划与预算和 | king 1 / elite 1 / ram 0 / grunt 1（共 3 只），预算和 27 | 组队顺序或余量分配错 |
 | 4 | 断言：连续生成 20 tick | 每 tick ≤ 8 只、出生点 ≤ 3 个、每点距最近玩家 > 15m | 生成节流或出生点规则错 |
 | 5 | 断言：`hpRatio = 0.70 / 0.66 / 0.33`；phase 2 跑满 8000ms | 阶段 1 / 2 / 3；恰好召唤 4 只咩咩兵（半径 2.6 ± 0.3） | 阶段阈值或召唤规则错 |
@@ -138,7 +139,7 @@
 - [ ] 上表 9 条验证全部通过，`--filter=ai` ≥ 22 用例、`--filter=waves` ≥ 16 用例，均 0 失败，`--filter=fixture` 仍 `TESTS 14/14`。
 - [ ] [工程约定](../../00-共识/工程约定.md) §5 的质量门 `node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 - [ ] 本份新增门：`--filter=ai` / `--filter=waves` 已注册且 `server/README.md` 有可复制的运行命令；AI 热路径零分配（600 tick × 60 只羊后分配计数增量为 0），`fx` 流抽取次数恒为 0。
-- [ ] 四种羊形参数、`SHEEP_AI` 全部字段、状态转移表与 v1 `configHash` 一致；`Select-String -Path server/src/ai/*.cpp,server/src/waves/*.cpp -Pattern "unordered_map|std::sin|std::cos"` 无输出。
+- [ ] 四种羊形参数、`SHEEP_AI` 全部字段、状态转移表与 v1 `configHash` 一致；`Get-ChildItem server/src/ai,server/src/waves -Recurse -Include *.hpp,*.cpp | Select-String -Pattern "unordered_map|std::sin|std::cos|atan2|asin|exp|pow"` 无输出。
 
 ## 8. 风险与回滚
 
