@@ -39,6 +39,10 @@
 
 **当前真实结论**：走 §5 合规命令（不加 `-nographics`）时编辑器在本机起不来 ⇒ 无 JSON ⇒ `exit 2`（环境不可用，不是"超预算"）；走 `-nographics` 得到上表 CPU 数字，但 `stageP95.fx/audio/draw/overlay` 缺段 ⇒ 门禁判 FAIL。**两种走法都无法得到 PASS**，因此 **C14 的 §6/DoD 在本机未验收**，未打 `MC14` 标签。
 
+## 3.1 收尾裁定（人工决定）
+
+**C14 按"未验收"收尾**：CPU 侧预算达标（上表实测），但 §6/DoD 里依赖真实图形设备的三项（1920×1080、drawCalls ≤ 120、triangles ≤ 180000）在本环境无法测量，且仓库尚无任何渲染装配。因此 `MC14` 是**带注解的"未验收"里程碑**：标签信息里写明这一点，本文档是唯一权威记录。门禁保持 fail-closed（两条走法都不打印 PASS），不为了让链条好看而放宽。后续拿到有图形设备的机器时，只需 `pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600` 即可补验收。
+
 ## 4. 仍未装配（C15/后续）
 
 音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`AmmoLedger`/武器 HUD 数值、HUD 字符串渲染与场景 UI、`ArenaMesh/Colliders` 实例化；`Batching` §5 的档位表（剔除/阴影/实例上限）目前**没有生产调用者**，`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。
