@@ -31,6 +31,11 @@ list(REMOVE_ITEM AC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 add_library(ac_core STATIC ${AC_CORE_SOURCES})
 target_include_directories(ac_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+# S04 §5.7：WinSock2 需要显式链接 ws2_32（POSIX 侧无需额外库）。
+if(WIN32)
+  target_link_libraries(ac_core PUBLIC ws2_32)
+endif()
+
 add_executable(ac_server "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 target_link_libraries(ac_server PRIVATE ac_core)
 

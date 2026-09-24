@@ -35,7 +35,13 @@ ctest --test-dir server/build --output-on-failure
 g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserver/src server/src/main.cpp server/src/core/log.cpp -o server/build/ac_server.exe
 ```
 
-> 该命令只编 `ac_server.exe`（与 S01 §5.3 字面量一致）；要复现 `ac_tests.exe`，用同一批开关加 `-I server/tests` 编 `server/tests/*.cpp`。
+> 该行只编 `ac_server.exe`（与 S01 §5.3 字面量一致）。测试程序要**另起一条命令**，不要把 `server/src/main.cpp` 带进去（双 `main()` 链接失败）：
+
+```powershell
+g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserver/src -Iserver/tests -o server/build/ac_tests_fallback.exe server/tests/*.cpp server/src/core/log.cpp server/src/net/*.cpp -lws2_32
+```
+
+> 兜底版 fixture 走相对路径（见 §4），必须在仓库根运行；S04 起需要 `-lws2_32`（WinSock2）与 `server/src/net/*.cpp`。
 
 | 产物 | 路径 | 说明 |
 | --- | --- | --- |
@@ -134,16 +140,75 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 6. **判断项（已用测试兜住，未改结构）**：事件「类型 → 字节/字段」的知识在 `decodeEventEntry` 的 switch、`writeEventEntry` 的 `if constexpr`、`eventPayloadWithTypeBytes` 与测试断言里各出现一次（§5.4 要求逐字段显式，故未做元表）；`eventTypeOf` 直接取 variant 下标当线号，因此 `codec_event_entry_bytes_all_types` 额外钉住「每个载荷类型 ↔ 线号」的对应，重排 `EventData` 会立刻变红。
 7. 顺带修正 S01 的两个用例名：`log_oversized_evt_truncated` → `log_overlong_evt_truncated`、`test_filter_matching` → `test_filter_selection`。原因：`--filter` 是**全局子串**匹配，前者的 `sized` 污染 `--filter=size`、后者的 `matching` 污染 `--filter=match`（S03 §6 与 S10 都按固定条数校验）。**后续计划命名用例时必须避开 `codec`/`hex`/`fuzz`/`size`/`wire`/`match` 这些已占用的门禁子串。**
 
-## 5. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 5. 传输子层（S04 §5 冻结）
+
+`server/src/net/` 在编解码之上提供可自证的 UDP 传输：握手、每通道序号与 ack 位图、RTO 重传、分片重组、心跳、断线判定与宽限期重连。生产侧走真实套接字，测试侧走内存总线（同一批常量、同一套时序）。
+
+| 文件 | 内容 |
+| --- | --- |
+| `udp_socket.hpp/.cpp` | 非阻塞 UDP 缝：`bind`/`sendTo`/`recvFrom`/`poll`/`close`，WinSock2 与 POSIX 双实现，错误码先映射到 `SocketError` 再判断 |
+| `reliability.hpp/.cpp` | `ReliableState`（ack 位图）、RTO 表与重传时间线、重传表、失联判定 |
+| `fragment.hpp/.cpp` | 分片发送（≤8 片、每片载荷 ≤1176B）与按 `(session, fragId)` 重组、60 tick 超时回收（计划 §5.4 写的 `channelType` 上不了线，见 §5.3.3） |
+| `handshake.hpp/.cpp` | 会话短 ID 分配与校验、Hello/HelloAck/Resume/Disconnect 状态机、重连令牌 `salt ^ clientNonce` |
+| `keepalive.hpp/.cpp` | 500ms 心跳、3s 断线判定、30s 宽限期计时、出站预算常量 |
+| `memory_transport.hpp` | 测试用内存总线：丢包率、单向延迟与抖动、乱序、`pump(nowMs, onDeliver)` |
+
+### 5.1 传输常量表（客户端链必须逐字对照实现）
+
+| 常量 | 值 | 定义处 |
+| --- | --- | --- |
+| `kInitialRtoMs` | 200 | `reliability.hpp` |
+| `kRtoBackoff` | 1.5（仅文档意义，表由整数递推得出） | `reliability.hpp` |
+| `kMaxRtoMs` | 1000 | `reliability.hpp` |
+| `kMaxRetransmits` | 5（第 6 次重传之前判失联） | `reliability.hpp` |
+| `kRtoTableMs` | `{200,300,450,675,1000}` | `reliability.hpp` |
+| `kKeepAliveMs` | 500 | `keepalive.hpp` |
+| `kDisconnectMs` | 3000 | `keepalive.hpp` |
+| `kGraceMs` | 30000 | `keepalive.hpp` |
+| `kMaxFragmentPayload` | 1176（= 1200 − 8 − 12 − 4） | `fragment.hpp` |
+| `kFragmentTimeoutTicks` | 60（3s） | `fragment.hpp` |
+| `kOutboundBacklogBytes` | 65536 | `keepalive.hpp` |
+| `kSnapshotBudgetBytes` | 1228（= `wire.hpp kSteadySnapshotBytes`） | `keepalive.hpp` |
+| `kClientBandwidthBytesPerSec` | 40960 | `keepalive.hpp` |
+| `kSessions` | 256（含宽限期会话；计划 §5.1 逐字用此名） | `handshake.hpp` |
+| `kHelloDedupMs` | 5000（同一 `clientNonce` 的 Hello 重发去重窗口） | `handshake.hpp` |
+| `kMaxPacketBytes` / `kMaxFragments` / `kMaxLogicalMessageBytes` | 1200 / 8 / 9408 | S03 的 `wire.hpp`（此处不重复定义） |
+
+### 5.2 行为要点（与客户端逐条对齐）
+
+- **ack 位图**（§5.3 逐字）：收到 `msgId = m` 时 `k = m - ackBase`；`k >= 1` 时 `ackBits = (k >= 32 ? 0 : ackBits << k) | (1 << (k-1))` 且 `ackBase = m`；否则 `d = ackBase - m`（1..32）置位 `1 << (d-1)`。bit i 表示 `msgId == ackBase - 1 - i` 已收到；重复或窗口外的 id 直接丢弃、不计错误。
+  - ⚠️ 公式的副产物：**首次收包会把不存在的 `msgId 0` 记进 ackBits**（因为初始 `ackBase = 0`）。两端都会算出同一个位图，所以这不是 bug，**不要单方面"修正"**，否则线上字节不一致。
+- **重传时间线**：发送时刻 0 → 第 1..5 次重传在 200 / 500 / 950 / 1625 / 2625ms（等待 `kRtoTableMs` 逐项）；第 5 次之后**再等一个表尾 1000ms**（t = 3625ms）才判失联，不产生第 6 次重传 → 进入宽限期 + `Disconnect(reason=3)`。判失联时点计划未冻结，见 §5.3.5。
+- **序号与去重是两套**：`seq` 是包头字段、每通道一条发送/接收序号（`ChannelSeq`，u16 回绕，Snapshot 用它丢弃过期包）；`msgId` 只管去重与 ack。两者互不干涉。
+- **分片**：逻辑消息 >1176B 才切；5000B → 5 片（1176×4 = 4704 < 5000）。`fragCount > 8`、`fragIndex >= fragCount`、同一组片数前后不一致 → `kBadValue` 并丢弃整组；60 tick 未收齐 → 丢弃整组并累加 `Reassembler::timedOutCount()`（`kFragmentTimeout` 不是 `DecodeFailure` 的取值；迟到切片会开启新组）。
+- **握手**：`Hello`（`session = 0`、不可靠）→ 分配会话 ID + 派生 `salt` + 回 `HelloAck`；`salt` 由会话层独立计数器派生（**不消费 ai/spawn/fx 任何 RNG 流**）。令牌 `reconnectToken = salt ^ clientNonce`，线上是 8 位小写十六进制 ASCII（见 §4）。`Resume` 仅在宽限期内有效，成功后服务器补一次 `baselineTick = 0` 的全量快照。
+- **会话与宽限期**：`Alloc → Connected →（3s 无任何合法包）→ GracePeriod →（+30s）→ Released`；释放后 ID 可复用、旧令牌失效，令牌不符/超期一律 `Disconnect(reason=2)`。非 `Hello` 包要求 `session != 0` 且在册（**宽限期也算在册**），否则丢弃并计 `kBadSession`（S03 的 `DecodeFailure::kBadSession` 就是给这里用的）；校验结果用 `SessionValidation::isGracePeriod` 告诉调用方，是否按 C03 §5.3「Zombie 收到本会话任何包即回 Connected」复活由调用方决定。
+- **名额**：在册会话打满 `kSessions` 时按 §8 风险表**先驱逐最早进入宽限期的会话**；一个宽限期会话都没有（全在 `Connected`）才算真打满，回 `Disconnect(reason=6)`（§5.5 无专门取值，见 §5.3.4）。
+- **Hello 去重**：客户端按 §5.5 以 1s × 5 次重发 Hello，服务器对同一 `clientNonce` 在 `kHelloDedupMs` 内复用同一会话并重发同一个 `HelloAck`（幂等），不占新名额。
+- **心跳**：每 500ms 一个 `flags = reliable|ackOnly`、载荷 0 的包；`ackOnly` 包携带 ack 字段但**不进重传表**。
+
+### 5.3 需回写计划/ADR 的差异（S04）
+
+1. **§5.3 伪代码在 `k >= 33` 时移位越界**：`ackBits = (k >= 32 ? 0 : ackBits << k)` 只护住了左移，`1u << (k - 1)` 在 `k >= 33` 时是未定义行为。本实现在 `k >= 33` 时把位图显式清零（`k == 32` 仍与伪代码一致：`0x80000000`），`reliability_ack_bitmap_advance` 钉住。**建议回写 §5.3 伪代码**，客户端必须与之一致。
+2. **沿用 S03 记录的 ADR-009 L49 歧义**：分片头在场条件写的是「`moreFragments=1` 或 `fragCount>1`」，实现只认 `moreFragments`（`payloadOffset` 同）。
+3. **§5.4 的重组键含 `channelType`，线上拿不到**：分片包头 `type` 恒为 9（`kFragment`），原通道身份不上线（末分片还不置 `moreFragments`，见上条），所以重组只能按 `(session, fragId)` 分组，计划里的 `channelType` 无法从分片还原。**需裁决**：要么规定 `fragId` 在会话内全局唯一（本实现如此：快照/事件共用同一命名空间），要么在分片头加通道字段（要改 ADR + 两端编解码）。C03 必须与裁决一致。
+4. **§5.5 未规定的三处**：`Hello` 带非 0 令牌时的语义（本实现记账但不使用，重连只走 `Resume`）；在册会话打满时的 reason（本实现取 6 `rateLimited`，且先按 §8 驱逐宽限期会话）；令牌的线上形是 8 位小写十六进制 ASCII（ADR-009 + C03 §5.5 已冻结，S04 §5.5 的表格只写 u32 类型，应补一句指向 ADR）。
+5. **判失联时点未冻结**：§5.3 只说“累计 5 次重传仍无 ack 即判失联”，没写第 5 次之后是否再等一个 `kRtoTableMs` 尾项。本实现在 t = 3625ms 判（五连等 200/300/450/675/1000 之后再等 1000），另一种读法是 t = 2625ms 立即判。C03 同样沉默，**需裁决**。
+6. **宽限期会话的包校验**：§5.2 只要求 `session != 0` 且在册，本实现据此让宽限期会话通过校验（不计 `kBadSession`），把“是否复活”留给调用方（C03 §5.3 的 Zombie 语义）。若计划要求“宽限期一律丢弃”，需回写 §5.2。
+7. **用例名冲突修正（7 个，含 3 个 S03/S02 用例）**：`hex_fragment` → `hex_split_message`、`size_single_packet_needs_fragments` → `size_single_packet_needs_slices`、`size_full_single_entity_snapshot_is_40` → `size_full_single_record_snapshot_is_40`、`match_truncated_and_trailing_rejected` → `match_truncated_and_extra_bytes_rejected`、`math_aabb_overlaps_and_contains` → `math_aabb_overlaps_and_covers`、`transport_handshake_allocates_session` → `transport_handshake_assigns_session`、`transport_loss_triggers_retransmit` → `transport_loss_causes_resend`。原因同 §4.2.7：`--filter` 是**全局子串**匹配，会污染 `--filter=fragment` / `alloc`（S05）/ `entity`（S05）/ `ai`（S09）/ `trig`（S02、S09）的固定条数门禁。**已占用门禁子串全表**（命名新用例前先对照）：`ai alloc codec combat entity fixture fragment fuzz grace grid hex http malicious match matchstate math memory pose quantize reliability replication rewind rng schedule security size step store threshold transport trig waves wire world`。
+8. **遗留项（本份未动）**：S02 的 `rng_ai_stream_bits` 含 `ai`，会让 S09 §6 的 `--filter=ai` 从 `TESTS 22/22` 变 23 条——名字本身没错（它就是 ai 流），**S09 立项时要先改名或改门禁**；另 S09 §7 第 9 条写的 `--filter=fixture` 在本套测试里是 `TESTS 0/0`（疑为 `--filter=codec` 之误，codec 恰为 14/14），S09 落地前需澄清。
+9. **`udp_socket_loopback_roundtrip` 不在 §6 的五组内**：那五组按固定条数（8/5/4/4/2）校验，套接字缝的真实回环收发单独一条用例覆盖（真 UDP、非阻塞、`poll` 超时）。POSIX 分支本机（Windows）跑不到，只在 WinSock2 分支上验证过。
+
+## 6. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 6. 当前状态
+## 7. 当前状态
 
-**S01、S02、S03 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02：数学、随机数、量化、CRC32C、共享角度表）与二进制协议编解码（S03：`src/net/` 三个文件 + 10 个字节级 fixture）就位；模拟/AI/房间/持久化由 S04 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S04 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）与 UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）就位；模拟/AI/房间/持久化由 S05 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -152,7 +217,19 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | `g++ --version` | `g++.exe (x86_64-win32-seh-rev1, Built by MinGW-Builds project) 15.2.0` |
 | `powershell -NoProfile -File server/build.ps1 -Config Release` | 退出码 0，末行 `[build] ok ac_server.exe`；`[build] toolchain: cmake 4.2 + ninja + C:\\Program Files\\mingw64\\bin\\g++.exe` |
 | `server/build/ac_server.exe --version` | `ac_server 0.1.0 protocol=1 tick=50ms` |
-| `server/build/ac_tests.exe` | 末行 `TESTS 86/86`，退出码 0（S01 的 18 条 + S02 的 28 条 + S03 的 40 条） |
+| `server/build/ac_tests.exe` | 末行 `TESTS 110/110`，退出码 0（S01 的 18 条 + S02 的 28 条 + S03 的 40 条 + S04 的 24 条） |
+| `--filter=transport` / `--filter=reliability` / `--filter=fragment` / `--filter=grace` / `--filter=memory` | 末行依次 `TESTS 8/8`、`TESTS 5/5`、`TESTS 4/4`、`TESTS 4/4`、`TESTS 2/2`，退出码全 0 |
+| `server/build/ac_tests.exe --filter=reliability` 的打印行 | `rto=200,300,450,675,1000` |
+| 丢包 20% + 延迟 50ms(±10) + 乱序 10% 的 1000 tick 回环 | 50 条可靠消息全部到达、按 `msgId` 严格升序交付、重传表清空、`droppedCount() > 0`（`memory_reliable_delivery_in_order`） |
+| 分片切分与本地重组（不过总线） | 5000B → 5 片、每片 ≤1200B、逆序投递逐字节还原；>9408B / 0B 返回空并判不可分（`fragment_split_5000_bytes_reassembles`） |
+| 分片过总线（20% 丢包 + 延迟 20ms ±5） | 每 200ms 重发一轮，5 片逐字节还原、`completedCount() == 1`、`timedOutCount() == 0`（`transport_split_logical_message`） |
+| 可靠分片（事件通道） | 每片带 12B 可靠扩展头，载荷偏移 = 8 + 12 + 4 = 24，逆序重组同样还原（同上用例） |
+| 会话名额（§8 驱逐规则） | 打满 `kSessions` 后：全 `Connected` → `Disconnect(reason=6)`；有宽限期会话 → 驱逐最早进宽限期的那个并收下新会话（`grace_release_after_thirty_seconds`） |
+| Hello 重发去重（§5.5） | 同一 `clientNonce` 在 5s 内复用同一会话与同一令牌，超过 `kHelloDedupMs` 才算新握手（`transport_handshake_assigns_session`） |
+| 每通道序号（§5.2） | `ChannelSeq` u16 回绕、重复/过期包判旧（`reliability_duplicate_is_ignored`） |
+| 心跳与断线实测 | 50s 内恰好 100 次心跳、相邻间隔恒 500ms；最后一个合法包后 3000ms 判断线并进入 30s 宽限期 |
+| `Get-ChildItem server/src/net -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::pow","exp\(","\b0\.0[0-9]* \* pow"` | 0 命中 |
+| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 110/110`（含真实 UDP 回环那条） |
 | `server/build/ac_tests.exe --filter=rng` / `--filter=quantize` / `--filter=math` / `--filter=trig` | 末行依次 `TESTS 6/6`、`TESTS 10/10`、`TESTS 8/8`、`TESTS 4/4`，退出码全 0 |
 | `server/build/ac_tests.exe --filter=trig` 的打印行 | `sin crc=0x8BD9F737 atan crc=0x197C3A8D asin crc=0xAD2BD35E` |
 | `--filter=codec` | 末行 `TESTS 14/14`，退出码 0 |

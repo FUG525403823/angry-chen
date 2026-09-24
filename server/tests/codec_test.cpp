@@ -934,7 +934,8 @@ AC_TEST(hex_keepalive) { AC_CHECK(runHexFixture("keepalive")); }
 AC_TEST(hex_command) { AC_CHECK(runHexFixture("command")); }
 AC_TEST(hex_snapshot_full) { AC_CHECK(runHexFixture("snapshot_full")); }
 AC_TEST(hex_event_hit) { AC_CHECK(runHexFixture("event_hit")); }
-AC_TEST(hex_fragment) { AC_CHECK(runHexFixture("fragment")); }
+// 用例名避开 S04 的 --filter=fragment（子串匹配是全局的）。
+AC_TEST(hex_split_message) { AC_CHECK(runHexFixture("fragment")); }
 AC_TEST(hex_truncated_command) { AC_CHECK(runHexFixture("truncated_command")); }
 
 AC_TEST(hex_snapshot_diff) {
@@ -1103,7 +1104,7 @@ AC_TEST(size_command_packet_is_34) {
   AC_CHECK(encoded.bytes <= net::kMaxPacketBytes);
 }
 
-AC_TEST(size_full_single_entity_snapshot_is_40) {
+AC_TEST(size_full_single_record_snapshot_is_40) {
   const std::vector<EntityRecord> records = makeRecords(1u);
   const SnapshotFrame frame{100u, 5000u, 7u, nullptr, records.data(), records.size(), nullptr, 0u};
   uint8_t buffer[256] = {};
@@ -1146,7 +1147,7 @@ AC_TEST(size_steady_snapshot_within_1228) {
   AC_CHECK_EQ(decoded.value.baselineTick, 99u);
 }
 
-AC_TEST(size_single_packet_needs_fragments) {
+AC_TEST(size_single_packet_needs_slices) {
   const std::vector<EntityRecord> full = makeRecords(128u);
   const PacketHeader header = makeHeader(PacketType::kSnapshot, 0u, 7u, 1u);
   std::vector<uint8_t> buffer(net::kMaxSnapshotBytes + 64u, 0u);
@@ -1350,7 +1351,7 @@ AC_TEST(match_bad_weapon_rejected) {
   AC_CHECK(badWeapon.failure == DecodeFailure::kBadValue);
 }
 
-AC_TEST(match_truncated_and_trailing_rejected) {
+AC_TEST(match_truncated_and_extra_bytes_rejected) {
   net::MatchState good{2u, 1u, 0u, {}};
   good.players.push_back(makePlayer(4u, "ok", 1u));
   uint8_t buffer[128] = {};

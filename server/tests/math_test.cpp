@@ -132,7 +132,7 @@ AC_TEST(math_yaw_pitch_direction) {
   AC_CHECK_NEAR(ac::length(ac::yawPitchToDirection(0.7, -0.3)), 1.0, 4e-9);
 }
 
-AC_TEST(math_aabb_overlaps_and_contains) {
+AC_TEST(math_aabb_overlaps_and_covers) {
   const ac::Aabb a{ac::Vec3{0.0, 0.0, 0.0}, ac::Vec3{1.0, 1.0, 1.0}};
   const ac::Aabb touching{ac::Vec3{1.0, 1.0, 1.0}, ac::Vec3{2.0, 2.0, 2.0}};
   const ac::Aabb apart{ac::Vec3{1.001, 0.0, 0.0}, ac::Vec3{2.0, 1.0, 1.0}};
