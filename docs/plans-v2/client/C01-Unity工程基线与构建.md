@@ -100,7 +100,7 @@
 | 编辑器 | `$env:AC_UNITY` | 唯一编辑器入口变量，指向 §5.1 的 `Tuanjie.exe`；所有批处理命令统一用它 |
 | 构建 | `Ac.Editor.BuildEntry.BuildWindows64` | `client/build.ps1` 的 `-executeMethod` 目标 |
 | 渲染前置 | `Ac.Editor.RenderPipelineSetup.Run` | 幂等生成并指派 URP 管线资产；`BuildEntry` 出包前调用其 `Ensure()` |
-| 核心自检 | `Ac.Core.SelfTest.Run` | 输出格式在本份冻结，实现在下一份计划落地 |
+| 核心自检 | `Ac.Core.SelfTest.Run` | 输出格式在本份冻结（`PASS`/`FAIL` 行 + 末行 `SELFTEST OK`），实现在下一份计划落地；C02 §5.7 在末行补 `cases=<n>` 计数并让两个自检入口共用同一实现 |
 | 分组自检 | `Ac.Tests.SuiteRegistry.RunAll` | 运行 `client/Assets/Tests/` 下注册的用例分组 |
 
 ### 5.4 命名规则（承继 [工程约定](../../00-共识/工程约定.md) §11）

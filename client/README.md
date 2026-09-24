@@ -11,7 +11,7 @@
 | 跨语言确定性契约                     | [ADR-010](../docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md)     |
 | 旧 TypeScript 客户端（冻结对照实现） | `packages/client/`                          |
 
-**当前状态**：C01（MC01）已交付工程基线与构建链——程序集边界、URP 管线资产、零素材门与唯一构建入口都在本目录内；渲染、玩法与网络代码由 C02 起落地。实测记录见 `docs/evidence/client-c01-acceptance.md`。
+**当前状态**：C01（MC01）已交付工程基线与构建链（程序集边界、URP 管线资产、零素材门、唯一构建入口）；C02（MC02）在其上落地确定性数学（`Vec3`、mulberry32 三流、量化/反量化、共享角度表）、v2 协议解码（命令/快照/事件/MatchState）与批处理自检框架。渲染、玩法与表现由 C03 起落地。实测记录见 `docs/evidence/client-c01-acceptance.md` 与 `docs/evidence/client-c02-acceptance.md`。
 
 **环境**：编辑器入口固定为环境变量 `AC_UNITY`（User 作用域），本机已设为 `D:\tools\unity\unity_install\2022.3.62t16\Editor\Tuanjie.exe`（设置与实测见 `docs/evidence/env-bootstrap.md`）。未重启的终端里 `$env:AC_UNITY` 可能为空，`client/build.ps1` 会回读 HKCU 里的同名变量。工程首次生成用 `-createProject client`，此后一律用 `-projectPath client`。
 
@@ -23,7 +23,9 @@
 |---|---|---|
 | 打开工程 | `& $env:AC_UNITY -projectPath client` | 编辑器打开 `client/` |
 | 构建 Windows x64 | `powershell -NoProfile -File client/build.ps1 -Target Windows64` | 末行 `Build succeeded`，退出码 `0`（`1` 构建失败、`2` 编辑器缺失）；产物 `client/Build/Windows64/angry-chen.exe`，引擎日志 `client/Logs/build.log` |
-| 分组自检 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -` | 每条用例一行 `PASS <分组>.<用例>`，末行 `SELFTEST OK`，退出码 `0` |
+| 分组自检 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -` | 首行 `SELFTEST START cases=<n>`，每条用例一行 `PASS <用例 id>`，末行 `SELFTEST OK cases=<n>`，退出码 `0`；有失败时逐行 `FAIL <用例 id> expected=<e> actual=<a>`，末行 `SELFTEST FAIL failures=<n> cases=<n>`，退出码 `1` |
+| 核心自检 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Core.SelfTest.Run -logFile -` | 末行 `SELFTEST OK cases=<n>`，退出码 `0`（只覆盖 Core 层的受限 JSON 读取器） |
+| 角度表校验（共享产物） | `node tools/export-trig-table.mjs --check` | `trig-table.json OK (65536 entries) sin=0x8BD9F737 atan=0x197C3A8D asin=0xAD2BD35E`，退出码 `0` |
 | 零素材门 | `powershell -NoProfile -File client/tools/verify-assets.ps1` | `OK：client 零外部素材`，退出码 `0`；命中则逐行 `BANNED <路径>` 且退出码 `1` |
 | URP 管线资产（幂等） | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Editor.RenderPipelineSetup.Run -logFile -` | `[urp] pipeline=Assets/Settings/UniversalRenderPipeline.asset` |
 | 仓库门禁 | `node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` | 两条都 `OK`，退出码 `0` |
@@ -41,7 +43,18 @@
 5. 生成目录不入库：`git status --porcelain -uall client` → 逐个列出的都是 C01 §3 的文件；出现 `Library/`、`Temp/`、`Logs/`、`Build/`、`UserSettings/` 下任何文件即失败。
 6. 仓库质量门：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 
-自检入口 `Ac.Tests.SuiteRegistry.RunAll` 注册的 `c01.*` 用例：`c01.assemblies.references`、`c01.project.identity`、`c01.project.serialization`、`c01.build.backend`、`c01.render.pipeline`。
+自检入口 `Ac.Tests.SuiteRegistry.RunAll` 注册的用例：C01 的 `c01.assemblies.references`、`c01.project.identity`、`c01.project.serialization`、`c01.build.backend`、`c01.render.pipeline`，加上 C02 的 `rng.streams`、`quantize.edge`、`codec.roundtrip`、`fixtures.loader`。
+
+## 验证（C02 §6 六条命令）
+
+按顺序逐条跑，输出与期望逐字匹配即算过；实测记录见 `docs/evidence/client-c02-acceptance.md`。
+
+1. 角度表：`node tools/export-trig-table.mjs --check` → `trig-table.json OK (65536 entries) sin=0x8BD9F737 atan=0x197C3A8D asin=0xAD2BD35E`。
+2. 核心自检：`& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Core.SelfTest.Run -logFile -` → 末行 `SELFTEST OK cases=<n>`。
+3. 禁超越函数扫描：`Get-ChildItem client/Assets/Scripts/Sim, client/Assets/Scripts/Net -Recurse -Include *.cs | Select-String -Pattern 'Math\.(Sin|Cos|Tan|Exp|Log|Pow|Atan|Atan2|Asin|Acos|Hypot)'` → 无输出；`client/Assets/Scripts/Sim/` 与 `Net/` 内角度只能经 `TrigTable`。
+4. 分组自检：第 2 条的 `-executeMethod` 换成 `Ac.Tests.SuiteRegistry.RunAll` → 含 `PASS codec.roundtrip`、`PASS quantize.edge`、`PASS rng.streams`、`PASS fixtures.loader` 与末行 `SELFTEST OK cases=<n>`。
+5. 仓库门禁：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
+6. 构建不回归：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`、末行 `Build succeeded`。
 
 ## 目录约定（C01 §5.3）
 

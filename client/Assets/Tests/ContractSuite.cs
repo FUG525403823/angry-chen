@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Ac.Core;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEngine;
@@ -25,11 +26,11 @@ namespace Ac.Tests
 
         public static void Register()
         {
-            SuiteRegistry.Register("c01.assemblies.references", CheckAssemblyReferences);
-            SuiteRegistry.Register("c01.project.identity", CheckIdentity);
-            SuiteRegistry.Register("c01.project.serialization", CheckSerialization);
-            SuiteRegistry.Register("c01.build.backend", CheckScriptingBackend);
-            SuiteRegistry.Register("c01.render.pipeline", CheckRenderPipeline);
+            SelfTest.Add("c01.assemblies.references", CheckAssemblyReferences);
+            SelfTest.Add("c01.project.identity", CheckIdentity);
+            SelfTest.Add("c01.project.serialization", CheckSerialization);
+            SelfTest.Add("c01.build.backend", CheckScriptingBackend);
+            SelfTest.Add("c01.render.pipeline", CheckRenderPipeline);
         }
 
         private static void CheckAssemblyReferences()
@@ -40,53 +41,50 @@ namespace Ac.Tests
             {
                 var relative = file.Substring(projectRoot.Length + 1).Replace('\\', '/');
                 var definition = JsonUtility.FromJson<AssemblyDefinition>(File.ReadAllText(file));
-                Assert(definition != null && !string.IsNullOrEmpty(definition.name), relative + " 不是合法 asmdef（缺 name）");
-                Assert(_allowedReferences.ContainsKey(definition.name), relative + " 的程序集名不在 §5.2 表内：" + definition.name);
+                SelfTest.True(definition != null && !string.IsNullOrEmpty(definition.name), "合法 asmdef（含 name）", relative);
+                SelfTest.True(_allowedReferences.ContainsKey(definition.name), "程序集名在 §5.2 表内",
+                    definition.name == null ? "<null>" : definition.name);
                 var allowed = _allowedReferences[definition.name];
                 var references = definition.references ?? new string[0];
                 foreach (var reference in references)
                 {
-                    Assert(Array.IndexOf(allowed, reference) >= 0, relative + " 引用了 §5.2 不允许的程序集：" + reference);
+                    SelfTest.True(Array.IndexOf(allowed, reference) >= 0, "§5.2 允许的引用", relative + " → " + reference);
                 }
                 found.Add(definition.name);
             }
 
             foreach (var name in _allowedReferences.Keys)
             {
-                Assert(found.Contains(name), "缺少程序集定义：" + name);
+                SelfTest.True(found.Contains(name), "程序集定义存在", name);
             }
         }
 
         private static void CheckIdentity()
         {
-            Assert(PlayerSettings.productName == "angry-chen", "productName 应为 angry-chen，实际 " + PlayerSettings.productName);
-            Assert(PlayerSettings.companyName == "AngryChen", "companyName 应为 AngryChen，实际 " + PlayerSettings.companyName);
-            Assert(PlayerSettings.bundleVersion == "0.1.0", "bundleVersion 应为 0.1.0，实际 " + PlayerSettings.bundleVersion);
+            SelfTest.Equal("angry-chen", PlayerSettings.productName);
+            SelfTest.Equal("AngryChen", PlayerSettings.companyName);
+            SelfTest.Equal("0.1.0", PlayerSettings.bundleVersion);
         }
 
         private static void CheckSerialization()
         {
-            Assert(EditorSettings.serializationMode == SerializationMode.ForceText, "m_SerializationMode 应为 ForceText（2）");
-            Assert(VersionControlSettings.mode == "Visible Meta Files", "m_Mode 应为 Visible Meta Files，实际 " + VersionControlSettings.mode);
+            SelfTest.Equal((long)SerializationMode.ForceText, (long)EditorSettings.serializationMode);
+            SelfTest.Equal("Visible Meta Files", VersionControlSettings.mode);
         }
 
         private static void CheckScriptingBackend()
         {
-            var backend = PlayerSettings.GetScriptingBackend(NamedBuildTarget.Standalone);
-            Assert(backend == ScriptingImplementation.Mono2x, "Standalone 脚本后端应为 Mono2x，实际 " + backend);
+            SelfTest.Equal((long)ScriptingImplementation.Mono2x,
+                (long)PlayerSettings.GetScriptingBackend(NamedBuildTarget.Standalone));
         }
 
         private static void CheckRenderPipeline()
         {
             const string pipelinePath = "Assets/Settings/UniversalRenderPipeline.asset";
             var expected = AssetDatabase.LoadAssetAtPath<RenderPipelineAsset>(pipelinePath);
-            Assert(expected != null, "缺少 §5.1 冻结的管线资产：" + pipelinePath);
-            Assert(GraphicsSettings.defaultRenderPipeline == expected, "GraphicsSettings 默认管线未指向 " + pipelinePath);
-        }
-
-        private static void Assert(bool condition, string message)
-        {
-            if (!condition) throw new Exception(message);
+            SelfTest.True(expected != null, pipelinePath + " 存在", "缺失");
+            SelfTest.True(GraphicsSettings.defaultRenderPipeline == expected, "GraphicsSettings 指向 " + pipelinePath,
+                "指向其它管线");
         }
 
         [Serializable]

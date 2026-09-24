@@ -1,67 +1,23 @@
-using System;
-using System.Collections.Generic;
+using Ac.Core;
 using UnityEditor;
-using UnityEngine;
 
 namespace Ac.Tests
 {
-    // C01 §5.3 冻结的分组自检入口：运行各计划注册进来的用例分组。
-    // 输出契约：每条用例一行 PASS <分组>.<用例> 或 FAIL <分组>.<用例> <原因>；
-    // 全部通过时末行 SELFTEST OK（退出码 0），有失败时末行 SELFTEST FAIL <失败数>（退出码 1）。
+    // C01 §5.3 与 C02 §8 的分组自检入口：注册 C01 与 C02 的非 Core 层用例分组，
+    // 输出格式由 Ac.Core.SelfTest 冻结（C02 §5.7）；Core 层用例只能由 Ac.Core.SelfTest.Run 跑（Ac.Core 无引用）。
+    // 有失败时返回退出码 1；Ac.Core.SelfTest.Run 那边因为不能引 UnityEditor，靠抛异常表达失败。
     public static class SuiteRegistry
     {
-        private static readonly List<Case> _cases = new List<Case>();
-
-        public static void Register(string name, Action body)
-        {
-            _cases.Add(new Case(name, body));
-        }
-
         public static void RunAll()
         {
-            RegisterAll();
-            var failed = 0;
-            foreach (var testCase in _cases)
-            {
-                try
-                {
-                    testCase.Body();
-                    Debug.Log("PASS " + testCase.Name);
-                }
-                catch (Exception error)
-                {
-                    failed += 1;
-                    Debug.Log("FAIL " + testCase.Name + " " + error.Message);
-                }
-            }
-
-            if (failed == 0)
-            {
-                Debug.Log("SELFTEST OK");
-                EditorApplication.Exit(0);
-                return;
-            }
-
-            Debug.Log("SELFTEST FAIL " + failed);
-            EditorApplication.Exit(1);
-        }
-
-        private static void RegisterAll()
-        {
-            _cases.Clear();
+            SelfTest.Reset();
             ContractSuite.Register();
-        }
-
-        private struct Case
-        {
-            internal string Name { get; }
-            internal Action Body { get; }
-
-            internal Case(string name, Action body)
-            {
-                Name = name;
-                Body = body;
-            }
+            RngSuite.Register();
+            QuantizeSuite.Register();
+            CodecSuite.Register();
+            FixtureSuite.Register();
+            var failures = SelfTest.RunAll(false);
+            EditorApplication.Exit(failures == 0 ? 0 : 1);
         }
     }
 }
