@@ -14,6 +14,7 @@ namespace Ac.Tests
             ContractSuite.Register();
             TransportSuite.Register();
             InterpolationSuite.Register();
+            InputCameraSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();

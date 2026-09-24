@@ -64,6 +64,33 @@ namespace Ac.Net
             return DecodeFailure.Ok;
         }
 
+        // C05 §9：Ac.Core 的采样结果 → 命令载荷（Ac.Core 不能引用 Ac.Net，映射放在这一侧）。
+        public static CommandPayload IntentToPayload(in global::Ac.Core.InputIntent intent)
+        {
+            var command = default(CommandPayload);
+            command.MoveX = intent.MoveX;
+            command.MoveY = intent.MoveY;
+            command.Yaw = intent.Yaw;
+            command.Pitch = intent.Pitch;
+            command.Buttons = intent.Buttons;
+            command.SwitchTo = intent.SwitchTo;
+            command.Seq = intent.Seq;
+            command.ClientTick = intent.ClientTick;
+            return command;
+        }
+
+        // C05 §9：命令载荷 → Ac.Sim 的步进视图（本地预测与权威模拟共用同一套语义）。
+        public static global::Ac.Sim.StepCommand ToStepCommand(in CommandPayload command)
+        {
+            var step = default(global::Ac.Sim.StepCommand);
+            step.MoveX = command.MoveX;
+            step.MoveY = command.MoveY;
+            step.Yaw = command.Yaw;
+            step.Pitch = command.Pitch;
+            step.Buttons = command.Buttons;
+            return step;
+        }
+
         // 命令编码侧：供回环测试与 C03 的发送路径；量化由调用方经 Quantize 完成。
         public static byte[] Encode(CommandPayload command)
         {
