@@ -1,0 +1,4 @@
+# s03 snapshot_diff.hex - type 5, unreliable, diff against tick 99, one removal
+# expect: version=0x1,type=0x5,flags=0x0,session=0x123,seq=0x6,tick=0x64,servertimems=0x1450,lastackedseq=0x8,baselinetick=0x63,count=0x0,removedcount=0x1,removedid=0x3,eventcount=0x0,bytes=0x1B
+01 05 00 00 23 01 06 00 64 00 00 00 50 14 00 00
+08 00 63 00 00 00 00 01 03 00 00

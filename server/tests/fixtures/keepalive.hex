@@ -1,0 +1,4 @@
+# s03 keepalive.hex - type 7, flags reliable and ackonly, empty payload
+# expect: version=0x1,type=0x7,flags=0x5,session=0x123,seq=0x3,msgid=0x3,ackbase=0x2,ackbits=0x3,payloadbytes=0x0,bytes=0x14
+01 07 05 00 23 01 03 00 03 00 00 00 02 00 00 00
+03 00 00 00

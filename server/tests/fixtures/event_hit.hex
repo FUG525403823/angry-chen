@@ -1,0 +1,5 @@
+# s03 event_hit.hex - type 6, reliable, playerhit entry of 18 bytes per adr-009
+# expect: version=0x1,type=0x6,flags=0x1,session=0x123,seq=0x1,msgid=0x1,ackbase=0x0,ackbits=0x0,tick=0x64,count=0x1,eventid=0x1,eventtype=0x1,subjectid=0x3,targetid=0x11,value=0x19,eventflags=0x5,hitx=0x78,hity=0x64,hitz=0xFF06,bytes=0x2B
+01 06 01 00 23 01 01 00 01 00 00 00 00 00 00 00
+00 00 00 00 64 00 00 00 01 01 00 00 00 01 03 00
+11 00 19 00 05 78 00 64 00 06 FF

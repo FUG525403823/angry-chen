@@ -1,0 +1,5 @@
+# s03 snapshot_full.hex - type 5, unreliable, full snapshot, one player entity
+# expect: version=0x1,type=0x5,flags=0x0,session=0x123,seq=0x5,tick=0x64,servertimems=0x1388,lastackedseq=0x7,baselinetick=0x0,count=0x1,removedcount=0x0,eventcount=0x0,recordid=0x3,kindflags=0x0,xcm=0x96,ycm=0x0,zcm=0xFF38,yawunits=0x4000,pitchunits=0x0,hpratiounits=0x80,state=0x0,bytes=0x28
+01 05 00 00 23 01 05 00 64 00 00 00 88 13 00 00
+07 00 00 00 00 00 01 03 00 00 96 00 00 00 38 FF
+00 40 00 00 80 00 00 00

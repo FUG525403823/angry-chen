@@ -1,0 +1,4 @@
+# s03 resume.hex - reconnect, type 3, reliable, token as 8 lowercase hex ascii
+# expect: version=0x1,type=0x3,flags=0x1,session=0x123,seq=0x1,msgid=0x2,ackbase=0x1,ackbits=0x1,token=0x11223344,bytes=0x1C
+01 03 01 00 23 01 01 00 02 00 00 00 01 00 00 00
+01 00 00 00 31 31 32 32 33 33 34 34

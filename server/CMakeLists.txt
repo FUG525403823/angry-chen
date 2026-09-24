@@ -41,5 +41,8 @@ add_executable(ac_tests ${AC_TEST_SOURCES})
 target_include_directories(ac_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 target_link_libraries(ac_tests PRIVATE ac_core)
 
+# fixture 目录用绝对路径注入：ctest 的工作目录是构建目录，相对路径找不到 server/tests/fixtures（S03 §5.5）。
+target_compile_definitions(ac_tests PRIVATE "AC_FIXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures\"")
+
 enable_testing()
 add_test(NAME unit COMMAND ac_tests)

@@ -1,0 +1,5 @@
+# s03 command.hex - type 4, reliable, 14 byte command payload
+# expect: version=0x1,type=0x4,flags=0x1,session=0x123,seq=0x2,msgid=0x1,ackbase=0x0,ackbits=0x0,movex=0x7F,movey=0x0,yaw=0x4000,pitch=0x0,buttons=0x9,switchto=0x1,cmdseq=0x7,clienttick=0x3039,bytes=0x22
+01 04 01 00 23 01 02 00 01 00 00 00 00 00 00 00
+00 00 00 00 7F 00 00 40 00 00 09 01 07 00 39 30
+00 00

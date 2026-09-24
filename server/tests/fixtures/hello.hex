@@ -1,0 +1,4 @@
+# s03 hello.hex - client greeting, type 1, unreliable, session 0, token as 8 lowercase hex ascii
+# expect: version=0x1,type=0x1,flags=0x0,session=0x0,seq=0x0,nonce=0x11223344,token=0x0,bytes=0x14
+01 01 00 00 00 00 00 00 44 33 22 11 30 30 30 30
+30 30 30 30

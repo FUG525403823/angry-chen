@@ -1,0 +1,3 @@
+# s03 fragment.hex - type 9, morefragments, slice 0 of 2, opaque 2 byte payload
+# expect: version=0x1,type=0x9,flags=0x2,session=0x123,seq=0x4,fragid=0x7,fragindex=0x0,fragcount=0x2,payloadbytes=0x2,bytes=0xE
+01 09 02 00 23 01 04 00 07 00 00 02 AA BB

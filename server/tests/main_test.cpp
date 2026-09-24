@@ -275,7 +275,9 @@ AC_TEST(log_line_length_cap) {
   AC_CHECK_EQ(object.stringValue("k12"), std::string());
 }
 
-AC_TEST(log_oversized_evt_truncated) {
+// 用例名不能含 "size"/"match" 等子串：--filter 是全局子串匹配，会污染后续计划的门禁计数
+// （S03 §6 的 --filter=size / --filter=match）。
+AC_TEST(log_overlong_evt_truncated) {
   const std::string line = lineAtEpochZero(Level::info, std::string(5000, 'e'), {});
   AC_CHECK(line.size() <= 4096);
   AC_CHECK(line.size() > 4000);
@@ -345,7 +347,7 @@ AC_TEST(test_result_line_format) {
   AC_CHECK_EQ(ac::test::formatSummaryLine(3, 4), std::string("TESTS 3/4"));
 }
 
-AC_TEST(test_filter_matching) {
+AC_TEST(test_filter_selection) {
   AC_CHECK(ac::test::matchesFilter("log_double_format", ""));
   AC_CHECK(ac::test::matchesFilter("log_double_format", "log_"));
   AC_CHECK(ac::test::matchesFilter("log_double_format", "double"));
