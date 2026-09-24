@@ -202,7 +202,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ## 6. 模拟数据布局（S05 §5 冻结）
 
 `server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`；S09 起 `entity_table.hpp` 为承载 §9 冻结的 `Entity::knock`/`Entity::ai` 而包含两份**纯数据**头 `combat/knockback.hpp`、`ai/sheep_state.hpp`，二者自身都不引 `sim/**`，因此不构成包含环 —— 见 §10.1-13），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §12 表格）。
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §13 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §12 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §13 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -336,7 +336,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §12 表格的实测行为准。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §13 表格的实测行为准。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -417,7 +417,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 - AI 模块（全部逐行照 v1 `packages/shared/src/ai/*.ts`）：`ai/steering.{hpp,cpp}`（`seek`/`arrive`/`normalize`/`separation`/`obstacleAvoid`）、`ai/flocking.{hpp,cpp}`（按 `(distanceSq, EntityId)` 有界插入的 12 邻居 + 分离/对齐/凝聚加权 + `0.5` 混合比）、`ai/targeting.{hpp,cpp}`（8 槽仇恨、每 tick `×0.98`、命中 `+20` 无上限、遮挡可见性、`score = aggro + 1/(1+d)` 与 `×1.5` 换目标阈值）、`ai/sheep_brain.{hpp,cpp}`（13 态转移表、四羊形行为分支、`updateAiIntents`/`applyAiIntents` 两趟结构）、`ai/sheep_attack.{hpp,cpp}`（撕咬 1.4+0.5+0.4、冲锋 0.5+0.4+0.15、精英问号弹、投射物推进与销毁）、`ai/king_phases.{hpp,cpp}`（`>0.66`/`>0.33` 三阶段 + 4 只咩咩兵召唤）。
 - 波次：`waves/director.{hpp,cpp}` 逐行照 v1 `ai/director.ts`（预算平面数组按 `grunt→ram→elite→king` 的 `cursor` 消耗、每 tick ≤8 个、出生点随机起点 + 只收 ≥15m 的点且 ≤3 个、±1.5m 抖动、清波与第 10 波结算）。`DirectorState` 是外部状态（§9 冻结签名），**未**接进 `stepWorld`（见 §10.1-3）。
 - 接线：`sim/step.cpp` 阶段 4/5 调 `ai::updateAiIntents`/`applyAiIntents`，阶段 11 调 `resolveEliteFire` → `advanceProjectiles` → `updateKings`；`combat/knockback.{hpp,cpp}` 的 `applyKnockback` 落在**阶段 6**（紧跟阶段 4/5 的 AI 意图之后，与 v1 `sim.ts:69-71` 同序）。阶段 1 另按 v1 `sim.ts:109-115` 补上 S08 §9.2-1 的救援者限速。`Entity` 追加 `knock{}` 与 `ai{}`，尺寸 232 → **960 B**、`World` → **1 010 824 B**。
-- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §12 表格。
+- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §13 表格。
 
 ### 10.1 计划文本纠正与已声明偏差（S09）
 
@@ -452,18 +452,96 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 2. **导演未进 tick**（§10.1-3）：已登记为 `docs/02-需求分析.md` 的 **OQ-11**。
 3. **判断项（未改）**：`ai::damagePlayer`（`sheep_attack.cpp`）与 `combat::applyHit`（`resolve.cpp`）的「护甲 → 血量 → 倒地 → 事件」序列重复（v1 也是两份实现，逐行端口保留）；`FlockNeighbors`/`TargetState` 的固定容量与 `setSheepState(Entity&, int32_t)` 的 int 形参（Data Clumps / Primitive Obsession，二者都是 §9 冻结签名或 v1 形状）；`addNeighbor`、`SheepAiState::summoned` 只被测试或只被写（v1 模块面保留）。
 
-## 11. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 11. 房间、会话与对局流程（S10 §5 冻结）
+
+**交付物**（`server/src/room/` 六个模块 + 1 份用例；职责按计划 §3 的文件表）：
+
+| 文件 | 职责 |
+|---|---|
+| `phase.{hpp,cpp}` | `MatchPhase{kLobby,kLoading,kPlaying,kIntermission,kEnded}`（码 0–4）、名字表、`canMatchTransition`（5×5 位掩码表：7 组合法 / 18 组非法，含 5 组同态）与 `applyMatchTransition`（非法转移记 `counters.deniedTransitions` 并返回 false；**同态按 v1 幂等返回 true**，见 §11.1-2） |
+| `session.{hpp,cpp}` | `Session{id,pid,name[13],nameBytes,token,ready,weapon,weaponApplied,kills,roomCode[5],joinedAtMs,disconnectedAtMs,command}`；`setSessionName`（v1 `sanitizeName` 逐位端口：控制字符与 `<>&"'` 剔除 → 首尾空白裁剪 → 允许集 `[0-9A-Za-z_]` + CJK 3400–4DBF/4E00–9FFF/F900–FAFF → 1–12 字节，越界整名拒绝） |
+| `stats.{hpp,cpp}` | `PlayerStats`/`PlayerRecord`（`kMaxPlayersPerRoom = 4`）/`MatchCounters`/`PlayerResult`/`MatchResultRecord`；§5.6 的事件→统计五映射、`accuracyOf`/`survivalMsOf`、`matchId = roomCode + '-' + startedAtMs` |
+| `match_controller.{hpp,cpp}` | 时长常量（`kLoadingMs=1500`、`kIntermissionMs=20000`、`kIntermissionSkipMinMs=5000`、`kMatchStateIntervalMs=1000`、`kGracePeriodMs=30000`、`kReconnectMinHpRatio=0.5`、`kEmptyRoomReclaimMs=60000`、`kTickCatchUpLimit=5`）；`tryStartMatch`（host → 已结束则重置 → lobby → 全员 ready）、loading 倒计时 → `wave=1` + 全体补给、波间到期或「已过 5000ms 且全员 ready」跳过、清波、结束判定（无已连接玩家 / 全员倒地 → 羊群；第 10 波清空 → 玩家）、`buildMatchResult`、§5.8 的 MatchState 组装与补发判定 |
+| `room.{hpp,cpp}` | `Room{code,world,seed,sessions[4],capacity,commands[4],match,director,phase,wave,intermissionMs,matchStateTimerMs,emptySinceMs,lastUpdateMs,stateSignature,matchState,accumulatorMs,unicastCount,immediateCount}`；`RoomDeps{user,sendMatchState,replicate}` 三个缝；`updateRoom` 按 §5.7 六步顺序（超时 → 阶段推进 → **仅 playing** 装配命令并 `stepWorld` → 结束判定 → `replicate` 快照缝 → MatchState 单播） |
+| `rooms.{hpp,cpp}` | `RoomRegistry{rooms[kMaxRooms=64],count,codeRng,worldSeed,reclaimedCount,createFailureCount}`；房间码（31 字符表、长度 4、保留码 `0000`、冲突重试 32 次）、`createRoom`/`destroyRoom`/`findRoom`、`join`（**先判保留码再判格式**）、`reconnect`（**只按 token**）、`leave`/`disconnect`/`reclaimIdle`/`findGraceSession` |
+
+**冻结契约要点**：阶段码与转移表、四个时长、房间码表与容量（每房 4 人 / 全服 64 房）、`Session` 字段、宽限期 30s（= 600 tick）、结算结构与 `matchId` 口径、§5.8 的单播节拍与立即补发触发条件。`hostId` **不上线**（客户端按 pid 最小者视为主机，§5.8）。
+
+**S12 的三个接入点**：①`RoomDeps::sendMatchState(void*, const Room&, Session&, const net::MatchState&)` 收到的是**已组装好的** `net::MatchState` —— 编码、`type 10` 可靠单播与重传属 S12，房间只决定「哪些 tick、发给谁」并计数；②`RoomDeps::replicate(void*, Room&)` 是 §5.7-5「广播快照与事件」的缝（今天没有 World→`SnapshotFrame` 投影器）；③`Session::token` 由握手层分配（房间只按 token 匹配宽限期会话，新加入一律清掉连线带来的令牌 —— v1 的 `O08`）。
+
+**运行命令（可直接复制）**：
+
+```powershell
+powershell -NoProfile -File server/build.ps1 -Config Release
+server/build/ac_tests.exe --filter=match        # TESTS 53/53（本批 44 + S03 的 9 条含 match 的 codec 用例）
+server/build/ac_tests.exe --filter=match_       # TESTS 42/42（只算 match_* 前缀；仍含 S03 的 7 条）
+server/build/ac_tests.exe --filter=matchstate   # TESTS 9/9（§5.8 往返、节拍与立即补发）
+server/build/ac_tests.exe --filter=room         # TESTS 8/8（注册表与三个缝）
+server/build/ac_tests.exe                       # TESTS 297/297
+```
+
+用例只用 `server/src/net/memory_transport.hpp` 的内存适配器驱动，**不监听任何真实端口**。
+
+### 11.1 计划文本纠正与已声明偏差（S10）
+
+1. **§6-2 的 `--filter=match` 计数口径**：`--filter` 是**全局子串**匹配，53/53 = 本批 44（`match_*` 35 + `matchstate_*` 9）+ S03 的 9 条含 `match` 的 codec 用例（其中 7 条以 `match_` 开头）；计划写的 `TESTS 26/26` 与实际不符，DoD 的「≥26」由本批 44 条独立满足，`--filter=match_` = 42/42。
+2. **§5.1「同态也返回 false」与 v1 不符（文档事实错误）**：v1 `match/controller.ts:111` 是 `if (room.phase === next) return true;`（幂等成功、不记警告），本批逐字端口；`canMatchTransition` 表里 5 组同态仍是非法（用例钉 7 合法 / 18 非法），但 `applyMatchTransition(same)` 返回 true。
+3. **§5.2 的「`elapsedMs` = 真实毫秒增量」改为固定 50ms 切片**：房间用 `accumulatorMs` 把两次 `updateRoom` 的真实间隔切成整数个 50ms tick（每房每 tick 最多追 `kTickCatchUpLimit = 5` 片，余量留给下一次），`updateMatch` 每片收 `kStepDtMs`。收益：阶段时钟与 `stepWorld` 的 dt 同源、可复现；代价：阶段时钟落后真实时钟 < 50ms，网络间隔异常时补片有上限（v1 用真实 elapsed 推阶段、固定 dt 推世界，两者会漂移）。
+4. **`hostId` 每次成员变化后按最小 pid 重算**：v1 只在建房时设一次，房主离开后房间再也不会开局（死锁）；§5.8 已明确「客户端把 pid 最小者视为主机」→ 服务端的 `hostId` 与客户端视图保持一致。
+5. **世界只在 `playing` 步进**（§5.7-3 就是这么写的；v1 每个 tick 都步进）：`lobby/loading/intermission/ended` 阶段 `world.tick` 不增长，`commands` 只在 `playing` 装配与消费。
+6. **`matchStateTimerMs` 每 tick 加 50ms**（v1 每次 `updateRoom` 调用加真实 elapsed）：语义差异同第 3 条。
+7. **量化口径**：`hpRatio`/`reviveRatio255` 走 `ac::quantizeRatio`（255 档，ADR-009），`reloadLeft10Ms`/`rageLeft100Ms` 按 §5.8 的「**向下取整**」实现（v1 用 `round`），`rage`（0–100）沿用 v1 的 `round(ratio*100)`。
+8. **§5.6 的 `matchEnded.flags = durationMs` 无法表示**：S05 冻结的 `sim::Event::flags` 是 **u8**，毫秒放不下 → 时长只存在于 `MatchRuntime.startedAtMs/endedAtMs`（`buildMatchResult` 现算），事件里 `flags = 0`。要让线上事件带时长需先改 S05 的事件结构（§11.2 未做项 3）。
+9. **§5.7-5 的「广播快照与事件」只留缝**：`replicate` 每 tick 调一次，真正的编码/事件通道（`eventId` 幂等）属 S12；今天没有 World→`SnapshotFrame` 投影器。
+10. **§5.8 的编码与可靠通道属 S12**：见本节 `sendMatchState` 说明；房间侧只保证「内容边界」（`count ≤ 4`、name 1–12 字节、量化档位）都可编码，`roomJoin` 对空昵称兜底为 `player`。
+11. **立即补发的实现方式**：不在 mutator 里同步广播（v1 在 `roomJoin/roomLeave/roomDisconnect` 里直接发），而是在 `updateRoom` 里比对「本 tick 组装的签名 vs 上次已播签名」（phase/wave/波间档/人数/pid/ready/weapon/HP 档/弹药/怒气/倒地与救援档）→ 变化即补发。后果：mutation 与补发之间最多隔一次 `updateRoom`（0 tick 的 `updateRoom` 也会补发）；`roomSetReady` 例外 —— 它立刻发一次并同步刷新签名，避免下一次重复。
+12. **签名是 32 位哈希**：碰撞只会漏一次补发，下一次 1000ms 节拍必然整帧覆盖；`hostId`/昵称/统计不进签名。
+13. **§6-6 的「连续建房 200 次」受 `kMaxRooms = 64` 限制**：用例建 200 次、撞到 64 上限就回收一间，断言「长度 4 / 全在 31 字符表内 / 不为 `0000` / 同时并存的房间码互不重复」；`createFailureCount` 只统计「32 次冲突重试仍失败」，容量满不计入。
+14. **`Session::kills` 是 v1 遗留字段**：v1 `room.ts` 也只写 0 / 照抄、从不累加 → 线上 MatchState 的 `kills` 恒 0（v1 同），真正的击杀数在 `PlayerStats::kills`（结算用）。要让 HUD 显示击杀得先改 ADR-009 的字段来源（§11.2 未做项 4）。
+15. **昵称剔除集的口径**：v1 只剔除 `<>&"'`，剩下的 `/` 不在允许集 → `<b>alpha</b>` 净化后是 `balpha/b`，**整名被拒**（不是 `balphab`）；用例按此钉住。
+16. **`tiny_test.hpp` 的用例容量 256 → 512**：`kMaxCases` 是框架容量上限，超限会**静默丢用例**（S10 新增 44 条后 S03/S09 的用例被挤出并只在 stderr 打警告）；抬到 512 后 `AC_TEST` 宏契约与「每例一行 + 末行 TESTS x/y」输出契约不变。
+17. **§6-13 的 `--filter=fixture` 是 6/6 而不是 `TESTS 14/14`**（同 S08 §9.1-2 / S09 §10.1-7：S07 §8.3 已把向量裁到 4 份 + 2 条自检）。
+18. **§3 交付物表里的「注册进 `main_test.cpp`」**：用例由 `AC_TEST` + CMake glob 自动注册，`main_test.cpp` 无需改动（S01 起的既有约定）。
+19. **`pickRoomCode` 的保留码分支是防御性的**：31 字符表里没有 `0`，生成的候选永不等于 `0000`；「先判保留码再判格式」的顺序体现在 `join`（`code == "0000"` → 新建房间，先于格式校验）。
+20. **房间码随机源用 `ac::createRng(startMs, RngStream::kFx)`**（§5.3 的「注册表自带的非模拟实例」）：它与每个 `world` 内部的三条流是**互相独立的对象**，抽取不会触碰任何 `world`；只是初值与 0 号房世界种子的 fx 流相同（S09 起模拟从不抽 `fx`，无实际耦合）。每间房的 `worldSeed` 从启动毫秒起逐房 +1 派生。
+
+### 11.2 两轴评审的发现与处置（S10，Standards + Spec 并行评审）
+
+**本次已修（发现 → 处置）**：
+1. **进 `playing` 的全体补给漏了「散布清零」**（Spec 轴，§5.2 明写「换弹与散布清零」）：`refillPlayers` 补 `weapon.spreadDeg = 0.0`；原用例只在「刚建号」的干净状态断言，等于空断言 → 改成进 `playing` 前把血/甲/三弹匣/备弹/换弹/散布/倒地/怒气全部弄脏再逐项验。
+2. **结算用例同义反复**（Spec 轴）：`matchId` 期望值原用被测的 `writeMatchId` 拼 → 改成 `snprintf("%s-%llu", code, startedAtMs)` 独立拼接。
+3. **`resetMatchForRestart` 有一处死写入**（Standards 轴）：`records[0] = PlayerRecord{}` 紧跟的循环已覆盖 0 号 → 删。
+4. **空昵称会产出不可编码的 MatchState**（Spec 轴，§5.8 要求 name 为 1–12 字节）：`roomJoin` 加兜底（`nameBytes < kNameMinBytes` → 用 `player`），把「任何时刻组装的 MatchState 都可编码」变成不变量而不依赖上层。
+5. **`Session::pid` 用 32 位顶替 `EntityId`**（Standards 轴，工程约定 §6 术语表）：改成 `uint16_t`（= `sim::EntityId` 的宽度，0 仍是「未分配」哨兵）。
+6. **只声明没定义的死 API**（Standards 轴）：`session.hpp` 里的 `sanitizeNickname` 声明无定义（净化逻辑在 `setSessionName` 内，链接期才会炸）→ 删声明；S12 若需要独立净化入口再抽。
+7. **只写不读的 `RoomRegistry::seed`**（Standards 轴，Speculative Generality）：`worldSeed` 已从同一启动毫秒派生 → 删字段。
+8. **布尔前缀**（Standards 轴）：`allPlayersReady` → `areAllPlayersReady`；`ready`/`weaponApplied`/`leftMidMatch` 是 §5.4/§5.6 冻结字段的字面名，保留（计划文本优先）。
+9. **框架静默丢用例**（Standards 轴）：`kMaxCases` 256 → 512（§11.1-16）。
+10. **文档缺 S10 章节**（Spec 轴：README 仍写「S01–S09 已完成」、无偏差清单）：本次补 §11/§11.1/§11.2 与 §13 的实测行，并同步 `docs/02-需求分析.md` 的 OQ-11（导演接线已由房间 tick 闭环）。
+
+**已声明但未做 / 判断项（登记在案，不隐藏）**：
+1. **`--filter=fixture` 6/6 而非 14/14**（§11.1-17）：跨语言向量仍只有 4 份；房间/对局流程这一层 v1 也没有导出向量（§5.7 无对拍面），故本批不新增。
+2. **阶段时钟用 50ms 切片而非真实 elapsed**（§11.1-3）：改成真实 elapsed 必须让 `updateMatch` 与 `stepWorld` 的 dt 脱钩，牺牲可复现性 → 留作后续判断项（若 S14 压测要求阶段时长按挂钟收敛，再引入「秒级校准」）。
+3. **`matchEnded.flags = durationMs` 不可表示**（§11.1-8）：修它要动 S05 的 `Event` 布局（`flags` u8 → u16 会改 `sizeof(Event)=48` 与全部对拍向量），登记为后续裁决。
+4. **S12 归属与 v1 遗留三项**（§11.1-9/10/14）：快照/事件广播的编码、MatchState 的可靠单播与重传、`Session::kills`（v1 也是恒 0）—— 本批只保留缝与字段。
+5. **重复的扫描循环与两张同形 switch**（Standards 轴的 smell 判断题）：`rooms.cpp` 的「扫全部房间 × 会话找指针」四个循环（`findGraceSession`/`reconnect`/`leave`/`disconnect`）与 `room.cpp` 的三个摘除点形状相同；`startOutcomeName`/`joinOutcomeName` 同形。判定**保留**：每次定位顺带做不同副作用（摘除、计宽限超时、清房间码、释放名额），抽公共后参数比逻辑长；两张名字表各只有 3–4 个分支而 `phase.cpp` 已用表，表化收益低 —— 若 S12 再加第三张，一起表化。
+6. **`{name[13], nameBytes}` 数据团与 `size_t/int` 形参**（Data Clumps / Primitive Obsession）：判定**保留**：它们是 §5.4/§5.6 冻结字段形状的直接投影（v1 同），重排会同时改动线上编码路径与结算结构。
+7. **`playerEntityAt` 的非 const 重载用 `const_cast` 转发**（Standards 轴的 Minor）：同上，形参形状属冻结面；已在头文件注释里点明。
+
+**两轴合计**：Standards 轴 9 条（已修 7 + 判断 2）、Spec 轴 4 条（已修 3 + 声明 1）与上表 7 条未做/判断项。Standards 轴最重的是「框架静默丢用例」（已修，用例数 256 → 512）；Spec 轴最重的是「全体补给漏散布清零」（已修，且原用例确实是空断言）。
+
+## 12. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 12. 当前状态
+## 13. 当前状态
 
-**S01–S09 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）就位；房间与持久化由
-S10 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S10 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）就位；权威校验与硬纠正（S11）、复制调度与背压（S12）由
+后续各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -564,5 +642,15 @@ S10 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 | 计划偏差清单（S09） | §10.1 的十七条（§5.7 朝向不 wrap、840ms 是 v1 死代码、导演未接 tick（OQ-11）、5 份 AI 向量未导出、grep 门禁按字面不可满足、死羊分支不可达、`fixture` 6/6 而非 14/14、`ai` 的 2 条污染与 `ai_` 收口、`Entity`/`World` 扩容、羊的默认阵营、`updateKing` 双签名、羊攻击档案复用 `WeaponDef`、`sim/` 的两处纯数据包含、命名回改（`questionBolt`/布尔前缀/`kReviveSpeedClampMps`）、删 `ai.sheepKind`、两趟意图表的模块级静态池、`absoluteValue` 合并） |
 | 救援者限速接回（S09，闭环 S08 §9.2-1） | `step_clamps_reviver_speed_when_holding_interact` 四档：按住交互 + 队友 1m → 速度 1.5；不按交互 / 队友未倒地 / 队友 3m 超距 → 4.5（`--filter=step` 末行 `TESTS 25/25`，全量 `TESTS 253/253`） |
 | 两轴评审（S09，Standards + Spec 并行） | §10.2 记录：已修 4 类（救援限速、命名与死状态、`applyKnockback` 阶段号与 §7 阶段表的文档事实错误、门禁收口）；未做/判断项 3 条（AI 行为无位级对拍、导演未进 tick 挂 OQ-11、`damagePlayer` 重复与冻结签名形状） |
+| 房间与会话（S10） | `--filter=match` 末行 `TESTS 53/53`，退出码 0（本批 44 = `match_*` 35 + `matchstate_*` 9；另 9 条是 S03 含 `match` 的 codec 用例）；只算本批前缀的收口门禁 `--filter=match_` = `TESTS 42/42`、`--filter=room` = `TESTS 8/8` |
+| MatchState 单播（S10 §5.8） | `--filter=matchstate` 末行 `TESTS 9/9`：2 人往返逐字段一致、name 1/12 字节边界、1000ms 节拍（`matchStateTimerMs` 不漂移）、阶段/ready/加入/离开/倒地/复活立即补发、`MemoryTransport` 单播投递、`hostId` 不上线 |
+| 全流程零分配（S10 §7 DoD） | `match_full_match_runs_three_thousand_ticks_without_allocating`：4 人开局后 3000 tick（覆盖清波/结算/宽限/单播路径；每 tick 先复位倒地避免提前结算）分配计数增量为 **0** |
+| 全量回归（S10 后） | `server/build/ac_tests.exe` 末行 `TESTS 297/297`（S01 18 + S02 28 + S03 40 + S04 24 + S05 26 + S06 21 + S07 6 + S08 45 + S09 45 + S10 44）；`ctest --test-dir server/build -C Release` → `100% tests passed, 0 tests failed out of 1` |
+| `--filter` 计数（S10 后） | match 53/53（`match_` 42/42）、matchstate 9/9、fixture 6/6、room 8/8、world 6/6、step 27/27、combat 45/45、ai_ 30/30、waves 16/16、transport 9/9、codec 15/15、alloc 6/6（新增用例含 `alloc` 子串） |
+| 结构体尺寸（S10） | 世界布局未动：`--filter=world` 打印行 `worldBytes=1010824 entityBytes=960 poseBytes=7688 gridBytes=3652 eventBytes=48`；新增的 `RoomRegistry`（64 × `unique_ptr<Room>`）与 `Session` 都不在每 tick 热路径上分配 |
+| `node tools/check-docs.mjs`（S10 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 58 个文档、169 条相对链接） |
+| `node tools/check-assets.mjs`（S10 后） | 退出码 0：341 个受控文件、二进制嗅探 341 个、零素材类扩展名；Unity 依赖 34 个全在白名单；`C++ 构建清单：未发现第三方依赖引入` |
+| 计划偏差清单（S10） | §11.1 的二十条（`--filter=match` 子串口径、同态转移按 v1 幂等返回 true、50ms 切片 vs 真实 elapsed、`hostId` 重算、世界只在 playing 步进、量化与向下取整口径、`matchEnded.flags` 放不下 durationMs、快照缝与单播编码归 S12、签名补发、令牌归握手层、200 房受 64 上限、`Session::kills` 恒 0、昵称剔除集、用例容量 512、fixture 6/6、自动注册、保留码分支防御性、房间码 RNG 独立实例） |
+| 两轴评审（S10，Standards + Spec 并行） | §11.2 记录：已修 10 类（补给漏散布清零、结算用例同义反复、死写入、空昵称兜底、`pid` 宽度、死声明、只写不读的 `seed`、布尔前缀、框架用例容量、README 缺章节）；未做/判断项 7 条（fixture 向量数、阶段时钟口径、`Event.flags` 布局、S12 归属与 v1 遗留三项、重复扫描循环与同形 switch、数据团形状、`const_cast` 转发） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

@@ -18,7 +18,7 @@ struct Case {
   CaseFn fn;
 };
 
-constexpr std::size_t kMaxCases = 256;
+constexpr std::size_t kMaxCases = 512;
 
 namespace detail {
 
