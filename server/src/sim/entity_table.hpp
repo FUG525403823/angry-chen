@@ -8,7 +8,8 @@
 
 namespace ac::sim {
 
-inline constexpr uint16_t kNoEntityId = 0u;  // "无实体"哨兵
+using EntityId = uint16_t;  // §5.2 的 "id u16"；S08/S09/S11 的计划用这个名字引用它
+inline constexpr EntityId kNoEntityId = 0u;  // "无实体"哨兵
 inline constexpr std::size_t kMaxEntities = static_cast<std::size_t>(ac::kMaxEntities);
 static_assert(kMaxEntities == 1024u, "§5.5：实体容量必须与 EntityId 上限、网格 cellItems 容量恒等");
 

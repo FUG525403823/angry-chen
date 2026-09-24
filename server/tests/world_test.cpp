@@ -9,10 +9,13 @@
 #include <memory>
 #include <vector>
 
+#include "config/player.hpp"
 #include "core/math.hpp"
 #include "core/rng.hpp"
+#include "world_test_support.hpp"
 #include "sim/arena.hpp"
 #include "sim/entity_table.hpp"
+#include "sim/step.hpp"
 #include "sim/pose_history.hpp"
 #include "sim/spatial_grid.hpp"
 #include "sim/world.hpp"
@@ -24,6 +27,14 @@ namespace {
 constexpr uint32_t kSeed = 0xA5A5u;
 
 ac::Vec3 vec(double x, double y, double z) { return ac::Vec3{x, y, z}; }
+
+using ac::test::stepEmpty;
+
+void setPosition(sim::World& world, sim::EntityId id, const ac::Vec3& pos) {
+  sim::Entity* entity = sim::entityById(world, id);
+  AC_CHECK(entity != nullptr);
+  if (entity != nullptr) entity->pos = pos;
+}
 
 std::vector<uint16_t> collectNeighbors(const sim::SpatialGrid& grid, double x, double z,
                                       double radius) {
@@ -148,8 +159,8 @@ AC_TEST(world_reset_returns_to_start) {
   sim::Event event{};
   event.type = 3u;
   AC_CHECK(sim::pushEvent(*world, event));
-  sim::stepWorld(*world);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
+  stepEmpty(*world);
   (void)world->rng.ai.nextU32();  // 把 ai 流推离起点
   AC_CHECK(world->tick != 0u);
 
@@ -182,7 +193,7 @@ AC_TEST(world_tick_advances_counters) {
   const auto sheep = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(3.0, 0.0, 4.0));
   AC_CHECK(player.isOk && sheep.isOk);
 
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->tick, 1u);
   AC_CHECK_EQ(world->poseHistory.newestTick, 1u);
   AC_CHECK_EQ(world->poseHistory.writeCount, 1u);
@@ -191,7 +202,7 @@ AC_TEST(world_tick_advances_counters) {
   AC_CHECK_EQ(world->poseHistory.slots[1u][1].id, 0u);  // 只记玩家
   AC_CHECK_EQ(gridItemCount(world->grid), 2u);         // 玩家 + 羊
 
-  for (int i = 0; i < 20; ++i) sim::stepWorld(*world);
+  for (int i = 0; i < 20; ++i) stepEmpty(*world);
   AC_CHECK_EQ(world->tick, 21u);
   AC_CHECK_EQ(world->poseHistory.newestTick, 21u);
   AC_CHECK_EQ(world->poseHistory.writeCount, sim::kPoseHistorySlots);  // 20 槽写满后只滚动
@@ -212,7 +223,7 @@ AC_TEST(world_tick_clears_event_buffer) {
   AC_CHECK_EQ(world->events[0].type, 4u);
   AC_CHECK_EQ(world->events[0].eventId, 7u);
 
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->eventCount, 0u);
   AC_CHECK_EQ(world->stats.eventsDropped, 0u);
   AC_CHECK(sim::pushEvent(*world, event));
@@ -239,7 +250,7 @@ AC_TEST(world_event_buffer_overflow_is_counted) {
   AC_CHECK_EQ(world->events[0].eventId, 1u);  // 先到先留
   AC_CHECK_EQ(world->events[sim::kMaxEvents - 1u].eventId, static_cast<uint32_t>(sim::kMaxEvents));
 
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->eventCount, 0u);
   AC_CHECK_EQ(world->stats.eventsDropped, 2u);  // 累计值不随 tick 清零
 }
@@ -255,16 +266,16 @@ AC_TEST(world_stats_count_alive_sheep) {
   const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(3.0, 0.0, 3.0));
   AC_CHECK(player.isOk && sheepA.isOk && sheepB.isOk && bullet.isOk);
 
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->stats.aliveSheep, 2u);
   AC_CHECK(sim::despawnEntity(*world, sheepA.id));
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->stats.aliveSheep, 1u);
   AC_CHECK(sim::despawnEntity(*world, sheepB.id));
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->stats.aliveSheep, 0u);
   AC_CHECK(sim::despawnEntity(*world, bullet.id));
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->stats.aliveSheep, 0u);
 }
 
@@ -596,7 +607,7 @@ AC_TEST(pose_history_records_players_only) {
   AC_CHECK(sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(3.0, 0.0, 3.0)).isOk);
   AC_CHECK(sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(4.0, 0.0, 4.0)).isOk);
 
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   const sim::PoseSlot& slot = world->poseHistory.slots[1u];
   AC_CHECK_EQ(slot[0].id, playerA.id);
   AC_CHECK_EQ(slot[1].id, playerB.id);
@@ -607,7 +618,7 @@ AC_TEST(pose_history_records_players_only) {
     AC_CHECK(sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(0.0, 0.0, 0.0)).isOk);
   }
   AC_CHECK_EQ(world->stats.aliveSheep, 1u);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(world->stats.aliveSheep, 1u);
   // 只记 id 最小的 8 个玩家：playerA(1)、playerB(2) 与随后 8 个里的前 6 个（5..10）
   const sim::PoseSlot& full = world->poseHistory.slots[2u];
@@ -624,14 +635,15 @@ AC_TEST(pose_sample_zero_is_exact) {
   AC_CHECK(world != nullptr);
   if (world == nullptr) return;
 
-  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(1.5, 0.0, -2.25));
+  // S06 起 tick 内含静态碰撞：坐标要落在谷仓外扩 AABB（x、z 各 4.4）之外，否则会被推走
+  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(1.5, 0.0, -20.25));
   AC_CHECK(player.isOk);
   sim::Entity* entity = sim::entityById(*world, player.id);
   AC_CHECK(entity != nullptr);
   if (entity == nullptr) return;
   entity->yaw = 0.75;
   entity->pitch = -0.125;
-  sim::stepWorld(*world);
+  stepEmpty(*world);
 
   sim::SampledPose sampled{};
   AC_CHECK(sim::samplePoseAgo(world->poseHistory, 0u, player.id, sampled));
@@ -640,17 +652,17 @@ AC_TEST(pose_sample_zero_is_exact) {
   AC_CHECK(!sampled.clamped);
   AC_CHECK_EQ(sampled.x, 1.5);       // ms = 0：逐位等于最新槽位原值
   AC_CHECK_EQ(sampled.y, 0.0);
-  AC_CHECK_EQ(sampled.z, -2.25);
+  AC_CHECK_EQ(sampled.z, -20.25);
   AC_CHECK_EQ(sampled.yaw, 0.75);
   AC_CHECK_EQ(sampled.pitch, -0.125);
   AC_CHECK(sampled.x == world->entities[player.id - 1u].pos.x);
   AC_CHECK(sampled.yaw == world->entities[player.id - 1u].yaw);
 
-  // 再推一 tick：ms = 0 仍然取最新槽位
-  entity->pos.x = 3.0;
-  sim::stepWorld(*world);
+  // 再推一 tick：ms = 0 仍然取最新槽位（同样避开谷仓与栅栏）
+  entity->pos.x = 30.0;
+  stepEmpty(*world);
   AC_CHECK(sim::samplePoseAgo(world->poseHistory, 0u, player.id, sampled));
-  AC_CHECK_EQ(sampled.x, 3.0);
+  AC_CHECK_EQ(sampled.x, 30.0);
 }
 
 AC_TEST(pose_sample_interpolates_between_slots) {
@@ -658,18 +670,19 @@ AC_TEST(pose_sample_interpolates_between_slots) {
   AC_CHECK(world != nullptr);
   if (world == nullptr) return;
 
-  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(0.0, 0.0, 0.0));
+  // S06 起 tick 内含静态碰撞：z 落在谷仓外扩 AABB 之外，x 的插值样本才不会被推走
+  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(0.0, 0.0, 20.0));
   AC_CHECK(player.isOk);
   sim::Entity* entity = sim::entityById(*world, player.id);
   AC_CHECK(entity != nullptr);
   if (entity == nullptr) return;
 
   entity->pos.x = 0.0;
-  sim::stepWorld(*world);  // tick 1：x = 0
+  stepEmpty(*world);  // tick 1：x = 0
   entity->pos.x = 4.0;
-  sim::stepWorld(*world);  // tick 2：x = 4
+  stepEmpty(*world);  // tick 2：x = 4
   entity->pos.x = 8.0;
-  sim::stepWorld(*world);  // tick 3：x = 8 (newest)
+  stepEmpty(*world);  // tick 3：x = 8 (newest)
 
   sim::SampledPose sampled{};
   AC_CHECK(sim::samplePoseAgo(world->poseHistory, 0u, player.id, sampled));
@@ -699,7 +712,7 @@ AC_TEST(pose_sample_beyond_limit_is_refused) {
 
   const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(9.0, 0.0, 9.0));
   AC_CHECK(player.isOk);
-  for (int i = 0; i < 5; ++i) sim::stepWorld(*world);
+  for (int i = 0; i < 5; ++i) stepEmpty(*world);
 
   sim::SampledPose sampled{};
   AC_CHECK(!sim::samplePoseAgo(world->poseHistory, sim::kRewindLimitMs + 1u, player.id, sampled));
@@ -733,8 +746,8 @@ AC_TEST(pose_sample_unknown_id_reports_missing) {
   const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(1.0, 0.0, 1.0));
   const auto sheep = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(2.0, 0.0, 2.0));
   AC_CHECK(player.isOk && sheep.isOk);
-  sim::stepWorld(*world);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
+  stepEmpty(*world);
 
   AC_CHECK(!sim::samplePoseAgo(world->poseHistory, 50u, sheep.id, sampled));  // 羊从不记录
   AC_CHECK(!sampled.found);
@@ -773,7 +786,7 @@ AC_TEST(grid_build_counts_and_sorts_cells) {
   const auto fifth = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(39.0, 0.0, 39.0));
   const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(0.0, 0.0, 0.0));
   AC_CHECK(first.isOk && second.isOk && third.isOk && fourth.isOk && fifth.isOk && bullet.isOk);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
 
   AC_CHECK_EQ(gridItemCount(world->grid), 5u);          // projectile 不入网格
   AC_CHECK_EQ(world->activeCount, 6u);
@@ -807,7 +820,16 @@ AC_TEST(grid_clamps_out_of_bounds_coordinates) {
   const auto farSouth = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(0.0, 0.0, -1000.0));
   const auto middle = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(0.0, 0.0, 0.0));
   AC_CHECK(farEast.isOk && farWest.isOk && farNorth.isOk && farSouth.isOk && middle.isOk);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
+
+  // S06 起 tick 内的静态碰撞会先把越界坐标夹回场地（README §7.2），所以这里把坐标重设成越界值、
+  // 单独重建网格，专门考 buildSpatialGrid 自己的夹取（这一趟不经过权威 tick）。
+  setPosition(*world, farEast.id, vec(1000.0, 0.0, 0.0));
+  setPosition(*world, farWest.id, vec(-1000.0, 0.0, 0.0));
+  setPosition(*world, farNorth.id, vec(0.0, 0.0, 1000.0));
+  setPosition(*world, farSouth.id, vec(0.0, 0.0, -1000.0));
+  setPosition(*world, middle.id, vec(0.0, 0.0, 0.0));
+  sim::buildSpatialGrid(*world);
 
   AC_CHECK_EQ(gridItemCount(world->grid), 5u);
   // 越界坐标各自夹到边界列/行：东 → (cx 19, cz 10)、西 → (0, 10)、北 → (10, 19)、南 → (10, 0)、中心 → (10, 10)
@@ -851,7 +873,7 @@ AC_TEST(grid_cell_items_are_ascending) {
   }
   for (uint16_t id = 2u; id <= 64u; id += 3u) AC_CHECK(sim::despawnEntity(*world, id));  // 制造 id 空洞
   AC_CHECK(sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(-30.0, 0.0, 30.0)).isOk);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
 
   // 每格内 EntityId 升序，且每个条目确实落在它所属的格
   std::vector<uint16_t> sequence;
@@ -892,13 +914,14 @@ AC_TEST(grid_ignores_projectiles) {
   AC_CHECK(world != nullptr);
   if (world == nullptr) return;
 
-  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(0.0, 0.0, 0.0));
+  // S06 起 tick 内含静态碰撞：玩家落在谷仓外，末尾按它的坐标查邻域
+  const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(20.0, 0.0, 20.0));
   const auto sheep = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(1.0, 0.0, 1.0));
   const auto bulletA = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(0.5, 0.0, 0.5));
   const auto bulletB = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(2.0, 0.0, 2.0));
   const auto pickup = sim::spawnEntity(*world, sim::EntityKind::kPickup, vec(3.0, 0.0, 3.0));
   AC_CHECK(player.isOk && sheep.isOk && bulletA.isOk && bulletB.isOk && pickup.isOk);
-  sim::stepWorld(*world);
+  stepEmpty(*world);
 
   AC_CHECK_EQ(gridItemCount(world->grid), 3u);  // 玩家 + 羊 + 掉落物
   const std::vector<uint16_t> all = collectNeighbors(world->grid, 0.0, 0.0, 200.0);
@@ -909,9 +932,9 @@ AC_TEST(grid_ignores_projectiles) {
   // 释放非投射物后网格随之收缩；投射物释放不影响
   AC_CHECK(sim::despawnEntity(*world, sheep.id));
   AC_CHECK(sim::despawnEntity(*world, bulletA.id));
-  sim::stepWorld(*world);
+  stepEmpty(*world);
   AC_CHECK_EQ(gridItemCount(world->grid), 2u);
-  const std::vector<uint16_t> after = collectNeighbors(world->grid, 0.0, 0.0, 1.0);
+  const std::vector<uint16_t> after = collectNeighbors(world->grid, 20.0, 20.0, 1.0);
   AC_CHECK(!containsId(after, bulletA.id));
   AC_CHECK(containsId(after, player.id));
 }

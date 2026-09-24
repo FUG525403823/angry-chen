@@ -1,5 +1,6 @@
 // S05 §5.6 / §6：热路径零分配的计数缝。
 // 只在本翻译单元替换全局 new/delete；计数只在 AllocationScope 里读，测量窗口内不做格式化输出。
+#include "allocation_probe.hpp"
 #include "tiny_test.hpp"
 
 #include <cstddef>
@@ -12,22 +13,18 @@
 #include <malloc.h>
 #endif
 
+#include "config/player.hpp"
 #include "core/math.hpp"
 #include "core/rng.hpp"
+#include "world_test_support.hpp"
 #include "sim/entity_table.hpp"
+#include "sim/step.hpp"
 #include "sim/spatial_grid.hpp"
 #include "sim/world.hpp"
 
 namespace {
 
-std::size_t allocationCount = 0u;
-
-// "专门缝"：窗口开始前取快照，窗口结束后读增量（读计数本身不分配）。
-struct AllocationScope {
-  std::size_t start;
-  AllocationScope() noexcept : start(allocationCount) {}
-  std::size_t since() const noexcept { return allocationCount - start; }
-};
+std::size_t allocationCounter = 0u;  // 只在本 TU 递增；对外经 ac::test::allocationCount() 读
 
 void* allocateRaw(std::size_t size) {
   return std::malloc(size == 0u ? 1u : size);
@@ -51,51 +48,57 @@ void freeAligned(void* memory) noexcept {
 
 }  // namespace
 
+namespace ac::test {
+
+std::size_t allocationCount() noexcept { return allocationCounter; }
+
+}  // namespace ac::test
+
 void* operator new(std::size_t size) {
-  ++allocationCount;
+  ++allocationCounter;
   void* memory = allocateRaw(size);
   if (memory == nullptr) throw std::bad_alloc();
   return memory;
 }
 
 void* operator new[](std::size_t size) {
-  ++allocationCount;
+  ++allocationCounter;
   void* memory = allocateRaw(size);
   if (memory == nullptr) throw std::bad_alloc();
   return memory;
 }
 
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
-  ++allocationCount;
+  ++allocationCounter;
   return allocateRaw(size);
 }
 
 void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
-  ++allocationCount;
+  ++allocationCounter;
   return allocateRaw(size);
 }
 
 void* operator new(std::size_t size, std::align_val_t alignment) {
-  ++allocationCount;
+  ++allocationCounter;
   void* memory = allocateAligned(size, static_cast<std::size_t>(alignment));
   if (memory == nullptr) throw std::bad_alloc();
   return memory;
 }
 
 void* operator new[](std::size_t size, std::align_val_t alignment) {
-  ++allocationCount;
+  ++allocationCounter;
   void* memory = allocateAligned(size, static_cast<std::size_t>(alignment));
   if (memory == nullptr) throw std::bad_alloc();
   return memory;
 }
 
 void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
-  ++allocationCount;
+  ++allocationCounter;
   return allocateAligned(size, static_cast<std::size_t>(alignment));
 }
 
 void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
-  ++allocationCount;
+  ++allocationCounter;
   return allocateAligned(size, static_cast<std::size_t>(alignment));
 }
 
@@ -114,6 +117,8 @@ namespace {
 
 constexpr uint32_t kSeed = 0xC0FFEEu;
 namespace sim = ac::sim;
+using ac::test::AllocationScope;
+using ac::test::stepEmpty;
 
 void populate(sim::World& world, std::size_t count) {
   for (std::size_t i = 0u; i < count; ++i) {
@@ -122,7 +127,7 @@ void populate(sim::World& world, std::size_t count) {
     const double z = static_cast<double>(static_cast<int32_t>((i / 32u) % 32u)) - 16.0;
     sim::spawnEntity(world, sim::EntityKind::kSheep, ac::Vec3{x, 0.0, z});
   }
-  sim::stepWorld(world);
+  stepEmpty(world);
 }
 
 std::size_t scanNeighbors(const sim::SpatialGrid& grid, std::size_t rounds) {
@@ -157,7 +162,7 @@ AC_TEST(alloc_steady_state_is_zero) {
       }
     }
     if (bullet.isOk && (tick % 5u) == 0u) sim::despawnEntity(*world, bullet.id);
-    sim::stepWorld(*world);
+    stepEmpty(*world);
     std::size_t visited = 0u;
     sim::forEachNeighbor(world->grid, 0.0, 0.0, 8.0, [&visited](uint16_t) { ++visited; });
     sim::Event event{};
@@ -221,7 +226,7 @@ AC_TEST(alloc_tick_loop_is_heap_free) {
   for (std::size_t i = 0u; i < 600u; ++i) {
     sim::Entity* entity = sim::entityById(*world, static_cast<uint16_t>(1u + (i % 512u)));
     if (entity != nullptr) entity->pos.z = static_cast<double>(i % 17u);
-    sim::stepWorld(*world);
+    stepEmpty(*world);
   }
   const std::size_t allocations = window.since();
   std::printf("tickLoopAllocations=%zu\n", allocations);

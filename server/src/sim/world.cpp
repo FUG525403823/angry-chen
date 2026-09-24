@@ -23,14 +23,6 @@ void resetWorld(World& world) noexcept {
   buildSpatialGrid(world);  // 空世界也要有合法的 cellStart[0..400]
 }
 
-void stepWorld(World& world) noexcept {
-  world.eventCount = 0u;  // §5.1：每 tick 开头清零（只有 [0, eventCount) 有效）
-  world.tick += 1u;
-  buildSpatialGrid(world);
-  recordPoseHistory(world.poseHistory, world);
-  updateWorldStats(world);
-}
-
 void updateWorldStats(World& world) noexcept {
   uint32_t aliveSheep = 0u;
   for (std::size_t i = 0u; i < world.activeCount; ++i) {

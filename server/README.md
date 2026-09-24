@@ -41,7 +41,7 @@ g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserv
 g++ -std=c++20 -O2 -ffp-contract=off -fno-fast-math -Wall -Wextra -Werror -Iserver/src -Iserver/tests -o server/build/ac_tests_fallback.exe server/tests/*.cpp server/src/core/*.cpp server/src/net/*.cpp server/src/sim/*.cpp -lws2_32
 ```
 
-> 兜底版 fixture 走相对路径（见 §4），必须在仓库根运行；S04 起需要 `-lws2_32`（WinSock2）与 `server/src/net/*.cpp`；S05 起需要 `server/src/sim/*.cpp`（模拟层新增源文件时照抄本行）。
+> 兜底版 fixture 走相对路径（见 §4），必须在仓库根运行；S04 起需要 `-lws2_32`（WinSock2）与 `server/src/net/*.cpp`；S05 起需要 `server/src/sim/*.cpp`，S06 起另有 `server/src/config/*.hpp`（纯头文件常量，不产生新的编译单元，兜底命令无需改动）。
 
 | 产物 | 路径 | 说明 |
 | --- | --- | --- |
@@ -202,14 +202,14 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ## 6. 模拟数据布局（S05 §5 冻结）
 
 `server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`、`ai/**`），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 115832` 字节 ≈ 113 KiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 96 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 8 字节（取证行见 §8 表格）。
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 115840` 字节 ≈ 113 KiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 96 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 8 字节（取证行见 §9 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
 | 字段 | 类型 | 容量 / 语义 |
 | --- | --- | --- |
 | `seed` | u32 | 三条 RNG 流的派生源（`createRng(seed, kAi/kSpawn/kFx)`） |
-| `tick` | u32 | 0 基；`timeMs = tick * 50`；`stepWorld` 先清事件缓冲、再 `++tick` |
+| `tick` | u32 | 0 基；`stepWorld` 阶段 0 先 `++tick`（`timeMs` 见下一行） |
 | `entities` | `Entity[1024]` | 下标 = `EntityId - 1`，**永不搬移**（跨 tick 持有的指针/引用仍有效） |
 | `activeIds` | u16[1024] + `activeCount` | **严格升序**；下游只准沿它遍历（唯一遍历入口） |
 | `freeIds` | u16[1024] + `freeCount` | 空闲栈，LIFO：最近释放的先复用 |
@@ -219,6 +219,8 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | `poseHistory` | 见 §6.3 | 回滚命中用的姿态环 |
 | `grid` | 见 §6.4 | 每 tick 重建的派生结构（不是权威状态） |
 | `events` | `Event[256]` + `eventCount` | 每 tick 开头清零；满 256 丢**新**事件并 `++eventsDropped` |
+| `timeMs` | u32 | S06 §5.1 阶段 0 **追加在末尾**：tick 的毫秒镜像（`+= dtMs`，恒等于 `tick * 50`）；S12 的模拟漂移口径读它 |
+| `eventCursor` | u16 | S06 §5.1 阶段 0 **追加在末尾**：事件遍历游标，阶段 0 清零（S12 发事件时消费） |
 
 `eventCount` 的线上形是 u8（编码上限 255，S05 §5.1 原文），但**单帧事件预算是 ≤64**（ADR-009 / S03 §5.4），超出部分走 `EventChannel` 可靠通道补发 —— 256 是本进程的缓冲容量，不是每帧发送量。
 `Event` 目前只固定 S03 §5.4 冻结的条目头：`eventId` u32（从 1 起单调递增、全局唯一、幂等去重键）+ `type` u8（1..10，ADR-009）；各类型载荷（`subjectId`/`targetId`/`value`/`flags`/`hitX..` 等，字段名以 S03 字段表为准）由 S06 起**追加**在末尾。
@@ -257,20 +259,96 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §8 表格的实测行为准。
-7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §9 表格的实测行为准。
+7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
-## 7. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 7. 模拟步进（S06 §5 冻结）
+
+权威 tick 入口是 `sim/step.hpp` 的 `bool stepWorld(World&, const Command*, uint32_t commandCount, uint32_t dtMs)`：
+`dtMs != 50` 时返回 `false` 且**世界不变**（校验在阶段 0 之前，禁止变长 dt）。`server/src/sim/step.cpp` 的 13 个阶段
+与 S06 §5.1 逐条同序，阶段只允许在末尾追加：
+
+| # | 阶段 | 状态 |
+| --- | --- | --- |
+| 0 | 头部：`++tick`、`timeMs += dtMs`、清事件缓冲与 `eventCursor` | 已实现 |
+| 1 | `applyCommands`（按玩家 `EntityId` 升序，见 §7.1） | 已实现 |
+| 2 | `collectPlayerIds`（升序、跳过 `idle`，写进调用方栈数组，不分配） | 已实现 |
+| 3 | `buildSpatialGrid` | 复用 S05 |
+| 4 / 5 | `updateAiIntents` / `applyAiIntents` | 空实现；签名按 S09 §9 冻结 |
+| 6 | `applyKnockback` | 空实现；等 S08 |
+| 7 | 逐实体 `integrateState(dtMs / 1000.0)` + `aliveMs += dtMs` | 已实现（救援夹取见 §7.5 第 3 条） |
+| 8 | `collideStatic`（谷仓推离 → 栅栏夹取，见 §7.2） | 已实现 |
+| 9 | 重建网格 + `separateEntities`，每趟分离后重跑 `collideStatic` | 已实现（1 趟） |
+| 10 | `resolveCombat` | 空实现；签名按 S08 §9 冻结（`CombatContext*` 前置声明） |
+| 11 | `resolveSheepAttacks` / `resolveEliteFire` / `advanceProjectiles` / `updateSheepKing` | 空实现；等 S08 / S09 |
+| 12 | `updateWorldStats`（`stats.aliveSheep`） | 复用 S05 |
+| 13 | `recordPoseHistory` | S05 §5.3 的"每 tick 末尾"，追加在末尾（见 §7.5 第 2 条） |
+
+### 7.1 命令与玩家游标（§5.2）
+
+`Command` 是**内存侧**命令，字段顺序 = S03 §5.2 的线上载荷顺序：
+`{moveX, moveY, yaw, pitch, buttons, switchTo, seq, clientTick}`；线上 i8 轴除 127、u16 角度单位过 `radiansFromUnits`
+才是这里的样子（状态与对拍一律 `double` 弧度）。`commands[k]` 属于**第 k 个升序玩家实体**（游标包含 `idle` 玩家，
+否则后面的玩家会串位、拿到别人的命令），命令不够的玩家走 §5.2 的"缺命令 → 速度归零、位置不动"分支；
+`collectPlayerIds` 另给下游一份**跳过 `idle`** 的升序列表 —— S08 §5 的"命令游标与阶段 1 一致"按此实现。
+
+`applyCommandToState` 是 S06 §5.2 代码块的逐字落地（运算顺序禁止改写）：`yaw`/`pitch` 先写进状态，
+方向向量只经 `quantizeAngle` + `sinUnits`/`cosUnits`（本份不新建任何角度表、不出现超越函数），
+`magSq > 1.0` 才归一化，最后 `vel = 方向 × 速度`，`vel.y` 恒 0。
+
+### 7.2 静态碰撞与分离（§5.5）
+
+`collideStatic(state, arena, radius)`：**先**谷仓推离（`pos.y >= 5` 跳过；半径外扩后的 AABB 内部才处理，按
+`min(pushLeft, pushRight) <= min(pushBack, pushForward)` 选 x 面或 z 面，并清零该轴速度），**后**边界夹取
+（`limit = halfSize - thickness / 2 - radius = 39.35`，x、z 各自夹取并清零该轴速度）。
+
+`separateEntities(world)`：单趟、同格 `i < j` 与东/南/东南/西南四格半邻域各一次（每个无序对恰好处理一次），
+预筛 `(2 × 0.5)^2 = 1.0`，重叠时双方各推 `(minDistance - distance) / 2`（半径按 `kind` 取 §5.4 表，
+`distance < 1e-6` 时按 `(+1, 0)` 推）。**推离总量守恒**：一次配对只搬动这两个实体，且位移等大反向。
+投射物不入网格（S05 §6.4），所以分离只作用于玩家/羊/掉落物。
+
+### 7.3 `localStep` 契约（§5.6，客户端预测复用）
+
+`LocalStepResult localStep(World&, const Command*, uint32_t commandCount, uint32_t dtMs, EntityId)`：只推进一个玩家
+一个 tick，等价于权威 tick 的子集"命令应用 → 积分 → 静态碰撞"，只消费 `commands[0]`；不读 `ai`/`spawn` 流、
+不写事件池、不触碰其他实体与统计量（**不记姿态环**）；位姿写回实体并推进 `tick` / `timeMs`。
+`dtMs != 50`、命令缓冲为空或 id 不是活动玩家 → `{isOk=false, 当前 tick, 当前 timeMs}` 且世界不变。
+一致性由用例钉住：同一初始世界 + 同一命令序列下，240 tick 的 `pos.x/y/z` 与 `yaw` 在 `localStep` 与 `stepWorld`
+之间 `bit_cast<uint64_t>` 全等（`step_local_step_equals_authority`）。
+
+### 7.4 玩家与场地常量（§5.4）
+
+`server/src/config/player.hpp` 集中玩家/实体/按钮位域/分离参数/固定步长；场地形状（80m、栅栏 3 × 0.5、
+谷仓 [-4,4] × [0,5] × [-4,4]、4 个出生点）的**唯一真值仍在 `sim/arena.hpp`**（S05），
+`config::kArenaConfig` 与 `config::kKindRadiusM` 只引用它并用 `static_assert` 锚定。
+
+### 7.5 计划文本纠正与已声明偏差（S06）
+
+1. §3 要求 `config/player.hpp` 抄 v1 `arena.ts`，但 S05 的 `sim/arena.hpp` 已是该表的唯一来源 → 本份**不复制数值**，只引用 + `static_assert` 锚点（两处真值迟早漂移，跨语言对拍时是致命的）。
+2. §5.1 的阶段表没列 S05 §5.3 的"每 tick 末尾 `recordPoseHistory`"；不记的话 S11 的回滚命中永远拿不到历史 → 作为第 13 步**追加在末尾**（0–12 的顺序一字不差）。
+3. §5.1 阶段 7 末尾的"对正在救援的玩家 `clampHorizontalSpeed(1.5)`"需要救援状态机，而救援态由 S08 定义（S03 §5.4 的 `kindFlags` 只有 `downed` 位，没有"正在救援"）→ 本份只落地 `clampHorizontalSpeed` 本身并有用例覆盖，调用点等 S08 接入。
+4. §5.5 的谷仓推离没写速度语义，但 §6 第 5 条要求 400 tick 后 `vel.z == 0` → 推离时清零该轴速度（与边界夹取同一语义）。
+5. §5.6 的 `struct LocalStepResult { bool ok; ... }` 与工程约定 §6 的布尔前缀规则冲突 → 字段名取 `isOk`（与 S05 的 `SpawnResult::isOk` 一致）。
+6. §6 第 4/6 条的"`pos.z == 4.5` / 间距 `== 0.8`"只有一部分能逐位成立：实测步行 20 tick 与 `yaw = 90°` 的 `pos.x` 恰好是 `4.5`，冲刺 20 tick 累加到 `6.3000000000000025`、分离后间距 `0.80000000000000071` → 这两条用 `1e-12` 容差断言并把实测值打成证据行（`stepSprintZ=` / `stepSeparation=`）。运算顺序按 §5.2 逐字复刻，不做"凑整"优化。
+7. §5.1 阶段 1 的"按玩家 EntityId 升序"与阶段 2 的"跳过 `idle`"并列时，命令游标归属易误读 → 阶段 1 的游标**包含 `idle` 玩家**，阶段 2 才过滤（见 §7.1）。
+8. **待裁决**：S10 §5 的草图写 `stepWorld(world, commands, 50)`（3 参），与 S06 §9 冻结的 4 参签名不一致 → 本份以 S06 §9 为准（`commandCount` 显式传入，`applyCommands` 才拿得到"缺命令"分支）。需要回写 S10 那行文字。
+9. §5.1 的 13 个空实现阶段签名一次冻结，能查到下游冻结的就逐字照抄：`updateAiIntents`（`(World&, uint32_t dtMs, const EntityId*, uint32_t, const SpatialGrid&)`）与 `applyAiIntents` 按 S09 §9，`resolveCombat` 按 S08 §9（`CombatContext*` 前置声明），`int resolveSheepAttacks(World&, const EntityId*, uint32_t)` / `int advanceProjectiles(World&, uint32_t dtMs, ...)` / `int updateKing(World&, Entity&, uint32_t dtMs)` 按 S09 §9（返回值 = 落地条数，本份恒 0）。S09 §9 只钉住 `int resolveEliteFire(...)` 与 `advanceProjectiles` 的前缀，本份就**只实现被钉住的部分**（`resolveEliteFire(World&)`、`advanceProjectiles(World&, uint32_t)`），不替下游猜参数。
+10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
+11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
+10. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
+12. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §9 表格的实测行为准。
+
+## 8. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 8. 当前状态
+## 9. 当前状态
 
-**S01–S05 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）与模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）就位；模拟规则/AI/房间/持久化由 S06 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S06 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）与模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）就位；战斗、AI、房间、持久化由 S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -291,7 +369,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 每通道序号（§5.2） | `ChannelSeq` u16 回绕、重复/过期包判旧（`reliability_duplicate_is_ignored`） |
 | 心跳与断线实测 | 50s 内恰好 100 次心跳、相邻间隔恒 500ms；最后一个合法包后 3000ms 判断线并进入 30s 宽限期 |
 | `Get-ChildItem server/src/net -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::pow","exp\(","\b0\.0[0-9]* \* pow"` | 0 命中 |
-| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 136/136`（含真实 UDP 回环那条） |
+| g++ 直编兜底（同上 + `-lws2_32`） | `ac_tests.exe` 兜底版跑出 `TESTS 136/136`（含真实 UDP 回环那条；**S05 时点值**，S06 后为 156/156，见下方 S06 行） |
 | `server/build/ac_tests.exe --filter=rng` / `--filter=quantize` / `--filter=math` / `--filter=trig` | 末行依次 `TESTS 6/6`、`TESTS 10/10`、`TESTS 8/8`、`TESTS 4/4`，退出码全 0 |
 | `server/build/ac_tests.exe --filter=trig` 的打印行 | `sin crc=0x8BD9F737 atan crc=0x197C3A8D asin crc=0xAD2BD35E` |
 | `--filter=codec` | 末行 `TESTS 14/14`，退出码 0 |
@@ -325,10 +403,23 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 场地点位（DoD §7） | 4 个出生点与 12 个生成点坐标逐位硬编码比对、环半径 38 ± 0.01、四种 kind 的半径/高度逐值比对（`world_create_initializes_defaults`） |
 | 计划偏差清单 | §6.5 的七条（`sizeof(PoseHistory)` 断言位置、`isOk` 命名、`Event` 收敛、255/64 澄清、实现落地位置、复选框不勾选、`stepWorld` 语义待裁决） |
 | `server/build/ac_server.exe --selftest-log \| ConvertFrom-Json` | 解析成功，键序 `ts,level,evt,version,protocol,tickMs` |
-| g++ 直编兜底（第三条命令 + 同开关 `-I server/tests`；S03 起还要加 `server/src/net/codec.cpp`） | `ac_server.exe` 与 `ac_tests.exe` 均编译成功、`--version` 与 cmake 分支一致，且兜底版 `ac_tests.exe` 末行同为 `TESTS 86/86`（走相对路径 fixture，需在仓库根运行） |
+| g++ 直编兜底（第三条命令 + 同开关 `-I server/tests`；S03 起还要加 `server/src/net/codec.cpp`） | `ac_server.exe` 与 `ac_tests.exe` 均编译成功、`--version` 与 cmake 分支一致，且兜底版 `ac_tests.exe` 末行同为 `TESTS 86/86`（**S03 时点值**；走相对路径 fixture，需在仓库根运行） |
 | `Select-String -Path server/CMakeLists.txt,server/build.ps1 -Pattern 'ffast-math','-march=native','-mfma'` | 0 命中 |
 | `Get-ChildItem server/src/core -Recurse -Include *.hpp,*.cpp \| Select-String -Pattern "std::(sin\|cos\|tan\|atan2\|asin\|exp\|log\|pow\|round\|lround\|llround)"` | 0 命中（S02 §7 的门禁；`Select-String server/src` 全目录同规则也是 0） |
 | `node tools/check-docs.mjs` | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 50 个文档、154 条相对链接） |
-| `node tools/check-assets.mjs` | 退出码 0：158 个受控文件零素材类扩展名（含 `client/` 侧 Unity 工程文件，非本份引入；该计数随客户端链增长，此处是本机时点值）；`C++ 构建清单：未发现第三方依赖引入` |
+| `node tools/check-assets.mjs` | 退出码 0：219 个受控文件零素材类扩展名（含 `client/` 侧 Unity 工程文件，非本份引入；该计数随客户端链增长，此处是本机时点值）；Unity 依赖 34 个全在白名单；`C++ 构建清单：未发现第三方依赖引入` |
+| `server/build/ac_tests.exe`（S06 后） | 末行 `TESTS 156/156`，退出码 0（S01 18 + S02 28 + S03 40 + S04 24 + S05 26 + S06 20） |
+| `--filter=step` | 末行 `TESTS 20/20`，退出码 0（S06 §6 第 3 条；用例名全含 `step`，未污染既有 20 组） |
+| `--filter=step` 的打印行 | `stepWalkZ=4.5`、`stepSprintZ=6.3000000000000025`、`stepForwardX=4.5`、`stepSeparation=0.80000000000000071`、`stepWorldAllocations=0`（偏差见 §7.5 第 6 条） |
+| S06 §6 第 4/5 条（移动与碰撞） | `yaw = 0`、`moveX = 1` 跑 20 tick：步行 `pos.z = 4.5`、冲刺 `pos.z = 6.3000000000000025`；从 `(0, 0, 30)` 向 -z 400 tick → `pos.z = 4.4` 且 `vel.z = 0`；从原点向 +x 400 tick → `pos.x = 39.35` 且 `vel.x = 0` |
+| S06 §6 第 6 条（分离与预测一致） | 两玩家相距 0.5m → 0.8m（实测 `0.80000000000000071`，中点守恒）；对称半推（羊 0.2m → 1.0m）；零距离按 `(+1, 0)` 各推一半；`vector(0.08) + pickup(0.35)` 分离到 0.85 |
+| 240 tick 预测一致性（§5.6） | 同一命令序列下 `localStep` 与 `stepWorld` 的 `pos.x/y/z`、`yaw` 位型全等（`step_local_step_equals_authority`，每 tick 4 次 `bit_cast` 比对） |
+| 稳态零分配（§6 第 6 条） | 64 玩家 + 64 羊、10 tick 预热后连跑 10000 次 `stepWorld`：`stepWorldAllocations=0` |
+| 21 组筛选门禁 | `size/math/trig/rng/quantize/codec/hex/fuzz/wire/match/transport/reliability/fragment/grace/memory/world/entity/pose/grid/alloc/step` 末行依次 `4/4`、`8/8`、`4/4`、`6/6`、`10/10`、`14/14`、`10/10`、`3/3`、`3/3`、`6/6`、`8/8`、`5/5`、`4/4`、`4/4`、`2/2`、`6/6`、`7/7`、`5/5`、`4/4`、`4/4`、`20/20`（既有冻结计数无一变动） |
+| `Get-ChildItem server/src/sim -Recurse -Include *.cpp \| Select-String -Pattern "std::sin","std::cos","std::atan2"` | 0 命中（§7 DoD；`std::sqrt` 属 ADR-010 允许集） |
+| `Select-String server/src/sim` 扫描 `\bnew\b` / `malloc` / `realloc` / `std::vector` / `std::string` | 0 命中（热路径零堆分配由 `alloc_test.cpp` 的计数版全局 `operator new` 断言） |
+| `--filter=world` 的打印行（S06 后） | `worldBytes=115840 entityBytes=96 poseBytes=7688 gridBytes=3652 eventBytes=8`（`timeMs` u32 + `eventCursor` u16 + 2 填充 = +8） |
+| g++ 直编兜底（新增 `server/src/sim/*.cpp`） | `TESTS 156/156`，退出码 0（与 cmake 分支同数） |
+| 计划偏差清单（S06） | §7.5 的十二条（含 2 条**待裁决**：S10 §5 的 3 参草图、投射物是否参与静态碰撞） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

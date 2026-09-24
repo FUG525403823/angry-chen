@@ -50,15 +50,17 @@ struct World {
   SpatialGrid grid{};
   Event events[kMaxEvents];
   uint16_t eventCount = 0u;
+  // S06 §5.1 阶段 0 追加（S05 §5.1 的字段顺序与容量不动，新字段只追加在末尾）：
+  // timeMs 是 tick 的毫秒镜像（S12 的模拟漂移口径读它）；eventCursor 是事件遍历游标，阶段 0 清零。
+  uint32_t timeMs = 0u;
+  uint16_t eventCursor = 0u;
 };
 
 // §9 稳定接口：World 一次性定长预分配（此后热路径不再分配）。
 std::unique_ptr<World> createWorld(uint32_t seed);
 void resetWorld(World& world) noexcept;  // 回到 createWorld 之后的状态（沿用 world.seed）
 
-// 一个 tick 的推进入口：清事件缓冲 → tick + 1 → 重建网格 → 记姿态 → 刷统计。
-// （S06 起在 tick 递增之后推进实体状态；本份只冻结数据布局与派生结构。）
-void stepWorld(World& world) noexcept;
+// 阶段 12 的统计汇总入口。tick 入口是 step.hpp 的 stepWorld —— S06 起签名带命令缓冲与 dtMs。
 void updateWorldStats(World& world) noexcept;
 
 inline EntityTable tableOf(World& world) noexcept {
