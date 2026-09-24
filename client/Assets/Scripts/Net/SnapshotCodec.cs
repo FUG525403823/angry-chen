@@ -118,5 +118,39 @@ namespace Ac.Net
             snapshot.DroppedDuplicates = dropped;
             return DecodeFailure.Ok;
         }
+
+        // C04 §3 的缝：把解码结果映射成 Ac.Sim 的帧镜像（Ac.Sim 不能引用 Ac.Net）。
+        // frame 的数组由调用方预分配并跨帧复用，本方法不分配。
+        public static bool TryToFrame(in SnapshotPayload payload, ref SnapshotFrame frame)
+        {
+            if (frame.Entities == null || frame.RemovedIds == null) return false;
+            if (payload.Records == null || payload.RemovedIds == null) return false;
+            if (payload.Records.Length > frame.Entities.Length) return false;
+            if (payload.RemovedIds.Length > frame.RemovedIds.Length) return false;
+
+            frame.Tick = payload.Tick;
+            frame.ServerTimeMs = payload.ServerTimeMs;
+            frame.LastAckedSeq = payload.LastAckedSeq;
+            frame.BaselineTick = payload.BaselineTick;
+            frame.EntityCount = payload.Records.Length;
+            frame.RemovedCount = payload.RemovedIds.Length;
+            for (var i = 0; i < payload.Records.Length; i++)
+            {
+                var record = payload.Records[i];
+                FrameEntity entity;
+                entity.Id = record.Id;
+                entity.KindFlags = record.KindFlags;
+                entity.XCm = record.XCm;
+                entity.YCm = record.YCm;
+                entity.ZCm = record.ZCm;
+                entity.YawUnits = record.YawUnits;
+                entity.PitchUnits = record.PitchUnits;
+                entity.HpRatioUnits = record.HpRatioUnits;
+                entity.State = record.State;
+                frame.Entities[i] = entity;
+            }
+            for (var i = 0; i < payload.RemovedIds.Length; i++) frame.RemovedIds[i] = payload.RemovedIds[i];
+            return true;
+        }
     }
 }

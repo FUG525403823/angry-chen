@@ -13,6 +13,7 @@ namespace Ac.Tests
             SelfTest.Reset();
             ContractSuite.Register();
             TransportSuite.Register();
+            InterpolationSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();
