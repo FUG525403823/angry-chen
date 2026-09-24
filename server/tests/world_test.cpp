@@ -84,7 +84,8 @@ AC_TEST(world_create_initializes_defaults) {
   AC_CHECK_EQ(world->entities[0].id, 0u);
   AC_CHECK(world->entities[0].kind == sim::EntityKind::kPlayer);
   AC_CHECK_EQ(world->entities[sim::kMaxEntities - 1u].pos.z, 0.0);
-  AC_CHECK_EQ(sizeof(sim::Entity), 96u);  // §6.2 的字节账：README 与代码同步
+  // S08 在 Entity 末尾追加了武器/倒地/怒气/交互/羊形状态（S05 §5.2 明写允许），96 -> 232 字节。
+  AC_CHECK_EQ(sizeof(sim::Entity), 232u);  // §6.2 的字节账：README §6.1/§9 与代码同步
   AC_CHECK_EQ(sizeof(sim::Entity::id), 2u);
   AC_CHECK_EQ(sizeof(sim::Entity::aliveMs), 4u);
 
@@ -144,7 +145,10 @@ AC_TEST(world_create_initializes_defaults) {
   std::printf("worldBytes=%zu entityBytes=%zu poseBytes=%zu gridBytes=%zu eventBytes=%zu\n",
               sizeof(sim::World), sizeof(sim::Entity), sizeof(sim::PoseHistory),
               sizeof(sim::SpatialGrid), sizeof(sim::Event));
-  AC_CHECK(sizeof(sim::World) < 128u * 1024u);
+  AC_CHECK_EQ(sizeof(sim::Event), 48u);  // S08 §5.6 的载荷扩容后仍是 48 字节
+  // S05 的 128 KiB 只是「一次性预分配」的卫生上限；S08 扩容后是 265352 字节（1024 实体 × 232 B
+  // + 256 事件 × 48 B + 姿态环 7680），上限随之抬到 288 KiB 并保留同量级约束（README §9 已声明）。
+  AC_CHECK(sizeof(sim::World) < 288u * 1024u);
 }
 
 AC_TEST(world_reset_returns_to_start) {
@@ -366,7 +370,8 @@ AC_TEST(entity_reuse_is_lifo_and_resets_fields) {
   sim::Entity* occupied = sim::entityById(*world, first.id);
   AC_CHECK(occupied != nullptr);
   if (occupied == nullptr) return;
-  AC_CHECK_EQ(occupied->maxHp, 30);            // maxHp 随 hp 初始化
+  AC_CHECK_EQ(occupied->hp, 30);               // params.hp 覆盖当前生命
+  AC_CHECK_EQ(occupied->maxHp, 60);            // maxHp 恒为 kind 基础生命（v1 world.ts:231）
   AC_CHECK_EQ(occupied->armor, 2);
   occupied->vel = vec(1.0, 2.0, 3.0);
   occupied->state = 9u;
@@ -409,9 +414,10 @@ AC_TEST(entity_reuse_is_lifo_and_resets_fields) {
   AC_CHECK_EQ(fresh->vel.z, 0.0);
   AC_CHECK_EQ(fresh->yaw, 0.0);
   AC_CHECK_EQ(fresh->pitch, 0.0);
-  AC_CHECK_EQ(fresh->hp, 0);
-  AC_CHECK_EQ(fresh->maxHp, 0);
-  AC_CHECK_EQ(fresh->armor, 0);
+  // 3 参便捷重载自 S08 起与 v1 spawnEntity 对齐：hp/armor 取 kind 基础属性
+  AC_CHECK_EQ(fresh->hp, 100);
+  AC_CHECK_EQ(fresh->maxHp, 100);
+  AC_CHECK_EQ(fresh->armor, 50);
   AC_CHECK_EQ(fresh->state, 0u);
   AC_CHECK_EQ(fresh->team, 0u);
   AC_CHECK_EQ(fresh->ownerId, 0u);

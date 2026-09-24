@@ -1,6 +1,9 @@
 // S06 §5.1：13 个阶段的固定顺序。阶段只允许在末尾追加，禁止变长 dt。
 #include "sim/step.hpp"
 
+#include "combat/rage.hpp"
+#include "config/combat.hpp"
+
 namespace ac::sim {
 namespace {
 
@@ -40,8 +43,19 @@ void applyCommands(World& world, const Command* commands, uint32_t commandCount)
     const Command* command =
         (commands != nullptr && cursor < commandCount) ? &commands[cursor] : nullptr;
     ++cursor;
+    // S08 §5.7：狂暴期移速 ×1.15（v1 sim.ts 在同一个调用点传 RAGE.moveSpeedMultiplier）。
+    const double speedMultiplier =
+        ac::combat::isRageActive(entity.rage, static_cast<double>(world.timeMs))
+            ? ac::config::kRageMoveSpeedMultiplier
+            : 1.0;
     MoveState state = moveStateOf(entity);
-    applyCommandToState(state, command, 1.0);
+    applyCommandToState(state, command, speedMultiplier);
+    // S08 §5.7：倒地玩家不移动（v1 sim.ts 在同处把速度清零并 continue）。
+    if (entity.downed.downed) {
+      state.vel.x = 0.0;
+      state.vel.y = 0.0;
+      state.vel.z = 0.0;
+    }
     storeMoveState(entity, state);
   }
 }
@@ -65,9 +79,9 @@ void applyAiIntents(World&) noexcept {}
 // 阶段 6：空实现，等 S08。
 void applyKnockback(World&) noexcept {}
 
-// 阶段 10/11：空实现，等 S08 / S09（返回值 = 落地条数，本份恒 0）。
-void resolveCombat(World&, const Command*, uint32_t, uint32_t, const CombatContext*) noexcept {}
+// 阶段 10：S08 已落地，定义在 combat/resolve.cpp（签名不变）。
 
+// 阶段 11：空实现，等 S09（返回值 = 落地条数，本份恒 0）。
 int resolveSheepAttacks(World&, const EntityId*, uint32_t) noexcept { return 0; }
 
 int resolveEliteFire(World&) noexcept { return 0; }

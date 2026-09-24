@@ -4,6 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "combat/downed.hpp"
+#include "config/player.hpp"
+#include "combat/rage.hpp"
+#include "combat/weapon.hpp"
 #include "core/math.hpp"
 
 namespace ac::sim {
@@ -48,14 +52,22 @@ struct Entity {
   ac::Vec3 vel{0.0, 0.0, 0.0};
   double yaw = 0.0;
   double pitch = 0.0;
-  int32_t hp = 0;
-  int32_t maxHp = 0;
-  int32_t armor = 0;
+  // S08 起 hp/maxHp/armor 是 double：v1 的权威值就是 number，伤害公式产出分数（例：手枪四肢 18.75、
+  // 护甲 50 时躯干 armorDamage 15 / hpDamage 10），取整会直接破坏与 v1 的逐位一致（见 README §9）。
+  double hp = 0.0;
+  double maxHp = 0.0;
+  double armor = 0.0;
   uint8_t state = 0u;
   uint8_t team = 0u;
   uint16_t ownerId = kNoEntityId;
   uint32_t aliveMs = 0u;
   bool idle = false;
+  // —— S08 追加（S05 §5.2 的原文允许："武器/倒地/怒气/羊群 AI 状态由所属模块追加"）——
+  ac::combat::WeaponState weapon{};
+  ac::combat::RageState rage{};
+  ac::combat::DownedState downed{};
+  bool interactHeld = false;  // §5.6：本 tick 的交互键（救援判定读它）
+  uint8_t sheepKind = 0u;     // 羊形（0 grunt / 1 ram / 2 elite / 3 king）：S09 填，§5.4 命中盒读它
 };
 
 struct SpawnParams {
@@ -65,8 +77,8 @@ struct SpawnParams {
   double pitch = 0.0;
   uint8_t team = 0u;
   uint16_t ownerId = kNoEntityId;
-  int32_t hp = 0;
-  int32_t armor = 0;
+  double hp = 0.0;
+  double armor = 0.0;
 };
 
 // 分配与复用时必须整体重置（§5.2/§8）：释放时不清，分配时清。
@@ -86,6 +98,11 @@ inline void resetEntity(Entity& entity) noexcept {
   entity.ownerId = kNoEntityId;
   entity.aliveMs = 0u;
   entity.idle = false;
+  ac::combat::resetWeaponState(entity.weapon);
+  ac::combat::resetRageState(entity.rage);
+  ac::combat::resetDownedState(entity.downed);
+  entity.interactHeld = false;
+  entity.sheepKind = 0u;
 }
 
 // 只读视图：查询语义与 EntityTable 完全一致（模拟遍历与只读消费方用它）。
@@ -164,7 +181,9 @@ struct EntityTable {
     entity.team = params.team;
     entity.ownerId = params.ownerId;
     entity.hp = params.hp;
-    entity.maxHp = params.hp;
+    // v1 world.ts:231 的 entity.maxHp = stats.hp：maxHp 恒为该 kind 的基础生命，
+    // params.hp 只覆盖当前生命（S05 为快照/用例加的显式入口）。
+    entity.maxHp = static_cast<double>(ac::config::kKindBaseStats[static_cast<std::size_t>(params.kind)].hp);
     entity.armor = params.armor;
 
     // 复用的 id 可能小于表内既有 id：按 lower_bound 插入，保持 §5.1 的严格升序。

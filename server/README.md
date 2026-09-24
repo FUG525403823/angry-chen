@@ -202,7 +202,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ## 6. 模拟数据布局（S05 §5 冻结）
 
 `server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`、`ai/**`），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 115840` 字节 ≈ 113 KiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 96 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 8 字节（取证行见 §9 表格）。
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 265352` 字节 ≈ 259 KiB，S08 扩容后），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 232 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §11 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §10 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §11 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -336,7 +336,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §10 表格的实测行为准。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §11 表格的实测行为准。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -357,7 +357,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 
 ### 8.2 实测（`--filter=fixture` = 6/6）
 
-- 4 份向量（`still-60t` 60 tick、`straight-line-240t` 240 tick、`barn-collision-400t` 400 tick、`fence-bounds-400t` 400 tick）**逐 tick 逐字段逐位一致**：1100 tick × 4 实体 × 9 字段 + 事件条数 + `rngState` 三流；`configHash = 96d1d5fe` 两侧相同。
+- 4 份向量（`still-60t` 60 tick、`straight-line-240t` 240 tick、`barn-collision-400t` 400 tick、`fence-bounds-400t` 400 tick）**逐 tick 逐字段逐位一致**：1100 tick × 4 实体 × 9 字段 + 事件条数 + `rngState` 三流；`configHash = 41ffb3e9` 两侧相同。
 - 自检（§6 DoD）：把最后一个 tick 的 `entities[0].pos.z` 改动 1 ULP → 报出 `DIFF fence-bounds-400t tick=400 field=entities[0].pos.z expected=0x4043acccccccccce actual=0x4043accccccccccd`；改 `configHash` → 报出 `field=configHash` 且 `comparedTicks=0`（**不跑 tick**）。
 - 移动类向量的事件恒 0、三流抽取次数恒 0、`flags` 恒 0 → 与 S06 的"纯移动"内核语义一致（也说明这批向量没有偷偷消费 RNG）。
 
@@ -379,16 +379,48 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 14. §4 的"用共享整数表替换 v1 的 `Math.sin/cos/atan2/asin`"实现为**进程内替换**（`patchMath`，在 import v1 之前打补丁），不往任何磁盘写补丁 → §7 的"补丁只打在可写派生副本上"以更强的形式成立（两侧磁盘都不动）。副作用是替换面覆盖 v1 的全部调用点（不止移动路径），这正是对拍要的：C++ 侧同样只走整数表。
 15. 导出脚本的基线纪律做成可判定：默认拒绝 `--root` 指向只读源；启动时逐文件比对派生副本与只读源（`packages/shared/src`，不一致直接失败，除非显式 `--allow-patched-copy`）；结束时比对只读源的 (文件数, 总字节, 最新 mtime) 指纹，被写入即报错；`--list` 缺文件由"打印 missing"改为**失败**；体积门移到写盘**之前**（门失败时不留下超限生成物）；CRC32C 与角度表常量改为 import `tools/lib/trig-table.mjs` 的唯一实现。
 
-## 9. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 9. 战斗（S08 §5 冻结）
+
+- 配置：`config/weapons.hpp`（三把枪整表 + 散布/后坐/弹道标量）、`config/combat.hpp`（命中部位、伤害与护甲吸收、怒气、救援、羊命中盒）。`configHashText` 自本批起多出七组（`weapons` / `weapon.rules` / `shot` / `damage` / `rage` / `revive` / `sheepHit`），C++ 与导出脚本逐字节一致，4 份向量已按新哈希重新导出。
+- 武器状态机：`combat/weapon.{hpp,cpp}` 逐行照 v1 `combat/weapon.ts`（弹匣/备弹/换弹/切枪/首次射击间隔）；`isAuto` 对应 v1 的 `auto`（`auto` 是 C++ 关键字，仅此一处改名）。
+- 弹道：`combat/raycast.{hpp,cpp}` + `combat/resolve.cpp` 的 `traceRay` 与 v1 同序（谷仓 AABB → 升序 `activeIds` → 玩家按 `poseHistory.found` 回滚、羊按局部盒），角度只走 ADR-009 整数表；slab 用显式状态结构，不再有 v1 的模块级全局。
+- 结算：`resolveCombat` 四阶段（全实体 `updateWeapon` → 命令游标：切枪/换弹/怒气/开火 → 全实体 `updateRage` → `updateRevives`）；命中写 6 类事件，载荷是帧内米制坐标 + 伤害和；`eventId` 仍留 0（S12 分配）。
+- 布局：`Entity` 96 → 232 B、`Event` 48 B、`World` 265 352 B（§6.1 表已同步）；战斗热路径零堆分配、不读 `rng.fx`。
+- 证据：`--filter=combat` 45/45、`--filter=fixture` 6/6、全量 `TESTS 207/207`、`ctest` 1/1、1000 tick 射击 0 次分配。
+
+### 9.1 计划文本纠正与已声明偏差（S08）
+
+1. §5.2 把俯仰上限与输入域并列写 `kPitchLimitRad = 1.5533`：v1 `combat/resolve.ts:47` 的 `PITCH_LIMIT_RAD = 1.5533` 是**结算侧夹取**，输入域仍是 `Math.PI/2` → 本份取 `config::kAimPitchLimitRad = 1.5533`，输入夹取沿用 S06 的 `kPitchLimitRad`。
+2. §6 的 `--filter=fixture` 写 14/14：S07 §8.3 已裁为 4 份向量（S08 后 6/6 = 4 向量 + 2 自检）。§5.7 的 3 份战斗向量（`rifle-burst-hit-120t` / `shotgun-spread-60t` / `downed-revive-140t`）需要「会移动的羊」→ 依赖 S09 的 AI 意图，**改挂 S09**（`docs/evidence/fixtures/README.md` 归属列已改）。
+3. §5.1 的 `WeaponDef.auto` 在 C++ 里是 `isAuto`（`auto` 是关键字），字段序与语义不变。
+4. `Event` 32 → 48 B、`Entity` 96 → 232 B → §6.1 的容量界从 `<128 KiB` 抬到 `<288 KiB`。
+5. `SpawnParams.hp/armor` 是 double，且 `maxHp` 取 **kind 基础值**（v1 `world.ts:231`），只有 `hp` 被参数覆盖；3 参便捷重载自本批起按 v1 填 `hp/armor`（此前留 0，会让救援/怒气用例拿到 0 血实体）。
+6. 玩家胶囊上「头部」只有顶端半球能达成（线段顶 1.3 + 半径 0.4 = 1.7，头部阈值 0.85×1.7 = 1.445）→ 用例改为瞄 1.55 打端盖，修正了「平射即爆头」的写法。
+7. §5.6 的事件载荷用帧内米制坐标（与 v1 `sim/events.ts` 一致），不是量化后的线上坐标。
+
+### 9.2 两轴评审的发现与处置（S08，Standards + Spec 并行评审）
+
+**本次已修**：`Event`/`Entity` 尺寸与 `configHash` 换新导致的历史叙述 —— §6.2 第 5 条与 §6.1 行内仍写「`Entity` 96 字节 / `hp`·`maxHp`·`armor` 各 4 / `maxHp = hp`」「`Event` 只固定条目头」，均以本节的 232/48 B 与 §11 证据行为准（历史行不回收改写）。
+
+**已声明但未做（已知缺口，登记在案，不隐藏）**：
+1. **救援者限速未接**（计划 §5.7 的 `kReviverMaxSpeed = 1.5`）：v1 `sim.ts:109-115` 在阶段 1 对「按住 interact 且附近有倒地队友」的救援者调 `clampHorizontalSpeed(1.5)`；本份只在 `resolve.cpp` 判定里**排除**速度 > 1.5 的救援者，`step.cpp` 的 `applyCommands` 没有这个 clamp → 边走边按交互救不起人（与 v1 不一致）。README §7.5-3 的原计划就是「调用点等 S08 接入」，本批未接入，**顺延到 S09 第一件事**。
+2. **回滚通路无覆盖**（计划 §5.7 的 200ms）：`CombatContext` 在权威步进里恒为 `nullptr`（`step.cpp`），`resolve.cpp` 的回滚分支因此是死路；`combat_test.cpp` 也没有 `rewindMs = 0/100/200` 的用例。回滚的真正消费方是 S11 的回溯命中验证。
+3. **§6 的三条场景只部分落地**：步枪「按住 10 tick = 6 发」无用例；霰弹「8 弹丸共 96 伤害」被弱化为 `hits ∈ [1,8]` 且 `damage ∈ [12·hits, 24·hits]`；「连射 20 发后 0.25」实测为 3 发，「每 tick −0.3°」因一步夹到 0 而不可观测（`kSpreadDecayPerSecondDeg ≥ 2` 即可过）。
+4. **§6-4 的 160.5m 口径**：用例改为传 `maxDist = 4.0` 打 7.4m 目标，验的是入参上限而不是场地对角线之外的羊。
+5. **§6-1 的计数**：计划写 `TESTS 26/26`，实测 `TESTS 45/45`（多出的用例是本次修的谷仓遮挡/胶囊端盖/零分配等边界）。
+6. **弹丸步长与抖动盐无守卫**：`13/29/0x9e3/0x51f` 是 v1 `resolve.ts` 的内联字面量（未导出），导出脚本只能抄一份进 `shot=` 组 → v1 改这四个值对拍不会红；C++ 侧自身抄错仍被冻结的 `configHash` 拦住。用例 `combat_jitter_matches_v1_vectors` 传的是自己的字面量，不引用 `kJitterYawSalt`。
+7. **判断项（未改，留待统一裁决）**：`bool downed` / `bool hit` / `bool interactHeld` 未用 `is`/`has` 前缀（工程约定 §6，S05 曾据此把 `ok` 改名 `isOk`）；`raycast.cpp` 用 `std::fabs`（ADR-010 §2 的允许项写「`abs` 用位运算实现」）；`s08` 是 `export-fixtures.mjs` 的模块级可变全局（S07 §8.3-14 曾以消除模块级全局为卖点）。
+
+## 10. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 10. 当前状态
+## 11. 当前状态
 
-**S01–S07 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+**S01–S08 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
 `World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）就位；战斗、AI、房间、持久化由
 S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
@@ -463,7 +495,7 @@ S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 | `--filter=world` 的打印行（S06 后） | `worldBytes=115840 entityBytes=96 poseBytes=7688 gridBytes=3652 eventBytes=8`（`timeMs` u32 + `eventCursor` u16 + 2 填充 = +8） |
 | g++ 直编兜底（新增 `server/src/sim/*.cpp`） | `TESTS 156/156`，退出码 0（与 cmake 分支同数） |
 | 计划偏差清单（S06） | §7.5 的十三条（含 2 条**待裁决**：S10 §5 的 3 参草图、投射物是否参与静态碰撞） |
-| `node tools/export-fixtures.mjs`（S07 后） | 从只读源自动派生副本后写出 4 份向量，总体积 1 446 500 B（体积门 2 097 152 B）；`configHash = 96d1d5fe` |
+| `node tools/export-fixtures.mjs`（S07 后） | 从只读源自动派生副本后写出 4 份向量，总体积 1 446 500 B（体积门 2 097 152 B）；`configHash = 41ffb3e9` |
 | `node tools/export-fixtures.mjs --check` / `--list` | `check ok：4/4 与盘上逐字节一致`（幂等）；`本批 4 份 = 1446500 B（体积门 2097152 B）`；`--out 目录合计 = 2163463 B / 6 个文件`（§6 的同一条命令，超出 66311 B）；`只读源未写入：packages/shared/src 62 文件 / 317509 B`；清单 4 行 `name bytes sha256`（见 `docs/evidence/fixtures/README.md` §1） |
 | 导出侧自检（S07 §5.2/§6） | `crc32c('123456789') == 0xe3069283`；`%.17g` 11 条 **C 侧实测**向量（含 tie 例 `0x42f8ceb15abbf812 → 436416285491073.12`）；启动时派生副本与只读源逐文件一致 |
 | `server/build/ac_tests.exe --filter=fixture` | 末行 `TESTS 6/6`，退出码 0：4 份向量逐 tick 逐字段**逐位**一致（1100 tick × 4 实体 × 9 字段 + 事件条数 + 三流 RNG 状态） |
@@ -472,5 +504,10 @@ S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 | 22 组 `--filter` 计数（S07 后） | 与 S06 逐组同数（size 4/4、math 8/8、trig 4/4、rng 6/6、quantize 10/10、codec 14/14、hex 10/10、fuzz 3/3、wire 3/3、match 6/6、transport 8/8、reliability 5/5、fragment 4/4、grace 4/4、memory 2/2、world 6/6、entity 7/7、pose 5/5、grid 4/4、alloc 4/4、step 20/20）+ 新增 `fixture 6/6` |
 | g++ 直编兜底（S07 后，不加 `AC_EVIDENCE_FIXTURE_DIR`） | `TESTS 162/162`，退出码 0（对拍向量按仓库根相对路径读取） |
 | 计划偏差清单（S07） | §8.3 的十五条（含 3 条**需裁决**：14 场景 → 4、事件载荷比较、体积门与 `%.17g` 不相容；这 3 条已登记为 `docs/02-需求分析.md` 的 OQ-07…OQ-09） |
+| 战斗模块（S08） | `--filter=combat` 末行 `TESTS 45/45`，退出码 0（武器状态机 8、散布与后坐 6、伤害与护甲 6、射线 5、命中盒与轨迹 6、整步结算 12、零分配与确定性 8） |
+| 全量回归（S08 后） | `server/build/ac_tests.exe` 末行 `TESTS 207/207`；`ctest` 1/1；g++ 直编兜底同数 |
+| configHash 扩展（S08） | 新增 `weapons` / `weapon.rules` / `shot` / `damage` / `rage` / `revive` / `sheepHit` 七组；`node tools/export-fixtures.mjs` 重写 4 份向量（1 446 500 B）后 `check ok：4/4`，C++ `--filter=fixture` 6/6 |
+| 结构体尺寸（S08） | `sizeof(Entity)=232`、`sizeof(Event)=48`、`sizeof(World)=265352`、`WeaponState=48`、`RageState=24`、`DownedState=40` |
+| 计划偏差清单（S08） | §9.1 的七条（3 份战斗向量改挂 S09、`auto`→`isAuto`、`Event`/`Entity` 尺寸与容量界、`maxHp` 口径、玩家爆头几何、事件载荷口径） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

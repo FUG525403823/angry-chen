@@ -9,7 +9,9 @@
 #include <utility>
 #include <vector>
 
+#include "config/combat.hpp"
 #include "config/player.hpp"
+#include "config/weapons.hpp"
 #include "core/hash.hpp"
 #include "sim/arena.hpp"
 
@@ -548,6 +550,74 @@ std::string configHashText() {
   text += "player=" + join17(player);
   text.push_back(kLf);
   text += "input=" + join17(input);
+  text.push_back(kLf);
+
+  // S08 §5：武器/散布/弹道/伤害/怒气/救援/命中盒（与 tools/export-fixtures.mjs 的 configHashText 逐组对应）
+  std::vector<double> weapons;
+  for (const ac::config::WeaponDef& def : ac::config::kWeapons) {
+    weapons.push_back(static_cast<double>(def.damage));
+    weapons.push_back(static_cast<double>(def.pellets));
+    weapons.push_back(static_cast<double>(def.rpm));
+    weapons.push_back(def.isAuto ? 1.0 : 0.0);
+    weapons.push_back(static_cast<double>(def.mag));
+    weapons.push_back(static_cast<double>(def.reloadMs));
+    weapons.push_back(def.spreadDeg);
+    weapons.push_back(def.falloffStartM);
+    weapons.push_back(def.falloffPerM);
+    weapons.push_back(def.headshotMultiplier);
+  }
+  text += "weapons=" + join17(weapons);
+  text.push_back(kLf);
+  text += "weapon.rules=" + join17({static_cast<double>(ac::config::kReserveAmmoInitial),
+                                     ac::config::kSpreadGrowthPerShotDeg, ac::config::kSpreadMaxDeg,
+                                     static_cast<double>(ac::config::kSpreadDecayDelayMs),
+                                     ac::config::kSpreadDecayPerSecondDeg,
+                                     ac::config::kRecoilPitchPerShotDeg, ac::config::kRecoilYawJitterDeg});
+  text.push_back(kLf);
+  text += "shot=" + join17({ac::config::kShotMaxDistanceM, ac::config::kDegToRad,
+                             ac::config::kAimPitchLimitRad,
+                             static_cast<double>(ac::config::kPelletYawStride),
+                             static_cast<double>(ac::config::kPelletPitchStride),
+                             static_cast<double>(ac::config::kJitterYawSalt),
+                             static_cast<double>(ac::config::kJitterPitchSalt)});
+  text.push_back(kLf);
+  text += "damage=" + join17({ac::config::kHeadMinHeightRatio, ac::config::kTorsoMinHeightRatio,
+                               ac::config::kBodyPartMultiplierLimb, ac::config::kArmorAbsorbRatio,
+                               static_cast<double>(ac::config::kMaxArmor),
+                               static_cast<double>(ac::config::kMaxHp),
+                               ac::config::kFalloffMinMultiplier,
+                               ac::config::kFriendlyFire ? 1.0 : 0.0,
+                               static_cast<double>(ac::config::kSheepEliteState)});
+  text.push_back(kLf);
+  text += "rage=" + join17({static_cast<double>(ac::config::kRageMax),
+                             static_cast<double>(ac::config::kRagePerKill),
+                             static_cast<double>(ac::config::kRagePerEliteKill),
+                             static_cast<double>(ac::config::kRageHeadshotKillMultiplier),
+                             static_cast<double>(ac::config::kRageIdleDecayDelayMs),
+                             static_cast<double>(ac::config::kRageDecayPerSecond),
+                             static_cast<double>(ac::config::kRageDurationMs),
+                             ac::config::kRageDamageMultiplier, ac::config::kRageFireRateMultiplier,
+                             ac::config::kRageMoveSpeedMultiplier});
+  text.push_back(kLf);
+  text += "revive=" + join17({ac::config::kReviveRangeM, static_cast<double>(ac::config::kReviveDurationMs),
+                               static_cast<double>(ac::config::kReviveResetDelayMs),
+                               ac::config::kRescueSpeedClampMps, ac::config::kRevivedHpRatio,
+                               ac::config::kWaveReviveHpRatio, ac::config::kProgressEventStepRatio});
+  text.push_back(kLf);
+  std::vector<double> sheepHit;
+  for (const ac::config::SheepHitProfile& profile : ac::config::kSheepHit) {
+    sheepHit.push_back(profile.halfWidthM);
+    sheepHit.push_back(profile.halfDepthM);
+    sheepHit.push_back(profile.topM);
+    sheepHit.push_back(profile.headHalfWidthM);
+    sheepHit.push_back(profile.headMinYM);
+    sheepHit.push_back(profile.headMaxYM);
+    sheepHit.push_back(profile.headMinZM);
+    sheepHit.push_back(profile.headMaxZM);
+    sheepHit.push_back(profile.headMinM);
+    sheepHit.push_back(profile.torsoMinM);
+  }
+  text += "sheepHit=" + join17(sheepHit);
   return text;
 }
 

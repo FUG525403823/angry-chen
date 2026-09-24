@@ -23,6 +23,12 @@ const V1_ENTRY = 'packages/shared/src/index.ts';
 const V1_CONFIG = 'packages/shared/src/config/index.ts';
 const V1_RAGE = 'packages/shared/src/combat/rage.ts';
 const V1_WEAPON = 'packages/shared/src/combat/weapon.ts';
+const V1_WEAPONS_CONFIG = 'packages/shared/src/config/weapons.ts';
+const V1_COMBAT_CONFIG = 'packages/shared/src/config/combat.ts';
+const V1_SHEEP_CONFIG = 'packages/shared/src/config/sheep.ts';
+const V1_RESOLVE = 'packages/shared/src/combat/resolve.ts';
+// S08 的 configHash 分组：导入结果在 main 里填，configHashText 只读它。
+let s08 = null;
 const TRIG_TABLE_PATH = 'docs/evidence/fixtures/trig-table.json';
 const DEFAULT_OUT = 'docs/evidence/fixtures';
 const SIZE_GATE_BYTES = 2 * 1024 * 1024;
@@ -284,6 +290,39 @@ function configHashText(config) {
   lines.push('input=' + g17List([input.moveAxisLimit, input.pitchLimitRad, input.buttonMask,
     input.buttons.fire, input.buttons.sprint, input.buttons.jump, input.buttons.reload,
     input.buttons.interact, input.buttons.rage, input.buttons.switchWeapon]));
+  if (s08 !== null) {
+    // ---- S08 §5：武器/散布/弹道/伤害/怒气/救援/命中盒（C++ 侧逐组同样重算）----
+    const weaponRows = s08.slotOrder.flatMap((slot) => {
+      const w = s08.weapons[slot];
+      return [w.damage, w.pellets, w.rpm, w.auto ? 1 : 0, w.mag, w.reloadMs, w.spreadDeg,
+        w.falloffStartM, w.falloffPerM, w.headshotMultiplier];
+    });
+    lines.push('weapons=' + g17List(weaponRows));
+    lines.push('weapon.rules=' + g17List([s08.w.RESERVE_AMMO_INITIAL, s08.w.SPREAD_GROWTH_PER_SHOT_DEG,
+      s08.w.SPREAD_MAX_DEG, s08.w.SPREAD_DECAY_DELAY_MS, s08.w.SPREAD_DECAY_PER_SECOND_DEG,
+      s08.w.RECOIL_PITCH_PER_SHOT_DEG, s08.w.RECOIL_YAW_JITTER_DEG]));
+    // 弹丸步长/抖动盐是 v1 resolve.ts 的内联字面量（:310-311 附近），没有导出，只能在这里抄一份：
+    // 它们改了 hash 不会变，但 C++ 侧那两处也钉死在同一份计划 §5.3 上。
+    lines.push('shot=' + g17List([s08.resolve.SHOT_MAX_DISTANCE_M, s08.resolve.DEG_TO_RAD,
+      s08.resolve.PITCH_LIMIT_RAD, 13, 29, 0x9e3, 0x51f]));
+    lines.push('damage=' + g17List([s08.c.HEAD_MIN_HEIGHT_RATIO, s08.c.TORSO_MIN_HEIGHT_RATIO,
+      s08.c.BODY_PART_MULTIPLIER.limb, s08.c.ARMOR_ABSORB_RATIO, s08.c.ARMOR_MAX, s08.c.HEALTH_MAX,
+      s08.c.FALLOFF_MIN_MULTIPLIER, s08.c.FRIENDLY_FIRE ? 1 : 0, s08.c.SHEEP_ELITE_STATE]));
+    const rage = s08.c.RAGE;
+    lines.push('rage=' + g17List([rage.max, rage.perKill, rage.perEliteKill, rage.headshotKillMultiplier,
+      rage.idleDecayDelayMs, rage.decayPerSecond, rage.durationMs, rage.damageMultiplier,
+      rage.fireRateMultiplier, rage.moveSpeedMultiplier]));
+    const revive = s08.c.REVIVE;
+    lines.push('revive=' + g17List([revive.rangeM, revive.durationMs, revive.resetDelayMs,
+      revive.reviverMaxSpeed, revive.revivedHpRatio, revive.waveReviveHpRatio,
+      revive.progressEventStepRatio]));
+    const hitRows = s08.sheepOrder.flatMap((kind) => {
+      const h = s08.sheepHit[kind];
+      return [h.halfWidthM, h.halfDepthM, h.topM, h.headHalfWidthM, h.headMinYM, h.headMaxYM,
+        h.headMinZM, h.headMaxZM, h.headMinM, h.torsoMinM];
+    });
+    lines.push('sheepHit=' + g17List(hitRows));
+  }
   const text = lines.join('\n');
   return { text, hash: crc32cText(text).toString(16).padStart(8, '0') };
 }
@@ -594,6 +633,20 @@ async function main() {
   const configModule = await import(pathToFileURL(path.join(root, V1_CONFIG)).href);
   const rageModule = await import(pathToFileURL(path.join(root, V1_RAGE)).href);
   const weaponModule = await import(pathToFileURL(path.join(root, V1_WEAPON)).href);
+const weaponsConfig = await import(pathToFileURL(path.join(root, V1_WEAPONS_CONFIG)).href);
+const combatConfig = await import(pathToFileURL(path.join(root, V1_COMBAT_CONFIG)).href);
+const sheepConfig = await import(pathToFileURL(path.join(root, V1_SHEEP_CONFIG)).href);
+const resolveModule = await import(pathToFileURL(path.join(root, V1_RESOLVE)).href);
+// combat/resolve.ts 顶层只导出常量，但导入它会把整条战斗依赖链拉进来（都用打补丁后的 Math）。
+s08 = {
+  weapons: weaponsConfig.WEAPONS,
+  slotOrder: weaponsConfig.WEAPON_SLOT_ORDER,
+  w: weaponsConfig,
+  c: combatConfig,
+  sheepHit: sheepConfig.SHEEP_HIT,
+  sheepOrder: sheepConfig.SHEEP_ORDER,
+  resolve: resolveModule,
+};
   const api = { createWorld: v1.createWorld, createCommand: v1.createCommand, stepWorld: v1.stepWorld,
     getEntity: v1.getEntity, CONFIG: v1.CONFIG, isRageActive: rageModule.isRageActive, isReloading: weaponModule.isReloading };
 

@@ -15,13 +15,38 @@ namespace ac::sim {
 
 inline constexpr std::size_t kMaxEvents = 256u;
 
-// §5.1：本 tick 的事件缓冲条目。这里只固定 S03 §5.4 冻结的条目头（eventId u32 + type u8，type ∈ 1..10）；
-// 各类型载荷（subjectId / targetId / value / flags / hitX.. 等，字段名以 S03 字段表为准）由 S06 起
-// 按其契约**追加**在末尾 —— 只能追加，不得改本份冻结的容量与每 tick 清零语义。
+// §5.1：本 tick 的事件缓冲条目。头（eventId u32 + type u8，type ∈ 1..10）由 S05 冻结；
+// S08 按 S06 的约定在末尾追加各类型载荷，字段语义与 v1 world.ts 的 SimEvent 逐字对应
+// （x/y/z 是米制、value 是原始数值 —— 量化到 u16/i16 厘米是编码层的事，见 S03 §5.4）。
+// eventId 仍留 0：v1 的 sim 事件没有这个字段，幂等键由广播层（S12）分配。
+// 字段顺序按「8 字节对齐优先」排布：eventId/tick + 4 个 double + 3 个 u16/u8 组 = 48 字节（无填充浪费）。
 struct Event {
   uint32_t eventId = 0u;
+  uint32_t tick = 0u;
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+  double value = 0.0;
+  uint16_t subjectId = 0u;
+  uint16_t targetId = 0u;
   uint8_t type = 0u;
+  uint8_t flags = 0u;
+  uint8_t kind = 0u;  // 仅 sheepKilled 用（0 grunt / 1 ram / 2 elite / 3 king）
 };
+static_assert(sizeof(Event) == 48u, "S08 §5.6：事件载荷扩容后条目仍是 48 字节（无隐式填充）");
+
+// S03 §5.4 的事件类型编号（sim 层只认整数，避免 sim -> net 的反向依赖；
+// combat_test.cpp 用 static_assert 把这份编号与 net/codec.hpp 的枚举钉在一起）。
+inline constexpr uint8_t kEventPlayerHit = 1u;
+inline constexpr uint8_t kEventSheepKilled = 2u;
+inline constexpr uint8_t kEventWaveStart = 3u;
+inline constexpr uint8_t kEventWaveClear = 4u;
+inline constexpr uint8_t kEventPlayerDowned = 5u;
+inline constexpr uint8_t kEventReviveProgress = 6u;
+inline constexpr uint8_t kEventReviveDone = 7u;
+inline constexpr uint8_t kEventRageActivated = 8u;
+inline constexpr uint8_t kEventMatchEnded = 9u;
+inline constexpr uint8_t kEventPhaseChange = 10u;
 
 struct WorldStats {
   uint32_t aliveSheep = 0u;
@@ -94,10 +119,15 @@ inline SpawnResult spawnEntity(World& world, const SpawnParams& params) noexcept
   return tableOf(world).allocate(params);
 }
 
+// v1 world.ts 的 spawnEntity(kind, x, y, z, ...) 口径：hp/armor 取该 kind 的基础属性。
+// S08 起这个便捷重载与 v1 对齐（此前留 0，会让 S08 的救援/怒气用例拿到 0 血实体）。
 inline SpawnResult spawnEntity(World& world, EntityKind kind, ac::Vec3 pos) noexcept {
   SpawnParams params{};
   params.kind = kind;
   params.pos = pos;
+  const ac::config::BaseStats& stats = ac::config::kKindBaseStats[static_cast<std::size_t>(kind)];
+  params.hp = static_cast<double>(stats.hp);
+  params.armor = static_cast<double>(stats.armor);
   return spawnEntity(world, params);
 }
 
@@ -114,6 +144,23 @@ inline bool pushEvent(World& world, const Event& event) noexcept {
   world.events[world.eventCount] = event;
   ++world.eventCount;
   return true;
+}
+
+// S08 §5.6：按 v1 sim/events.ts 的 pushEvent 口径入队（type 用上表的整数编号）。
+inline bool pushEvent(World& world, uint8_t type_, uint8_t flags, uint16_t subjectId, uint16_t targetId,
+                      double x, double y, double z, double value, uint8_t kind = 0u) noexcept {
+  Event event;
+  event.type = type_;
+  event.tick = world.tick;
+  event.flags = flags;
+  event.subjectId = subjectId;
+  event.targetId = targetId;
+  event.x = x;
+  event.y = y;
+  event.z = z;
+  event.value = value;
+  event.kind = kind;
+  return pushEvent(world, event);
 }
 
 }  // namespace ac::sim

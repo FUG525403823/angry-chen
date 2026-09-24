@@ -52,9 +52,9 @@ node tools/export-fixtures.mjs --root <副本> --out <目录>
 
 | fixture（§5.3） | 依赖的 C++ 能力 | 所有者 |
 |---|---|---|
-| `rifle-burst-hit-120t` | 武器状态、射线、伤害（S08） | S08 |
-| `shotgun-spread-60t` | 8 弹丸与抖动派生（S08） | S08 |
-| `downed-revive-140t` | 倒地/救援（S08） | S08 |
+| `rifle-burst-hit-120t` | 武器状态、射线、伤害（S08） | S09（原 S08：需要会移动的羊，见 server/README §9.1-2） |
+| `shotgun-spread-60t` | 8 弹丸与抖动派生（S08） | S09（原 S08：需要会移动的羊，见 server/README §9.1-2） |
+| `downed-revive-140t` | 倒地/救援（S08） | S09（原 S08：需要会移动的羊，见 server/README §9.1-2） |
 | `sheep-grunt-ai-600t` | 羊形 AI 与聚集（S09） | S09 |
 | `sheep-ram-charge-300t` | 冲锋/硬直（S09） | S09 |
 | `sheep-elite-bolt-300t` | 距离保持与投射物生命周期（S09） | S09 |
