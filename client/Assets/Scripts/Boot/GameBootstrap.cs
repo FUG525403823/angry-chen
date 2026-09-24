@@ -1,3 +1,4 @@
+using System;
 using Ac.Core;
 using Ac.Sim;
 using Ac.UI;
@@ -21,8 +22,19 @@ namespace Ac.Boot
             var views = new EntityViews();
             var profiler = new FrameProfiler();
             Loop = new GameLoop(new SnapshotView(), views, new Hud(), profiler);
+            // 音频：设备不可用（无头/Null Device）时不要假装有，保持该段未打点。
+            try
+            {
+                Ac.Audio.Mixer.EnsureStarted();      // 静态启动：设备就绪后才有 mix
+                var mixer = new Ac.Audio.Mixer();
+                Loop.Audio = new MixerSink(mixer);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("Ac.Boot: audio unavailable, 'audio' stage stays unmarked: " + ex.Message);
+            }
             var root = new GameObject(RootName);
-            Object.DontDestroyOnLoad(root);
+            UnityEngine.Object.DontDestroyOnLoad(root);
             root.AddComponent<GameLoopDriver>();
         }
 
@@ -32,6 +44,13 @@ namespace Ac.Boot
         {
             if (Loop == null) Start();
         }
+    }
+
+    internal sealed class MixerSink : IFrameStageSink
+    {
+        private readonly Ac.Audio.Mixer _mixer;
+        internal MixerSink(Ac.Audio.Mixer mixer) { _mixer = mixer; }
+        public void Tick(double dtMs) { _mixer.Tick((float)dtMs); }
     }
 
     // 唯一的 MonoBehaviour：只做"每帧把 dt 交给帧回路"这一件事，逻辑全在 GameLoop 里（可无头测试）。

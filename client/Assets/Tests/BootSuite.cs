@@ -14,6 +14,7 @@ namespace Ac.Tests
         {
             SelfTest.Add("boot.frame_loop", ChecksFrameLoop);
             SelfTest.Add("boot.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
+            SelfTest.Add("boot.stage_sinks", ChecksStageSinks);
         }
 
         private static GameLoop NewLoop(int entities, out SnapshotFrame frame)
@@ -71,6 +72,33 @@ namespace Ac.Tests
             SelfTest.Equal(8, (long)loop.Views.ActiveCount);
             SelfTest.Equal(0, (long)loop.EventsApplied);
             SelfTest.Equal(0, (long)loop.HardCorrects);   // 没有权威帧时不产生硬纠正
+        }
+
+        // 呈现阶段的缝：接了 sink 就必须每帧被驱动；没接就必须**一帧都不打点**
+        // （打了点、值恒 0，等于让 fx/audio 的预算永远通过 —— 审查点名的假绿）。
+        private sealed class CountingSink : IFrameStageSink
+        {
+            internal int Ticks;
+            public void Tick(double dtMs) { Ticks += 1; }
+        }
+
+        private static void ChecksStageSinks()
+        {
+            SnapshotFrame frame;
+            var loop = NewLoop(4, out frame);
+
+            for (uint tick = 1; tick <= 5; tick++) { Feed(loop, ref frame, 4, tick, tick == 1); loop.Frame(1000.0 / 60.0); }
+            SelfTest.True(loop.Profiler.P95Ms(FrameStage.Fx) == 0f, "未接 sink 时 fx 段不许打点", loop.Profiler.P95Ms(FrameStage.Fx).ToString("R"));
+
+            var audio = new CountingSink();
+            loop.Audio = audio;
+            for (uint tick = 6; tick <= 10; tick++) { Feed(loop, ref frame, 4, tick, false); loop.Frame(1000.0 / 60.0); }
+            SelfTest.Equal(5, (long)audio.Ticks);
+            SelfTest.True(loop.Profiler.P95Ms(FrameStage.Audio) > 0f, "接了 sink 就该打点", loop.Profiler.P95Ms(FrameStage.Audio).ToString("R"));
+
+            loop.Audio = null;
+            for (uint tick = 11; tick <= 12; tick++) { Feed(loop, ref frame, 4, tick, false); loop.Frame(1000.0 / 60.0); }
+            SelfTest.Equal(5, (long)audio.Ticks);
         }
 
         private static void ChecksSteadyStateZeroAlloc()

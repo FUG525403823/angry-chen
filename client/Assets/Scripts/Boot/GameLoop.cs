@@ -11,6 +11,13 @@ namespace Ac.Boot
     //
     // 这里刻意**不引用 UnityEngine**：帧基准（Ac.Tests.FrameBench）与无头用例跑的是同一条回路，
     // 免得"基准测的路径"和"游戏跑的路径"变成两条代码。
+    // 呈现阶段的缝：帧回路不引用 UnityEngine，特效/音频的实现在 Ac.Boot 的 Unity 侧适配器里，
+    // 通过这个接口按帧被调用（也因此测试可以注入假实现来验证"这一段真的被打点了"）。
+    public interface IFrameStageSink
+    {
+        void Tick(double dtMs);
+    }
+
     public sealed class GameLoop
     {
         public const int MaxInboundPerPoll = 64;
@@ -42,6 +49,8 @@ namespace Ac.Boot
         }
 
         public UdpTransport Transport { get; set; }      // 离线（单机/帧基准）时为 null
+        public IFrameStageSink Fx { get; set; }
+        public IFrameStageSink Audio { get; set; }
         public EventIdTracker Events { get; set; }
         public ushort LocalPlayerId { get; set; }
 
@@ -161,6 +170,12 @@ namespace Ac.Boot
             _clock.Advance(_nowMs);
             _views.SyncFrame(_view, _clock, dtMs);
             _profiler.Mark(FrameStage.Sync);   // 镜像同步算 sync 段；draw 段在没有渲染器时不打点（见 FrameBench）
+
+            // ⑤ 呈现：特效与音频各有独立预算段（§5 的 fx / audio）。没接线就不打点——
+            //    "报 0 让预算永远通过"是审查点名的假绿。
+            // 关键：**没接线就不打点**。打了点、值为 0，会让 fx/audio 的预算永远"通过"。
+            if (Fx != null) { Fx.Tick(dtMs); _profiler.Mark(FrameStage.Fx); }
+            if (Audio != null) { Audio.Tick(dtMs); _profiler.Mark(FrameStage.Audio); }
 
             // ⑤ HUD：采样 → 应用 → 推进
             FillSample();
