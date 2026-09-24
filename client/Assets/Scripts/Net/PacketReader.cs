@@ -122,7 +122,7 @@ namespace Ac.Net
         }
 
         // 分片包（type 9）例外：必须置 moreFragments，reliable 由被分片的通道决定。
-        private static bool IsFlagsValidForType(PacketType type, ushort flags)
+        public static bool IsFlagsValidForType(PacketType type, ushort flags)
         {
             if (type == PacketType.Fragment)
             {

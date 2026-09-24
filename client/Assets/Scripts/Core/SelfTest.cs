@@ -60,6 +60,12 @@ namespace Ac.Core
                 {
                     failures++;
                     Debug.Log("FAIL " + testCase.Id + " " + Describe(error));
+                    // 冻结的 FAIL 行只有 expected=/actual= 两个字段，堆栈另起一行（前缀 [selftest] 不属于门的判据）。
+                    // 诊断行默认静默：C02 §5.7 的失败行是冻结契约，多打的行只在排查时用环境变量打开。
+                if (Environment.GetEnvironmentVariable("AC_SELFTEST_STACK") == "1")
+                {
+                    Debug.Log("[selftest] stack " + testCase.Id + "\n" + error.StackTrace);
+                }
                 }
             }
 
