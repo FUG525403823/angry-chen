@@ -40,10 +40,38 @@ jobs:
       - name: Test
         run: ctest --test-dir server/build --output-on-failure
 
+  # S14 §4-7：同 job 依次跑 gate-4p2min、反向自检（必须红）、soak-4p5min；任一阈值 fail → 作业红。
   server-perf:
-    name: server-perf (S14 占位)
+    name: server-perf (ac_gate gate-4p2min + soak + 反向自检)
+    needs: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Placeholder
-        run: echo "S14 落地：无头机器人负载、5 分钟 soak、CPU 与带宽阈值"
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Configure
+        run: cmake -S server -B server/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAC_WERROR=ON
+      - name: Build
+        run: cmake --build server/build
+      - name: Run performance gate (4 players, 2 min)
+        run: ./server/build/ac_gate --scenario=gate-4p2min --out=server/build/server-perf.json
+      # §6-3：反向自检必须让整跑次变红（把 G3 的上限压到 0），否则门禁本身不可信。
+      - name: Reverse self-check (must fail)
+        run: |
+          if ./server/build/ac_gate --scenario=gate-4p2min --break=G3=0 --out=server/build/server-perf-break.json; then
+            echo "reverse self-check must exit non-zero" >&2
+            exit 1
+          fi
+      - name: Run soak gate (4 players, 5 min)
+        run: ./server/build/ac_gate --scenario=soak-4p5min --out=server/build/server-perf-soak.json
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-perf-report
+          path: |
+            server/build/server-perf.json
+            server/build/server-perf-break.json
+            server/build/server-perf-soak.json
+          if-no-files-found: warn

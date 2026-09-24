@@ -4,12 +4,16 @@
 #include "core/version.hpp"
 #include "metrics/metrics.hpp"
 #include "persist/match_store.hpp"
+#include "server/runtime.hpp"
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -20,6 +24,8 @@ void printUsage(const char* argv0) {
   std::printf("  --selftest-log    向 stdout 写一条结构化启动日志后退出\n");
   std::printf("  --selftest-metrics 向 stdout 渲染一遍 /metrics 文本后退出\n");
   std::printf("  --selftest-store  打开 AC_DATA_DIR 下的战绩存储并打印常驻/坏行计数与两条存储指标后退出\n");
+  std::printf("  --serve           启动服务器运行时（UDP 游戏面 + HTTP 诊断面），直到 --minutes 到时或 Ctrl+C\n");
+  std::printf("                    环境变量 AC_UDP_PORT / AC_HTTP_PORT / AC_DATA_DIR；选项 --minutes= --udp-port= --http-port= --seed=\n");
   std::printf("  无参数            向 stderr 写一条结构化启动日志后退出\n");
 }
 
@@ -75,6 +81,62 @@ int runSelftestStore() {
   return 0;
 }
 
+std::uint16_t portFromEnv(const char* name, std::uint16_t fallback) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') return fallback;
+  const int value = std::atoi(raw);
+  return value > 0 && value < 65536 ? static_cast<std::uint16_t>(value) : fallback;
+}
+
+std::uint64_t steadyNowMs() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+// S14 §2-3 / S15 §5：常驻服务模式（端口与数据目录全部来自环境变量，便于 systemd 接管）。
+int runServe(int argc, char** argv) {
+  ac::server::RuntimeConfig config{};
+  config.udpPort = portFromEnv("AC_UDP_PORT", config.udpPort);
+  config.httpPort = portFromEnv("AC_HTTP_PORT", config.httpPort);
+  double minutes = 0.0;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    const std::size_t eq = arg.find('=');
+    if (eq == std::string_view::npos) continue;
+    const std::string_view key = arg.substr(0u, eq);
+    const std::string value(arg.substr(eq + 1u));
+    if (key == "--minutes") minutes = std::atof(value.c_str());
+    else if (key == "--udp-port") config.udpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
+    else if (key == "--http-port") config.httpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
+    else if (key == "--seed") config.seed = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+  }
+
+  ac::server::Runtime runtime;
+  std::string error;
+  if (!runtime.start(config, &error)) {
+    std::fprintf(stderr, "serve failed: %s\n", error.c_str());
+    return 1;
+  }
+  ac::log::event(ac::log::Level::info, "listening", {},
+                 {ac::log::DetailField("udpPort", static_cast<std::uint32_t>(runtime.udpPort())),
+                  ac::log::DetailField("httpPort", static_cast<std::uint32_t>(runtime.httpPort())),
+                  ac::log::DetailField("dataDir", std::string_view(runtime.dataDir()))});
+  const std::uint64_t startMs = steadyNowMs();
+  const std::uint64_t endMs =
+      minutes > 0.0 ? startMs + static_cast<std::uint64_t>(minutes * 60000.0) : 0u;
+  while (endMs == 0u || steadyNowMs() < endMs) {
+    runtime.pollOnce(steadyNowMs());
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ac::log::event(ac::log::Level::info, "shutdownRequested", {}, {});
+  runtime.stop();
+  ac::log::event(ac::log::Level::info, "shutdownComplete", {},
+                 {ac::log::DetailField("ticks", runtime.metrics().ticks)});
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -99,6 +161,7 @@ int main(int argc, char** argv) {
       }
       if (arg == "--selftest-metrics") return runSelftestMetrics();
       if (arg == "--selftest-store") return runSelftestStore();
+      if (arg == "--serve") return runServe(argc, argv);
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       printUsage(argv[0]);
       return 2;

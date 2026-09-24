@@ -364,9 +364,17 @@ void event(Level level, std::string_view evt, const EventContext& ctx,
   writeLine(formatEventLine(level, evt, resolved, detail));
 }
 
+namespace {
+// §5 G8 的采集点：本工程单线程写日志，读到半写状态的风险不值得引入原子量。
+unsigned gUncaughtCount = 0u;
+}  // namespace
+
 void reportUncaught(std::string_view what, const EventContext& ctx) {
+  ++gUncaughtCount;
   event(Level::error, "error.uncaught", ctx, {DetailField("what", what)});
 }
+
+unsigned uncaughtCount() noexcept { return gUncaughtCount; }
 
 std::size_t knownEventCount() noexcept { return kKnownEventCount; }
 

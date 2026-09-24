@@ -15,6 +15,9 @@ struct Endpoint {
   }
 };
 
+// WinSock 初始化（幂等）：Windows 首次调用执行 WSAStartup，POSIX 恒真。UDP 与 TCP 共用一份。
+bool ensureWinsock() noexcept;
+
 enum class SocketError : int {
   kNone = 0,
   kWouldBlock = 1,

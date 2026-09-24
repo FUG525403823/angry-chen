@@ -48,6 +48,9 @@ int32_t plannedBudgetSum(const DirectorState& state) noexcept;
 // v1：stepWorld 每 tick 全量数一次羊并写 world.stats.aliveSheep，这里 O(1) 读。
 int32_t aliveSheepCount(const ac::sim::World& world) noexcept;
 
+// §5.4 的出生原语：波次导演与 S14 的运行时负载补羊共用这一份实现（不另起第二套生成路径）。
+bool spawnSheepAt(ac::sim::World& world, ac::config::SheepKind kind, double x, double z) noexcept;
+
 double nearestPlayerDistanceM(const ac::sim::World& world, double x, double z,
                               const uint16_t* playerIds, uint32_t playerCount) noexcept;
 

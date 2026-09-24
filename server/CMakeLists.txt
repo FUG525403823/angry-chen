@@ -39,6 +39,16 @@ endif()
 add_executable(ac_server "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 target_link_libraries(ac_server PRIVATE ac_core)
 
+# S14 §3：压测与门禁工具（tools/ 在 src/ 之外，不会被 ac_core 的 glob 吸进去）。
+foreach(AC_TOOL IN ITEMS bot bench gate)
+  add_executable(ac_${AC_TOOL} "${CMAKE_CURRENT_SOURCE_DIR}/tools/${AC_TOOL}.cpp")
+  target_link_libraries(ac_${AC_TOOL} PRIVATE ac_core)
+endforeach()
+if(WIN32)
+  # gate 采样 RSS 需要 psapi（GetProcessMemoryInfo）。
+  target_link_libraries(ac_gate PRIVATE psapi)
+endif()
+
 # tests/ 下的每个 .cpp 都是 ac_tests 的翻译单元；入口 main() 只在 main_test.cpp，
 # 后续计划的测试文件只写 AC_TEST 用例（§9 消费约定）。
 file(GLOB AC_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")

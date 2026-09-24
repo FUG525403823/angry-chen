@@ -119,6 +119,9 @@ void event(Level level, std::string_view evt, const EventContext& ctx,
 // §5「频率纪律」：未捕获异常必须落 error.uncaught，且写日志的路径不能因此失效。
 void reportUncaught(std::string_view what, const EventContext& ctx = {});
 
+// §5 G8：进程内已落盘的 error.uncaught 条数（单线程使用，性能门禁直接读它）。
+unsigned uncaughtCount() noexcept;
+
 // §5 的事件名最小集（名字即契约，新增名要同步改清单与断言）。
 std::size_t knownEventCount() noexcept;
 std::string_view knownEvent(std::size_t index) noexcept;

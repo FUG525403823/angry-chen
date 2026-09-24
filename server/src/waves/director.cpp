@@ -17,6 +17,8 @@ namespace {
 // §5.4 的出生点抖动（v1 director.ts 的内联字面量）。
 inline constexpr double kSpawnJitterM = 1.5;
 
+}  // namespace
+
 // 返回 false 表示实体池耗尽（v1 的 !spawned.ok）：调用方丢弃本次生成、不重试。
 bool spawnSheepAt(ac::sim::World& world, ac::config::SheepKind kind, double x, double z) noexcept {
   ac::sim::SpawnParams params{};
@@ -35,8 +37,6 @@ bool spawnSheepAt(ac::sim::World& world, ac::config::SheepKind kind, double x, d
   entity->state = ac::config::sheepStateCode(ac::config::SheepState::kGraze);
   return true;
 }
-
-}  // namespace
 
 DirectorState createDirectorState() noexcept { return DirectorState{}; }
 

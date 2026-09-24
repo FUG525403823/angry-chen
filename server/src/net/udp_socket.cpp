@@ -18,19 +18,24 @@
 
 namespace ac::net {
 
-namespace {
-
 #if defined(_WIN32)
-using NativeSocket = SOCKET;
-constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
-
 bool ensureWinsock() noexcept {
+  // 幂等：UDP 与 TCP 两条缝共用这一份初始化（S14 §2-3 的 HTTP 监听也走这里）。
   static bool isStarted = false;
   if (isStarted) return true;
   WSADATA data{};
   isStarted = WSAStartup(MAKEWORD(2, 2), &data) == 0;
   return isStarted;
 }
+#else
+bool ensureWinsock() noexcept { return true; }
+#endif
+
+namespace {
+
+#if defined(_WIN32)
+using NativeSocket = SOCKET;
+constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
 
 SocketError mapLastError() noexcept {
   switch (WSAGetLastError()) {
@@ -48,8 +53,6 @@ SocketError mapLastError() noexcept {
 #else
 using NativeSocket = int;
 constexpr NativeSocket kInvalidSocket = -1;
-
-bool ensureWinsock() noexcept { return true; }
 
 SocketError mapLastError() noexcept {
   switch (errno) {
