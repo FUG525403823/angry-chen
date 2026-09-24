@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "metrics/counters.hpp"
+#include "metrics/gauges.hpp"
 
 namespace ac::replication {
 
@@ -36,10 +37,12 @@ constexpr bool shouldSendSnapshot(uint16_t rateX10, uint32_t tick) noexcept {
 
 struct RateTriggers {
   bool isBacklogOverHalf = false;
-  bool didTickSkipsGrow = false;
-  bool didBudgetExceedGrow = false;
+  bool hasTickSkipsGrown = false;
+  bool hasBudgetExceededGrown = false;
 
-  bool hasAny() const noexcept { return isBacklogOverHalf || didTickSkipsGrow || didBudgetExceedGrow; }
+  bool hasAny() const noexcept {
+    return isBacklogOverHalf || hasTickSkipsGrown || hasBudgetExceededGrown;
+  }
 };
 
 struct SnapshotRateState {
@@ -51,11 +54,11 @@ struct SnapshotRateState {
   bool isEvaluated = false;
 };
 
-RateLevel snapshotRateLevel(const SnapshotRateState& state) noexcept;
 uint16_t snapshotRateX10(const SnapshotRateState& state) noexcept;
 
-// 返回 true = 本周期档位发生变更（降档或升档）。
+// 返回 true = 本周期档位发生变更（降档或升档）。每次调用都会刷新 ac_snapshot_rate_x10。
 bool updateSnapshotRate(SnapshotRateState& state, uint32_t nowMs, const RateTriggers& triggers,
-                        ac::metrics::CounterRegistry* counters = nullptr) noexcept;
+                        ac::metrics::CounterRegistry* counters = nullptr,
+                        ac::metrics::GaugeRegistry* gauges = nullptr) noexcept;
 
 }  // namespace ac::replication

@@ -88,13 +88,13 @@ AC_TEST(schedule_rate_machine_walks_all_levels) {
 AC_TEST(schedule_eval_period_is_one_second) {
   bp::SnapshotRateState state;
   bp::RateTriggers triggered{};
-  triggered.didTickSkipsGrow = true;
+  triggered.hasTickSkipsGrown = true;
   AC_CHECK(bp::updateSnapshotRate(state, 0u, triggered, nullptr));
   AC_CHECK_EQ(bp::snapshotRateX10(state), bp::kSnapshotRateMidX10);
-  triggered.didTickSkipsGrow = false;
+  triggered.hasTickSkipsGrown = false;
   AC_CHECK(!bp::updateSnapshotRate(state, 500u, triggered, nullptr));
   AC_CHECK_EQ(bp::snapshotRateX10(state), bp::kSnapshotRateMidX10);
-  triggered.didTickSkipsGrow = true;
+  triggered.hasTickSkipsGrown = true;
   AC_CHECK(bp::updateSnapshotRate(state, 1000u, triggered, nullptr));
   AC_CHECK_EQ(bp::snapshotRateX10(state), bp::kSnapshotRateLowX10);
   AC_CHECK_EQ(state.lastEvalMs, 1000u);
@@ -103,9 +103,9 @@ AC_TEST(schedule_eval_period_is_one_second) {
 AC_TEST(schedule_clean_period_is_three_seconds) {
   bp::SnapshotRateState state;
   bp::RateTriggers triggered{};
-  triggered.didTickSkipsGrow = true;
+  triggered.hasTickSkipsGrown = true;
   AC_CHECK(bp::updateSnapshotRate(state, 0u, triggered, nullptr));
-  triggered.didTickSkipsGrow = false;
+  triggered.hasTickSkipsGrown = false;
   AC_CHECK(!bp::updateSnapshotRate(state, 1000u, triggered, nullptr));
   AC_CHECK(!bp::updateSnapshotRate(state, 2000u, triggered, nullptr));
   AC_CHECK(bp::updateSnapshotRate(state, 3000u, triggered, nullptr));
@@ -121,13 +121,13 @@ AC_TEST(schedule_downshift_signals_are_independent) {
 
   bp::SnapshotRateState skips;
   bp::RateTriggers skipTrigger{};
-  skipTrigger.didTickSkipsGrow = true;
+  skipTrigger.hasTickSkipsGrown = true;
   AC_CHECK(bp::updateSnapshotRate(skips, 0u, skipTrigger, nullptr));
   AC_CHECK_EQ(bp::snapshotRateX10(skips), bp::kSnapshotRateMidX10);
 
   bp::SnapshotRateState budget;
   bp::RateTriggers budgetTrigger{};
-  budgetTrigger.didBudgetExceedGrow = true;
+  budgetTrigger.hasBudgetExceededGrown = true;
   AC_CHECK(bp::updateSnapshotRate(budget, 0u, budgetTrigger, nullptr));
   AC_CHECK_EQ(bp::snapshotRateX10(budget), bp::kSnapshotRateMidX10);
 
@@ -156,12 +156,12 @@ AC_TEST(schedule_budget_yield_does_not_drop_ticks) {
   AC_CHECK(didYield);
   AC_CHECK_EQ(scheduler.budgetExceeded, 1u);
   AC_CHECK_EQ(scheduler.tickIndex, 1u);
-  AC_CHECK_EQ(scheduler.accumulatedTicks, 1u);
+  AC_CHECK_EQ(core::accountedTicks(scheduler), 1u);
   AC_CHECK_EQ(scheduler.tickSkips, 0u);  // 让出不记丢 tick
   AC_CHECK_EQ(core::pendingTicks(scheduler, 1100u), 2u);  // 累积量照旧
   AC_CHECK_EQ(metrics::counterValue(counters, metrics::CounterId::kRoomBudgetExceeded), 1u);
   AC_CHECK(!core::noteTickRun(scheduler, 1050u, 7u, &counters, &gauges));
-  AC_CHECK_EQ(scheduler.accumulatedTicks, 2u);
+  AC_CHECK_EQ(core::accountedTicks(scheduler), 2u);
 }
 
 AC_TEST(schedule_tick_skip_is_counted_separately) {
@@ -170,7 +170,7 @@ AC_TEST(schedule_tick_skip_is_counted_separately) {
   metrics::CounterRegistry counters{};
   core::noteTickSkip(scheduler, 3u, &counters);
   AC_CHECK_EQ(scheduler.tickSkips, 3u);
-  AC_CHECK_EQ(scheduler.accumulatedTicks, 3u);
+  AC_CHECK_EQ(core::accountedTicks(scheduler), 3u);
   AC_CHECK_EQ(scheduler.tickIndex, 0u);
   AC_CHECK_EQ(metrics::counterValue(counters, metrics::CounterId::kTickSkips), 3u);
   AC_CHECK_NEAR(core::tickScheduleErrorP95Ms(scheduler), 0.0, 1e-9);  // 无采样即无误差，丢 tick 另有计数
@@ -208,11 +208,19 @@ AC_TEST(schedule_late_ticks_gap_grows) {
 
 AC_TEST(schedule_sim_drift_formula_holds) {
   AC_CHECK_EQ(core::kSimDriftBudgetMs, 50);
-  AC_CHECK_EQ(core::simDriftMs(1000u, 0u, 1000u, 0u), 0);
-  AC_CHECK_EQ(core::simDriftMs(1030u, 0u, 1000u, 0u), 30);
-  AC_CHECK_EQ(core::simDriftMs(980u, 100u, 1000u, 100u), -20);
-  AC_CHECK_EQ(core::simDriftMs(2000u, 1000u, 500u, 0u), 500);  // 仿真跑得比墙钟快
-  AC_CHECK_EQ(core::simDriftMs(1000u, 0u, 2000u, 0u), -1000);
+  AC_CHECK_EQ(core::simDriftMs(core::SimClock{0u, 0u}, 1000u, 1000u), 0);
+  AC_CHECK_EQ(core::simDriftMs(core::SimClock{0u, 0u}, 1030u, 1000u), 30);
+  AC_CHECK_EQ(core::simDriftMs(core::SimClock{100u, 100u}, 980u, 1000u), -20);
+  AC_CHECK_EQ(core::simDriftMs(core::SimClock{1000u, 0u}, 2000u, 500u), 500);  // 仿真跑得比墙钟快
+  AC_CHECK_EQ(core::simDriftMs(core::SimClock{0u, 0u}, 1000u, 2000u), -1000);
+
+  // 房间每 tick 走 noteSimClock：漂移既回给调用方，也写进 ac_sim_drift_ms。
+  core::TickScheduler scheduler;
+  metrics::GaugeRegistry gauges{};
+  core::startScheduler(scheduler, 0u);
+  AC_CHECK_EQ(core::noteSimClock(scheduler, 30u, 50u, &gauges), -20);
+  AC_CHECK_NEAR(metrics::gaugeValue(gauges, metrics::GaugeId::kSimDriftMs), -20.0, 1e-12);
+  AC_CHECK_EQ(core::accountedTicks(scheduler), 0u);
 }
 
 AC_TEST(schedule_frozen_values_are_named) {
@@ -229,4 +237,22 @@ AC_TEST(schedule_frozen_values_are_named) {
   AC_CHECK_EQ(bp::kSnapshotRateEvalPeriodMs, 1000u);
   AC_CHECK_EQ(bp::kSnapshotRateCleanPeriodMs, 3000u);
   AC_CHECK_EQ(bp::kSnapshotRateLevelCount, 3u);
+}
+
+// §4-8「接线」：每个量值都得有生产者在写；这里逐条把生产者跑一遍并读回量值表。
+AC_TEST(schedule_gauges_are_written_by_producers) {
+  metrics::GaugeRegistry gauges{};
+  core::TickScheduler scheduler;
+  core::startScheduler(scheduler, 0u);
+  core::noteTickRun(scheduler, 50u, 3u, nullptr, &gauges);
+  AC_CHECK_NEAR(metrics::gaugeValue(gauges, metrics::GaugeId::kTickScheduleErrorMsP95),
+                core::tickScheduleErrorP95Ms(scheduler), 1e-12);
+
+  bp::SnapshotRateState rate;
+  bp::RateTriggers triggers{};
+  bp::updateSnapshotRate(rate, 0u, triggers, nullptr, &gauges);
+  AC_CHECK_NEAR(metrics::gaugeValue(gauges, metrics::GaugeId::kSnapshotRateX10), 200.0, 1e-12);
+  triggers.isBacklogOverHalf = true;
+  bp::updateSnapshotRate(rate, 1000u, triggers, nullptr, &gauges);
+  AC_CHECK_NEAR(metrics::gaugeValue(gauges, metrics::GaugeId::kSnapshotRateX10), 150.0, 1e-12);
 }

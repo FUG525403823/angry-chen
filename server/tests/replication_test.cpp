@@ -57,6 +57,7 @@ struct ClientMirror {
   }
 
   void apply(const net::SnapshotView& view) {
+    if (view.baselineTick == 0u) records.clear();  // 全量帧：整份替换（客户端不保留帧外记录）
     for (const uint16_t id : view.removedIds) eraseById(id);
     for (const net::EntityRecord& record : view.records) upsert(record);
   }
@@ -67,7 +68,7 @@ struct Room {
   std::unique_ptr<sim::World> world;
   bp::ClientBaseline baseline;
   bp::OutboundBudget budget;
-  uint8_t buffer[bp::kSnapshotCapacityBytes] = {};
+  uint8_t buffer[bp::kMaxSnapshotBytes] = {};
   uint16_t nextSeq = 1u;
 
   Room() {
@@ -271,7 +272,7 @@ AC_TEST(replication_snapshot_bytes_stay_within_budget) {
     room.tick();
     const bp::DeltaOutcome outcome = room.send();
     AC_CHECK(outcome.isOk);
-    AC_CHECK(outcome.bytes <= bp::kSnapshotCapacityBytes);
+    AC_CHECK(outcome.bytes <= bp::kMaxSnapshotBytes);
     if (outcome.isFull) fullBytes = outcome.bytes;
     if (tick >= 20) {
       steadySum += outcome.bytes;
@@ -279,7 +280,7 @@ AC_TEST(replication_snapshot_bytes_stay_within_budget) {
       if (outcome.bytes > steadyMax) steadyMax = outcome.bytes;
     }
   }
-  AC_CHECK(fullBytes > 0u && fullBytes <= bp::kSnapshotCapacityBytes);
+  AC_CHECK(fullBytes > 0u && fullBytes <= bp::kMaxSnapshotBytes);
   AC_CHECK(steadyMax <= bp::kSteadySnapshotBudgetBytes);
   AC_CHECK(steadyCount > 0u && steadySum / steadyCount <= bp::kSteadySnapshotBudgetBytes);
 }
@@ -341,7 +342,9 @@ AC_TEST(replication_too_large_frame_is_refused) {
 // 都以具名常量出现并被断言；同时把「同一数值的两个名字」（编码器容量 vs 单帧上限）钉在一起。
 AC_TEST(replication_frozen_values_are_named) {
   AC_CHECK(bp::kMaxSnapshotBytes == 2048u);
-  AC_CHECK(bp::kSnapshotCapacityBytes == bp::kMaxSnapshotBytes);
+  AC_CHECK(bp::kMaxSnapshotBytes == net::kMaxSnapshotBytes);
+  AC_CHECK(bp::kSteadySnapshotBudgetBytes == net::kSteadySnapshotBytes);
+  AC_CHECK(bp::kMaxRecordsPerFrame == net::kMaxEntityRecordsPerFrame);
   AC_CHECK_EQ(bp::kSteadySnapshotBudgetBytes, 1228u);
   AC_CHECK_EQ(bp::kOutboundBacklogBytes, 65536u);
   AC_CHECK_EQ(bp::kBacklogDownshiftBytes, bp::kOutboundBacklogBytes / 2u);
@@ -371,6 +374,11 @@ AC_TEST(replication_encode_delta_rejects_bad_input) {
 
 AC_TEST(replication_metric_and_flag_names_hold) {
   AC_CHECK_EQ(metrics::gaugeCount(), 6u);
+  AC_CHECK_EQ(metrics::counterCount(), 13u);  // 本批追加 4 条：S09–S11 的 9 条 + 复制/调度 4 条
+  AC_CHECK(metrics::isCounterRegistered("ac_snapshot_rate_downshifts_total"));
+  AC_CHECK(metrics::isCounterRegistered("ac_slow_client_drops_total"));
+  AC_CHECK(metrics::isCounterRegistered("ac_room_budget_exceeded_total"));
+  AC_CHECK(metrics::isCounterRegistered("ac_tick_skips_total"));
   AC_CHECK(metrics::isGaugeRegistered("ac_snapshot_rate_x10"));
   AC_CHECK(metrics::isGaugeRegistered("ac_snapshot_bytes_avg"));
   AC_CHECK(metrics::isGaugeRegistered("ac_snapshot_bytes_max"));
@@ -386,7 +394,7 @@ AC_TEST(replication_metric_and_flag_names_hold) {
   AC_CHECK_NEAR(metrics::gaugeValue(gauges, metrics::GaugeId::kSnapshotRateX10), 0.0, 1e-12);
 
   bp::SnapshotRateState rate;
-  AC_CHECK(bp::snapshotRateLevel(rate) == bp::RateLevel::kHigh);
+  AC_CHECK_EQ(bp::snapshotRateX10(rate), bp::kSnapshotRateHighX10);
   AC_CHECK_EQ(bp::snapshotRateX10(rate), 200u);
 
   // v1 线上位型：kind 低 2 位 | (flags & 0x3F) << 2（snapshot-codec.ts:607 + computeEntityFlags）
@@ -429,7 +437,7 @@ AC_TEST(replication_report_writes_json_file) {
     const uint64_t nowMs = static_cast<uint64_t>(tick) * static_cast<uint64_t>(ac::kTickMs) +
                            static_cast<uint64_t>(tick % 5u);
     ac::core::noteTickRun(scheduler, nowMs, 1u);
-    const int64_t drift = ac::core::simDriftMs(room.world->timeMs, 0u, nowMs, 0u);
+    const int64_t drift = ac::core::noteSimClock(scheduler, room.world->timeMs, nowMs);
     if (drift > driftWorstMs) driftWorstMs = drift;
     if (-drift > driftWorstMs) driftWorstMs = -drift;
     room.tick();
@@ -529,14 +537,105 @@ AC_TEST(replication_report_writes_json_file) {
                 "\"eventsDropped\":%u,\"rateLevelsVisited\":[%u,%u,%u,%u,%u],\"scheduleErrorP95Ms\":%.3f,"
                 "\"simDriftMsMax\":%lld}",
                 kReportSeed, kTicks, static_cast<unsigned long long>(maxBytes),
-                static_cast<unsigned long long>(p95), steadyMean, budget.droppedSnapshots,
+                static_cast<unsigned long long>(p95), steadyMean,
+                static_cast<unsigned>(budget.droppedSnapshots),
                 eventsDropped, levels[0], levels[1], levels[2], levels[3], levels[4],
                 ac::core::tickScheduleErrorP95Ms(scheduler), static_cast<long long>(driftWorstMs));
 
-  AC_CHECK(maxBytes <= bp::kSnapshotCapacityBytes);
+  AC_CHECK(maxBytes <= bp::kMaxSnapshotBytes);
   AC_CHECK(steadyMean <= static_cast<double>(bp::kSteadySnapshotBudgetBytes));
   AC_CHECK(!frameBytes.empty());
   if (ac::test::reportPath()[0] != 0) {
     AC_CHECK(ac::test::writeReportFile(json));
   }
+}
+
+// §5 行 62：单帧实体记录受 S03 编码器上限（128）约束 —— 超出的实体留在帧外，绝不伪造成删除。
+AC_TEST(replication_records_beyond_cap_stay_absent) {
+  AC_CHECK_EQ(bp::kMaxRecordsPerFrame, net::kMaxEntityRecordsPerFrame);
+  Room room;
+  for (int i = 0; i < 130; ++i) {
+    room.spawn(sim::EntityKind::kSheep, -40.0 + 0.5 * i, 0.0, 15.0);
+  }
+  room.tick();
+  const bp::DeltaOutcome full = room.send();
+  AC_CHECK(full.isOk);
+  AC_CHECK(full.isFull);
+  AC_CHECK_EQ(full.recordCount, bp::kMaxRecordsPerFrame);
+  AC_CHECK_EQ(full.truncatedCount, std::size_t{2});
+  AC_CHECK_EQ(room.baseline.mirror.records.size(), bp::kMaxRecordsPerFrame);
+
+  ClientMirror mirror;
+  mirror.apply(net::decodeSnapshot(room.buffer, full.bytes, nullptr).value);
+  AC_CHECK_EQ(mirror.records.size(), bp::kMaxRecordsPerFrame);
+
+  room.tick();
+  const bp::DeltaOutcome delta = room.send();
+  AC_CHECK(delta.isOk);
+  AC_CHECK(!delta.isFull);
+  AC_CHECK_EQ(delta.removedCount, 0u);  // 帧外的活实体不构成删除
+  mirror.apply(net::decodeSnapshot(room.buffer, delta.bytes, nullptr).value);
+  AC_CHECK_EQ(mirror.records.size(), bp::kMaxRecordsPerFrame);
+}
+
+// §5 行 70：队列顶到 64 KiB 时丢的是**旧**快照 —— 最新帧一定进队（快照是状态，留旧帧只会更滞后）。
+AC_TEST(replication_backlog_drops_old_snapshots_first) {
+  bp::OutboundBudget budget;
+  metrics::CounterRegistry counters{};
+  for (int i = 0; i < 32; ++i) {
+    AC_CHECK(bp::enqueueSnapshot(budget, 2048u, &counters, nullptr) == bp::QueueVerdict::kEnqueue);
+  }
+  AC_CHECK_EQ(budget.queuedBytes, bp::kOutboundBacklogBytes);  // 32 × 2048 = 正好顶满
+  AC_CHECK_EQ(budget.droppedSnapshots, 0u);
+
+  AC_CHECK(bp::enqueueSnapshot(budget, 2048u, &counters, nullptr) == bp::QueueVerdict::kEnqueue);
+  AC_CHECK_EQ(budget.droppedSnapshots, 32u);    // 旧的全丢
+  AC_CHECK_EQ(budget.queuedSnapshotCount, 1u);  // 只剩最新帧
+  AC_CHECK_EQ(budget.queuedBytes, 2048u);
+  AC_CHECK_EQ(budget.consecutiveDrops, 32u);
+  AC_CHECK_EQ(metrics::counterValue(counters, metrics::CounterId::kSlowClientDrops), 32u);
+  AC_CHECK(!bp::isBacklogOverHalf(budget));
+
+  bp::noteDrained(budget, 2048u);
+  AC_CHECK_EQ(budget.queuedBytes, 0u);
+  AC_CHECK_EQ(budget.consecutiveDrops, 0u);
+}
+
+// §7 DoD-2：客户端连丢若干帧后不需要重传机制 —— 40 tick 的强制全量节拍内必自愈。
+AC_TEST(replication_stale_client_resyncs_within_forty_ticks) {
+  Room room;
+  room.spawn(sim::EntityKind::kPlayer, 1.0, 0.0, 8.0);
+  room.spawn(sim::EntityKind::kSheep, 4.0, 0.0, 12.0);
+  room.tick();
+  const bp::DeltaOutcome first = room.send();
+  AC_CHECK(first.isFull);
+
+  std::vector<uint8_t> lastFrame(room.buffer, room.buffer + first.bytes);
+  uint32_t ticksWaited = 0u;
+  bool didSeeFull = false;
+  for (uint32_t i = 0u; i < bp::kFullSnapshotIntervalTicks; ++i) {
+    sim::Command command{};
+    command.moveX = 1.0;
+    room.tick();
+    sim::stepWorld(*room.world, &command, 1u, ac::config::kStepDtMs);
+    const bp::DeltaOutcome outcome = room.send();
+    AC_CHECK(outcome.isOk);
+    lastFrame.assign(room.buffer, room.buffer + outcome.bytes);
+    ++ticksWaited;
+    if (outcome.isFull) {
+      didSeeFull = true;
+      break;
+    }
+  }
+  AC_CHECK(didSeeFull);  // 这一段里客户端一帧都没应用（模拟连丢），全量帧负责把它拉回一致
+  AC_CHECK(ticksWaited <= bp::kFullSnapshotIntervalTicks);
+
+  const net::DecodeResult<net::SnapshotView> last =
+      net::decodeSnapshot(lastFrame.data(), lastFrame.size(), nullptr);
+  AC_CHECK(last.isOk);
+  ClientMirror mirror;
+  mirror.apply(last.value);
+  std::vector<net::EntityRecord> expected;
+  const std::vector<net::EntityRecord> server = projectionOf(*room.world, expected);
+  AC_CHECK(mirror.records == server);
 }

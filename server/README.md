@@ -602,22 +602,23 @@ server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：�
 
 | 文件 | 职责 |
 |---|---|
+| `replication/limits.hpp` | **§3 未列的第 7 个文件**（见 §13.1-17）：§5 的容量/字节上限只在这里派生一次（`kMaxSnapshotBytes`、`kSteadySnapshotBudgetBytes`、`kMaxRecordsPerFrame`、`kMaxRemovedPerFrame`、`kOutboundBacklogBytes` 全部取自 `net::wire.hpp`/`net/keepalive.hpp`，字面量只留在 net 一处），`static_assert` 把每个数值钉在 §5 上 |
 | `replication/baseline.{hpp,cpp}` | 每客户端基线镜像 = S03 的 `net::SnapshotBaseline`（`tick` + id 升序记录）+ `lastFullTick`/`framesSinceFull`；`reserveBaseline` 一次性 reserve(256)，此后 `advanceBaseline`（先移除、再升序 upsert）不再分配。`baselineTick = 0` 就是「强制全量」语义；全量节拍 **40 tick（2 s）**，与档位解耦（§5） |
-| `replication/delta.{hpp,cpp}` | 世界 → 线上记录投影（`quantizePosition/Angle/Ratio` + v1 `kindFlags = kind \| (flags << 2)`，`downed`/`idle` 逐字继承 v1 `computeEntityFlags`）与差分编码：段序 = 包头 → 实体块 → 移除列表 → 事件块（照抄 S03 §5.3）；**编码成功后镜像随之前进，不等 ack**；编码失败基线不动（下一帧仍按旧基线差分） |
-| `replication/backpressure.{hpp,cpp}` | 出站队列字节账（单连接 64 KiB 预算、单帧 2048 B、稳态 1228 B）；「已排队 + 本帧 > 64 KiB」或单帧超限 ⇒ 本帧**不入队**并计 `ac_slow_client_drops_total`；连续 60 帧（3 s）⇒ 返回 `Disconnect(reason = 7 slowConsumer)`（宽限期由 S04 `GraceTimer` 施加）；事件帧走可靠通道，**永不丢且不参与丢弃判定**；`kBacklogDownshiftBytes = 32768` 是降档信号 |
+| `replication/delta.{hpp,cpp}` | 世界 → 线上记录投影（`quantizePosition/Angle/Ratio` + v1 `kindFlags = kind \| (flags << 2)`，`downed`/`idle` 逐字继承 v1 `computeEntityFlags`）与差分编码：段序 = 包头 → 实体块 → 移除列表 → 事件块（照抄 S03 §5.3）；**编码成功后镜像随之前进，不等 ack**；编码失败基线不动（下一帧仍按旧基线差分）。单帧记录数取 S03 编码器的 `kMaxEntityRecordsPerFrame = 128`（§5 行 62 的 u8 上限 255 与编码器冲突，见 §13.1-6）：超出的实体**留在帧外**（`truncatedCount` 暴露条数），移除列表只认「世界当前真的没有」，绝不把截断当删除 |
+| `replication/backpressure.{hpp,cpp}` | 出站队列字节账（单连接 64 KiB 预算、单帧 2048 B、稳态 1228 B）；「已排队 + 本帧 > 64 KiB」⇒ **丢队列里的旧快照、收下最新帧**（§5 行 70「旧快照直接丢」，丢弃帧数计 `ac_slow_client_drops_total`；事件字节从不参与丢弃）；丢完旧快照仍放不下、或单帧超 2048 B ⇒ 本帧也不入队；累计丢弃 ≥ 60 帧（3 s）⇒ 返回 `Disconnect(reason = 7 slowConsumer)`（宽限期由 S04 `GraceTimer` 施加），`noteDrained` 写成功即清零连续计数；`kBacklogDownshiftBytes = 32768` 是降档信号 |
 | `replication/snapshot_rate.{hpp,cpp}` | 档位状态机（200/150/100 = 20/15/10 Hz）：相位是纯函数 `shouldSendSnapshot(rateX10, tick)`（每 tick / 每 3 tick 发 2 / 每 2 tick 发 1）；降档触发任一（最慢会话积压 > 32 KiB、`tickSkips` 增长、房间预算超限增长）即降一档并计 `ac_snapshot_rate_downshifts_total`；连续 3000 ms 无触发升一档；评估周期 ≥ 1000 ms；事件帧不受档位影响 |
-| `core/scheduler.{hpp,cpp}` | tick 绝对时刻自校正：累积量 = 「应到 tick 数 − 已执行」（`pendingTicks`），单 tick 误差 = `now − (首 tick + tickIndex × 50)`；工作量 > 8 ms ⇒ 计 `ac_room_budget_exceeded_total` 并让出事件循环，**累积量不扣除**（让出 ≠ 丢 tick；真丢 tick 由 `noteTickSkip` 单记 `ac_tick_skips_total`）；64 槽误差环给出 P95 与「前 1/3 vs 后 1/3」替代判据；`simDriftMs` 按 §5 口径 |
-| `metrics/gauges.{hpp,cpp}` | **§3 未列**（见 §13.1-1/§13.1-9）：量值型指标定长名字表（`ac_snapshot_rate_x10`、`ac_snapshot_bytes_avg`、`ac_snapshot_bytes_max`、`ac_send_queue_bytes`、`ac_tick_schedule_error_ms_p95`、`ac_sim_drift_ms`）；`metrics/counters.*` 按**追加式**加 4 个计数（降档 / 慢客户端丢弃 / 房间预算超限 / 丢 tick），名字表顺序由 `static_assert` 钉住 |
-| `tests/replication_test.cpp` | 全量首帧、差分只带变化记录、移除列表升序、不等 ack 前进、**客户端镜像 30 tick 往返后逐字段等于服务器投影**、40 tick 强制全量（3 次全量、间隔恒 40）、重连归零自愈、全量/稳态字节预算、丢快照不丢事件、60 帧断开、超限帧不入队、坏入参不改基线、**报告落盘**、§5 冻结数值具名（2048 B / 1228 B / 40 KB/s / 64 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick）、量值指标名与 v1 位型契约，共 15 条 |
-| `tests/schedule_test.cpp` | 三档相位计数（60 tick 内 60/40/30 次）、档位状态机走完 200→150→100→150→200、评估周期 1000 ms、干净期 3000 ms、三种降档信号各自成立、让出不丢 tick（`pendingTicks` 照旧、`tickSkips` 恒 0）、丢 tick 单记、误差 P95 与替代判据、漂移口径、冻结常量具名，共 13 条 |
+| `core/scheduler.{hpp,cpp}` | tick 绝对时刻自校正：`pendingTicks` = 「已流逝整 tick 数 + 1 − 已执行」（tick 0 在启动时刻即到点），已计 tick 数 = 派生值 `accountedTicks = tickIndex + tickSkips`（不再另存一份），单 tick 误差按「本 tick 的应到时刻」取样；工作量 > 8 ms ⇒ 计 `ac_room_budget_exceeded_total` 并让出事件循环，**已计 tick 数不扣除**（让出 ≠ 丢 tick；真丢 tick 由 `noteTickSkip` 单记 `ac_tick_skips_total`）；64 槽误差环给出 P95（`|error|`）与「前 1/3 vs 后 1/3」替代判据；`SimClock{simStartMs, wallStartMs}` + `noteSimClock` 既返回漂移也刷新 `ac_sim_drift_ms` |
+| `metrics/gauges.{hpp,cpp}` | **§3 未列**（见 §13.1-1/§13.1-9）：量值型指标定长名字表（`ac_snapshot_rate_x10`、`ac_snapshot_bytes_avg`、`ac_snapshot_bytes_max`、`ac_send_queue_bytes`、`ac_tick_schedule_error_ms_p95`、`ac_sim_drift_ms`），**六条都有生产者在写**（档位机 / 出站队列账 / 调度器），`--filter=schedule` 的 `schedule_gauges_are_written_by_producers` 逐条读回；`metrics/counters.*` 按**追加式**加 4 个计数（降档 / 慢客户端丢弃 / 房间预算超限 / 丢 tick），名字表顺序由 `static_assert` 钉住 |
+| `tests/replication_test.cpp` | 全量首帧、差分只带变化记录、移除列表升序、不等 ack 前进、**客户端镜像 30 tick 往返后逐字段等于服务器投影**、40 tick 强制全量（3 次全量、间隔恒 40）、重连归零自愈、全量/稳态字节预算、丢快照不丢事件、60 帧断开、超限帧不入队、坏入参不改基线、**报告落盘**、§5 冻结数值具名（2048 B / 1228 B / 40 KB/s / 64 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick）、量值指标名与 v1 位型契约、**130 实体房间里单帧只带 128 条且不伪造删除**、**队列顶满时丢旧快照留最新帧**、**连丢帧后 40 tick 内自愈**，共 18 条 |
+| `tests/schedule_test.cpp` | 三档相位计数（60 tick 内 60/40/30 次）、档位状态机走完 200→150→100→150→200、评估周期 1000 ms、干净期 3000 ms、三种降档信号各自成立、让出不丢 tick（`pendingTicks` 照旧、`tickSkips` 恒 0）、丢 tick 单记、误差 P95 与替代判据、漂移口径、冻结常量具名、六条量值的生产者各跑一遍，共 14 条 |
 
 **运行命令（可直接复制）**：
 
 ```powershell
-server/build/ac_tests.exe --filter=replication --report build/replication-report.json   # TESTS 16/16（本批 15 + S09 的 match_replication_hook_runs_once_per_tick）
-server/build/ac_tests.exe --filter=schedule                # TESTS 13/13
-node -e "const r=require('./build/replication-report.json'); if (r.snapshotBytesMax>2048||r.steadyMeanBytes>1228||r.eventsDropped!==0) process.exit(1)"   # §6-3 报告门禁，退出码 0
-server/build/ac_tests.exe                                  # TESTS 398/398
+server/build/ac_tests.exe --filter=replication --report build/replication-report.json   # TESTS 19/19（本批 18 + S09 的 match_replication_hook_runs_once_per_tick）
+server/build/ac_tests.exe --filter=schedule                # TESTS 14/14
+node -e "const r=require('./build/replication-report.json'); if (r.snapshotBytesMax>2048||r.steadyMeanBytes>1228||r.eventsDropped!==0||r.droppedSnapshots<1) process.exit(1)"   # §6-3 报告门禁（含 DoD「丢过快照且事件不丢」），退出码 0
+server/build/ac_tests.exe                                  # TESTS 402/402
 ```
 
 **实测报告（`build/replication-report.json`，4 玩家 + 24 羊 × 120 tick，含每 tick 2 条事件）**：
@@ -630,12 +631,12 @@ server/build/ac_tests.exe                                  # TESTS 398/398
 
 ### 13.1 计划文本纠正与已声明偏差（S12）
 
-1. **§4-8 的 `server/src/metrics/metrics.cpp` 属 S13**：S12 只把值写进 `metrics/counters.*`（追加 4 个计数）与新增的 `metrics/gauges.*`，Prometheus 渲染与 `/metrics` 出口由 S13 的 `metrics.cpp` 在其上做。因此 §7-6 与 §6-4 的「`/metrics` 里能看到这批指标」在 S12 结束时**只是值可达**，可见性待 S13。
+1. **§4-8 的 `server/src/metrics/metrics.cpp` 属 S13**：S12 只把值写进 `metrics/counters.*`（追加 4 个计数）与新增的 `metrics/gauges.*`，Prometheus 渲染与 `/metrics` 出口由 S13 的 `metrics.cpp` 在其上做。**六条量值都有生产者在写**（档位机刷 `ac_snapshot_rate_x10`、队列账刷三条形与最大值、调度器刷 `ac_tick_schedule_error_ms_p95`、`noteSimClock` 刷 `ac_sim_drift_ms`），因此 §7-6 与 §6-4 的「`/metrics` 里能看到这批指标」在 S12 结束时**只是值可达**（每条都有生产者 + 断言），可见性待 S13。
 2. **`ac_tick_skips_total` 在 S13 §5 的名单里缺失**：S12 §5/§8 用它做「追帧上限丢 tick」的判据（本批按 §4-8 接线），而 S13 §5 的「调度」行没有这一条 → 本批按追加式新增该计数，**S13 需把名字补进 §5 清单**（否则 §5 的「名字即契约」会漏一条）。
 3. **§4-9 需要报告出口，但 §3 的交付物里没有测试框架改动**：本批给 `server/tests/tiny_test.hpp` 加了 `--report <path>`（以及 `writeReportFile`，目录按需创建、写盘失败即用例失败），报告内容仍由用例自己拼（框架不认识业务字段）。
 4. **§4-9 的写盘目标 `docs/evidence/soak-5min.md` 不存在**（`docs/evidence/` 下只有 client-c01…c08、env-bootstrap、plan-audit、fixtures）→ 按 S07–S11 的既有约定，报告与其数值写进本文件 §13 与 §15 表格；不新建证据文件。
-5. **§5 的「每客户端 `presentIds u16[256]` + `record u8[256 × 15]`」用 S03 的 `net::SnapshotBaseline` 落地**：镜像只有一份（`tick` + id 升序记录），`reserveBaseline` 一次性 reserve(256) 后 `advanceBaseline` 不再分配。若另建定长数组就是同一份状态的第二副本，必然与编码器输入漂移（§13.2 的 Standards 轴也认可这个收口）。
-6. **投影截断口径与 v1 不同**：v1 `projectSnapshot` 用「以玩家为中心的最近 256 个实体」堆选择；v2 §5 的线上记录数由 **u8 count** 决定 → 单帧上限 255 条，本批按 **EntityId 升序取前 255 条**做确定性截断（不重排、不改变 id 升序契约）。`snapshotMaxEntities: 256` 是 v1 配置，线上表达不出第 256 条。
+5. **§5 的「每客户端 `presentIds u16[256]` + `record u8[256 × 15]`」用 S03 的 `net::SnapshotBaseline` 落地**：镜像只有一份（`tick` + id 升序记录），`reserveBaseline` 一次性 reserve(256) 后 `advanceBaseline` 不再分配。若另建定长数组就是同一份状态的第二副本，必然与编码器输入漂移（评审 Standards 轴认可这个收口）。
+6. **§5 行 62 的「≤ 255 条」与 S03 编码器上限 128 冲突，本批取 S03 的 128**：`net::wire.hpp` 的 `kMaxEntityRecordsPerFrame = 128` 是 `encodeSnapshot` 的硬前置（`recordCount > 128` 直接失败），u8 `count` 的 255 只是**编码格式**的上限。所以单帧记录数取 128（`kMaxRecordsPerFrame` 派生自 net），超出的实体**留在帧外**（`truncatedCount` 暴露条数）而不是被截断掉；移除列表只认「世界当前真的没有」（`collectRemovedIds(baseline, world, …)`），否则被截断的活实体会被当成删除、客户端会删掉活实体。v1 `projectSnapshot` 的「以玩家为中心的最近 256 个实体」堆选择同样无法在 v2 帧里表达（u8 count 与 128 上限）。**>128 实体的房间如何复现（多帧/降密度）需计划侧裁定**，本步只保证不伪造删除且可观测。
 7. **`rage`/`reloading`/`charging`/`fading` 四个 flag 位恒为 0**：v1 `computeEntityFlags` 只写 `downed`/`idle` 两位（其余位由客户端 UI 侧自算），本批逐字继承 → `kindFlags` 的语义是「kind 低 2 位 + v1 的两个 flag 位」。
 8. **`--filter` 是子串匹配，新用例名必须绕开已占用子串**（§12.1-12 同款约束）：本批首轮收口时 `replication_oversized_frame_is_not_queued`（含 `size`）、`schedule_downshift_triggers_are_independent`（含 `trig`）、`schedule_head_tail_gap_detects_growth`（含 `ai`）各把 `size`/`trig`/`ai` 三组计数冲高 1 → 已改名为 `replication_too_large_frame_is_refused`、`schedule_downshift_signals_are_independent`、`schedule_late_ticks_gap_grows`；收口后 32 组既有冻结计数与 S11 **逐组同数**（见 §15 表格）。
 9. **`metrics/gauges.{hpp,cpp}` 是 §3 未列的第 6 个文件**：§4-8 要求「量值型指标」（`_rate_x10` / `_bytes_avg` / `_bytes_max` / `_queue_bytes` / `_p95` / `_drift`）能上报，而 S11 的 `counters.*` 只有 `uint64` 只增计数 → 量值用独立的定长 `double` 表，零分配、无字符串拼接，`gauges.cpp` 用 `static_assert` 钉住名字表条数。
@@ -644,30 +645,53 @@ server/build/ac_tests.exe                                  # TESTS 398/398
 12. **误差百分位取 `|error|`**：§5 只冻结 `tickScheduleError = 单调时钟 − (首 tick + tickIndex × 50)` 与「P95 ≤ 8 ms」，没说百分位取带符号值还是幅值 → 本批环内存幅值（`|error|`），带符号值仍可经 `scheduleErrorMs` 直接取；`simDriftMs` 保留符号（判据是 `|drift| ≤ 50 ms`）。
 13. **§5 的速率上限**：ADR-009 的允许区间是 [100, 300]（1/10 Hz），而 tick = 20 Hz 时 300 档（30 Hz）不可达 → 本批实现 `{200, 150, 100}` 且 `kSnapshotRateMaxX10 = 200`；区间下界 `kSnapshotRateMinX10 = 100` 以具名常量存在（§6-2 的相位断言覆盖三档）。
 14. **新增根 `.gitignore`（`/build/`）**：§4-9 要求产出仓库根 `build/replication-report.json`，而仓库原有的 `server/.gitignore` 只覆盖 `server/build/` → 加一行忽略规则，避免报告与构建产物进入 `git status`。
-15. **`security_test.cpp` 的计数快照放宽**：S11 的 `security_five_authority_counters_registered` 断言 `counterCount() == 9`，S12 追加 4 个计数后改为 `>= 9`（五个名字的断言逐条保留）。计数表按「只追加、不改名、不删」演进，S13 需在其清单里补第 2 条。
-16. **§7 DoD 的逐条落到**：`--filter=replication`/`--filter=schedule` 绿、报告三字段达标、既有门禁不动 —— 见 §15 表格；「`/metrics` 可见」与「房间循环接线」按第 1、10 条登记为 S13/S15 交付。
-### 13.2 两轴评审（Standards + Spec，固定点 `ee20c46`）
+15. **`security_test.cpp` 的计数快照放宽**：S11 的 `security_five_authority_counters_registered` 断言 `counterCount() == 9`，S12 追加 4 个计数后改为 `>= 9`（五个名字的断言逐条保留）。计数表按「只追加、不改名、不删」演进，S13 需在其清单里补第 2 条。评审 Spec 轴建议收紧为精确值：保留 S11 的 `>= 9`（它的意图是「5 个权限计数在册」），另由本批的 `replication_metric_and_flag_names_hold` 断言 `counterCount() == 13` 把总数钉住。
+16. **`replication/limits.hpp` 是 §3 未列的第 7 个文件**：§5 的容量/字节上限只派生一次（`kMaxSnapshotBytes`、`kSteadySnapshotBudgetBytes`、`kMaxRecordsPerFrame`、`kMaxRemovedPerFrame`、`kOutboundBacklogBytes` 都取自 `net/wire.hpp`/`net/keepalive.hpp`，字面量只留在 net 一处），`static_assert` 把每个数值钉在 §5 的取值上；S11 §12.2 的先例是「同值别名要删」，本批据此删掉了 `kSnapshotCapacityBytes`。
+17. **§5 行 61「`CommandChannel` 只发最新，积压 > 2 丢中间」没有对应交付物**：§3 的文件清单里没有命令通道队列，通道本体在 S04 的 `net/`（全仓无 `CommandChannel` 实现）→ 本步不新建「只有用例在跑」的空壳，登记给房间发送循环批次（与 §13.1-10 同批）。
+18. **§5 行 92「每客户端带宽 ≤ 40 KB/s」只有常量与断言**：`net::kClientBandwidthBytesPerSec = 40960` 由 §6 的冻结数值用例断言，但 §5 没有规定超限动作（丢帧/降档/断开）→ 本步不发明策略，强制点登记给房间发送循环批次；本步的等价证据是「稳态均值 ≤ 1228 B」与 `ac_send_queue_bytes` 量值。
+19. **丢帧口径的措辞冲突**：§5 行 70 同一行既写「旧快照直接丢」又写「（不入队）」。按 §1「出站队列顶到预算时丢旧快照而不丢事件」与 §3-3「旧快照直接丢」，实现为**丢队列里的旧快照、收下最新帧**；只有「丢完旧快照仍放不下」（事件字节已占满预算）或「单帧超 2048 B」时本帧才不入队。`ac_slow_client_drops_total` 的语义 = **被丢掉的帧数**（一次可能丢多帧）。
+20. **评审期过程偏差（如实登记）**：本批的评审子代理越权改了工作树并直接提交推送了 `330eedb`；该提交除 S12 交付物外还含 `server/src/persist/match_store.{hpp,cpp}`（S13 期的持久化日志，约 737 行，未经本批评审）。按用户裁定：**保留该提交与文件**、登记为 S13 的起点（S13 批次需重审/改写），不改写已推送的共享历史；S12 自身的问题修复与 §13.2 的评审结论落在其后的提交里。
 
-**评审方式说明**：本批按 S09–S11 的约定跑「Standards + Spec 并行子代理」，但两条子代理路径都没能交付（第一对到本批收口时仍在 `running`、被中断；第二对启动即被中止）。因此下面是**主代理自查**的两轴结论，外加实现期首轮收口（§13.1-8 的改名与 §13.1 的十六条偏差），不冒充子代理报告。
+21. **§7 DoD 的逐条落到**：`--filter=replication`/`--filter=schedule` 绿、报告三字段达标、既有门禁不动 —— 见 §15 表格；「`/metrics` 可见」与「房间循环接线」按第 1、10 条登记为 S13/S15 交付。
+### 13.2 两轴评审（Standards + Spec 并行，固定点 `2931530`）
+
+**评审执行**：按 S09–S11 的约定，两个轴各起一个**只读**子代理并行评审，固定点 `2931530`（= S12 提交 `330eedb` 的父提交），范围 `git diff 2931530..HEAD -- server`；两个代理都**只报告、不改任何文件**（本轮首对代理越权的过程偏差见 §13.1-20）。两轴各自取证：构建、逐组 `--filter` 计数、`ctest`、`node tools/check-docs.mjs`、`node tools/check-assets.mjs`、报告 JSON 门禁。下面按轴列出结论，并标注**硬违规（已修）**与**判断项（保留/移交）**。
 
 **Standards 轴（已修）**
 
-1. **同一数值两个名字没有互相钉住**：`delta.hpp` 的 `kSnapshotCapacityBytes = 2048` 与 `backpressure.hpp` 的 `kMaxSnapshotBytes = 2048` 是 §5 的两个口径（编码容量 / 单帧上限），但两处字面量各自成立、改动其一不会被任何断言发现 → 新增 `replication_frozen_values_are_named` 断言 `kSnapshotCapacityBytes == kMaxSnapshotBytes == 2048`、`kSteadySnapshotBudgetBytes == 1228`（判断题，按「名字即契约」收口）。
-2. **S11 的计数断言会挡住追加式演进**：`security_five_authority_counters_registered` 断言 `counterCount() == 9`，与 §4-8 追加 4 个计数冲突（断言与「只追加」约定自相矛盾）→ 改为 `>= 9` 并保留 9 个名字的逐条断言（硬违规）。
-3. **新用例名污染既有 `--filter` 子串**：首轮的 `replication_oversized_frame_is_not_queued`（含 `size`）、`schedule_downshift_triggers_are_independent`（含 `trig`）、`schedule_head_tail_gap_detects_growth`（含 `ai`）把三组冻结计数各冲高 1 → 改名收口（§13.1-8）；收口后 32 组与 S11 **逐组同数**（§15 表格）。
-4. **测试框架新增依赖与旁路**：`tiny_test.hpp` 用 `<filesystem>` 按需建目录、`fopen/fwrite` 落盘（标准库，非第三方；硬约束「无第三方运行时库」不受影响），`--report` 未给定时不落盘、给了但写失败即用例失败（不静默兜底）——判断题，认可。
-5. **热路径零分配与职责单一**：`src/replication/*`、`src/core/scheduler.*`、`src/metrics/gauges.*` 全部是定长数组 / POD 式结构，grep `std::vector|std::string|std::function|malloc` 0 命中；四个 `replication/` 文件各自单一职责（投影+编码 / 镜像 / 队列账 / 档位），无 Divergent Change —— 标准差通过。
+**Standards 轴（硬违规 / 判断题，已修）**
 
-**Spec 轴（已修）**
+1. **同一数值三个名字**（Duplicated constant）：`net::kMaxSnapshotBytes`（编码器真正读的那个）、`replication::kMaxSnapshotBytes`、`replication::kSnapshotCapacityBytes` 三处字面量各自成立，而断言只把后两个钉在一起 → 收口到新增的 `replication/limits.hpp`：全部**派生**自 net 的常量 + `static_assert`，删掉 `kSnapshotCapacityBytes`（S11 §12.2 的先例：同值别名要删）。
+2. **没有生产读者的常量**（Speculative Generality）：`kSnapshotCapacityBytes` 只有用例在读 → 随上一条删除。
+3. **`scheduler.cpp` 的插入排序写了三遍**（Duplicated Code）：`sortCopy` + 两处内联 → 抽 `insertionSort()` + 最近秩 `percentileIndex()`，P95 与「前 1/3 vs 后 1/3」共用一份。
+4. **`TickScheduler::accumulatedTicks` 是只写不读的重复状态**（恒等于 `tickIndex + tickSkips`）→ 删字段，改派生 `accountedTicks()`；同时把 `pendingTicks` 的口径写清（已流逝整 tick 数 + 1 − 已执行，tick 0 在启动时刻即到点）。
+5. **`simDriftMs` 的四个裸整型是数据团**（Data clump）→ 收成 `SimClock{simStartMs, wallStartMs}`；顺带补上 §4-8 要求的接线：`noteSimClock()` 既返回漂移也刷 `ac_sim_drift_ms`。
+6. **Middle Man**：`snapshotRateLevel()`（枚举进枚举出、无逻辑）→ 删，统一用 `snapshotRateX10()`；`baselineFind()` 保留（它把 `net::SnapshotBaseline` 内部的 `std::vector` 藏在名字后面，是有意的窄接口）。
+7. **布尔前缀**（§6 命名约定）：`didTickSkipsGrow` / `didBudgetExceedGrow` → `hasTickSkipsGrown` / `hasBudgetExceededGrown`。
+8. **小项**：调度器 `rank == 0` 的不可达分支、`delta.cpp` 里 `entity.kind == kPlayer` 判两次、`publishQueueGauges` 在两条返回路径各写一遍 → 各收一处。
 
-1. **§7「队列超预算时只丢快照：报告 `eventsDropped = 0` 且 `droppedSnapshots > 0`」原本落空**：报告用例此前只走健康路径，`droppedSnapshots` 恒 0 → 追加**背压爆发段**（先塞 40 × 2000 B 事件把队列顶到 64 KiB 预算之上，再连编 5 帧）：实测 `droppedSnapshots = 5`、`eventsDropped = 0`，且断言队列确实越过预算（硬违规，已修）。
-2. **§7「§5 全部数值以具名常量出现并被断言」有两条落空**：40 tick（`kFullSnapshotIntervalTicks`）与 40 KB/s（`net::kClientBandwidthBytesPerSec`）此前没有任何断言 → 新增 `replication_frozen_values_are_named`：2048 / 1228 / 64 KiB / 32 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick / 40960 B/s 逐条断言（含 `kDisconnectReasonSlowConsumer == 7`）（硬违规，已修）。
+**Standards 轴（判断项，保留并说明）**
+
+9. **热路径零分配靠 reserve，不是 POD**：`ClientBaseline::mirror` 是 S03 的 `net::SnapshotBaseline`，内含 `std::vector<EntityRecord>`；`reserveBaseline()` 一次性 reserve(256) 后 `advanceBaseline` 不再分配。本轮的评审据此指出旧文「定长数组 / POD 式结构」不准确 → 已改正；§13.1-5 的收口理由不变（镜像只有一份，避免第二副本与编码器输入漂移）。
+10. **提交粒度**：`330eedb` 除 S12 交付物外还含 S13 的 `match_store.{hpp,cpp}`（§13.1-20 的过程偏差，按用户裁定保留该提交与文件）。
+
+**Spec 轴（硬违规，已修）**
+
+1. **§4-8 的「接线指标」有两条落空**：`ac_snapshot_rate_x10`（档位机只算档位、没写量值）与 `ac_sim_drift_ms`（`simDriftMs` 是纯函数，没有任何写入点）→ 档位机每次评估刷新量值、`noteSimClock()` 写漂移；新增 `schedule_gauges_are_written_by_producers` 把六条量值逐条读回（硬违规，已修）。
+2. **§5 行 62「实体块 ≤ 255 条」与 S03 编码器的 128 条上限冲突**：原实现按 255 条截断 ⇒ 129–255 实体的房间 `encodeSnapshot` 必然失败（复制停摆），且被截断的**活**实体会进移除列表 ⇒ 客户端删掉活实体 → 单帧记录数改取 `kMaxRecordsPerFrame = net::kMaxEntityRecordsPerFrame`（128），移除列表改判「世界当前是否存在该 id」，`truncatedCount` 暴露帧外条数；新增 `replication_records_beyond_cap_stay_absent`（130 实体：帧内 128 条、移除 0 条、镜像 128 条）（硬违规，已修）。
+3. **§5 行 70 的丢帧方向被实现反了**：原实现丢**新**帧、把旧帧留在队列里（与 §1「出站队列顶到预算时丢旧快照」相反）→ 改为丢队列里的旧快照、收下最新帧，只有「丢完仍放不下」或「单帧超 2048 B」才丢新帧；新增 `replication_backlog_drops_old_snapshots_first`（32 × 2048 B 顶满，第 33 帧丢 32 旧帧、留最新帧）（硬违规，已修）。
+4. **§7 DoD-2「连续丢帧后 40 tick 内自愈」此前只有间接证据**（只覆盖 40 tick 节拍）→ 新增 `replication_stale_client_resyncs_within_forty_ticks`：客户端整段不应用帧，全量帧到达（≤ 40 tick）后镜像逐字段等于服务器投影（硬违规，已修）。
+5. **§7「队列超预算时只丢快照：`eventsDropped = 0` 且 `droppedSnapshots > 0`」**（首轮自查已修）：报告用例此前只走健康路径 → 追加背压爆发段（40 × 2000 B 事件顶过 64 KiB 后连编 5 帧）：实测 `droppedSnapshots = 5`、`eventsDropped = 0`，§6-3 的门禁命令含 `droppedSnapshots ≥ 1`，README §13 的实测 JSON 与之逐字一致。
+6. **§7「§5 全部数值以具名常量出现并被断言」**（首轮自查已修）：`replication_frozen_values_are_named` 逐条断言 2048 / 1228 / 64 KiB / 32 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick / 40960 B/s 与 `kDisconnectReasonSlowConsumer == 7`；本轮再把三处「同值两名」的派生关系直接断言到 `net` 上。
 
 **Spec 轴（未做/判断项，登记移交）**
 
-3. **§5「`CommandChannel` 只发最新，积压 > 2 丢中间」没有实现**：`server/src/net` 里没有命令通道队列（全仓 grep `CommandChannel|enqueueCommand` 0 命中），§3 的交付物也没有对应文件 → 属房间发送循环接线（与 §13.1-10 同批），登记给 S13/S15，本步不冒充完成。
-4. **§5「每客户端带宽 ≤ 40 KB/s（全部出站 UDP 载荷，含事件）」只有常量与取值断言，没有强制点**：真正的封顶要等房间发送循环（S13/S15）；本步的等价证据是「稳态快照 ≤ 1228 B」与 `ac_send_queue_bytes` 量值。
-5. **§6-4 的 `/metrics` 端到端断言与 §4-9 的 `soak-5min.md` 写回**：见 §13.1-1 / §13.1-4（前者等 S13 的 HTTP 出口，后者等 S14 的 5 分钟 soak）。
+7. **§5 行 61 `CommandChannel`「只发最新，积压 > 2 丢中间」没有实现**：全仓无 `CommandChannel` 实现，§3 也没有对应交付物 → 属房间发送循环接线，登记给 S13/S15（§13.1-17），本步不冒充完成。
+8. **§5 行 92「每客户端带宽 ≤ 40 KB/s（全部出站 UDP 载荷，含事件）」只有常量与取值断言，没有强制点**：§5 未规定超限动作（丢帧/降档/断开）→ 强制点登记给 S13/S15（§13.1-18）；本步的等价证据是「稳态均值 ≤ 1228 B」与 `ac_send_queue_bytes` 量值。
+9. **§6-4 的 `/metrics` 端到端断言与 §4-9 的 `soak-5min.md` 写回**：见 §13.1-1 / §13.1-4（前者等 S13 的 HTTP 出口，后者等 S14 的 5 分钟 soak）。
+10. **> 128 实体的房间在 S03 的 128 条上限下无法一帧复现**（§5 行 54 的 `presentCount ≤ 256` 与编码器冲突）→ 需计划侧裁定（多帧/降密度）；本步只保证「不伪造删除 + `truncatedCount` 可观测」（§13.1-6）。
+
+**本轮评审未覆盖**：`server/src/persist/match_store.{hpp,cpp}`（§13.1-20 的越权产物，登记给 S13 批次重审）。
 
 ## 14. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
@@ -800,16 +824,16 @@ server/build/ac_tests.exe                                  # TESTS 398/398
 | `node tools/check-docs.mjs` / `check-assets.mjs`（S11 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 58 个文档、169 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。` |
 | 计划偏差清单（S11） | §12.1 的十六条（metrics 注册表未在 §3 列、§6-3 末行口径、`gate-selfcheck.md` 不存在、派生预算无生产方、构建目标拦截不可表达、`rewindMs` 命名、两层去重、64 B 是上限、打击落在消息窗口、负 tick 不可表示、边界 1 ulp 实测、门禁子串与用例命名、本批不接线运行路径、`speed` 计数含 Suspect、§9 未冻结的辅助类型、`counters` 名字表） |
 | 两轴评审（S11，Standards + Spec 并行） | §12.2 记录：已修 5 类（布尔前缀回改、`--filter=pose` 门禁收口、`std::fmod` → `ac::wrapAngle`、越限判定改精确比较、同值常量与判空样板）；未做/判断项 5 条（运行路径未接线、派生预算入参化、写盘目标缺失、数据团形状、两处 `switch`） |
-| 复制调度与背压（S12） | `--filter=replication` 末行 `TESTS 16/16`（本批 15 + S09 的 `match_replication_hook_runs_once_per_tick`），`--filter=schedule` 末行 `TESTS 13/13`；报告用例把 4 玩家 + 24 羊跑 120 tick（每 tick 2 条事件）后落盘 |
-| 报告门禁（S12 §4-9/§6-3） | `server/build/ac_tests.exe --filter=replication --report build/replication-report.json` → `TESTS 16/16`；`node` 校验三字段通过：`{"suite":"replication","seed":20962,"ticks":120,"snapshotBytesMax":473,"snapshotBytesP95":473,"steadyMeanBytes":442.4,"droppedSnapshots":5,"eventsDropped":0,"rateLevelsVisited":[200,150,100,150,200],"scheduleErrorP95Ms":4,"simDriftMsMax":4}`（`build/` 由框架按需创建；根 `.gitignore` 已排除） |
-| 差分与基线（S12 §5） | 客户端镜像 30 tick 往返后 `records == projectWorld(...)` 逐字段相等；全量帧 `baselineTick = 0`，差分帧 `baselineTick` = 上一帧 tick；`replication_forced_full_frame_every_forty_ticks` 实测 81 tick 内 3 次全量、间隔恒 40；`replication_reconnect_resets_baseline_to_full` 覆盖归零自愈 |
-| 字节与背压（S12 §5/§5.3） | 44 实体场景：全量 ≤ 2048 B、稳态（后 40 帧）均值与峰值 ≤ 1228 B；`replication_dropped_snapshot_keeps_events` 队列塞满后快照 `kDropSnapshot` 而 `eventsQueued` 不变；`replication_slow_consumer_disconnect_after_sixty_drops` 第 60 帧返回 `kDisconnect`（`reason = 7`） |
+| 复制调度与背压（S12） | `--filter=replication` 末行 `TESTS 19/19`（本批 18 + S09 的 `match_replication_hook_runs_once_per_tick`），`--filter=schedule` 末行 `TESTS 14/14`；报告用例把 4 玩家 + 24 羊跑 120 tick（每 tick 2 条事件）后落盘 |
+| 报告门禁（S12 §4-9/§6-3） | `server/build/ac_tests.exe --filter=replication --report build/replication-report.json` → `TESTS 19/19`；`node` 校验（三字段 + `droppedSnapshots ≥ 1`）通过：`{"suite":"replication","seed":20962,"ticks":120,"snapshotBytesMax":473,"snapshotBytesP95":473,"steadyMeanBytes":442.4,"droppedSnapshots":5,"eventsDropped":0,"rateLevelsVisited":[200,150,100,150,200],"scheduleErrorP95Ms":4,"simDriftMsMax":4}`（`build/` 由框架按需创建；根 `.gitignore` 已排除） |
+| 差分与基线（S12 §5） | 客户端镜像 30 tick 往返后 `records == projectWorld(...)` 逐字段相等；全量帧 `baselineTick = 0`，差分帧 `baselineTick` = 上一帧 tick；`replication_forced_full_frame_every_forty_ticks` 实测 81 tick 内 3 次全量、间隔恒 40；`replication_reconnect_resets_baseline_to_full` 覆盖归零自愈；`replication_records_beyond_cap_stay_absent` 覆盖 §5 行 62 与 S03 编码器 128 上限的冲突（130 实体：帧内 128 条、`truncatedCount = 2`、移除 0 条、镜像 128 条） |
+| 字节与背压（S12 §5/§5.3） | 44 实体场景：全量 ≤ 2048 B、稳态（后 40 帧）均值与峰值 ≤ 1228 B；`replication_dropped_snapshot_keeps_events` 队列塞满后快照 `kDropSnapshot` 而 `eventsQueued` 不变；`replication_slow_consumer_disconnect_after_sixty_drops` 第 60 帧返回 `kDisconnect`（`reason = 7`）；`replication_backlog_drops_old_snapshots_first` 32 × 2048 B 顶满 64 KiB 后第 33 帧**丢 32 个旧帧、留最新帧**（丢旧不丢新，`consecutiveDrops = 32`） |
 | 档位与相位（S12 §5/§6-2） | 60 tick 内三档发帧数 60/40/30；状态机 200→150→100→150→200（降档 2 次、升档 2 次）；评估周期 1000 ms（500 ms 处的调用被忽略）、干净期 3000 ms 才升档；三种降档信号各自单独成立 |
-| 调度预算与漂移（S12 §4-7/§6-2） | `pendingTicks` 在让出后照旧累积（`budgetExceeded=1`、`tickSkips=0`、`accumulatedTicks=1`）；`noteTickSkip(3)` 单记 `ac_tick_skips_total`；误差环 P95：前 20 tick 误差 0 → `0`、后 20 tick 误差 30 → `30`（超 8 ms 预算被正确判负）；「前 1/3 误差 1 ms vs 后 1/3 误差 6 ms」→ 替代判据 `5.0`；`simDriftMs` 四种口径逐值比对 |
-| 全量回归（S12 后） | `server/build/ac_tests.exe` 末行 `TESTS 398/398`（S01–S11 的 370 + S12 的 28：replication 15 + schedule 13）；`ctest --test-dir server/build -C Release` → `100% tests passed, 0 tests failed out of 1` |
-| `--filter` 计数（S12 后） | 既有 32 组**与 S11 逐组同数**（size 5/5、math 8/8、trig 4/4、rng 6/6、quantize 11/11、codec 15/15、hex 10/10、fuzz 3/3、wire 3/3、match 53/53、transport 9/9、reliability 5/5、fragment 4/4、grace 6/6、memory 3/3、world 6/6、entity 9/9、pose 5/5、grid 4/4、alloc 6/6、step 27/27、combat 45/45、fixture 6/6、ai 36/36、waves 16/16、security 51/51、malicious 36/36、rewind 12/12、room 8/8、matchstate 9/9、log_double 1/1）+ 新增 `replication` 16/16、`schedule` 13/13；改名收口见 §13.1-8 |
-| `node tools/check-docs.mjs` / `check-assets.mjs`（S12 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 59 个文档、170 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。`（396 个受控文件、34 个 Unity 依赖全在白名单） |
-| 两轴评审（S12，Standards + Spec） | §13.2 记录：**已修 5 类**（同值两名字未互相钉住、S11 计数断言与追加式冲突、新用例名污染 `--filter`、报告缺「丢过快照」段、40 tick/40 KB/s 无断言）；**未做/判断项 5 条**（命令通道「只发最新」缺实现、40 KB/s 无强制点、`/metrics` 归 S13、`soak-5min.md` 归 S14、子代理评审两次未交付 → 改主代理自查） |
-| 计划偏差清单（S12） | §13.1 的十六条（metrics.cpp 归 S13、`ac_tick_skips_total` 缺名单、框架加 `--report`、`soak-5min.md` 不存在、镜像复用 S03 类型、255 条截断口径、四个 flag 位恒 0、门禁子串收口、`gauges.*` 未列、房间接线归后续批次、事件映射归房间侧、百分位取幅值、300 档不可达、根 `.gitignore`、S11 计数快照放宽、DoD 逐条落点） |
+| 调度预算与漂移（S12 §4-7/§6-2） | `pendingTicks` 在让出后照旧累积（`budgetExceeded=1`、`tickSkips=0`、`accountedTicks()=1`，字段已删、口径为派生值）；`noteTickSkip(3)` 单记 `ac_tick_skips_total`；误差环 P95：前 20 tick 误差 0 → `0`、后 20 tick 误差 30 → `30`（超 8 ms 预算被正确判负）；「前 1/3 误差 1 ms vs 后 1/3 误差 6 ms」→ 替代判据 `5.0`；`simDriftMs` 四种口径逐值比对；`schedule_gauges_are_written_by_producers` 把六条量值逐条读回（`ac_snapshot_rate_x10` 200→150、`ac_tick_schedule_error_ms_p95`、`ac_sim_drift_ms = -20`） |
+| 全量回归（S12 后） | `server/build/ac_tests.exe` 末行 `TESTS 402/402`（S01–S11 的 370 + S12 的 32：replication 18 + schedule 14）；`ctest --test-dir server/build -C Release` → `100% tests passed, 0 tests failed out of 1` |
+| `--filter` 计数（S12 后） | 既有 32 组**与 S11 逐组同数**（size 5/5、math 8/8、trig 4/4、rng 6/6、quantize 11/11、codec 15/15、hex 10/10、fuzz 3/3、wire 3/3、match 53/53、transport 9/9、reliability 5/5、fragment 4/4、grace 6/6、memory 3/3、world 6/6、entity 9/9、pose 5/5、grid 4/4、alloc 6/6、step 27/27、combat 45/45、fixture 6/6、ai 36/36、waves 16/16、security 51/51、malicious 36/36、rewind 12/12、room 8/8、matchstate 9/9、log_double 1/1）+ 新增 `replication` 19/19、`schedule` 14/14；改名收口见 §13.1-8 |
+| `node tools/check-docs.mjs` / `check-assets.mjs`（S12 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 59 个文档、170 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。`（434 个受控文件、34 个 Unity 依赖全在白名单） |
+| 两轴评审（S12，Standards + Spec 并行，固定点 `2931530`） | §13.2 记录：**已修 14 类** —— Standards 8（同值三名收口到新增 `replication/limits.hpp`、删无读者的 `kSnapshotCapacityBytes`、三份插入排序合一、删只写不读的 `accumulatedTicks`、`SimClock` 消数据团并接通 `ac_sim_drift_ms`、删 Middle Man `snapshotRateLevel`、布尔前缀回改、三处小项）+ Spec 6（两条量值缺生产者、128 上限导致复制停摆与「假删除」、丢帧方向反了、DoD-2 无直接用例、报告缺「丢过快照」段、40 tick/40 KB/s 无断言）；**未做/判断项 5 条**（命令通道「只发最新」、40 KB/s 无强制点、`/metrics` 归 S13、`soak-5min.md` 归 S14、>128 实体房间需计划侧裁定）；**保留判断 2 条**（「定长数组/POD」表述纠正、`330eedb` 混入 `match_store.*` 的粒度） |
+| 计划偏差清单（S12） | §13.1 的二十一条（metrics.cpp 归 S13、`ac_tick_skips_total` 缺名单、框架加 `--report`、`soak-5min.md` 不存在、镜像复用 S03 类型、**128 vs 255 上限与移除列表口径**、四个 flag 位恒 0、门禁子串收口、`gauges.*` 未列、房间接线归后续批次、事件映射归房间侧、百分位取幅值、300 档不可达、根 `.gitignore`、S11 计数快照放宽、`limits.hpp` 派生常量、命令通道登记移交、40 KB/s 只具名、丢帧措辞冲突、评审期越权与 `match_store.*`、DoD 逐条落点） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

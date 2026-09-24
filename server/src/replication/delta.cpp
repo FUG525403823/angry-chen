@@ -3,11 +3,20 @@
 #include "core/quantize.hpp"
 
 namespace ac::replication {
+namespace {
+
+bool isPresentInWorld(const sim::World& world, uint16_t id) noexcept {
+  const sim::Entity* entity = sim::entityById(world, id);
+  return entity != nullptr && entity->active;
+}
+
+}  // namespace
 
 uint8_t kindFlagsOf(const sim::Entity& entity) noexcept {
+  const bool isPlayer = entity.kind == sim::EntityKind::kPlayer;
   uint8_t flags = 0u;
-  if (entity.kind == sim::EntityKind::kPlayer && entity.hp <= 0.0) flags |= kSnapshotFlagDowned;
-  if (entity.kind == sim::EntityKind::kPlayer && entity.idle) flags |= kSnapshotFlagIdle;
+  if (isPlayer && entity.hp <= 0.0) flags |= kSnapshotFlagDowned;
+  if (isPlayer && entity.idle) flags |= kSnapshotFlagIdle;
   const uint8_t kind = static_cast<uint8_t>(entity.kind);  // §5.2：kind 线上编号 0/1/2/3
   return static_cast<uint8_t>(kind | static_cast<uint8_t>((flags & 0x3Fu) << 2));
 }
@@ -33,6 +42,16 @@ std::size_t projectWorld(const sim::World& world, net::EntityRecord* out,
   return count;
 }
 
+std::size_t collectRemovedIds(const ClientBaseline& baseline, const sim::World& world,
+                              uint16_t* out, std::size_t capacity) noexcept {
+  std::size_t count = 0u;
+  for (const net::EntityRecord& previous : baseline.mirror.records) {
+    if (count >= capacity) break;
+    if (!isPresentInWorld(world, previous.id)) out[count++] = previous.id;
+  }
+  return count;
+}
+
 DeltaOutcome encodeDelta(const DeltaInput& input, ClientBaseline& baseline, uint8_t* out,
                          std::size_t capacity) noexcept {
   DeltaOutcome result{};
@@ -41,10 +60,14 @@ DeltaOutcome encodeDelta(const DeltaInput& input, ClientBaseline& baseline, uint
 
   net::EntityRecord records[kMaxRecordsPerFrame] = {};
   const std::size_t recordCount = projectWorld(world, records, kMaxRecordsPerFrame);
+  const std::size_t truncatedCount =
+      static_cast<std::size_t>(world.activeCount) > recordCount
+          ? static_cast<std::size_t>(world.activeCount) - recordCount
+          : 0u;
+  const bool isFull = input.isForceFull || baseline.mirror.tick == 0u;
   uint16_t removed[kBaselineCapacity] = {};
   const std::size_t removedCount =
-      collectRemovedIds(baseline, records, recordCount, removed, kBaselineCapacity);
-  const bool isFull = input.isForceFull || baseline.mirror.tick == 0u;
+      isFull ? 0u : collectRemovedIds(baseline, world, removed, kBaselineCapacity);
 
   net::PacketHeader header{};
   header.version = net::kProtocolVersion;
@@ -66,7 +89,7 @@ DeltaOutcome encodeDelta(const DeltaInput& input, ClientBaseline& baseline, uint
   const net::EncodeResult encoded = net::encodeSnapshot(header, frame, out, capacity);
   if (!encoded.isOk) return result;
 
-  advanceBaseline(baseline, world.tick, records, recordCount, removed, removedCount);
+  advanceBaseline(baseline, world.tick, records, recordCount, removed, removedCount, isFull);
   if (isFull) {
     baseline.lastFullTick = world.tick;
     baseline.framesSinceFull = 0u;
@@ -78,6 +101,7 @@ DeltaOutcome encodeDelta(const DeltaInput& input, ClientBaseline& baseline, uint
   result.recordCount = recordCount;
   result.removedCount = removedCount;
   result.eventCount = input.eventCount;
+  result.truncatedCount = truncatedCount;
   result.tick = world.tick;
   return result;
 }

@@ -2,39 +2,46 @@
 
 namespace ac::replication {
 
-RateLevel snapshotRateLevel(const SnapshotRateState& state) noexcept { return state.level; }
-
 uint16_t snapshotRateX10(const SnapshotRateState& state) noexcept {
-  const std::size_t index = static_cast<std::size_t>(state.level);
-  return index < kSnapshotRateLevelCount ? kSnapshotRateLevelsX10[index] : kSnapshotRateHighX10;
+  return kSnapshotRateLevelsX10[static_cast<std::size_t>(state.level)];
 }
 
 bool updateSnapshotRate(SnapshotRateState& state, uint32_t nowMs, const RateTriggers& triggers,
-                        ac::metrics::CounterRegistry* counters) noexcept {
-  if (state.isEvaluated && nowMs - state.lastEvalMs < kSnapshotRateEvalPeriodMs) return false;
-  const bool isFirstEval = !state.isEvaluated;
-  state.isEvaluated = true;
-  state.lastEvalMs = nowMs;
-
+                        ac::metrics::CounterRegistry* counters,
+                        ac::metrics::GaugeRegistry* gauges) noexcept {
+  // 干净期：任一触发条件出现就重置；升档要求「连续 3000 ms 无触发」。
   if (triggers.hasAny()) {
-    state.cleanSinceMs = nowMs;  // 有触发就重开干净期
-    if (state.level == RateLevel::kLow) return false;
-    state.level = static_cast<RateLevel>(static_cast<uint8_t>(state.level) + 1u);
-    ++state.downshifts;
-    ac::metrics::bumpCounter(counters, ac::metrics::CounterId::kSnapshotRateDownshifts);
-    return true;
+    state.cleanSinceMs = nowMs;
   }
 
-  if (isFirstEval) {
-    state.cleanSinceMs = nowMs;  // 首个评估周期只建立干净期起点，不升档
+  const bool isFirstEval = !state.isEvaluated;
+  if (!isFirstEval && nowMs - state.lastEvalMs < kSnapshotRateEvalPeriodMs) {
+    ac::metrics::setGaugeIf(gauges, ac::metrics::GaugeId::kSnapshotRateX10,
+                            static_cast<double>(snapshotRateX10(state)));
     return false;
   }
-  if (state.level == RateLevel::kHigh) return false;
-  if (nowMs - state.cleanSinceMs < kSnapshotRateCleanPeriodMs) return false;
-  state.level = static_cast<RateLevel>(static_cast<uint8_t>(state.level) - 1u);
-  state.cleanSinceMs = nowMs;  // 升档后重新计时，避免一次干净期连升两档
-  ++state.upshifts;
-  return true;
+  state.isEvaluated = true;
+  state.lastEvalMs = nowMs;  // 首个评估点就是 nowMs（档位从此刻起生效）
+
+  bool isChanged = false;
+  const std::size_t level = static_cast<std::size_t>(state.level);
+  if (triggers.hasAny()) {
+    if (level + 1u < kSnapshotRateLevelCount) {
+      state.level = static_cast<RateLevel>(level + 1u);
+      ++state.downshifts;
+      ac::metrics::bumpCounter(counters, ac::metrics::CounterId::kSnapshotRateDownshifts);
+      isChanged = true;
+    }
+    state.cleanSinceMs = nowMs;
+  } else if (nowMs - state.cleanSinceMs >= kSnapshotRateCleanPeriodMs && level > 0u) {
+    state.level = static_cast<RateLevel>(level - 1u);
+    ++state.upshifts;
+    isChanged = true;
+  }
+
+  ac::metrics::setGaugeIf(gauges, ac::metrics::GaugeId::kSnapshotRateX10,
+                          static_cast<double>(snapshotRateX10(state)));
+  return isChanged;
 }
 
 }  // namespace ac::replication
