@@ -28,16 +28,20 @@ void updateAiIntents(World& world, uint32_t dtMs, const EntityId* playerIds, uin
                      const SpatialGrid& grid) noexcept;
 void applyAiIntents(World& world) noexcept;
 
-// 阶段 6：S08 落地的空实现。
-void applyKnockback(World& world) noexcept;
+// 阶段 6：S09 落地（S06 的占位签名补上 dtMs —— 击退时长要按 tick 递减）。
+void applyKnockback(World& world, uint32_t dtMs) noexcept;
 
-// 阶段 10/11：S08 / S09 落地的空实现（返回值 = 本阶段落地的条数，本份恒 0）。
-// 签名按下游计划的移交物冻结：resolveCombat 见 S08 §9；resolveSheepAttacks / advanceProjectiles / updateKing 见 S09 §9。
+// 阶段 10/11：S08 / S09 落地（返回值 = 本阶段落地的事件条数 / 弹丸数 / 召唤数）。
+// 签名按下游计划的移交物冻结：resolveCombat 见 S08 §9；resolveSheepAttacks / resolveEliteFire /
+// advanceProjectiles / updateKing 见 S09 §9（S06 的占位签名只钉住前缀，参数表由 S09 补齐）。
 void resolveCombat(World& world, const Command* commands, uint32_t commandCount, uint32_t dtMs,
                    const CombatContext* context) noexcept;
 int resolveSheepAttacks(World& world, const EntityId* playerIds, uint32_t playerCount) noexcept;
-int resolveEliteFire(World& world) noexcept;
-int advanceProjectiles(World& world, uint32_t dtMs) noexcept;
+int resolveEliteFire(World& world, const EntityId* playerIds, uint32_t playerCount) noexcept;
+int advanceProjectiles(World& world, uint32_t dtMs, const EntityId* playerIds,
+                       uint32_t playerCount) noexcept;
 int updateKing(World& world, Entity& king, uint32_t dtMs) noexcept;
+// 阶段 11 的循环入口：遍历存活羊王逐个调 updateKing，返回本 tick 召唤总数。
+int updateKings(World& world, uint32_t dtMs) noexcept;
 
 }  // namespace ac::sim

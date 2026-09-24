@@ -4,8 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "ai/sheep_state.hpp"
 #include "combat/downed.hpp"
 #include "config/player.hpp"
+#include "combat/knockback.hpp"
 #include "combat/rage.hpp"
 #include "combat/weapon.hpp"
 #include "core/math.hpp"
@@ -68,6 +70,9 @@ struct Entity {
   ac::combat::DownedState downed{};
   bool interactHeld = false;  // §5.6：本 tick 的交互键（救援判定读它）
   uint8_t sheepKind = 0u;     // 羊形（0 grunt / 1 ram / 2 elite / 3 king）：S09 填，§5.4 命中盒读它
+  // —— S09 追加 ——
+  ac::combat::KnockbackState knock{};  // 击退（S08 只带了武器/怒气/倒地；阶段 6 读它）
+  ac::ai::SheepAiState ai{};           // 每只羊的 AI 状态（仇恨槽 / 计时 / 冲锋方向 / 邻居槽）
 };
 
 struct SpawnParams {
@@ -103,6 +108,8 @@ inline void resetEntity(Entity& entity) noexcept {
   ac::combat::resetDownedState(entity.downed);
   entity.interactHeld = false;
   entity.sheepKind = 0u;
+  ac::combat::resetKnockbackState(entity.knock);
+  ac::ai::resetSheepAiState(entity.ai);
 }
 
 // 只读视图：查询语义与 EntityTable 完全一致（模拟遍历与只读消费方用它）。

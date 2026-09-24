@@ -84,8 +84,10 @@ AC_TEST(world_create_initializes_defaults) {
   AC_CHECK_EQ(world->entities[0].id, 0u);
   AC_CHECK(world->entities[0].kind == sim::EntityKind::kPlayer);
   AC_CHECK_EQ(world->entities[sim::kMaxEntities - 1u].pos.z, 0.0);
-  // S08 在 Entity 末尾追加了武器/倒地/怒气/交互/羊形状态（S05 §5.2 明写允许），96 -> 232 字节。
-  AC_CHECK_EQ(sizeof(sim::Entity), 232u);  // §6.2 的字节账：README §6.1/§9 与代码同步
+  // S08 在 Entity 末尾追加武器/倒地/怒气/交互/羊形（96 -> 232），S09 再追加击退与羊群 AI
+  // 状态（仇恨槽 8 + 邻居槽 12 + 计时/冲锋方向）→ 232 -> 960 字节（README §12 的字节账；两轴评审后
+  // 删掉了与 S08 `Entity::sheepKind` 重复的 `ai.sheepKind` 镜像，故由 968 回落到 960）。
+  AC_CHECK_EQ(sizeof(sim::Entity), 960u);
   AC_CHECK_EQ(sizeof(sim::Entity::id), 2u);
   AC_CHECK_EQ(sizeof(sim::Entity::aliveMs), 4u);
 
@@ -146,9 +148,10 @@ AC_TEST(world_create_initializes_defaults) {
               sizeof(sim::World), sizeof(sim::Entity), sizeof(sim::PoseHistory),
               sizeof(sim::SpatialGrid), sizeof(sim::Event));
   AC_CHECK_EQ(sizeof(sim::Event), 48u);  // S08 §5.6 的载荷扩容后仍是 48 字节
-  // S05 的 128 KiB 只是「一次性预分配」的卫生上限；S08 扩容后是 265352 字节（1024 实体 × 232 B
-  // + 256 事件 × 48 B + 姿态环 7680），上限随之抬到 288 KiB 并保留同量级约束（README §9 已声明）。
-  AC_CHECK(sizeof(sim::World) < 288u * 1024u);
+  // S05 的 128 KiB 只是「一次性预分配」的卫生上限；S08 扩到 265352 字节、S09 再随 Entity 的
+  // 羊群 AI 状态扩到 1010824 字节（1024 实体 × 960 B + 256 事件 × 48 B + 姿态环 7688），
+  // 上限抬到 1 MiB 并保留同量级约束（README §12 已声明）。
+  AC_CHECK(sizeof(sim::World) < 1024u * 1024u);
 }
 
 AC_TEST(world_reset_returns_to_start) {
@@ -267,7 +270,8 @@ AC_TEST(world_stats_count_alive_sheep) {
   const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(0.0, 0.0, 0.0));
   const auto sheepA = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(1.0, 0.0, 1.0));
   const auto sheepB = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(2.0, 0.0, 2.0));
-  const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(3.0, 0.0, 3.0));
+  // S09 起投射物有生命周期：谷仓 AABB 内的弹丸会在阶段 11 被回收，所以放在场地空地上。
+  const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(20.0, 0.0, 20.0));
   AC_CHECK(player.isOk && sheepA.isOk && sheepB.isOk && bullet.isOk);
 
   stepEmpty(*world);
@@ -790,7 +794,8 @@ AC_TEST(grid_build_counts_and_sorts_cells) {
   const auto third = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(-1.0, 0.0, -1.0));
   const auto fourth = sim::spawnEntity(*world, sim::EntityKind::kPickup, vec(20.0, 0.0, -20.0));
   const auto fifth = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(39.0, 0.0, 39.0));
-  const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(0.0, 0.0, 0.0));
+  // S09 起弹丸在谷仓内会被回收（§5.6），放场地空地上只验证「不入网格 + 留在活动表」。
+  const auto bullet = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(20.0, 0.0, 20.0));
   AC_CHECK(first.isOk && second.isOk && third.isOk && fourth.isOk && fifth.isOk && bullet.isOk);
   stepEmpty(*world);
 
@@ -923,8 +928,9 @@ AC_TEST(grid_ignores_projectiles) {
   // S06 起 tick 内含静态碰撞：玩家落在谷仓外，末尾按它的坐标查邻域
   const auto player = sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(20.0, 0.0, 20.0));
   const auto sheep = sim::spawnEntity(*world, sim::EntityKind::kSheep, vec(1.0, 0.0, 1.0));
-  const auto bulletA = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(0.5, 0.0, 0.5));
-  const auto bulletB = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(2.0, 0.0, 2.0));
+  // S09 起弹丸有生命周期：谷仓内的弹丸会在阶段 11 被回收，故放在场地空地上（§5.6）。
+  const auto bulletA = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(6.0, 0.0, 6.0));
+  const auto bulletB = sim::spawnEntity(*world, sim::EntityKind::kProjectile, vec(7.0, 0.0, 7.0));
   const auto pickup = sim::spawnEntity(*world, sim::EntityKind::kPickup, vec(3.0, 0.0, 3.0));
   AC_CHECK(player.isOk && sheep.isOk && bulletA.isOk && bulletB.isOk && pickup.isOk);
   stepEmpty(*world);

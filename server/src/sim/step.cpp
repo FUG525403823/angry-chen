@@ -2,14 +2,15 @@
 #include "sim/step.hpp"
 
 #include "combat/rage.hpp"
+#include "combat/resolve.hpp"
 #include "config/combat.hpp"
 
 namespace ac::sim {
 namespace {
 
 // 阶段 7：对全部活动实体 integrateState + aliveMs 累加。
-// §5.1 末尾那句"对正在救援的玩家 clampHorizontalSpeed(1.5)"需要 S08 的救援状态机，
-// 本份无该状态（见 README 的计划偏差清单），故调用点等 S08 接入；clampHorizontalSpeed 本身已实现并有用例。
+// §5.1 末尾那句"对正在救援的玩家 clampHorizontalSpeed(1.5)"在 S09 补齐：救援状态机（S08）与
+// hasDownedTeammateInRange（combat/resolve）都已就位，调用点见 applyCommands（v1 sim.ts:109-115 同序）。
 void integrateEntities(World& world, uint32_t dtMs) noexcept {
   const double dtSeconds = static_cast<double>(dtMs) / 1000.0;
   for (std::size_t i = 0u; i < world.activeCount; ++i) {
@@ -23,10 +24,13 @@ void integrateEntities(World& world, uint32_t dtMs) noexcept {
 }
 
 // 阶段 8（与阶段 9 每趟分离后的复跑）：单实体先谷仓推离、后边界夹取。
+// §5.6/§5.7：投射物不参与静态碰撞（v1 sim.ts 的 resolveStaticCollisions 明确跳过 projectile）；
+// 问号弹的越界/进场回收由阶段 11 的 advanceProjectiles 负责，否则谷仓推离会把弹丸挤到
+// AABB 边界上、让 v1 的"进谷仓即销毁"判定永远不成立（S09 §5.6）。
 void collideEntities(World& world) noexcept {
   for (std::size_t i = 0u; i < world.activeCount; ++i) {
     Entity& entity = world.entities[world.activeIds[i] - 1u];
-    if (!entity.active) continue;
+    if (!entity.active || entity.kind == EntityKind::kProjectile) continue;
     MoveState state = moveStateOf(entity);
     collideStatic(state, ac::config::kArenaConfig, radiusOf(entity));
     storeMoveState(entity, state);
@@ -55,6 +59,10 @@ void applyCommands(World& world, const Command* commands, uint32_t commandCount)
       state.vel.x = 0.0;
       state.vel.y = 0.0;
       state.vel.z = 0.0;
+    } else if (command != nullptr && (command->buttons & ac::config::kButtonInteract) != 0u &&
+               hasDownedTeammateInRange(world, entity, ac::config::kReviveRangeM)) {
+      // S09 补上 S08 §9.2-1 的欠账（v1 sim.ts:109-115）：按住交互且救援距离内有倒地队友 → 限速 1.5 m/s。
+      clampHorizontalSpeed(state, ac::config::kReviveSpeedClampMps);
     }
     storeMoveState(entity, state);
   }
@@ -71,24 +79,11 @@ uint32_t collectPlayerIds(const World& world, EntityId* out) noexcept {
   return count;
 }
 
-// 阶段 4/5：空实现，等 S09。
-void updateAiIntents(World&, uint32_t, const EntityId*, uint32_t, const SpatialGrid&) noexcept {}
-
-void applyAiIntents(World&) noexcept {}
-
-// 阶段 6：空实现，等 S08。
-void applyKnockback(World&) noexcept {}
-
+// 阶段 4/5：S09 已落地，定义在 ai/sheep_brain.cpp。
+// 阶段 6：S09 已落地，定义在 combat/knockback.cpp（S06 的占位签名补上 dtMs）。
 // 阶段 10：S08 已落地，定义在 combat/resolve.cpp（签名不变）。
-
-// 阶段 11：空实现，等 S09（返回值 = 落地条数，本份恒 0）。
-int resolveSheepAttacks(World&, const EntityId*, uint32_t) noexcept { return 0; }
-
-int resolveEliteFire(World&) noexcept { return 0; }
-
-int advanceProjectiles(World&, uint32_t) noexcept { return 0; }
-
-int updateKing(World&, Entity&, uint32_t) noexcept { return 0; }
+// 阶段 11：S09 已落地，定义在 ai/sheep_attack.cpp（resolveSheepAttacks / resolveEliteFire /
+// advanceProjectiles，S06 的占位签名补上 playerIds/playerCount）与 ai/king_phases.cpp（updateKing / updateKings）。
 
 bool stepWorld(World& world, const Command* commands, uint32_t commandCount, uint32_t dtMs) noexcept {
   if (dtMs != ac::config::kStepDtMs) return false;  // §5.1：禁止变长 dt，拒绝时世界不变
@@ -114,7 +109,7 @@ bool stepWorld(World& world, const Command* commands, uint32_t commandCount, uin
   applyAiIntents(world);
 
   // 阶段 6：击退
-  applyKnockback(world);
+  applyKnockback(world, dtMs);
 
   // 阶段 7：积分
   integrateEntities(world, dtMs);
@@ -129,13 +124,13 @@ bool stepWorld(World& world, const Command* commands, uint32_t commandCount, uin
     collideEntities(world);
   }
 
-  // 阶段 10/11：战斗、羊群攻击、投射物、羊王
-  // updateKing(World&, Entity&, uint32_t) 需要 S09 创建的羊王实体，本份没有该实体，
-  // 因此只冻结签名、不设调用点（见 README §7.5），其余四个阶段按 S09/S08 的冻结签名调用。
+  // 阶段 10/11：战斗、羊群攻击、投射物、羊王（updateKings 遍历本 tick 存活的羊王，逐个走冻结的
+  // updateKing(World&, Entity&, uint32_t)；召唤出的咩咩兵按 activeIds 升序插入，遍历按 v1 逐字重读当前下标）。
   resolveCombat(world, commands, commandCount, dtMs, nullptr);
   resolveSheepAttacks(world, playerIds, playerCount);
-  resolveEliteFire(world);
-  advanceProjectiles(world, dtMs);
+  resolveEliteFire(world, playerIds, playerCount);
+  advanceProjectiles(world, dtMs, playerIds, playerCount);
+  updateKings(world, dtMs);
 
   // 阶段 12：统计汇总
   updateWorldStats(world);

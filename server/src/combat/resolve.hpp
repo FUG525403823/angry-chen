@@ -45,7 +45,7 @@ ShotTrace& traceRay(const World& world, const PoseHistory* history, EntityId sho
 
 // §5.7：波间复苏（所有倒地玩家按 waveReviveHpRatio 复活），返回复苏人数。
 uint32_t reviveDownedForWaveClear(World& world) noexcept;
-// §5.7：范围内是否有倒地队友（S09 的羊形 AI 读它）。
+// §5.7：范围内是否有倒地队友（S09 的羊形 AI 与阶段 1 的救援限速都读它）。
 bool hasDownedTeammateInRange(const World& world, const Entity& entity, double rangeM) noexcept;
 
 }  // namespace ac::sim

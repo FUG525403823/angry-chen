@@ -27,8 +27,16 @@ const V1_WEAPONS_CONFIG = 'packages/shared/src/config/weapons.ts';
 const V1_COMBAT_CONFIG = 'packages/shared/src/config/combat.ts';
 const V1_SHEEP_CONFIG = 'packages/shared/src/config/sheep.ts';
 const V1_RESOLVE = 'packages/shared/src/combat/resolve.ts';
+const V1_SHEEP_BRAIN = 'packages/shared/src/ai/sheepBrain.ts';
+const V1_FLOCKING = 'packages/shared/src/ai/flocking.ts';
+const V1_SHEEP_ATTACK = 'packages/shared/src/ai/sheepAttack.ts';
+const V1_KING_PHASES = 'packages/shared/src/ai/kingPhases.ts';
+const V1_DIRECTOR = 'packages/shared/src/ai/director.ts';
+const V1_WAVES_CONFIG = 'packages/shared/src/config/waves.ts';
 // S08 的 configHash 分组：导入结果在 main 里填，configHashText 只读它。
 let s08 = null;
+// S09 的 configHash 分组：同样在 main 里填。
+let s09 = null;
 const TRIG_TABLE_PATH = 'docs/evidence/fixtures/trig-table.json';
 const DEFAULT_OUT = 'docs/evidence/fixtures';
 const SIZE_GATE_BYTES = 2 * 1024 * 1024;
@@ -322,6 +330,60 @@ function configHashText(config) {
         h.headMinZM, h.headMaxZM, h.headMinM, h.torsoMinM];
     });
     lines.push('sheepHit=' + g17List(hitRows));
+  }
+  if (s09 !== null) {
+    // ---- S09 §5.1-§5.4：羊形表 / SHEEP_AI / 状态转移表 / 局部常量 / 攻击档案 / 波次常量 ----
+    // （C++ 侧 config/sheep.hpp + config/waves.hpp 逐组重算，两条文本必须逐字节一致。）
+    const s = s09;
+    lines.push('sheep=' + g17List(s.order.flatMap((kind) => {
+      const def = s.sheep.SHEEP[kind];
+      return [def.hp, def.speed, def.damage, def.price, def.radiusM, def.heightM];
+    })));
+    lines.push('sheep.ai=' + g17List(Object.values(s.sheep.SHEEP_AI)));
+    // 转移表：13 行 × (count + 6 槽)，不足 6 的地方补 0（C++ 是定长数组）。
+    const stateCodes = Object.values(s.sheep.SHEEP_STATE);
+    const states = [stateCodes.length, 6];
+    for (const code of stateCodes) {
+      const row = s.sheep.SHEEP_STATE_TRANSITIONS[code] ?? [];
+      states.push(row.length);
+      for (let slot = 0; slot < 6; slot += 1) states.push(row[slot] ?? 0);
+    }
+    lines.push('sheep.states=' + g17List(states));
+    // 局部常量：能导入的取 v1 导出；其余是 v1 的内联字面量（没有导出），按 文件:行 抄一份钉住。
+    lines.push('sheep.local=' + g17List([s.brain.SHEEP_ALERT_MS, s.brain.RAM_CHARGE_TRIGGER_M,
+      s.brain.RAM_CHARGE_MAX_MS, s.brain.GRAZE_REPICK_MS, s.brain.ELITE_STRAFE_MS,
+      0.5,  // ELITE_STRAFE_SPEED_RATIO sheepBrain.ts:221
+      0.4,  // GRAZE_SPEED_RATIO sheepBrain.ts:180
+      0.5,  // GRAZE_OBSTACLE_RADIUS_RATIO sheepBrain.ts:189
+      2,    // ARRIVE_SLOW_RADIUS_M sheepBrain.ts:180
+      s.flockWeight.separation, s.flockWeight.alignment, s.flockWeight.cohesion,
+      0.1,  // FLOCK_COHESION_SCALE flocking.ts:233
+      0.5,  // FLOCK_BLEND_RATIO sheepBrain.ts:328
+      s.attack.BITE_KNOCKBACK_M, s.attack.CHARGE_KNOCKBACK_M, s.attack.BOLT_LIFE_MS,
+      s.attack.BOLT_RADIUS_M,
+      0.6,  // BOLT_SPAWN_HEIGHT_M sheepAttack.ts:165
+      0.6,  // TARGET_EYE_HEIGHT_M targeting.ts:82
+      0.9,  // VICTIM_CHEST_HEIGHT_M targeting.ts:42 / sheepAttack.ts:90
+      2.6,  // KING_SUMMON_RADIUS_M kingPhases.ts:39
+      0.3,  // KING_SUMMON_JITTER_M kingPhases.ts:43
+      s.king.KING_PHASE_1_MIN_RATIO, s.king.KING_PHASE_2_MIN_RATIO,
+      config.arena.halfSize - config.arena.fence.thickness]));  // FIELD_EDGE_LIMIT_M sheepBrain.ts:257
+    const sheepAttack = s.order.flatMap((kind) => {
+      const w = s.sheep.SHEEP_ATTACK_PROFILE[kind];
+      return [w.damage, w.pellets, w.rpm, w.auto ? 1 : 0, w.mag, w.reloadMs, w.spreadDeg,
+        w.falloffStartM, w.falloffPerM, w.headshotMultiplier];
+    });
+    lines.push('sheep.attack=' + g17List(sheepAttack));
+    const waveRows = [s.waves.WAVE_MAX, s.waves.WAVE_INTERMISSION_MS, s.waves.WAVE_INTERMISSION_MIN_MS,
+      s.waves.BUDGET_SCALE_PER_EXTRA_PLAYER, s.waves.SPEED_SCALE_PER_EXTRA_PLAYER,
+      s.waves.MAX_SPAWNS_PER_TICK, s.waves.MAX_ACTIVE_SPAWN_POINTS, s.waves.MIN_SPAWN_DISTANCE_M];
+    for (let wave = 1; wave <= s.waves.WAVE_MAX; wave += 1) waveRows.push(s.waves.waveBaseBudget(wave));
+    for (let players = 1; players <= 4; players += 1) waveRows.push(s.waves.sheepSpeedMultiplier(players));
+    lines.push('waves=' + g17List(waveRows));
+    lines.push('waves.scaling=' + g17List([s.waves.waveBudget(1, 4), s.waves.waveBudget(5, 4),
+      s.waves.firstWaveFor('ram'), s.waves.firstWaveFor('elite'), s.waves.firstWaveFor('king'),
+      s.waves.firstWaveFor('grunt'), s.waves.isBossWave(5) ? 1 : 0, s.waves.isBossWave(4) ? 1 : 0,
+      s.director.DIRECTOR_KIND_COUNT]));
   }
   const text = lines.join('\n');
   return { text, hash: crc32cText(text).toString(16).padStart(8, '0') };
@@ -646,6 +708,22 @@ s08 = {
   sheepHit: sheepConfig.SHEEP_HIT,
   sheepOrder: sheepConfig.SHEEP_ORDER,
   resolve: resolveModule,
+};
+const sheepBrainModule = await import(pathToFileURL(path.join(root, V1_SHEEP_BRAIN)).href);
+const flockingModule = await import(pathToFileURL(path.join(root, V1_FLOCKING)).href);
+const sheepAttackModule = await import(pathToFileURL(path.join(root, V1_SHEEP_ATTACK)).href);
+const kingModule = await import(pathToFileURL(path.join(root, V1_KING_PHASES)).href);
+const directorModule = await import(pathToFileURL(path.join(root, V1_DIRECTOR)).href);
+const wavesConfig = await import(pathToFileURL(path.join(root, V1_WAVES_CONFIG)).href);
+s09 = {
+  sheep: sheepConfig,
+  order: sheepConfig.SHEEP_ORDER,
+  brain: sheepBrainModule,
+  flockWeight: flockingModule.FLOCK_WEIGHT,
+  attack: sheepAttackModule,
+  king: kingModule,
+  director: directorModule,
+  waves: wavesConfig,
 };
   const api = { createWorld: v1.createWorld, createCommand: v1.createCommand, stepWorld: v1.stepWorld,
     getEntity: v1.getEntity, CONFIG: v1.CONFIG, isRageActive: rageModule.isRageActive, isReloading: weaponModule.isReloading };

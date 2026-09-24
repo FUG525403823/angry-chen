@@ -120,11 +120,14 @@ inline SpawnResult spawnEntity(World& world, const SpawnParams& params) noexcept
 }
 
 // v1 world.ts 的 spawnEntity(kind, x, y, z, ...) 口径：hp/armor 取该 kind 的基础属性。
-// S08 起这个便捷重载与 v1 对齐（此前留 0，会让 S08 的救援/怒气用例拿到 0 血实体）。
+// S08 起这个便捷重载与 v1 对齐（此前留 0，会让 S08 的救援/怒气用例拿到 0 血实体）；
+// S09 起连 team 也对齐 v1 的 defaultTeamByKind（羊 = 1）—— 否则 director/羊王召唤出的羊与玩家同队，
+// 会被 kFriendlyFire=false 的命中结算全部挡掉（见 README §12）。
 inline SpawnResult spawnEntity(World& world, EntityKind kind, ac::Vec3 pos) noexcept {
   SpawnParams params{};
   params.kind = kind;
   params.pos = pos;
+  params.team = ac::config::kDefaultTeamByKind[static_cast<std::size_t>(kind)];
   const ac::config::BaseStats& stats = ac::config::kKindBaseStats[static_cast<std::size_t>(kind)];
   params.hp = static_cast<double>(stats.hp);
   params.armor = static_cast<double>(stats.armor);

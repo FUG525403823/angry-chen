@@ -128,7 +128,7 @@ void updateRevives(World& world, uint32_t dtMs, double nowMs) noexcept {
       if (other.downed.downed || other.team != victim.team) continue;
       if (!other.interactHeld) continue;
       const double speed = std::sqrt(other.vel.x * other.vel.x + other.vel.z * other.vel.z);
-      if (speed > ac::config::kRescueSpeedClampMps) continue;
+      if (speed > ac::config::kReviveSpeedClampMps) continue;
       const double dx = other.pos.x - victim.pos.x;
       const double dz = other.pos.z - victim.pos.z;
       if (dx * dx + dz * dz > ac::config::kReviveRangeM * ac::config::kReviveRangeM) continue;

@@ -7,10 +7,10 @@
 
 | fixture | 场景 | tick | 实体 | 关键覆盖 | 字节 | SHA256 |
 |---|---|---|---|---|---|---|
-| `still-60t.json` | 静止 | 60 | 4 | 缺命令分支（前 30 tick 传 0 条命令）、位姿不动 | 54474 | `7827638c076edbe01fb426d2c87ae152d1546509c9bfdc7d4f87a1857a18eb50` |
-| `straight-line-240t.json` | 直线移动 | 240 | 4 | 步行 0.225 m/tick 与冲刺 0.315 m/tick、方向反转、积分精度 | 326155 | `7185e1bab1338c10ab66feba854d6e8da2dd090f251d123f6d78dd63eb62d07c` |
-| `barn-collision-400t.json` | 碰撞（谷仓） | 400 | 4 | 谷仓推离到 z=±4.4 与速度清零（x=±1.5 两名玩家） | 545965 | `547ce632f51cc2de18f3545596557fb1dc2229a004328c92b998b30b00ea9bde` |
-| `fence-bounds-400t.json` | 边界（栅栏） | 400 | 4 | `limit = 40 - 0.25 - 0.4 = 39.35` 的 +z / -x 两侧夹取 | 519906 | `655feaef8991e205a5eed86bc1a45cdd4318caee86c607ca52e1c1201ad0f17b` |
+| `still-60t.json` | 静止 | 60 | 4 | 缺命令分支（前 30 tick 传 0 条命令）、位姿不动 | 54474 | `f8ae76e4e216b06c741c31eb06cdda7e561ccd372c5c4cdcdbd0576b422df3bd` |
+| `straight-line-240t.json` | 直线移动 | 240 | 4 | 步行 0.225 m/tick 与冲刺 0.315 m/tick、方向反转、积分精度 | 326155 | `b8d0da2dc708a9d129835c5ae9149631d49fc66a8f55d13fdeea14c8a77148d2` |
+| `barn-collision-400t.json` | 碰撞（谷仓） | 400 | 4 | 谷仓推离到 z=±4.4 与速度清零（x=±1.5 两名玩家） | 545965 | `6f67c0e3ec241d32131d474784e9458051af5addf11e97082b595c79d23f4cfc` |
+| `fence-bounds-400t.json` | 边界（栅栏） | 400 | 4 | `limit = 40 - 0.25 - 0.4 = 39.35` 的 +z / -x 两侧夹取 | 519906 | `366d5e6d56db9149cb093b3af314c5b649d148f4443fb2777dbebb91e5afa82f` |
 
 总体积 **1 446 500 B**，门限 2 097 152 B（§5.5 / ADR-010 §8）——见 §6 的体积门冲突。
 
@@ -64,6 +64,8 @@ node tools/export-fixtures.mjs --root <副本> --out <目录>
 | `rng-streams-600t` | 三流归属（依赖上面全部消费方） | S12 |
 
 导出时刻就有消费者，才能验证"这份向量到底在测什么"——所以它们随各自的计划一起入库，而不是现在冻一批没人验证过的语义猜测。同一原因：§5.6 的 `configHash` 覆盖「武器表与散布常量、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则」，这些组在 C++ 侧落地前，任何 14 场景的 hash 都不可能通过。
+
+**S09 落地后的现状（2026-09-24）**：S09 交付的是 `configHash` 的七组新覆盖（`sheep` / `sheep.ai` / `sheep.states` / `sheep.local` / `sheep.attack` / `waves` / `waves.scaling`，`configHash = 19a978ea`，见 `server/README.md` §10）——只把本文件 §1 的 4 份向量按新哈希重新导出了一遍（字节数不变、SHA256 全部换新）。上表挂在 S09 名下的 5 份**场景向量仍未导出**：导出器的场景集目前只有「4 名玩家的移动/碰撞」，跑羊群要先给它加「生成羊 + 空命令」的驱动；`wave-director-1to5-1200t` 另外依赖把导演接进 tick 循环（S09 按计划把 `DirectorState` 留给 S10 的比赛控制器，见 `server/README.md` §10.1-3/§10.1-4）。
 
 ## 6. 交给后续计划的已知风险
 

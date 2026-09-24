@@ -11,9 +11,12 @@
 
 #include "config/combat.hpp"
 #include "config/player.hpp"
+#include "config/sheep.hpp"
+#include "config/waves.hpp"
 #include "config/weapons.hpp"
 #include "core/hash.hpp"
 #include "sim/arena.hpp"
+#include "waves/director.hpp"
 
 namespace ac::test {
 namespace {
@@ -601,7 +604,7 @@ std::string configHashText() {
   text.push_back(kLf);
   text += "revive=" + join17({ac::config::kReviveRangeM, static_cast<double>(ac::config::kReviveDurationMs),
                                static_cast<double>(ac::config::kReviveResetDelayMs),
-                               ac::config::kRescueSpeedClampMps, ac::config::kRevivedHpRatio,
+                               ac::config::kReviveSpeedClampMps, ac::config::kRevivedHpRatio,
                                ac::config::kWaveReviveHpRatio, ac::config::kProgressEventStepRatio});
   text.push_back(kLf);
   std::vector<double> sheepHit;
@@ -618,6 +621,129 @@ std::string configHashText() {
     sheepHit.push_back(profile.torsoMinM);
   }
   text += "sheepHit=" + join17(sheepHit);
+  text.push_back(kLf);
+
+  // S09 §5.1-§5.4：羊形表 / SHEEP_AI / 状态转移表 / 局部常量 / 攻击档案 / 波次常量
+  // （与 tools/export-fixtures.mjs 的 configHashText 逐组对应）
+  std::vector<double> sheep;
+  for (const ac::config::SheepDef& def : ac::config::kSheep) {
+    sheep.push_back(def.hp);
+    sheep.push_back(def.speed);
+    sheep.push_back(def.damage);
+    sheep.push_back(def.price);
+    sheep.push_back(def.radiusM);
+    sheep.push_back(def.heightM);
+  }
+  text += "sheep=" + join17(sheep);
+  text.push_back(kLf);
+  const ac::config::SheepAiParams& sheepAi = ac::config::kSheepAi;
+  text += "sheep.ai=" +
+          join17({sheepAi.sightM,
+                  sheepAi.attackRangeM,
+                  sheepAi.attackCooldownMs,
+                  sheepAi.chargeWindupMs,
+                  sheepAi.chargeSpeedMps,
+                  sheepAi.eliteBoltRangeM,
+                  sheepAi.eliteBoltCooldownMs,
+                  sheepAi.eliteKeepMinM,
+                  sheepAi.eliteKeepMaxM,
+                  sheepAi.boltSpeedMps,
+                  static_cast<double>(sheepAi.kingSummonCount),
+                  sheepAi.kingSummonIntervalMs,
+                  sheepAi.kingPhase3SpeedMultiplier,
+                  sheepAi.kingPhase3CooldownMultiplier,
+                  sheepAi.staggerMs,
+                  sheepAi.chargeStaggerMs,
+                  sheepAi.deadFadeMs,
+                  sheepAi.knockbackVelocityMps,
+                  sheepAi.neighborRadiusM,
+                  static_cast<double>(sheepAi.maxNeighbors),
+                  static_cast<double>(sheepAi.aggroSlots),
+                  sheepAi.aggroDecayPerTick,
+                  sheepAi.aggroPerHit,
+                  sheepAi.targetSwitchRatio,
+                  sheepAi.grazeRadiusM});
+  text.push_back(kLf);
+  std::vector<double> states{static_cast<double>(ac::config::kSheepStateCount),
+                             static_cast<double>(ac::config::kSheepMaxTransitions)};
+  for (const ac::config::SheepTransitionRow& row : ac::config::kSheepTransitions) {
+    states.push_back(static_cast<double>(row.count));
+    for (int slot = 0; slot < ac::config::kSheepMaxTransitions; ++slot) {
+      states.push_back(static_cast<double>(row.to[slot]));
+    }
+  }
+  text += "sheep.states=" + join17(states);
+  text.push_back(kLf);
+  // 局部常量：可导入的取 v1 导出；其余是 v1 的内联字面量（没有导出），按 文件:行 抄一份钉住。
+  text += "sheep.local=" +
+          join17({ac::config::kSheepAlertMs,
+                  ac::config::kRamChargeTriggerM,
+                  ac::config::kRamChargeMaxMs,
+                  ac::config::kGrazeRepickMs,
+                  ac::config::kEliteStrafeMs,
+                  ac::config::kEliteStrafeSpeedRatio,
+                  ac::config::kGrazeSpeedRatio,
+                  ac::config::kGrazeObstacleRadiusRatio,
+                  ac::config::kArriveSlowRadiusM,
+                  ac::config::kFlockWeightSeparation,
+                  ac::config::kFlockWeightAlignment,
+                  ac::config::kFlockWeightCohesion,
+                  ac::config::kFlockCohesionScale,
+                  ac::config::kFlockBlendRatio,
+                  ac::config::kBiteKnockbackM,
+                  ac::config::kChargeKnockbackM,
+                  ac::config::kQuestionBoltLifeMs,
+                  ac::config::kQuestionBoltRadiusM,
+                  ac::config::kQuestionBoltSpawnHeightM,
+                  ac::config::kTargetEyeHeightM,
+                  ac::config::kVictimChestHeightM,
+                  ac::config::kKingSummonRadiusM,
+                  ac::config::kKingSummonJitterM,
+                  ac::config::kKingPhase1MinRatio,
+                  ac::config::kKingPhase2MinRatio,
+                  ac::config::kFieldEdgeLimitM});
+  text.push_back(kLf);
+  std::vector<double> sheepAttack;
+  for (const ac::config::WeaponDef& profile : ac::config::kSheepAttackProfile) {
+    sheepAttack.push_back(profile.damage);
+    sheepAttack.push_back(static_cast<double>(profile.pellets));
+    sheepAttack.push_back(static_cast<double>(profile.rpm));
+    sheepAttack.push_back(profile.isAuto ? 1.0 : 0.0);
+    sheepAttack.push_back(static_cast<double>(profile.mag));
+    sheepAttack.push_back(static_cast<double>(profile.reloadMs));
+    sheepAttack.push_back(profile.spreadDeg);
+    sheepAttack.push_back(profile.falloffStartM);
+    sheepAttack.push_back(profile.falloffPerM);
+    sheepAttack.push_back(profile.headshotMultiplier);
+  }
+  text += "sheep.attack=" + join17(sheepAttack);
+  text.push_back(kLf);
+  std::vector<double> waveRows{static_cast<double>(ac::config::kWaveMax),
+                               ac::config::kWaveIntermissionMs,
+                               ac::config::kWaveIntermissionMinMs,
+                               ac::config::kBudgetScalePerExtraPlayer,
+                               ac::config::kSpeedScalePerExtraPlayer,
+                               static_cast<double>(ac::config::kMaxSpawnsPerTick),
+                               static_cast<double>(ac::config::kMaxActiveSpawnPoints),
+                               ac::config::kMinSpawnDistanceM};
+  for (int32_t wave = 1; wave <= ac::config::kWaveMax; ++wave) {
+    waveRows.push_back(static_cast<double>(ac::config::waveBaseBudget(wave)));
+  }
+  for (int32_t players = 1; players <= 4; ++players) {
+    waveRows.push_back(ac::config::sheepSpeedMultiplier(players));
+  }
+  text += "waves=" + join17(waveRows);
+  text.push_back(kLf);
+  text += "waves.scaling=" +
+          join17({static_cast<double>(ac::config::waveBudget(1, 4)),
+                  static_cast<double>(ac::config::waveBudget(5, 4)),
+                  static_cast<double>(ac::config::firstWaveFor(ac::config::SheepKind::kRam)),
+                  static_cast<double>(ac::config::firstWaveFor(ac::config::SheepKind::kElite)),
+                  static_cast<double>(ac::config::firstWaveFor(ac::config::SheepKind::kKing)),
+                  static_cast<double>(ac::config::firstWaveFor(ac::config::SheepKind::kGrunt)),
+                  ac::config::isBossWave(5) ? 1.0 : 0.0,
+                  ac::config::isBossWave(4) ? 1.0 : 0.0,
+                  static_cast<double>(ac::waves::kDirectorKindCount)});
   return text;
 }
 

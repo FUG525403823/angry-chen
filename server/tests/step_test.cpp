@@ -14,6 +14,7 @@
 #include "sim/local_step.hpp"
 #include "sim/step.hpp"
 #include "sim/world.hpp"
+#include "world_test_support.hpp"
 
 namespace {
 
@@ -178,8 +179,50 @@ AC_TEST(step_integrates_velocity_into_position) {
   sim::MoveState rescued{};
   rescued.vel.x = 2.0;
   rescued.vel.z = 2.0;
-  sim::clampHorizontalSpeed(rescued, ac::config::kRescueSpeedClampMps);  // §5.1 阶段 7 的救援上限 1.5
+  sim::clampHorizontalSpeed(rescued, ac::config::kReviveSpeedClampMps);  // §5.1 阶段 7 的救援上限 1.5
   AC_CHECK_NEAR(std::sqrt(rescued.vel.x * rescued.vel.x + rescued.vel.z * rescued.vel.z), 1.5, 1e-12);
+}
+
+// S09 补上 S08 §9.2-1 的欠账：阶段 1 对「按住交互 + 救援距离内有倒地队友」的玩家限速（v1 sim.ts:109-115）。
+AC_TEST(step_clamps_reviver_speed_when_holding_interact) {
+  AC_CHECK_EQ(ac::config::kReviveRangeM, 2.0);
+  AC_CHECK_EQ(ac::config::kReviveSpeedClampMps, 1.5);
+  struct Case {
+    bool downed;
+    bool interact;
+    double victimX;
+    double expectedSpeed;
+  };
+  const Case cases[4] = {
+      {true, true, 1.0, ac::config::kReviveSpeedClampMps},   // 按住交互、队友 1m 内 → 限速
+      {true, false, 1.0, ac::config::kMoveSpeedMps},         // 不按交互 → 不限速
+      {false, true, 1.0, ac::config::kMoveSpeedMps},         // 队友没倒地 → 不限速
+      {true, true, 3.0, ac::config::kMoveSpeedMps},          // 超出救援距离 2.0m → 不限速
+  };
+  for (const Case& item : cases) {
+    std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+    const sim::EntityId reviver = spawnPlayer(*world, 0.0, 20.0);
+    const sim::EntityId victim = spawnPlayer(*world, item.victimX, 20.0);
+    if (item.downed) {
+      world->entities[victim - 1u].downed.downed = true;
+      world->entities[victim - 1u].hp = 0.0;
+    }
+    sim::Command c = command(1.0, 0.0, ac::kPi);  // 前向 -z 的步行 4.5 m/s
+    if (item.interact) c.buttons = ac::config::kButtonInteract;
+    sim::Command commands[2] = {c, c};  // 第 k 条命令给升序第 k 名玩家
+    AC_CHECK(sim::stepWorld(*world, commands, 2u, ac::config::kStepDtMs));
+    const sim::Entity& reviverEntity = at(*world, reviver);
+    const double speed =
+        std::sqrt(reviverEntity.vel.x * reviverEntity.vel.x + reviverEntity.vel.z * reviverEntity.vel.z);
+    AC_CHECK_NEAR(speed, item.expectedSpeed, 1e-12);
+    AC_CHECK_EQ(reviverEntity.vel.x, 0.0);
+    AC_CHECK_NEAR(reviverEntity.pos.z, 20.0 - item.expectedSpeed * 0.05, 1e-12);
+    if (item.downed) {
+      const sim::Entity& victimEntity = at(*world, victim);
+      AC_CHECK_EQ(victimEntity.vel.x, 0.0);
+      AC_CHECK_EQ(victimEntity.vel.z, 0.0);  // 倒地玩家不移动
+    }
+  }
 }
 
 AC_TEST(step_barn_push_out_stops_at_z_face) {
@@ -245,6 +288,7 @@ AC_TEST(step_separation_is_symmetric_half_push) {
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
   const sim::EntityId a = spawnSheep(*world, 10.0, 0.0);
   const sim::EntityId b = spawnSheep(*world, 10.2, 0.0);
+  ac::test::freezeSheepAi(*world);  // S09 起阶段 4/5 会驱动羊的 AI，本用例只测分离
   AC_CHECK(stepOnce(*world, nullptr));
   const double ax = at(*world, a).pos.x;
   const double bx = at(*world, b).pos.x;
@@ -258,6 +302,7 @@ AC_TEST(step_separation_zero_distance_uses_x_axis) {
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
   const sim::EntityId a = spawnSheep(*world, 10.0, 0.0);
   const sim::EntityId b = spawnSheep(*world, 10.0, 0.0);
+  ac::test::freezeSheepAi(*world);  // S09 起阶段 4/5 会驱动羊的 AI，本用例只测零距离分离
   AC_CHECK(stepOnce(*world, nullptr));
   AC_CHECK_NEAR(at(*world, a).pos.x, 9.5, 1e-12);  // 按 (+1, 0) 推：各半
   AC_CHECK_NEAR(at(*world, b).pos.x, 10.5, 1e-12);
@@ -269,6 +314,7 @@ AC_TEST(step_separation_respects_kind_radii) {
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
   const sim::EntityId sheep = spawnSheep(*world, 10.0, 0.0);
   const sim::EntityId pickup = spawnPickup(*world, 10.2, 0.0);
+  ac::test::freezeSheepAi(*world);  // S09 起阶段 4/5 会驱动羊的 AI，本用例只测半径表
   AC_CHECK(stepOnce(*world, nullptr));
   const double distance =
       std::fabs(at(*world, pickup).pos.x - at(*world, sheep).pos.x);

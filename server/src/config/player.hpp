@@ -70,8 +70,12 @@ static_assert(kKindBaseStats[0].hp == kMaxHp && kKindBaseStats[0].armor == kMaxA
 static_assert(kMoveAxisLimit == 1.0 && kPitchLimitRad == kPi / 2.0, "§5.6：输入域常量抄 v1 input.ts");
 
 // §5.1/§5.6 固定步长；§5.1 阶段 7 的救援速度上限
+// §5.2（S09 补）：v1 world.ts 的 defaultTeamByKind —— player/projectile/pickup = 0、sheep = 1。
+// 三参 spawnEntity 便捷重载用它；羊必须与玩家不同队，否则 kFriendlyFire=false 会让玩家打不动羊。
+inline constexpr std::array<uint8_t, 4> kDefaultTeamByKind{0u, 1u, 0u, 0u};
+
 inline constexpr uint32_t kStepDtMs = 50u;
-inline constexpr double kRescueSpeedClampMps = 1.5;
+inline constexpr double kReviveSpeedClampMps = 1.5;
 
 // §5.4：kind → 半径（下标 = EntityKind 0..3，与 arena.hpp 的尺寸表同源）
 inline constexpr std::array<double, 4> kKindRadiusM{

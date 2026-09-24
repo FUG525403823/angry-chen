@@ -196,13 +196,13 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 5. **判失联时点未冻结**：§5.3 只说“累计 5 次重传仍无 ack 即判失联”，没写第 5 次之后是否再等一个 `kRtoTableMs` 尾项。本实现在 t = 3625ms 判（五连等 200/300/450/675/1000 之后再等 1000），另一种读法是 t = 2625ms 立即判。C03 同样沉默，**需裁决**。
 6. **宽限期会话的包校验**：§5.2 只要求 `session != 0` 且在册，本实现据此让宽限期会话通过校验（不计 `kBadSession`），把“是否复活”留给调用方（C03 §5.3 的 Zombie 语义）。若计划要求“宽限期一律丢弃”，需回写 §5.2。
 7. **用例名冲突修正（7 个，含 3 个 S03/S02 用例）**：`hex_fragment` → `hex_split_message`、`size_single_packet_needs_fragments` → `size_single_packet_needs_slices`、`size_full_single_entity_snapshot_is_40` → `size_full_single_record_snapshot_is_40`、`match_truncated_and_trailing_rejected` → `match_truncated_and_extra_bytes_rejected`、`math_aabb_overlaps_and_contains` → `math_aabb_overlaps_and_covers`、`transport_handshake_allocates_session` → `transport_handshake_assigns_session`、`transport_loss_triggers_retransmit` → `transport_loss_causes_resend`。原因同 §4.2.7：`--filter` 是**全局子串**匹配，会污染 `--filter=fragment` / `alloc`（S05）/ `entity`（S05）/ `ai`（S09）/ `trig`（S02、S09）的固定条数门禁。**已占用门禁子串全表**（命名新用例前先对照）：`ai alloc codec combat entity fixture fragment fuzz grace grid hex http malicious match matchstate math memory pose quantize reliability replication rewind rng schedule security size step store threshold transport trig waves wire world`。
-8. **遗留项（本份未动）**：S02 的 `rng_ai_stream_bits` 含 `ai`，会让 S09 §6 的 `--filter=ai` 从 `TESTS 22/22` 变 23 条——名字本身没错（它就是 ai 流），**S09 立项时要先改名或改门禁**；另 S09 §7 第 9 条写的 `--filter=fixture` 在本套测试里是 `TESTS 0/0`（疑为 `--filter=codec` 之误，codec 恰为 14/14），S09 落地前需澄清。
+8. **遗留项（本份未动）**：S02 的 `rng_ai_stream_bits` 含 `ai`，会让 S09 §6 的 `--filter=ai` 从 `TESTS 22/22` 变 23 条——名字本身没错（它就是 ai 流），**S09 立项时要先改名或改门禁**（S09 处置：不改名，改门禁 —— 见 §10.1-8）；另 S09 §7 第 9 条写的 `--filter=fixture` 在本套测试里是 `TESTS 0/0`（疑为 `--filter=codec` 之误，codec 恰为 14/14），S09 落地前需澄清。
 9. **`udp_socket_loopback_roundtrip` 不在 §6 的五组内**：那五组按固定条数（8/5/4/4/2）校验，套接字缝的真实回环收发单独一条用例覆盖（真 UDP、非阻塞、`poll` 超时）。POSIX 分支本机（Windows）跑不到，只在 WinSock2 分支上验证过。
 
 ## 6. 模拟数据布局（S05 §5 冻结）
 
-`server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`、`ai/**`），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 265352` 字节 ≈ 259 KiB，S08 扩容后），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 232 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §11 表格）。
+`server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`；S09 起 `entity_table.hpp` 为承载 §9 冻结的 `Entity::knock`/`Entity::ai` 而包含两份**纯数据**头 `combat/knockback.hpp`、`ai/sheep_state.hpp`，二者自身都不引 `sim/**`，因此不构成包含环 —— 见 §10.1-13），热路径零堆分配：
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §12 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §11 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §12 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -274,13 +274,13 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 | 1 | `applyCommands`（按玩家 `EntityId` 升序，见 §7.1） | 已实现 |
 | 2 | `collectPlayerIds`（升序、跳过 `idle`，写进调用方栈数组，不分配） | 已实现 |
 | 3 | `buildSpatialGrid` | 复用 S05 |
-| 4 / 5 | `updateAiIntents` / `applyAiIntents` | 空实现；签名按 S09 §9 冻结 |
-| 6 | `applyKnockback` | 空实现；等 S08 |
+| 4 / 5 | `updateAiIntents` / `applyAiIntents` | 已实现（S09，`ai/sheep_brain.cpp`；两趟意图表按 §9 冻结签名） |
+| 6 | `applyKnockback` | 已实现（S09，`combat/knockback.cpp`；S06 的占位签名补上 `dtMs`，与 v1 `sim.ts:71` 同序） |
 | 7 | 逐实体 `integrateState(dtMs / 1000.0)` + `aliveMs += dtMs` | 已实现（救援夹取见 §7.5 第 3 条） |
 | 8 | `collideStatic`（谷仓推离 → 栅栏夹取，见 §7.2） | 已实现 |
 | 9 | 重建网格 + `separateEntities`，每趟分离后重跑 `collideStatic` | 已实现（1 趟） |
-| 10 | `resolveCombat` | 空实现；签名按 S08 §9 冻结（`CombatContext*` 前置声明） |
-| 11 | `resolveSheepAttacks` / `resolveEliteFire` / `advanceProjectiles` / `updateKing` | 空实现（签名按 S09 §9，`updateKing` 暂无调用点，见 §7.5 第 10 条） |
+| 10 | `resolveCombat` | 已实现（S08，`combat/resolve.cpp`；签名不变） |
+| 11 | `resolveSheepAttacks` / `resolveEliteFire` / `advanceProjectiles` / `updateKings` | 已实现（S09：前三者在 `ai/sheep_attack.cpp`（占位签名补上 `playerIds`/`playerCount`），`updateKings` 在 `ai/king_phases.cpp`） |
 | 12 | `updateWorldStats`（`stats.aliveSheep`） | 复用 S05 |
 | 13 | `recordPoseHistory` | S05 §5.3 的"每 tick 末尾"，追加在末尾（见 §7.5 第 2 条） |
 
@@ -336,7 +336,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §11 表格的实测行为准。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §12 表格的实测行为准。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -400,10 +400,10 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 
 ### 9.2 两轴评审的发现与处置（S08，Standards + Spec 并行评审）
 
-**本次已修**：`Event`/`Entity` 尺寸与 `configHash` 换新导致的历史叙述 —— §6.2 第 5 条与 §6.1 行内仍写「`Entity` 96 字节 / `hp`·`maxHp`·`armor` 各 4 / `maxHp = hp`」「`Event` 只固定条目头」，均以本节的 232/48 B 与 §11 证据行为准（历史行不回收改写）。
+**本次已修**：`Event`/`Entity` 尺寸与 `configHash` 换新导致的历史叙述 —— §6.2 第 5 条与 §6.1 行内仍写「`Entity` 96 字节 / `hp`·`maxHp`·`armor` 各 4 / `maxHp = hp`」「`Event` 只固定条目头」，均以本节的 232/48 B 与 §12 证据行为准（历史行不回收改写）。
 
 **已声明但未做（已知缺口，登记在案，不隐藏）**：
-1. **救援者限速未接**（计划 §5.7 的 `kReviverMaxSpeed = 1.5`）：v1 `sim.ts:109-115` 在阶段 1 对「按住 interact 且附近有倒地队友」的救援者调 `clampHorizontalSpeed(1.5)`；本份只在 `resolve.cpp` 判定里**排除**速度 > 1.5 的救援者，`step.cpp` 的 `applyCommands` 没有这个 clamp → 边走边按交互救不起人（与 v1 不一致）。README §7.5-3 的原计划就是「调用点等 S08 接入」，本批未接入，**顺延到 S09 第一件事**。
+1. **救援者限速未接**（计划 §5.7 的 `kReviverMaxSpeed = 1.5`）：v1 `sim.ts:109-115` 在阶段 1 对「按住 interact 且附近有倒地队友」的救援者调 `clampHorizontalSpeed(1.5)`；本份只在 `resolve.cpp` 判定里**排除**速度 > 1.5 的救援者，`step.cpp` 的 `applyCommands` 没有这个 clamp → 边走边按交互救不起人（与 v1 不一致）。README §7.5-3 的原计划就是「调用点等 S08 接入」，本批未接入，**顺延到 S09 第一件事**。→ **S09 已闭环**：`step.cpp` 阶段 1 现按 v1 `sim.ts:109-115` 调 `clampHorizontalSpeed(state, kReviveSpeedClampMps)`，用例 `step_clamps_reviver_speed_when_holding_interact` 钉住四档（限速 / 不按交互 / 队友未倒地 / 队友 3m 超距），见 §10.2。
 2. **回滚通路无覆盖**（计划 §5.7 的 200ms）：`CombatContext` 在权威步进里恒为 `nullptr`（`step.cpp`），`resolve.cpp` 的回滚分支因此是死路；`combat_test.cpp` 也没有 `rewindMs = 0/100/200` 的用例。回滚的真正消费方是 S11 的回溯命中验证。
 3. **§6 的三条场景只部分落地**：步枪「按住 10 tick = 6 发」无用例；霰弹「8 弹丸共 96 伤害」被弱化为 `hits ∈ [1,8]` 且 `damage ∈ [12·hits, 24·hits]`；「连射 20 发后 0.25」实测为 3 发，「每 tick −0.3°」因一步夹到 0 而不可观测（`kSpreadDecayPerSecondDeg ≥ 2` 即可过）。
 4. **§6-4 的 160.5m 口径**：用例改为传 `maxDist = 4.0` 打 7.4m 目标，验的是入参上限而不是场地对角线之外的羊。
@@ -411,18 +411,59 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 6. **弹丸步长与抖动盐无守卫**：`13/29/0x9e3/0x51f` 是 v1 `resolve.ts` 的内联字面量（未导出），导出脚本只能抄一份进 `shot=` 组 → v1 改这四个值对拍不会红；C++ 侧自身抄错仍被冻结的 `configHash` 拦住。用例 `combat_jitter_matches_v1_vectors` 传的是自己的字面量，不引用 `kJitterYawSalt`。
 7. **判断项（未改，留待统一裁决）**：`bool downed` / `bool hit` / `bool interactHeld` 未用 `is`/`has` 前缀（工程约定 §6，S05 曾据此把 `ok` 改名 `isOk`）；`raycast.cpp` 用 `std::fabs`（ADR-010 §2 的允许项写「`abs` 用位运算实现」）；`s08` 是 `export-fixtures.mjs` 的模块级可变全局（S07 §8.3-14 曾以消除模块级全局为卖点）。
 
-## 10. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 10. 羊群 AI 与波次导演（S09 §5 冻结）
+
+- 配置：`config/sheep.hpp`（四羊形整表、`SHEEP_AI` 全字段、13 行状态转移表、局部常量、攻击档案）、`config/waves.hpp`（波次上限与间歇、人数缩放、每 tick 生成上限、出生点约束，以及 `waveBaseBudget`/`waveBudget`/`sheepSpeedMultiplier`/`firstWaveFor`/`isBossWave`/`kindAllowedAt`）。`configHashText` 自本批起多出七组（`sheep` / `sheep.ai` / `sheep.states` / `sheep.local` / `sheep.attack` / `waves` / `waves.scaling`），C++ 与导出脚本逐字节一致（`configHash = 19a978ea`），4 份向量已按新哈希重新导出。
+- AI 模块（全部逐行照 v1 `packages/shared/src/ai/*.ts`）：`ai/steering.{hpp,cpp}`（`seek`/`arrive`/`normalize`/`separation`/`obstacleAvoid`）、`ai/flocking.{hpp,cpp}`（按 `(distanceSq, EntityId)` 有界插入的 12 邻居 + 分离/对齐/凝聚加权 + `0.5` 混合比）、`ai/targeting.{hpp,cpp}`（8 槽仇恨、每 tick `×0.98`、命中 `+20` 无上限、遮挡可见性、`score = aggro + 1/(1+d)` 与 `×1.5` 换目标阈值）、`ai/sheep_brain.{hpp,cpp}`（13 态转移表、四羊形行为分支、`updateAiIntents`/`applyAiIntents` 两趟结构）、`ai/sheep_attack.{hpp,cpp}`（撕咬 1.4+0.5+0.4、冲锋 0.5+0.4+0.15、精英问号弹、投射物推进与销毁）、`ai/king_phases.{hpp,cpp}`（`>0.66`/`>0.33` 三阶段 + 4 只咩咩兵召唤）。
+- 波次：`waves/director.{hpp,cpp}` 逐行照 v1 `ai/director.ts`（预算平面数组按 `grunt→ram→elite→king` 的 `cursor` 消耗、每 tick ≤8 个、出生点随机起点 + 只收 ≥15m 的点且 ≤3 个、±1.5m 抖动、清波与第 10 波结算）。`DirectorState` 是外部状态（§9 冻结签名），**未**接进 `stepWorld`（见 §10.1-3）。
+- 接线：`sim/step.cpp` 阶段 4/5 调 `ai::updateAiIntents`/`applyAiIntents`，阶段 11 调 `resolveEliteFire` → `advanceProjectiles` → `updateKings`；`combat/knockback.{hpp,cpp}` 的 `applyKnockback` 落在**阶段 6**（紧跟阶段 4/5 的 AI 意图之后，与 v1 `sim.ts:69-71` 同序）。阶段 1 另按 v1 `sim.ts:109-115` 补上 S08 §9.2-1 的救援者限速。`Entity` 追加 `knock{}` 与 `ai{}`，尺寸 232 → **960 B**、`World` → **1 010 824 B**。
+- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §12 表格。
+
+### 10.1 计划文本纠正与已声明偏差（S09）
+
+1. **§5.7 的朝向写法不 wrap**：v1 的补丁把 `Math.atan2(dx, dz)` 换成 `angleUnitsFromVector` + `radiansFromUnits`（导出脚本的 `patchMath` 就是 `Math.atan2 = (y, x) => trig.radiansFromUnits(trig.angleUnitsFromVector(y, x))`，`tools/export-fixtures.mjs:268`），而 `radiansFromUnits` **不做** `wrapAngle`（只有 `dequantizeAngle` 才 wrap）。羊的 `yaw` 因此落在 `[0, 2π)`；照 §5.7 的字面（用 `dequantizeAngle`）会在 `dx < 0` 时得到负角、与 v1 的位型不同。
+2. **§5.5 的 840ms 羊王攻击冷却不存在**：v1 `kingPhases.ts:29` 导出的 `kingAttackCooldownMs` **从未被调用**（羊王撕咬走 `SHEEP_AI.attackCooldownMs = 1200`）。C++ 侧保留 `kingSpeedMultiplier`/`kingAttackCooldownMs` 作为 v1 模块面的 1:1 端口（`ai/king_phases.hpp`），但行为路径与 v1 一样**内联** `kingPhase3SpeedMultiplier`，840ms 分支不可达；用例只钉数值。
+3. **导演未接 tick 循环**：§9 把 `DirectorState&` 冻结为外部状态，v1 也把它留在比赛控制器里；波次间歇与"下一波何时开"属于 S10 → 本批 `updateDirector` 只被用例调用，`stepWorld` 里没有它。连带后果：`docs/evidence/fixtures/README.md` §5 中属于 S09 的 5 份 AI 场景向量**未导出**（见下一条）。**需裁决**（已登记为 `docs/02-需求分析.md` 的 **OQ-11**）：§4 要求「接进 `step.cpp`」，§9 却把 `DirectorState` 冻结为外部状态，而 S06 §5.1 冻死的 `stepWorld(World&, const Command*, uint32_t, uint32_t)` 没有它的入口、§5.3 的 20s/5s 波间时钟也没有推进者 → 要么把 `DirectorState` 放进 `World` 并追加阶段（要动 S06/S09 的计划文本），要么由 S10 的比赛控制器在 `stepWorld` 之外持有并调用。
+4. **5 份场景向量未导出**：`docs/evidence/fixtures/README.md` §5 把 `sheep-grunt-ai-600t`/`sheep-ram-charge-300t`/`sheep-elite-bolt-300t`/`sheep-king-phases-900t`/`wave-director-1to5-1200t` 挂在 S09；本批只交付了**共享 `configHash` 覆盖**（这才是 §7 DoD 的"AI 数值与 v1 基线漂移"守卫）。要跑羊群，导出器的场景集需要新增"生成羊 + 空命令"的驱动；`wave-director-1to5-1200t` 另外依赖上一条的接线。
+5. **§7 的 grep 门禁按字面不可满足**：`Select-String` 默认**大小写不敏感**，而 `exp` 是 `constexpr` 的子串 → 该命令在 `server/src/ai`+`server/src/waves` 恒定命中 5 行（全是 `constexpr`）。等价的、可执行的门禁是 `Select-String -CaseSensitive -Pattern "unordered_map","std::sin","std::cos","atan2","asin","\bpow\b"` 与 `"\bexp\s*\("`，实测**均 0 命中**；注释里也不留 `atan2`/`asin` 字面量。
+6. **死羊分支不可达**：v1 `sim.ts:149` 在阶段 4 对 `state === dead` 的羊 `continue`（不进意图表），阶段 5 的"1500ms 回收"分支因此永远进不去；S08 起击杀即 `despawnEntity`，`dead` 态也到不了。C++ 逐字端口这两处（含 stage 5 的死分支），用例断言的也是"只累加 `timerMs`、不改速度、不回收"。
+7. **`--filter=fixture` 是 6/6 而不是计划写的 14/14**（与 S08 §9.1-2 同因：S07 §8.3 已把向量裁到 4 份）。
+8. **`--filter=ai` 含 2 条既有污染**：`rng_ai_stream_bits`（名字里有 `ai_`）与 `fixture_tampered_hash_fails_before_ticks`（`f-ai-ls`）→ 31 = 本批 29 + 2；按 S05 §5.3-8 的遗留项**改门禁**收口：本批 29 条一律以 `ai_` 起头，`--filter=ai_` = 30 = 29 + `rng_ai_stream_bits`；两条既有用例名本身正确，故不改名。`--filter=waves` 无污染（16 = 16）。
+9. **实体/世界扩容**：`Entity` 232 → 960 B（+击退状态 +羊 AI 状态；§10.2-3 删掉 `ai.sheepKind` 镜像后由 968 回落）、`World` → 1 010 824 B → §6 行内尺寸已同步为 S09 值，`world_test.cpp` 的容量界改成 <1 MiB；§6.2 第 5 条的"96 字节"是 S05 的历史推导，按既有约定**不回收改写**。
+10. **羊的默认阵营是敌对方**：v1 `world.ts` 的 `spawnEntity` 会按 kind 填 `team`（羊 = 1），S05 的 3 参便捷重载此前留 0 → 羊与玩家同队、`FRIENDLY_FIRE=false` 下**打不掉血**。本批在 `config/player.hpp` 加 `kDefaultTeamByKind` 并让 `spawnEntity` 用它（用例 `ai_spawn_teams_make_sheep_hostile` 钉住）。
+11. **`updateKing` 双签名**：S06 冻结的是 `int updateKing(World&, Entity&, uint32_t)`（声明在 `sim/step.hpp`），S09 §9 要求实现落在 `ai/` → 实现放 `ai/king_phases.cpp`，另有一个同名转发函数保持冻结签名可用。
+12. **`kSheepAttackProfile` 复用 S08 的 `WeaponDef`**（`pellets = 1`、`falloffStartM = 1e9`、`headshotMultiplier = 1`）；AI 只用它的 `damage` 字段（8/22/14/30），散布/弹匣等字段不参与羊的攻击结算（v1 同样如此）。
+13. **`sim/` 的两处纯数据包含**：`sim/entity_table.hpp` 为承载 §9 冻结的 `Entity::knock{}` 与 `Entity::ai{}` 而包含 `combat/knockback.hpp`、`ai/sheep_state.hpp`，与 §6 开头「不引 `ai/**`」的字面冲突；两份头都不引 `sim/**`（`ai/sheep_state.hpp` 只引 `config/sheep.hpp`，`knockback.hpp` 是纯 POD），因此**无包含环**，按局部豁免处理（§6 开头已回写）。
+14. **命名按 CONTEXT / 工程约定 §6 回改**（两轴评审后）：①`questionBolt`（CONTEXT §1）—— `kBoltLifeMs`/`kBoltRadiusM`/`kBoltSpawnHeightM` → `kQuestionBolt*`、`spawnBolt` → `spawnQuestionBolt`；②布尔前缀（工程约定 §6）—— `DirectorState::finished`/`waveStartPending` → `isFinished`/`isWaveStartPending`，`DirectorTick::waveStarted`/`waveCleared`/`matchEnded` → `isWaveStart`/`isWaveClear`/`isMatchEnd`；③`kRescueSpeedClampMps` → `kReviveSpeedClampMps`（CONTEXT §1「救援 = `revive`」，S08 的旧名一并回改）。**保留**：`SHEEP_AI` 的 `eliteBoltRangeM`/`eliteBoltCooldownMs`/`boltSpeedMps` 是 §5.2 冻结的 v1 字段名（`configHashText` 的 `sheep.ai` 组逐字对齐），不改。
+15. **删掉 `ai.sheepKind` 镜像字段**：v1 把羊形存在 `entity.ai.sheepKind`，而 S08 已把同一份状态放在 `Entity::sheepKind`（命中盒/攻击档案查询用）→ 本批让 `applySheepKind`/`sheepKindOf` 统一读写 `Entity::sheepKind`，删掉从不被读的 `ai.sheepKind`（评审的 Speculative Generality 项）；副作用是 `sizeof(Entity)` 968 → 960（§6 行内与 §12 已同步）。
+16. **两趟意图表用模块级静态池**：§9 冻结的 `updateAiIntents(World&, …)` / `applyAiIntents(World&)` 之间要传 `SheepIntent[kMaxEntities]`，v1 `sim.ts` 用的也是模块级 `intentPool`/`intentIds` → C++ 同样落成 `ai/sheep_brain.cpp` 匿名命名空间里的定长静态池（约 34 KiB，无堆分配）。与 §5.1「全部可变状态都住在 `World` 里」的字面冲突：世界仍自洽（池每个 tick 全量重写、不跨 tick 读），但**同一进程内两个 `World` 不能交错步进**（与 v1 同限制）；若 S12 要求并行多世界，需把池搬进 `World`（追加字段，不动阶段顺序）。
+17. **`absoluteValue` 合并**：`sheep_brain.cpp` 与 `sheep_attack.cpp` 各有一份本地绝对值（评审的 Duplicated Code 项）→ 合并到 `ai/steering.hpp` 的 `inline constexpr double absoluteValue(double)`（ADR-010 §2 的位运算口径，不引浮点库）。
+
+### 10.2 两轴评审的发现与处置（S09，Standards + Spec 并行评审）
+
+**本次已修（发现 → 处置）**：
+1. **救援者限速未接**（S08 §9.2-1 的顺延项，Spec 轴问「是否有该做的没做」）：`step.cpp` 阶段 1 现按 v1 `sim.ts:109-115` 补上 `clampHorizontalSpeed(state, kReviveSpeedClampMps)`，条件是「非倒地 + 本 tick 命令按了交互 + 救援距离（2.0m）内有倒地队友」；用例 `step_clamps_reviver_speed_when_holding_interact` 钉四档（限速 1.5 / 不按交互 / 队友未倒地 / 队友 3m 超距）。
+2. **命名与死状态**（Standards 轴）：见 §10.1-14、§10.1-15、§10.1-17（`questionBolt`、布尔前缀、`kReviveSpeedClampMps`、删 `ai.sheepKind`、合并 `absoluteValue`）。
+3. **文档事实错误**：§10 原写「`applyKnockback` 接在阶段 4 之前」，实际是**阶段 6**（v1 `sim.ts:71`，紧跟 `applyAiIntents`）→ 已改；§7 的阶段表 4/5/6/10/11 四行原写「空实现」→ 已改为各脚本文件的实际归属。
+4. **按 §5.3-8 收口门禁**：`--filter=ai_` = 30/30（本批 29 + `rng_ai_stream_bits`），`--filter=ai` = 31/31（再多一条 `f-ai-ls` 污染）；两条既有用例名本身正确，不改名。
+
+**已声明但未做 / 判断项（登记在案，不隐藏）**：
+1. **5 份 AI 场景向量未导出**（§10.1-4）：本批的跨语言守卫只有共享 `configHash`（数值表逐字节一致），AI 的**行为**没有位级对拍 —— 要补需给导出器加「生成羊 + 空命令」的场景驱动，属 S07/S09 之间的接口缺口。
+2. **导演未进 tick**（§10.1-3）：已登记为 `docs/02-需求分析.md` 的 **OQ-11**。
+3. **判断项（未改）**：`ai::damagePlayer`（`sheep_attack.cpp`）与 `combat::applyHit`（`resolve.cpp`）的「护甲 → 血量 → 倒地 → 事件」序列重复（v1 也是两份实现，逐行端口保留）；`FlockNeighbors`/`TargetState` 的固定容量与 `setSheepState(Entity&, int32_t)` 的 int 形参（Data Clumps / Primitive Obsession，二者都是 §9 冻结签名或 v1 形状）；`addNeighbor`、`SheepAiState::summoned` 只被测试或只被写（v1 模块面保留）。
+
+## 11. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 11. 当前状态
+## 12. 当前状态
 
-**S01–S08 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）就位；战斗、AI、房间、持久化由
-S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S09 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）就位；房间与持久化由
+S10 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -509,5 +550,19 @@ S08 起的各份计划按"交付物"章节逐份创建，**不预先存在**。
 | configHash 扩展（S08） | 新增 `weapons` / `weapon.rules` / `shot` / `damage` / `rage` / `revive` / `sheepHit` 七组；`node tools/export-fixtures.mjs` 重写 4 份向量（1 446 500 B）后 `check ok：4/4`，C++ `--filter=fixture` 6/6 |
 | 结构体尺寸（S08） | `sizeof(Entity)=232`、`sizeof(Event)=48`、`sizeof(World)=265352`、`WeaponState=48`、`RageState=24`、`DownedState=40` |
 | 计划偏差清单（S08） | §9.1 的七条（3 份战斗向量改挂 S09、`auto`→`isAuto`、`Event`/`Entity` 尺寸与容量界、`maxHp` 口径、玩家爆头几何、事件载荷口径） |
+| 羊群 AI（S09） | `--filter=ai` 末行 `TESTS 31/31`，退出码 0（本批 29 条 + 既有 2 条含 `ai` 子串：`rng_ai_stream_bits`、`fixture_tampered_hash_fails_before_ticks` 的 `f-ai-ls`）；只算本批的收口门禁 `--filter=ai_` = `TESTS 30/30`（§10.1-8） |
+| 波次导演（S09） | `--filter=waves` 末行 `TESTS 16/16`，退出码 0（预算表、组队、节流、出生点距离、清波/结算、池满丢弃、同种子逐位一致、10 波打到结束） |
+| 全量回归（S09 后） | `server/build/ac_tests.exe` 末行 `TESTS 253/253`（S01 18 + S02 28 + S03 40 + S04 24 + S05 26 + S06 21（含 S09 补的救援限速一条）+ S07 6 + S08 45 + S09 45）；`ctest --test-dir server/build --output-on-failure` → `100% tests passed, 0 tests failed out of 1` |
+| 25 组 `--filter` 计数（S09 后） | size 4/4、math 8/8、trig 4/4、rng 6/6、quantize 10/10、codec 15/15、hex 10/10、fuzz 3/3、wire 3/3、match 9/9、transport 8/8、reliability 5/5、fragment 4/4、grace 4/4、memory 2/2、world 6/6、entity 7/7、pose 5/5、grid 4/4、alloc 5/5、step 24/25（+救援限速一条）、combat 45/45、fixture 6/6、ai 31/31（`ai_` 30/30）、waves 16/16（`codec`/`match`/`alloc` 的增量来自 S08，本批未动；AI 的 2 条污染见 §10.1-8） |
+| AI 热路径零分配（§7 DoD） | `ai_swarm_tick_loop_is_heap_clean` 打印 `aiSwarmTicks=600 sheep=60 allocations=0`（4 玩家 + 60 羊，10 tick 预热后 600 次 `stepWorld`，计数版全局 `operator new`） |
+| AI 确定性与 `fx` 隔离（§7 DoD） | 同种子 4 玩家 + 60 羊跑 600 tick 的两次运行：三流 RNG 内部状态、`activeIds`、事件数、`aliveSheep` 与全部实体的 `pos/vel/yaw/hp/armor/state/sheepKind/aliveMs/ai.*/knock.*` 位型逐位相等；`rng.fx.a` 全程不变（`ai_two_runs_same_seed_are_bit_identical`） |
+| configHash 扩展（S09） | 新增 `sheep` / `sheep.ai` / `sheep.states` / `sheep.local` / `sheep.attack` / `waves` / `waves.scaling` 七组；`node tools/export-fixtures.mjs --allow-patched-copy` 重写 4 份向量（1 446 500 B，逐文件只动 `configHash` 行）后 `--check` 为 `check ok：4/4 与盘上逐字节一致`，C++ `--filter=fixture` 6/6，`configHash = 19a978ea` |
+| 结构体尺寸（S09） | `sizeof(Entity) = 960`（S08 的 232 + 击退状态 + 羊 AI 状态）、`sizeof(World) = 1010824`（`< 1 MiB` 由 `world_test.cpp` 断言）、`sizeof(Event) = 48`、`sizeof(PoseHistory) = 7688`、`sizeof(SpatialGrid) = 3652`；`--filter=world` 打印行 `worldBytes=1010824 entityBytes=960 poseBytes=7688 gridBytes=3652 eventBytes=48`（§10.2-2 删 `ai.sheepKind` 后重测） |
+| `server/src/ai` + `server/src/waves` 的禁用子串门禁（§7 DoD） | 计划原文的命令（`-Pattern "unordered_map\|std::sin\|std::cos\|atan2\|asin\|exp\|pow"`）恒定命中 5 行，全是 `constexpr` 里的 `exp`（`Select-String` 默认大小写不敏感，见 §10.1-5）；等价门禁 `Select-String -CaseSensitive -Pattern "unordered_map","std::sin","std::cos","atan2","asin","\bpow\b"` 与 `"\bexp\s*\("` 实测均 **0 命中** |
+| `node tools/check-docs.mjs`（S09 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 55 个文档、166 条相对链接） |
+| `node tools/check-assets.mjs`（S09 后） | 退出码 0：285 个受控文件、二进制嗅探 285 个、零素材类扩展名；Unity 依赖 34 个全在白名单；`C++ 构建清单：未发现第三方依赖引入` |
+| 计划偏差清单（S09） | §10.1 的十七条（§5.7 朝向不 wrap、840ms 是 v1 死代码、导演未接 tick（OQ-11）、5 份 AI 向量未导出、grep 门禁按字面不可满足、死羊分支不可达、`fixture` 6/6 而非 14/14、`ai` 的 2 条污染与 `ai_` 收口、`Entity`/`World` 扩容、羊的默认阵营、`updateKing` 双签名、羊攻击档案复用 `WeaponDef`、`sim/` 的两处纯数据包含、命名回改（`questionBolt`/布尔前缀/`kReviveSpeedClampMps`）、删 `ai.sheepKind`、两趟意图表的模块级静态池、`absoluteValue` 合并） |
+| 救援者限速接回（S09，闭环 S08 §9.2-1） | `step_clamps_reviver_speed_when_holding_interact` 四档：按住交互 + 队友 1m → 速度 1.5；不按交互 / 队友未倒地 / 队友 3m 超距 → 4.5（`--filter=step` 末行 `TESTS 25/25`，全量 `TESTS 253/253`） |
+| 两轴评审（S09，Standards + Spec 并行） | §10.2 记录：已修 4 类（救援限速、命名与死状态、`applyKnockback` 阶段号与 §7 阶段表的文档事实错误、门禁收口）；未做/判断项 3 条（AI 行为无位级对拍、导演未进 tick 挂 OQ-11、`damagePlayer` 重复与冻结签名形状） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
