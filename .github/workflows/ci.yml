@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    name: quality (docs + assets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node tools/check-docs.mjs
+      - run: node tools/check-assets.mjs
+
+  server:
+    name: server (cmake + ninja + ctest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Require cmake >= 3.28
+        run: |
+          cmake --version
+          version=$(cmake --version | head -1 | awk '{print $3}')
+          major=$(echo "$version" | cut -d. -f1)
+          minor=$(echo "$version" | cut -d. -f2)
+          if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 28 ]; }; then
+            echo "cmake $version 低于 3.28，与 server/CMakeLists.txt 的 cmake_minimum_required 不符"
+            exit 1
+          fi
+      - name: Configure
+        run: cmake -S server -B server/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAC_WERROR=ON
+      - name: Build
+        run: cmake --build server/build
+      - name: Test
+        run: ctest --test-dir server/build --output-on-failure
+
+  server-perf:
+    name: server-perf (S14 占位)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: echo "S14 落地：无头机器人负载、5 分钟 soak、CPU 与带宽阈值"
