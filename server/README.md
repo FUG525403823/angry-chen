@@ -202,7 +202,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ## 6. 模拟数据布局（S05 §5 冻结）
 
 `server/src/sim/` 是纯数据层（只依赖标准库与 `core/**`，不引 `net/**`；S09 起 `entity_table.hpp` 为承载 §9 冻结的 `Entity::knock`/`Entity::ai` 而包含两份**纯数据**头 `combat/knockback.hpp`、`ai/sheep_state.hpp`，二者自身都不引 `sim/**`，因此不构成包含环 —— 见 §10.1-13），热路径零堆分配：
-`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §14 表格）。
+`World` 由 `createWorld(seed)` 一次性定长预分配（实测 `sizeof(World) = 1010824` 字节 ≈ 987 KiB，S09 扩容后，容量界 <1 MiB），此后每 tick 只在已分配的数组上做计数与写入；`Entity` 960 字节、`PoseHistory` 7688 字节、`SpatialGrid` 3652 字节、`Event` 48 字节（取证行见 §15 表格）。
 
 ### 6.1 World 字段表（类型、顺序、容量不得改）
 
@@ -259,7 +259,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 3. §5.1 未定义 `Event` 的条目字段 → 本份只落 S03 §5.4 的条目头（`eventId` u32 + `type` u8），类型载荷留给 S06 起追加（容量 256 与每 tick 清零语义不变）。
 4. §5.1「线上单帧事件数由 `u8 eventCount` 编码（硬上限 255）」与 ADR-009 / S03 §5.4 的「单帧事件 ≤64，超出走 `EventChannel`」并列时易误读 → 两者关系写在 §6.1（256 是缓冲容量，64 是每帧发送预算）。
 5. `recordPoseHistory(PoseHistory&, const World&)` 与 `buildSpatialGrid(World&)` 的实现放在 `world.cpp`（两个头文件只前置声明 `World`），避免头文件互相包含；签名与 §5.3/§5.4 一字不差。
-6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §14 表格的实测行为准。
+6. 计划 §4/§7 的 `- [ ]` 复选框按 S01–S04 的既有约定**不勾选**（计划文本冻结、不回收写），完成情况以 §15 表格的实测行为准。
 7. CONTEXT §2 的词条把 `stepWorld` 称作"纯函数入口"，而 §5.1 要求全部可变状态都住在 `World` 里、§5.6 又禁止热路径分配 → 实现取**原地推进 `void stepWorld(World&)`**（返回新世界会与零分配约束冲突）；`stepWorld` 这个名字/签名在本份计划里并未出现，**需裁决**的是 CONTEXT 用词（"纯"指"唯一入口 + 无外部副作用"，还是指函数式无副作用）。→ **S06 已裁决**：签名冻为 `bool stepWorld(World&, const Command*, uint32_t, uint32_t)`（原地推进 + 非法 dt 返回 false），CONTEXT 用词按"唯一入口 + 无外部副作用"理解，见 §7。
 
 ## 7. 模拟步进（S06 §5 冻结）
@@ -336,7 +336,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
-13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §14 表格的实测行为准。
+13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §15 表格的实测行为准。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -417,7 +417,7 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 - AI 模块（全部逐行照 v1 `packages/shared/src/ai/*.ts`）：`ai/steering.{hpp,cpp}`（`seek`/`arrive`/`normalize`/`separation`/`obstacleAvoid`）、`ai/flocking.{hpp,cpp}`（按 `(distanceSq, EntityId)` 有界插入的 12 邻居 + 分离/对齐/凝聚加权 + `0.5` 混合比）、`ai/targeting.{hpp,cpp}`（8 槽仇恨、每 tick `×0.98`、命中 `+20` 无上限、遮挡可见性、`score = aggro + 1/(1+d)` 与 `×1.5` 换目标阈值）、`ai/sheep_brain.{hpp,cpp}`（13 态转移表、四羊形行为分支、`updateAiIntents`/`applyAiIntents` 两趟结构）、`ai/sheep_attack.{hpp,cpp}`（撕咬 1.4+0.5+0.4、冲锋 0.5+0.4+0.15、精英问号弹、投射物推进与销毁）、`ai/king_phases.{hpp,cpp}`（`>0.66`/`>0.33` 三阶段 + 4 只咩咩兵召唤）。
 - 波次：`waves/director.{hpp,cpp}` 逐行照 v1 `ai/director.ts`（预算平面数组按 `grunt→ram→elite→king` 的 `cursor` 消耗、每 tick ≤8 个、出生点随机起点 + 只收 ≥15m 的点且 ≤3 个、±1.5m 抖动、清波与第 10 波结算）。`DirectorState` 是外部状态（§9 冻结签名），**未**接进 `stepWorld`（见 §10.1-3）。
 - 接线：`sim/step.cpp` 阶段 4/5 调 `ai::updateAiIntents`/`applyAiIntents`，阶段 11 调 `resolveEliteFire` → `advanceProjectiles` → `updateKings`；`combat/knockback.{hpp,cpp}` 的 `applyKnockback` 落在**阶段 6**（紧跟阶段 4/5 的 AI 意图之后，与 v1 `sim.ts:69-71` 同序）。阶段 1 另按 v1 `sim.ts:109-115` 补上 S08 §9.2-1 的救援者限速。`Entity` 追加 `knock{}` 与 `ai{}`，尺寸 232 → **960 B**、`World` → **1 010 824 B**。
-- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §14 表格。
+- 证据：`--filter=ai` 31/31（只算本批：`--filter=ai_` 30/30，见 §10.1-8）、`--filter=waves` 16/16、`--filter=fixture` 6/6、全量 `TESTS 253/253`、`ctest` 1/1、600 tick × 60 羊 + 4 玩家 0 次堆分配、同种子 600 tick 两次运行逐位一致、`fx` 流零抽取。详见 §15 表格。
 
 ### 10.1 计划文本纠正与已声明偏差（S09）
 
@@ -517,7 +517,7 @@ server/build/ac_tests.exe                       # TESTS 297/297
 7. **只写不读的 `RoomRegistry::seed`**（Standards 轴，Speculative Generality）：`worldSeed` 已从同一启动毫秒派生 → 删字段。
 8. **布尔前缀**（Standards 轴）：`allPlayersReady` → `areAllPlayersReady`；`ready`/`weaponApplied`/`leftMidMatch` 是 §5.4/§5.6 冻结字段的字面名，保留（计划文本优先）。
 9. **框架静默丢用例**（Standards 轴）：`kMaxCases` 256 → 512（§11.1-16）。
-10. **文档缺 S10 章节**（Spec 轴：README 仍写「S01–S09 已完成」、无偏差清单）：本次补 §11/§11.1/§11.2 与 §13 的实测行，并同步 `docs/02-需求分析.md` 的 OQ-11（导演接线已由房间 tick 闭环）。
+10. **文档缺 S10 章节**（Spec 轴：README 仍写「S01–S09 已完成」、无偏差清单）：本次补 §11/§11.1/§11.2 与 §15 的实测行，并同步 `docs/02-需求分析.md` 的 OQ-11（导演接线已由房间 tick 闭环）。
 
 **已声明但未做 / 判断项（登记在案，不隐藏）**：
 1. **`--filter=fixture` 6/6 而非 14/14**（§11.1-17）：跨语言向量仍只有 4 份；房间/对局流程这一层 v1 也没有导出向量（§5.7 无对拍面），故本批不新增。
@@ -563,9 +563,9 @@ server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：�
 
 1. **§3 未列 `server/src/metrics/counters.{hpp,cpp}`**：§4-7 / §6-4 / §7 要求「5 个新计数已接线注册」，而 `server/src/metrics/` 在本步之前并不存在（S13 才建 `metrics/metrics.cpp`）→ 本批新建最小注册表（名字表 + 定长计数数组 + `counterValue` / `isCounterRegistered`），S13 的 Prometheus 渲染与 `/metrics` 出口直接在其上做。
 2. **§6-3 的末行 `malicious cases=36 failures=0` 不可得**：S01 冻结的输出契约是「每例一行 `PASS/FAIL` + 末行 `TESTS x/y`」，退出码 = 失败用例数 → 实际末行是 `TESTS 36/36`（退出码 0）。矩阵地板的**计数语义**由用例数守住（§7 DoD 照旧满足）。
-3. **§4-8 / §4-9 的写盘目标 `docs/evidence/gate-selfcheck.md` 不存在**（`docs/evidence/` 下只有 client-c01…c08 验收、env-bootstrap、plan-audit 与 fixtures）→ 按 S07–S10 的既有约定，本批的校验数值与对拍结论写进本文件 §12 与 §14 表格。
+3. **§4-8 / §4-9 的写盘目标 `docs/evidence/gate-selfcheck.md` 不存在**（`docs/evidence/` 下只有 client-c01…c08 验收、env-bootstrap、plan-audit 与 fixtures）→ 按 S07–S10 的既有约定，本批的校验数值与对拍结论写进本文件 §12 与 §15 表格。
 4. **§5 的「派生预算只由权威模拟产生」在 v2 没有生产方**：v1 的 `Entity` 有 `derivedMoveX/Z`（`sim.ts:213-216` 累计、`world.ts:238-239` 每 tick 清零），而 S05–S09 冻结的 v2 `Entity` 没有这两个字段（全仓 grep `derivedMove` 无命中）→ 本批按 v1 `validateAdvance(..., derivedBudgetM = 0)` 的形状把派生预算做成**入参**（`PoseSample.derivedBudgetM`，默认 0），未来由模拟侧累加后传入；「在 sim 里加派生位移累加器」登记为后续裁决（它会改 `sizeof(Entity)` 与跨语言对拍向量）。
-5. **§8 风险表的「用构建目标的依赖方向拦截」在单一 `ac_core` 目标下无法表达**：`server/CMakeLists.txt` 只有 `ac_core`（`src/**.cpp` 一次 glob）+ `ac_server` + `ac_tests` → 本批以「源码约定 + 审查期 grep」替代（sim/ai/combat/waves 无一处 include `security/` 或 `metrics/`，见 §14 表格）；要硬拦截需先拆目标或加一次源文件扫描门禁。
+5. **§8 风险表的「用构建目标的依赖方向拦截」在单一 `ac_core` 目标下无法表达**：`server/CMakeLists.txt` 只有 `ac_core`（`src/**.cpp` 一次 glob）+ `ac_server` + `ac_tests` → 本批以「源码约定 + 审查期 grep」替代（sim/ai/combat/waves 无一处 include `security/` 或 `metrics/`，见 §15 表格）；要硬拦截需先拆目标或加一次源文件扫描门禁。
 6. **§9 的 `rewind_ms` 写成 `rewindMs`**：按仓库既有命名（`samplePoseAgo` / `horizontalLimitM`）与工程约定的 camelCase，语义一致（`min(rttMs / 2, 200)`，整数除法）。
 7. **§5「重复 msgId（重传）」是两层去重**：线上重复包由 S04 的 `ackOnReceive(state, msgId)`（ADR-009 可靠扩展 `msgId` u32 + 32 位 ack 位图）去重；矩阵 8 针对的是**应用层幂等**（同一命令 `seq` 不得被应用两次），窗口 64 条（`kDedupWindow`）。
 8. **§5「命令载荷上限 64 B」是上限而非实际长度**：ADR-009 §5.2 的命令载荷固定 14 B（包头 8 + 可靠扩展 12 = 34 B 起）→ `validatePayloadSize` 按 64 B 拒绝**超长帧**，不是把 14 B 当契约。
@@ -596,18 +596,90 @@ server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：�
 **处置（本提交内已改）**：布尔前缀全量回改（`isOk` / `isMoveXClamped` / `isMoveYClamped` / `isYawWrapped` / `isPitchClamped` / `isSwitchToReset` / `isNonFinite` / `hasAnyAdjustment()` / `isSpeedViolation` / `isVerticalViolation` / `isPositionIllegal` / `isRolledBack` / `isClamped` / `isFound`）；新用例改名（`motion_authority_*` / `rewind_*`）把 `--filter=pose` 收回 **5/5**；`std::fmod` 换成 `ac::wrapAngle`（§5.1 冻结的左开右闭，无循环）；越限判定改**精确比较** `rttMs > 400`（新增 `isRewindOverLimit`，函数与采样共用，消掉重复）；删掉 `security::kMaxPacketBytes` 同值别名；四文件的判空样板收敛为 `metrics::bumpCounter`。
 **处置（判断项，保留并说明）**：`horizontalDistanceM(prevX, prevZ, x, z)` 是两点水平距离原语（四个坐标就是它的定义域，没有更小的领域类型可替）；`ValidateReason` 的两处 `switch` 是两个不同映射（名字表 / 计数映射）；「本批不接线运行路径」与「派生预算入参化」按 §12.1-4/§12.1-13 登记为后续裁决；`gate-selfcheck.md` 缺失按 §12.1-3 写回本文件；`Suspect` 同计 `speed_violations` 按 §12.1-14 声明；§3 未列的 `metrics/counters.*` 按 §12.1-1/§12.1-16 保留（S13 的渲染依赖它）。
 
-## 13. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
+## 13. 复制调度与背压（S12 §5 冻结）
+
+**交付物**（§3 的四个模块 + 调度器 + 指标出口；另加报告门禁）：
+
+| 文件 | 职责 |
+|---|---|
+| `replication/baseline.{hpp,cpp}` | 每客户端基线镜像 = S03 的 `net::SnapshotBaseline`（`tick` + id 升序记录）+ `lastFullTick`/`framesSinceFull`；`reserveBaseline` 一次性 reserve(256)，此后 `advanceBaseline`（先移除、再升序 upsert）不再分配。`baselineTick = 0` 就是「强制全量」语义；全量节拍 **40 tick（2 s）**，与档位解耦（§5） |
+| `replication/delta.{hpp,cpp}` | 世界 → 线上记录投影（`quantizePosition/Angle/Ratio` + v1 `kindFlags = kind \| (flags << 2)`，`downed`/`idle` 逐字继承 v1 `computeEntityFlags`）与差分编码：段序 = 包头 → 实体块 → 移除列表 → 事件块（照抄 S03 §5.3）；**编码成功后镜像随之前进，不等 ack**；编码失败基线不动（下一帧仍按旧基线差分） |
+| `replication/backpressure.{hpp,cpp}` | 出站队列字节账（单连接 64 KiB 预算、单帧 2048 B、稳态 1228 B）；「已排队 + 本帧 > 64 KiB」或单帧超限 ⇒ 本帧**不入队**并计 `ac_slow_client_drops_total`；连续 60 帧（3 s）⇒ 返回 `Disconnect(reason = 7 slowConsumer)`（宽限期由 S04 `GraceTimer` 施加）；事件帧走可靠通道，**永不丢且不参与丢弃判定**；`kBacklogDownshiftBytes = 32768` 是降档信号 |
+| `replication/snapshot_rate.{hpp,cpp}` | 档位状态机（200/150/100 = 20/15/10 Hz）：相位是纯函数 `shouldSendSnapshot(rateX10, tick)`（每 tick / 每 3 tick 发 2 / 每 2 tick 发 1）；降档触发任一（最慢会话积压 > 32 KiB、`tickSkips` 增长、房间预算超限增长）即降一档并计 `ac_snapshot_rate_downshifts_total`；连续 3000 ms 无触发升一档；评估周期 ≥ 1000 ms；事件帧不受档位影响 |
+| `core/scheduler.{hpp,cpp}` | tick 绝对时刻自校正：累积量 = 「应到 tick 数 − 已执行」（`pendingTicks`），单 tick 误差 = `now − (首 tick + tickIndex × 50)`；工作量 > 8 ms ⇒ 计 `ac_room_budget_exceeded_total` 并让出事件循环，**累积量不扣除**（让出 ≠ 丢 tick；真丢 tick 由 `noteTickSkip` 单记 `ac_tick_skips_total`）；64 槽误差环给出 P95 与「前 1/3 vs 后 1/3」替代判据；`simDriftMs` 按 §5 口径 |
+| `metrics/gauges.{hpp,cpp}` | **§3 未列**（见 §13.1-1/§13.1-9）：量值型指标定长名字表（`ac_snapshot_rate_x10`、`ac_snapshot_bytes_avg`、`ac_snapshot_bytes_max`、`ac_send_queue_bytes`、`ac_tick_schedule_error_ms_p95`、`ac_sim_drift_ms`）；`metrics/counters.*` 按**追加式**加 4 个计数（降档 / 慢客户端丢弃 / 房间预算超限 / 丢 tick），名字表顺序由 `static_assert` 钉住 |
+| `tests/replication_test.cpp` | 全量首帧、差分只带变化记录、移除列表升序、不等 ack 前进、**客户端镜像 30 tick 往返后逐字段等于服务器投影**、40 tick 强制全量（3 次全量、间隔恒 40）、重连归零自愈、全量/稳态字节预算、丢快照不丢事件、60 帧断开、超限帧不入队、坏入参不改基线、**报告落盘**、§5 冻结数值具名（2048 B / 1228 B / 40 KB/s / 64 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick）、量值指标名与 v1 位型契约，共 15 条 |
+| `tests/schedule_test.cpp` | 三档相位计数（60 tick 内 60/40/30 次）、档位状态机走完 200→150→100→150→200、评估周期 1000 ms、干净期 3000 ms、三种降档信号各自成立、让出不丢 tick（`pendingTicks` 照旧、`tickSkips` 恒 0）、丢 tick 单记、误差 P95 与替代判据、漂移口径、冻结常量具名，共 13 条 |
+
+**运行命令（可直接复制）**：
+
+```powershell
+server/build/ac_tests.exe --filter=replication --report build/replication-report.json   # TESTS 16/16（本批 15 + S09 的 match_replication_hook_runs_once_per_tick）
+server/build/ac_tests.exe --filter=schedule                # TESTS 13/13
+node -e "const r=require('./build/replication-report.json'); if (r.snapshotBytesMax>2048||r.steadyMeanBytes>1228||r.eventsDropped!==0) process.exit(1)"   # §6-3 报告门禁，退出码 0
+server/build/ac_tests.exe                                  # TESTS 398/398
+```
+
+**实测报告（`build/replication-report.json`，4 玩家 + 24 羊 × 120 tick，含每 tick 2 条事件）**：
+
+```json
+{"suite":"replication","seed":20962,"ticks":120,"snapshotBytesMax":473,"snapshotBytesP95":473,"steadyMeanBytes":442.4,"droppedSnapshots":5,"eventsDropped":0,"rateLevelsVisited":[200,150,100,150,200],"scheduleErrorP95Ms":4,"simDriftMsMax":4}
+```
+
+报告目录由测试框架**按需创建**（`build/` 在干净仓库里不存在），并已由根 `.gitignore` 的 `/build/` 排除（§13.1-14）。
+
+### 13.1 计划文本纠正与已声明偏差（S12）
+
+1. **§4-8 的 `server/src/metrics/metrics.cpp` 属 S13**：S12 只把值写进 `metrics/counters.*`（追加 4 个计数）与新增的 `metrics/gauges.*`，Prometheus 渲染与 `/metrics` 出口由 S13 的 `metrics.cpp` 在其上做。因此 §7-6 与 §6-4 的「`/metrics` 里能看到这批指标」在 S12 结束时**只是值可达**，可见性待 S13。
+2. **`ac_tick_skips_total` 在 S13 §5 的名单里缺失**：S12 §5/§8 用它做「追帧上限丢 tick」的判据（本批按 §4-8 接线），而 S13 §5 的「调度」行没有这一条 → 本批按追加式新增该计数，**S13 需把名字补进 §5 清单**（否则 §5 的「名字即契约」会漏一条）。
+3. **§4-9 需要报告出口，但 §3 的交付物里没有测试框架改动**：本批给 `server/tests/tiny_test.hpp` 加了 `--report <path>`（以及 `writeReportFile`，目录按需创建、写盘失败即用例失败），报告内容仍由用例自己拼（框架不认识业务字段）。
+4. **§4-9 的写盘目标 `docs/evidence/soak-5min.md` 不存在**（`docs/evidence/` 下只有 client-c01…c08、env-bootstrap、plan-audit、fixtures）→ 按 S07–S11 的既有约定，报告与其数值写进本文件 §13 与 §15 表格；不新建证据文件。
+5. **§5 的「每客户端 `presentIds u16[256]` + `record u8[256 × 15]`」用 S03 的 `net::SnapshotBaseline` 落地**：镜像只有一份（`tick` + id 升序记录），`reserveBaseline` 一次性 reserve(256) 后 `advanceBaseline` 不再分配。若另建定长数组就是同一份状态的第二副本，必然与编码器输入漂移（§13.2 的 Standards 轴也认可这个收口）。
+6. **投影截断口径与 v1 不同**：v1 `projectSnapshot` 用「以玩家为中心的最近 256 个实体」堆选择；v2 §5 的线上记录数由 **u8 count** 决定 → 单帧上限 255 条，本批按 **EntityId 升序取前 255 条**做确定性截断（不重排、不改变 id 升序契约）。`snapshotMaxEntities: 256` 是 v1 配置，线上表达不出第 256 条。
+7. **`rage`/`reloading`/`charging`/`fading` 四个 flag 位恒为 0**：v1 `computeEntityFlags` 只写 `downed`/`idle` 两位（其余位由客户端 UI 侧自算），本批逐字继承 → `kindFlags` 的语义是「kind 低 2 位 + v1 的两个 flag 位」。
+8. **`--filter` 是子串匹配，新用例名必须绕开已占用子串**（§12.1-12 同款约束）：本批首轮收口时 `replication_oversized_frame_is_not_queued`（含 `size`）、`schedule_downshift_triggers_are_independent`（含 `trig`）、`schedule_head_tail_gap_detects_growth`（含 `ai`）各把 `size`/`trig`/`ai` 三组计数冲高 1 → 已改名为 `replication_too_large_frame_is_refused`、`schedule_downshift_signals_are_independent`、`schedule_late_ticks_gap_grows`；收口后 32 组既有冻结计数与 S11 **逐组同数**（见 §15 表格）。
+9. **`metrics/gauges.{hpp,cpp}` 是 §3 未列的第 6 个文件**：§4-8 要求「量值型指标」（`_rate_x10` / `_bytes_avg` / `_bytes_max` / `_queue_bytes` / `_p95` / `_drift`）能上报，而 S11 的 `counters.*` 只有 `uint64` 只增计数 → 量值用独立的定长 `double` 表，零分配、无字符串拼接，`gauges.cpp` 用 `static_assert` 钉住名字表条数。
+10. **房间侧接线不在 §3**：§3 的交付物是四个 `replication/` 模块 + 调度器，没有 `room/` 或 `net/` 改动 → 「每会话的基线 + 队列预算 + 档位」的组合由用例直接驱动（`replication_test.cpp` 的 `Room` 夹具），房间循环里的 `Room::replicate(...)` 组合留给 S13/S15 的房间批次；`ac_slow_client_drops_total` 断开后进入 30 s 宽限期同样由房间侧用 S04 的 `GraceTimer` 施加（本批只返回裁决）。
+11. **`sim::Event` → `net::EventEntry` 的映射不在 §3**：`encodeDelta` 与 S03 编码器同形，吃 `const net::EventEntry*`（事件条目的生产属房间侧）。本批的用例直接构造 `net::EventEntry`，映射函数登记为房间批次交付物。
+12. **误差百分位取 `|error|`**：§5 只冻结 `tickScheduleError = 单调时钟 − (首 tick + tickIndex × 50)` 与「P95 ≤ 8 ms」，没说百分位取带符号值还是幅值 → 本批环内存幅值（`|error|`），带符号值仍可经 `scheduleErrorMs` 直接取；`simDriftMs` 保留符号（判据是 `|drift| ≤ 50 ms`）。
+13. **§5 的速率上限**：ADR-009 的允许区间是 [100, 300]（1/10 Hz），而 tick = 20 Hz 时 300 档（30 Hz）不可达 → 本批实现 `{200, 150, 100}` 且 `kSnapshotRateMaxX10 = 200`；区间下界 `kSnapshotRateMinX10 = 100` 以具名常量存在（§6-2 的相位断言覆盖三档）。
+14. **新增根 `.gitignore`（`/build/`）**：§4-9 要求产出仓库根 `build/replication-report.json`，而仓库原有的 `server/.gitignore` 只覆盖 `server/build/` → 加一行忽略规则，避免报告与构建产物进入 `git status`。
+15. **`security_test.cpp` 的计数快照放宽**：S11 的 `security_five_authority_counters_registered` 断言 `counterCount() == 9`，S12 追加 4 个计数后改为 `>= 9`（五个名字的断言逐条保留）。计数表按「只追加、不改名、不删」演进，S13 需在其清单里补第 2 条。
+16. **§7 DoD 的逐条落到**：`--filter=replication`/`--filter=schedule` 绿、报告三字段达标、既有门禁不动 —— 见 §15 表格；「`/metrics` 可见」与「房间循环接线」按第 1、10 条登记为 S13/S15 交付。
+### 13.2 两轴评审（Standards + Spec，固定点 `ee20c46`）
+
+**评审方式说明**：本批按 S09–S11 的约定跑「Standards + Spec 并行子代理」，但两条子代理路径都没能交付（第一对到本批收口时仍在 `running`、被中断；第二对启动即被中止）。因此下面是**主代理自查**的两轴结论，外加实现期首轮收口（§13.1-8 的改名与 §13.1 的十六条偏差），不冒充子代理报告。
+
+**Standards 轴（已修）**
+
+1. **同一数值两个名字没有互相钉住**：`delta.hpp` 的 `kSnapshotCapacityBytes = 2048` 与 `backpressure.hpp` 的 `kMaxSnapshotBytes = 2048` 是 §5 的两个口径（编码容量 / 单帧上限），但两处字面量各自成立、改动其一不会被任何断言发现 → 新增 `replication_frozen_values_are_named` 断言 `kSnapshotCapacityBytes == kMaxSnapshotBytes == 2048`、`kSteadySnapshotBudgetBytes == 1228`（判断题，按「名字即契约」收口）。
+2. **S11 的计数断言会挡住追加式演进**：`security_five_authority_counters_registered` 断言 `counterCount() == 9`，与 §4-8 追加 4 个计数冲突（断言与「只追加」约定自相矛盾）→ 改为 `>= 9` 并保留 9 个名字的逐条断言（硬违规）。
+3. **新用例名污染既有 `--filter` 子串**：首轮的 `replication_oversized_frame_is_not_queued`（含 `size`）、`schedule_downshift_triggers_are_independent`（含 `trig`）、`schedule_head_tail_gap_detects_growth`（含 `ai`）把三组冻结计数各冲高 1 → 改名收口（§13.1-8）；收口后 32 组与 S11 **逐组同数**（§15 表格）。
+4. **测试框架新增依赖与旁路**：`tiny_test.hpp` 用 `<filesystem>` 按需建目录、`fopen/fwrite` 落盘（标准库，非第三方；硬约束「无第三方运行时库」不受影响），`--report` 未给定时不落盘、给了但写失败即用例失败（不静默兜底）——判断题，认可。
+5. **热路径零分配与职责单一**：`src/replication/*`、`src/core/scheduler.*`、`src/metrics/gauges.*` 全部是定长数组 / POD 式结构，grep `std::vector|std::string|std::function|malloc` 0 命中；四个 `replication/` 文件各自单一职责（投影+编码 / 镜像 / 队列账 / 档位），无 Divergent Change —— 标准差通过。
+
+**Spec 轴（已修）**
+
+1. **§7「队列超预算时只丢快照：报告 `eventsDropped = 0` 且 `droppedSnapshots > 0`」原本落空**：报告用例此前只走健康路径，`droppedSnapshots` 恒 0 → 追加**背压爆发段**（先塞 40 × 2000 B 事件把队列顶到 64 KiB 预算之上，再连编 5 帧）：实测 `droppedSnapshots = 5`、`eventsDropped = 0`，且断言队列确实越过预算（硬违规，已修）。
+2. **§7「§5 全部数值以具名常量出现并被断言」有两条落空**：40 tick（`kFullSnapshotIntervalTicks`）与 40 KB/s（`net::kClientBandwidthBytesPerSec`）此前没有任何断言 → 新增 `replication_frozen_values_are_named`：2048 / 1228 / 64 KiB / 32 KiB / 60 帧 / 3000 ms / 1000 ms / 8 ms / 40 tick / 40960 B/s 逐条断言（含 `kDisconnectReasonSlowConsumer == 7`）（硬违规，已修）。
+
+**Spec 轴（未做/判断项，登记移交）**
+
+3. **§5「`CommandChannel` 只发最新，积压 > 2 丢中间」没有实现**：`server/src/net` 里没有命令通道队列（全仓 grep `CommandChannel|enqueueCommand` 0 命中），§3 的交付物也没有对应文件 → 属房间发送循环接线（与 §13.1-10 同批），登记给 S13/S15，本步不冒充完成。
+4. **§5「每客户端带宽 ≤ 40 KB/s（全部出站 UDP 载荷，含事件）」只有常量与取值断言，没有强制点**：真正的封顶要等房间发送循环（S13/S15）；本步的等价证据是「稳态快照 ≤ 1228 B」与 `ac_send_queue_bytes` 量值。
+5. **§6-4 的 `/metrics` 端到端断言与 §4-9 的 `soak-5min.md` 写回**：见 §13.1-1 / §13.1-4（前者等 S13 的 HTTP 出口，后者等 S14 的 5 分钟 soak）。
+
+## 14. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
 2. 量化、字节序、包头与通道语义一律以 ADR-009 为准，服务端不得单方面扩展字段。
 3. 模拟热路径只用 `+ - * / sqrt` 与整数运算；编译禁用 fast-math 与 `-march=native`（ADR-010），Release 固定 `-O2`、`-ffp-contract=off`、`-fno-fast-math`、`-Werror`。
 4. 零外部素材：本目录不得出现任何二进制资源文件（`node tools/check-assets.mjs` 会拦）。
 
-## 14. 当前状态
+## 15. 当前状态
 
-**S01–S11 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12）由
-后续各份计划按"交付物"章节逐份创建，**不预先存在**。
+**S01–S12 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12：每客户端基线镜像与 40 tick 强制全量、差分编码与移除列表、64 KiB 队列预算与 60 帧慢客户端断开、200/150/100 档位状态机与 3000 ms 升档、tick 绝对时刻自校正与 8 ms 工作量预算（让出 ≠ 丢 tick）、6 个量值指标与 4 个追加计数、报告门禁，见 §13）就位。S13–S15（指标出口与诊断报告、持久化日志、5 分钟 soak）由后续各份计划按"交付物"章节逐份创建，**不预先存在**。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -728,5 +800,16 @@ server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：�
 | `node tools/check-docs.mjs` / `check-assets.mjs`（S11 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 58 个文档、169 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。` |
 | 计划偏差清单（S11） | §12.1 的十六条（metrics 注册表未在 §3 列、§6-3 末行口径、`gate-selfcheck.md` 不存在、派生预算无生产方、构建目标拦截不可表达、`rewindMs` 命名、两层去重、64 B 是上限、打击落在消息窗口、负 tick 不可表示、边界 1 ulp 实测、门禁子串与用例命名、本批不接线运行路径、`speed` 计数含 Suspect、§9 未冻结的辅助类型、`counters` 名字表） |
 | 两轴评审（S11，Standards + Spec 并行） | §12.2 记录：已修 5 类（布尔前缀回改、`--filter=pose` 门禁收口、`std::fmod` → `ac::wrapAngle`、越限判定改精确比较、同值常量与判空样板）；未做/判断项 5 条（运行路径未接线、派生预算入参化、写盘目标缺失、数据团形状、两处 `switch`） |
+| 复制调度与背压（S12） | `--filter=replication` 末行 `TESTS 16/16`（本批 15 + S09 的 `match_replication_hook_runs_once_per_tick`），`--filter=schedule` 末行 `TESTS 13/13`；报告用例把 4 玩家 + 24 羊跑 120 tick（每 tick 2 条事件）后落盘 |
+| 报告门禁（S12 §4-9/§6-3） | `server/build/ac_tests.exe --filter=replication --report build/replication-report.json` → `TESTS 16/16`；`node` 校验三字段通过：`{"suite":"replication","seed":20962,"ticks":120,"snapshotBytesMax":473,"snapshotBytesP95":473,"steadyMeanBytes":442.4,"droppedSnapshots":5,"eventsDropped":0,"rateLevelsVisited":[200,150,100,150,200],"scheduleErrorP95Ms":4,"simDriftMsMax":4}`（`build/` 由框架按需创建；根 `.gitignore` 已排除） |
+| 差分与基线（S12 §5） | 客户端镜像 30 tick 往返后 `records == projectWorld(...)` 逐字段相等；全量帧 `baselineTick = 0`，差分帧 `baselineTick` = 上一帧 tick；`replication_forced_full_frame_every_forty_ticks` 实测 81 tick 内 3 次全量、间隔恒 40；`replication_reconnect_resets_baseline_to_full` 覆盖归零自愈 |
+| 字节与背压（S12 §5/§5.3） | 44 实体场景：全量 ≤ 2048 B、稳态（后 40 帧）均值与峰值 ≤ 1228 B；`replication_dropped_snapshot_keeps_events` 队列塞满后快照 `kDropSnapshot` 而 `eventsQueued` 不变；`replication_slow_consumer_disconnect_after_sixty_drops` 第 60 帧返回 `kDisconnect`（`reason = 7`） |
+| 档位与相位（S12 §5/§6-2） | 60 tick 内三档发帧数 60/40/30；状态机 200→150→100→150→200（降档 2 次、升档 2 次）；评估周期 1000 ms（500 ms 处的调用被忽略）、干净期 3000 ms 才升档；三种降档信号各自单独成立 |
+| 调度预算与漂移（S12 §4-7/§6-2） | `pendingTicks` 在让出后照旧累积（`budgetExceeded=1`、`tickSkips=0`、`accumulatedTicks=1`）；`noteTickSkip(3)` 单记 `ac_tick_skips_total`；误差环 P95：前 20 tick 误差 0 → `0`、后 20 tick 误差 30 → `30`（超 8 ms 预算被正确判负）；「前 1/3 误差 1 ms vs 后 1/3 误差 6 ms」→ 替代判据 `5.0`；`simDriftMs` 四种口径逐值比对 |
+| 全量回归（S12 后） | `server/build/ac_tests.exe` 末行 `TESTS 398/398`（S01–S11 的 370 + S12 的 28：replication 15 + schedule 13）；`ctest --test-dir server/build -C Release` → `100% tests passed, 0 tests failed out of 1` |
+| `--filter` 计数（S12 后） | 既有 32 组**与 S11 逐组同数**（size 5/5、math 8/8、trig 4/4、rng 6/6、quantize 11/11、codec 15/15、hex 10/10、fuzz 3/3、wire 3/3、match 53/53、transport 9/9、reliability 5/5、fragment 4/4、grace 6/6、memory 3/3、world 6/6、entity 9/9、pose 5/5、grid 4/4、alloc 6/6、step 27/27、combat 45/45、fixture 6/6、ai 36/36、waves 16/16、security 51/51、malicious 36/36、rewind 12/12、room 8/8、matchstate 9/9、log_double 1/1）+ 新增 `replication` 16/16、`schedule` 13/13；改名收口见 §13.1-8 |
+| `node tools/check-docs.mjs` / `check-assets.mjs`（S12 后） | 退出码 0：`OK：v2 30 份计划（S/C 链） + 10 份前置文档，线性链与链接校验通过。`（扫描 59 个文档、170 条相对链接）；`OK：仓库零外部素材，依赖白名单未被破坏。`（396 个受控文件、34 个 Unity 依赖全在白名单） |
+| 两轴评审（S12，Standards + Spec） | §13.2 记录：**已修 5 类**（同值两名字未互相钉住、S11 计数断言与追加式冲突、新用例名污染 `--filter`、报告缺「丢过快照」段、40 tick/40 KB/s 无断言）；**未做/判断项 5 条**（命令通道「只发最新」缺实现、40 KB/s 无强制点、`/metrics` 归 S13、`soak-5min.md` 归 S14、子代理评审两次未交付 → 改主代理自查） |
+| 计划偏差清单（S12） | §13.1 的十六条（metrics.cpp 归 S13、`ac_tick_skips_total` 缺名单、框架加 `--report`、`soak-5min.md` 不存在、镜像复用 S03 类型、255 条截断口径、四个 flag 位恒 0、门禁子串收口、`gauges.*` 未列、房间接线归后续批次、事件映射归房间侧、百分位取幅值、300 档不可达、根 `.gitignore`、S11 计数快照放宽、DoD 逐条落点） |
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

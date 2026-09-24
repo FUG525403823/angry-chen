@@ -6,7 +6,10 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <string_view>
 
 namespace ac::test {
@@ -29,6 +32,18 @@ struct Registry {
 
 inline Registry& registry() {
   static Registry instance;
+  return instance;
+}
+
+// 报告出口（S12 §4-9/§6-3）：用例用 --report <path> 指定落盘位置，框架只负责写文件，
+// 内容由用例自己拼（框架不认识任何业务字段）。
+struct ReportState {
+  char path[512] = {};
+  bool isSet = false;
+};
+
+inline ReportState& report() {
+  static ReportState instance;
   return instance;
 }
 
@@ -60,6 +75,42 @@ inline void registerCase(const char* name, CaseFn fn) {
 }
 
 inline const char* currentCase() noexcept { return detail::state().name; }
+
+inline void setReportPath(const char* path) noexcept {
+  detail::ReportState& state = detail::report();
+  state.path[0] = '\0';
+  state.isSet = false;
+  if (path == nullptr) return;
+  const std::size_t length = std::strlen(path);
+  const std::size_t limit = sizeof(state.path) - 1u;
+  const std::size_t copy = length < limit ? length : limit;
+  std::memcpy(state.path, path, copy);
+  state.path[copy] = '\0';
+  state.isSet = true;
+}
+
+inline const char* reportPath() noexcept {
+  const detail::ReportState& state = detail::report();
+  return state.isSet ? state.path : "";
+}
+
+// 返回 false = 没指定路径或写盘失败（用例据此报错，不做静默兜底）。
+inline bool writeReportFile(const char* json) noexcept {
+  const char* path = reportPath();
+  if (path[0] == '\0' || json == nullptr) return false;
+  // 报告目录按需创建（计划里的 build/ 在干净仓库里并不存在），失败不吞：写盘失败即返回 false。
+  const std::filesystem::path target(path);
+  if (target.has_parent_path()) {
+    std::error_code ignored;
+    std::filesystem::create_directories(target.parent_path(), ignored);
+  }
+  std::FILE* file = std::fopen(path, "wb");
+  if (file == nullptr) return false;
+  const std::size_t length = std::strlen(json);
+  const bool isOk = std::fwrite(json, 1u, length, file) == length;
+  std::fclose(file);
+  return isOk;
+}
 
 inline void reportCheck(bool isOk, const char* expr, const char* file, int line) {
   if (isOk) return;
@@ -112,6 +163,8 @@ inline int runAll(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] == nullptr ? std::string_view{} : std::string_view(argv[i]);
     if (arg.rfind("--filter=", 0) == 0) filter = argv[i] + 9;
+    if (arg == "--report" && i + 1 < argc) setReportPath(argv[++i]);
+    if (arg.rfind("--report=", 0) == 0) setReportPath(argv[i] + 9);
   }
 
   detail::Registry& registry = detail::registry();

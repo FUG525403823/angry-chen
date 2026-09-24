@@ -16,6 +16,11 @@ enum class CounterId : uint8_t {
   kHardCorrect,          // ac_hard_correct_total
   kRewindClamped,        // ac_rewind_clamped_total
   kSpeedViolations,      // ac_speed_violations_total
+  // S12 §4-8 追加（名字见 S13 §5 的「调度」「复制与背压」两行）
+  kSnapshotRateDownshifts,  // ac_snapshot_rate_downshifts_total
+  kSlowClientDrops,         // ac_slow_client_drops_total
+  kRoomBudgetExceeded,      // ac_room_budget_exceeded_total
+  kTickSkips,               // ac_tick_skips_total（S12 §8 风险判据；S13 §5 名单暂缺，见 README §13.1）
   kCount,
 };
 

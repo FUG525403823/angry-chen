@@ -1,0 +1,2 @@
+# S12 §4-9：复制/调度报告与构建产物落在仓库根的 build/（server/.gitignore 只覆盖 server/build/）
+/build/

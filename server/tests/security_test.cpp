@@ -299,7 +299,7 @@ AC_TEST(security_reason_and_verdict_names) {
 }
 
 AC_TEST(security_five_authority_counters_registered) {
-  AC_CHECK_EQ(metrics::counterCount(), 9u);
+  AC_CHECK(metrics::counterCount() >= 9u);  // S12 起计数只追加（§4-8），S11 的 9 个必须仍在
   AC_CHECK(metrics::isCounterRegistered("ac_pose_suspect_total"));
   AC_CHECK(metrics::isCounterRegistered("ac_pose_rejected_total"));
   AC_CHECK(metrics::isCounterRegistered("ac_hard_correct_total"));

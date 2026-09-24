@@ -20,6 +20,10 @@ constexpr CounterDef kCounterDefs[] = {
     {CounterId::kHardCorrect, "ac_hard_correct_total"},
     {CounterId::kRewindClamped, "ac_rewind_clamped_total"},
     {CounterId::kSpeedViolations, "ac_speed_violations_total"},
+    {CounterId::kSnapshotRateDownshifts, "ac_snapshot_rate_downshifts_total"},
+    {CounterId::kSlowClientDrops, "ac_slow_client_drops_total"},
+    {CounterId::kRoomBudgetExceeded, "ac_room_budget_exceeded_total"},
+    {CounterId::kTickSkips, "ac_tick_skips_total"},
 };
 constexpr std::size_t kCounterDefCount = sizeof(kCounterDefs) / sizeof(kCounterDefs[0]);
 static_assert(kCounterDefCount == kCounterCount, "每个计数恰好一条名字");
