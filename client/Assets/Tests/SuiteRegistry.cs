@@ -17,6 +17,7 @@ namespace Ac.Tests
             InputCameraSuite.Register();
             ReconcileSuite.Register();
             FixturePredictSuite.Register();
+            ArenaSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
             QuantizeSuite.Register();
