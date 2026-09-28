@@ -22,6 +22,19 @@
 
 ## A. 需要你出手
 
+**优先级一览（按"卡住什么"排）**
+
+| 优先级 | 事项 | 一句话 | 卡住什么 |
+|---|---|---|---|
+| **P0** | **A7** fixture 格式 | 服务端已提交 15 份新格式向量，客户端 loader 仍读 0 份 ⇒ 自测 2 条红 | 客户端自测全绿（其余 162 例已绿） |
+| **P0** | **A2** C15 六步联合验收 | 服务端在场跑连接→大厅→对局→波次→结算→重连，两侧版本行入档 | **`MC15` 无法打标签** |
+| **P1** | **A8** 昵称上报通道 | 客户端没有上报昵称的报文，服务端把所有人叫 `player` | 真连时本地身份落不下来 |
+| **P1** | **A1** 有 GPU 的机器 | 跑一次 `frame-bench.ps1` 补三项 GPU 指标 | **`MC14` 仍是"未验收"** |
+| **P2** | **A3** 三项跨计划冲突 | 剔除距离 / 阴影距离 / 准星散布口径 | 三个数值口径悬空 |
+| **P2** | **A4** `Send`/`Track` 拒收回滚 | 被积压封顶拒收的可靠消息是否回滚 | 跨服务端语义 |
+| **P3** | **A6** IL2CPP 模块（可选） | 想发 IL2CPP 包才需要 | 现在走 Mono 兜底并如实标注 |
+| ✅ | ~~A5 本地玩家身份~~ | 已按"玩家自己输入昵称"落地客户端侧 | （真连仍受 A8 阻塞） |
+
 ### A1. 一台有真实图形设备的机器 —— C14 收口前置
 本机 `GPU = Null Device`、`Screen 640×480`，PlaybackEngines 只有 Mono 变体，`frame-bench.ps1 -Runs 1` 两次都是 `exit 2`（"run produced no JSON"）。C14 §6/DoD 的 `1920×1080` / `drawCalls ≤ 120` / `triangles ≤ 180000` 无法测量，所以 `MC14` 是"**未验收**"里程碑。拿到有 GPU 的机器后：
 
@@ -70,7 +83,9 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 `-Backend auto` 现走 Mono 兜底并在日志与 `manifest.json` 标注 `backend=mono`。要发 IL2CPP 包需补装 IL2CPP（Windows x64）模块 + VS C++ 工作负载。
 
 ### A7. **并行会话的 fixture 冲突**（不是我能碰的）
-`docs/evidence/fixtures/*.json`（7 份，C1 冻结向量）在 11:23 被并行会话**未提交**地重写，客户端 `fixtures.loader` 因此加载到 0 份、`fixture_predict.*` 全红（本次复跑：`cases=145`、2 条失败全在此）。这些文件不属于客户端，我没有动；等他们提交后客户端自测会自然回绿。**两侧需要约定：fixture 冻结向量不能单方面改格式。**
+`docs/evidence/fixtures/*.json` 已被并行服务端会话重写并**提交**（现 15 份），但客户端 `fixtures.loader` 仍**加载到 0 份**、`fixture_predict.manifest` 报"缺少向量 still-60t"——**文件在，schema 对不上**。客户端自测因此 164 例里 2 条红（非 fixture 失败 = 0，其余 162 例全绿）。这些文件不属于客户端，我没有动。
+
+**要你定一条**：① 服务端新 schema 是权威 ⇒ 我一轮把客户端 loader/用例适配过去；② fixture 是两侧冻结契约 ⇒ 请服务端按客户端已实现的 schema 补回向量；③ fixture 由服务端单方拥有、客户端不再加载 ⇒ 我把这组用例改成读不到就 `UNVERIFIED`（不再当红）。**在此之前客户端自测无法全绿。**
 
 ---
 
