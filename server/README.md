@@ -639,6 +639,9 @@ server/build/ac_tests.exe                       # TESTS 297/297
 8. **§5.6 的 `matchEnded.flags = durationMs` 无法表示**：S05 冻结的 `sim::Event::flags` 是 **u8**，毫秒放不下 → 时长只存在于 `MatchRuntime.startedAtMs/endedAtMs`（`buildMatchResult` 现算），事件里 `flags = 0`。要让线上事件带时长需先改 S05 的事件结构（§11.2 未做项 3）。
 
 > 待办：`sim::Event::flags` 仍是 `uint8_t`（`server/src/sim/world.hpp:33`），S10 计划 §5.9 的 `flags = durationMs`（`docs/plans-v2/server/S10-房间会话与对局流程.md:107`）无处安放；是否把 `flags` 拓到 u16（会改 `sizeof(Event)` 与全部对拍向量）仍无裁决文本。
+
+> 待办（C4 第三批）：两种选择的代价已核清 —— (A) 把 `flags` 拓到 u16：要改 S05 §5.1 冻结的事件字段表与 `world.hpp:36` 的 `static_assert(sizeof(Event) == 48u)`，每个事件类型的线载荷随之变（`codec_event_entry_bytes_all_types` 钉住类型↔线号与逐字段字节），14 份跨语言对拍向量必须重导（§8.5）；(B) 不动 `flags`，把 `durationMs` 放到别的字段/载体：事件结构不动，但线上 `matchEnded` 事件永远不带时长，只能从快照或结算路径（`MatchRuntime.startedAtMs/endedAtMs` 已在用）补。需要谁裁决：S05 事件布局是冻结项（计划 §5.1 + ADR-009 的线格式），须由计划侧/用户裁定后才实施；本批不改实现。
+
 9. **§5.7-5 的「广播快照与事件」只留缝**：`replicate` 每 tick 调一次，真正的编码/事件通道（`eventId` 幂等）属 S12；今天没有 World→`SnapshotFrame` 投影器。
 
 > 收口：见 §13.1-10 —— 缝已接线：S14 的 `Runtime::onReplicate` 每 tick 经 `RoomDeps::replicate` 编码并发送快照；依据：`server/src/server/runtime.cpp:85/465-525`、§13.1-10。
@@ -657,6 +660,9 @@ server/build/ac_tests.exe                       # TESTS 297/297
 14. **`Session::kills` 是 v1 遗留字段**：v1 `room.ts` 也只写 0 / 照抄、从不累加 → 线上 MatchState 的 `kills` 恒 0（v1 同），真正的击杀数在 `PlayerStats::kills`（结算用）。要让 HUD 显示击杀得先改 ADR-009 的字段来源（§11.2 未做项 4）。
 
 > 待办：`MatchState.kills` 仍恒 0 —— `Session::kills` 的唯一写点把它置 0 / 照抄（`server/src/room/room.cpp:190/216/352`），全仓无累加写点；把 HUD 击杀数接到 `PlayerStats::kills` 需要改 ADR-009 的字段来源，本次无裁决文本。
+
+> 待办（C4 第三批）：改动面已核清 —— `Session::kills`（`server/src/room/session.hpp:21`）今天只有置 0（`room.cpp:190`）与照抄（`room.cpp:216`）两个写点、一个读点（`room.cpp:352` → `MatchState.kills`），全仓无累加点；真正的击杀数在 `noteKill` 累加的 `PlayerStats::kills`（`stats.cpp:25-26`，调用点 `match_controller.cpp:338`），只在结算时被抄进 `PlayerResult`（`match_controller.cpp:232`）。要接线须新增「`Session::kills` ← `PlayerStats::kills`」的写点，或把 `room.cpp:352` 的来源从会话改成结算记录 —— 两者都动 ADR-009 冻结的 `MatchState` 字段来源与客户端 HUD 的读数约定，需用户/ADR 侧裁决；本批不改实现。
+
 15. **昵称剔除集的口径**：v1 只剔除 `<>&"'`，剩下的 `/` 不在允许集 → `<b>alpha</b>` 净化后是 `balpha/b`，**整名被拒**（不是 `balphab`）；用例按此钉住。
 
 > 收口：按实现修正 —— 剔除集只含 `<>&"'`，其余越界字符使整名被拒（`<b>alpha</b>` → `balpha/b` 整名拒收）；依据：`server/src/room/session.cpp:89-121`、`server/tests/match_flow_test.cpp:365`（`match_nickname_sanitizer_rules`）。
@@ -743,7 +749,7 @@ server/build/ac_tests.exe --filter=fixture       # TESTS 6/6（逐位一致：�
 > 收口：按实现修正 —— `docs/evidence/gate-selfcheck.md` 至今未建（S13–S15 新增的是 `server-v2-acceptance.md` / `server-perf-4p2min.md`），数值与结论写在 §12 与 §17；依据：`docs/evidence/` 目录清单、§17 表格。
 4. **§5 的「派生预算只由权威模拟产生」在 v2 没有生产方**：v1 的 `Entity` 有 `derivedMoveX/Z`（`sim.ts:213-216` 累计、`world.ts:238-239` 每 tick 清零），而 S05–S09 冻结的 v2 `Entity` 没有这两个字段（全仓 grep `derivedMove` 无命中）→ 本批按 v1 `validateAdvance(..., derivedBudgetM = 0)` 的形状把派生预算做成**入参**（`PoseSample.derivedBudgetM`，默认 0），未来由模拟侧累加后传入；「在 sim 里加派生位移累加器」登记为后续裁决（它会改 `sizeof(Entity)` 与跨语言对拍向量）。
 
-> 待办：派生预算仍无生产方 —— 全仓 `derivedBudget` 只出现在入参（`server/src/security/pose_validation.hpp:58`）与文档里，「在 sim 里加派生位移累加器」无裁决文本。
+> 收口：按实现修正 —— 该口径暂不启用：生产路径从不让 `PoseSample.derivedBudgetM` 离开默认值 0.0（全仓唯一赋值点是用例 `pose_validation_test.cpp:102/115/118/121` 为验证公式而显式注入），因为 S05–S09 冻结的 v2 `Entity` 没有 `derivedMoveX/Z`（全仓 grep `derivedMove` 0 命中）；要启用得在 sim 里加派生位移累加器，那会动 `sizeof(Entity)` 与对拍向量、须裁决，故本批把「暂不启用」写实而不动实现；依据：`server/src/security/pose_validation.hpp:58`、`server/src/security/pose_validation.cpp:13-18`、`server/tests/pose_validation_test.cpp:102/115/118/121`。
 5. **§8 风险表的「用构建目标的依赖方向拦截」在单一 `ac_core` 目标下无法表达**：`server/CMakeLists.txt` 只有 `ac_core`（`src/**.cpp` 一次 glob）+ `ac_server` + `ac_tests` → 本批以「源码约定 + 审查期 grep」替代（sim/ai/combat/waves 无一处 include `security/` 或 `metrics/`，见 §17 表格）；要硬拦截需先拆目标或加一次源文件扫描门禁。
 
 > 收口：按实现修正 —— 仍是单一 `ac_core` 目标（无构建级依赖拦截，靠源码约定 + 审查期 grep）；依据：`server/CMakeLists.txt:34`、§12.2 的核对通过项。
@@ -839,7 +845,7 @@ server/build/ac_tests.exe                                  # TESTS 402/402
 > 收口：见 §14.1-1/§14.1-6 —— S13 已交付 `metrics/metrics.cpp`（Prometheus 渲染 + `/metrics` 出口 + `--selftest-metrics`）；依据：`server/src/metrics/metrics.cpp:76`、§14.1-6。
 2. **`ac_tick_skips_total` 在 S13 §5 的名单里缺失**：S12 §5/§8 用它做「追帧上限丢 tick」的判据（本批按 §4-8 接线），而 S13 §5 的「调度」行没有这一条 → 本批按追加式新增该计数，**S13 需把名字补进 §5 清单**（否则 §5 的「名字即契约」会漏一条）。
 
-> 待办：S13 计划 §5 的「调度」行仍缺 `ac_tick_skips_total`（`docs/plans-v2/server/S13-持久化日志指标与诊断报告.md:85`）；名字已进注册表并在用例里断言（`server/tests/replication_test.cpp:384`），缺的只是计划文本回写。
+> 收口：已回写 —— 计划文本的漏写已补：S13 计划 §5 的「调度」行现已含 `ac_tick_skips_total`（本批第三部分直接改计划文本）；名字早在注册表（`server/src/metrics/counters.cpp:26`）并被 `server/tests/replication_test.cpp:384` 与 `server/tests/http_test.cpp:100` 断言；依据：`docs/plans-v2/server/S13-持久化日志指标与诊断报告.md:85`、`server/src/metrics/counters.cpp:26`。
 3. **§4-9 需要报告出口，但 §3 的交付物里没有测试框架改动**：本批给 `server/tests/tiny_test.hpp` 加了 `--report <path>`（以及 `writeReportFile`，目录按需创建、写盘失败即用例失败），报告内容仍由用例自己拼（框架不认识业务字段）。
 
 > 收口：按实现修正 —— `tiny_test.hpp` 已提供 `--report <path>` / `--report=<path>` 与写盘（目录按需创建、写失败即用例失败）；依据：`server/tests/tiny_test.hpp:38/121/195-196`。
@@ -867,6 +873,9 @@ server/build/ac_tests.exe                                  # TESTS 402/402
 11. **`sim::Event` → `net::EventEntry` 的映射不在 §3**：`encodeDelta` 与 S03 编码器同形，吃 `const net::EventEntry*`（事件条目的生产属房间侧）。本批的用例直接构造 `net::EventEntry`，映射函数登记为房间批次交付物。
 
 > 待办：`sim::Event` → `net::EventEntry` 仍无映射函数（全仓 `EventEntry` 只出现在 `server/src/net/codec.hpp:224` 与 `codec.cpp`），事件条目生产仍待房间批次。
+
+> 待办（C4 第三批）：生产方归属已核清 —— 全仓 `net::EventEntry` 只出现在编解码层（`server/src/net/codec.hpp:224`、`codec.cpp:105/197`）与用例里；运行时 `encodeDelta` 的入参不填 `events`（`runtime.cpp:490-498` 只设 world/session/seq/isForceFull，`DeltaInput::events` 默认 nullptr，`delta.hpp:38`），`delta.hpp:6` 也写明该映射属「房间侧接线」，而 S10 房间与 S14 运行循环都没派这一项 → 事件条目生产仍待「房间/广播批次」，需要计划侧把 `sim::Event → net::EventEntry` 映射派给某个批次；本批不臆造映射。
+
 12. **误差百分位取 `|error|`**：§5 只冻结 `tickScheduleError = 单调时钟 − (首 tick + tickIndex × 50)` 与「P95 ≤ 8 ms」，没说百分位取带符号值还是幅值 → 本批环内存幅值（`|error|`），带符号值仍可经 `scheduleErrorMs` 直接取；`simDriftMs` 保留符号（判据是 `|drift| ≤ 50 ms`）。
 
 > 收口：按实现修正 —— 误差环存幅值（`percentileOf(..., useMagnitude = true)`），`simDriftMs` 保留符号；依据：`server/src/core/scheduler.cpp:48-50/142-146`。
@@ -1002,32 +1011,107 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 ### 14.1 计划文本纠正与已声明偏差（S13，二十五条）
 
 1. **`core/version.{hpp,cpp}` 是本批新增的**：S01 的版本/协议/tick 原是 `main.cpp` 匿名命名空间里的字面量，`/metrics` 侧引用不到；§5 要求 `ac_server_version` 与 `--version` 行同源 → 抽成一份常量并加 `versionLine()`（实测两条输出的字段一致）。
+
+> 收口：按实现修正 —— 编号 1 的「版本单一来源」成立：`--version` 与 `/metrics` 的 `ac_server_version` 都读 `ac::version::kVersion`，且 `version.cpp:10` 的 `static_assert` 把它与调度器 tick 钉在一起；依据：`server/src/core/version.hpp:16`、`server/src/core/version.cpp:10-16`、`server/src/main.cpp:157-158`、§18.8-2。
+
 2. **`core/json_text.{hpp,cpp}`：全仓唯一一份 JSON 转义**。写这一步时发现 S01 的 `core/log.cpp` 与 S13 起点（`330eedb` 带进来的 `persist/match_store.cpp`）各有一份「同一件事、两套规则」的转义（短转义 `\n` vs 一律 `\u00XX`）→ 合并为一份，口径取 S01 §5.4（控制字符一律 `\u00XX` + 大写十六进制），两处改为调用它（store 侧不再自带 `appendEscaped`）。
+
+> 收口：按实现修正 —— 全仓唯一的 JSON 转义就是 `core/json_text`：日志（`log.cpp:163/324`）与战绩存储（`match_store.cpp:421/437` 的 `json::quote`）都走它，store 侧自带的 `appendEscaped` 已删；依据：`server/src/core/json_text.hpp:14`、`server/src/core/log.cpp:163/324`、`server/src/persist/match_store.cpp:421/437`。
+
 3. **`--fixture` 是测试框架的新出口**：§6-2 的命令要求 `ac_tests.exe --filter=store --fixture build/ndjson-100k.ndjson`。实现与既有 `--report` 同款（`--fixture <path>` / `--fixture=<path>`，`setFixturePath()` / `fixturePath()`）；文件不存在时用例先生成 10 万行到该路径（门禁命令因此自带数据）。
+
+> 收口：按实现修正 —— `--fixture` 与 `--fixture=<path>` 两种写法都在框架侧（`tiny_test.hpp:197-198`），用例每次运行重写夹具而不是当缓存；依据：`server/tests/tiny_test.hpp:90/104/197-198`、`server/tests/store_test.cpp:335-342`。
+
 4. **`tests/log_test.cpp`、`tests/report_test.cpp`、`tests/tmp_workdir.hpp` 是本批新增的三个测试文件**（§3 只列了 `tests/store_test.cpp` 与 `tests/http_test.cpp`）：§5 的日志契约与诊断报告在计划里没有归属文件，落到这两份；临时目录 RAII 抽成 `tmp_workdir.hpp`（四个新测试文件共用）。
+
+> 收口：按实现修正 —— 三个新文件都在（`tests/log_test.cpp`、`tests/report_test.cpp`、`tests/tmp_workdir.hpp`），另新增 `tests/test_io.hpp` 与 `tests/log_guard.hpp` 两份共用助手；依据：`server/tests/log_test.cpp`、`server/tests/report_test.cpp`、`server/tests/tmp_workdir.hpp`、§14.2 中-6/低-6。
+
 5. **`--selftest-metrics` / `--selftest-store` 是本批新增的 CLI 出口**：§6-3/§6-4 要求打真实监听套接字（`http://localhost:8787`），而本步按 §9 只交付 `handle_http` 处理层（见第 6 条）→ 把「46 个名字整段渲染」与「`AC_DATA_DIR` 下的战绩存储能打开、能报常驻/坏行计数」做成进程内自检作为等价证据。§6-6 的 `--selftest-log` 行为不变，只把版本字段改成 `versionLine()` 同源。
+
+> 收口：按实现修正 —— 两个自检出口都在（`main.cpp:46` 渲染整段名字、`main.cpp:54` 打开存储并打印常驻/坏行计数），解析在 `main.cpp:171-172`；依据：`server/src/main.cpp:46/54/171-172`。
+
 6. **没有 TCP 监听、没有 8787 绑定**：`http/server.cpp` 是纯 `handleRequest(state, deps, request, nowMs) -> Response`（§9 的接口形状）。socket accept 循环与端口绑定归 `S14` §2 行 3（守门程序读 `/health`）与 `S15`（端口与端点契约：UDP 8788 / HTTP 8787）→ §6-3/§6-4 的 curl 类证据本步用 `--selftest-metrics`（46 行）+ `--filter=http`（15 条端点用例）替代，§17 表格逐条标注归属。
+
+> 收口：见 §15.3-2 / §19.5 B8 —— 该缺口已被后续批次补上：`net::TcpListener`、`http::HttpListener` 与 `ac_server --serve` 都在（8787/8788 实测可绑）；依据：§19.5 B8、`server/src/net/tcp_listener.hpp`、`server/src/http/listener.hpp`、`server/src/main.cpp:30`。
+
 7. **`--selftest-store` 把存储统计写进注册表**：`ac_corrupt_lines_total` 的语义是「加载时遇到的坏行数」，而 `persist` 不依赖 `metrics`（保持纯 I/O 模块）→ 由调用方（`--selftest-store`、将来的运行循环）把 `stats().corruptLines` 写进计数器；常驻条数走 `ProcessSnapshot.recordsRetained`，自检命令会打印这两行。
+
+> 收口：按实现修正 —— 存储统计仍由调用方写进注册表：`main.cpp:68` 写 `ac_corrupt_lines_total`、`main.cpp:70` 填 `recordsRetained`，运行循环另在 `runtime.cpp:671` 每轮刷新常驻条数；依据：`server/src/main.cpp:68/70`、`server/src/server/runtime.cpp:671`。
+
 8. **本步没有写入方的指标**（只登记，不冒充接线）：9 条计数 `ac_bytes_out_total`、`ac_bytes_in_total`、`ac_frames_out_total`、`ac_frames_in_total`、`ac_events_sent_total`、`ac_events_dropped_total`、`ac_grace_starts_total`、`ac_grace_reconnects_total`、`ac_grace_timeouts_total`（归属发送/接收循环与 S10 房间的宽限期迁移点），以及 7 个进程字段里除 `ac_server_version` 以外的 6 条（运行循环填 `ProcessSnapshot`；`--selftest-metrics` 用默认值渲染，所以自检里这些行是 0）。其中 `ac_bytes_out_total`、`ac_frames_in_total`、`ac_grace_*` 已被 `report.cpp` **读取**（报告字段有读方、暂无写方），所以报告里 `net.bytesOutTotal`、`net.messagesInTotal`、`grace.*` 目前是 0。
+
+> 收口：见本条之后的「收口（C3）」—— 9 条计数里 8 条已有自增写入方，只剩 `ac_events_sent_total` 无写入方（`counters.cpp:36` 只有名字与注册表条目）；依据：`server/src/metrics/counters.cpp:36`、§14.1 第 8/9 条后的「收口（C3）」。
+
 9. **`listening` / `shutdownRequested` / `shutdownComplete` 三个事件名本步没有调用点**（没有监听、没有生命周期循环）：名字在 19 个的表里且被用例断言，调用点随 S14/S15 接线；进程启动目前写的是 S01 的 `serverStarted`（§5 的最小集是下限，不排斥 S01 已冻结的名字）。
+
+> 收口：见本条之后的「收口（C3）」—— 三个事件名都有生产调用点：`main.cpp:122`（`listening`）、`:133`（`shutdownRequested`）、`:138`（`shutdownComplete`），名字在 `log.cpp:68` 的表里；依据：`server/src/main.cpp:122/133/138`、`server/src/core/log.cpp:68`、§14.1 第 8/9 条后的「收口（C3）」。
+
 
 > 收口（C3）：第 8/9 条记的是 S13 当时的状态，现在都不成立了 —— 9 条计数里 8 条已有自增写入方，19 名里的 `listening`/`shutdownRequested`/`shutdownComplete` 也都有生产调用点；逐条依据见 §14.2 末的 C3 收口。
 10. **`level` 字段输出级别名（`"info"`）而不是数字**：§5 的 10/20/30/40 在本步作为**过滤阈值**实现（`levelValue()` 与 `AC_LOG_LEVEL`）；S01 §5.4 已冻结 `"level":"info"` 的写法，两者都满足 §6-6 的 `ts/level/evt` 断言。
+
+> 收口：按实现修正 —— 级别仍输出级别名（`log.cpp:145/151` 的 `"info"`），10/20/30/40 只作过滤阈值（`log.cpp:225` 的 `levelValue`、`:250` 接受 `"info"` 与 `"20"`）；依据：`server/src/core/log.cpp:145/151/225/250`。
+
 11. **`detail` 的 `string[]` 用「指针 + 个数」入参**（`DetailField::array(key, items, count)`）：§5 只说「扁平键值」，日志层因此不引入 `std::vector`（保持零分配）。
+
+> 收口：按实现修正 —— `DetailField::array(key, items, count)` 就是「指针 + 个数」，日志层没有引入 `std::vector`；依据：`server/src/core/log.hpp:107`、`server/src/core/log.cpp:163`。
+
 12. **报告写盘是同步的**（对局结束时刻调用）：§8 风险表的对策提到「写盘走独立队列」——队列与批量 flush 属于运行循环批次，本步只做「结束时一次落盘 + 按 mtime 保留 200 份 + 失败只记 `report.write_failed`」。
+
+> 收口：按实现修正 —— 写盘确实是一次同步调用（无队列、无批量 flush）；但生产路径至今没有调用点（全仓 `writeReport(` 只有定义与 `report_test` 的用例），落盘仍待运行循环接线；依据：`server/src/report.cpp:210`、`server/tests/report_test.cpp:100/113/126/149`。
+
 13. **HTTP 的 500 有两个可复现触发条件**：`/metrics` 的 `metrics-unavailable`（渲染产物为空）与读接口的 `response-too-large`（body > 64 KiB）。§5 只规定「200/429/500」与响应形状，没有规定 500 的触发条件。
+
+> 收口：按实现修正 —— 两个 500 触发条件都在：`server.cpp:134` 的 `metrics-unavailable` 与 `:180` 的 `response-too-large`（body > `kMaxBodyBytes`）；依据：`server/src/http/server.cpp:134/180`、`server/src/http/server.hpp:27`。
+
 14. **`limit` 的非法值收敛到默认值**（`limit=0`、`limit=abc` → 默认 20/10；`limit=999` → 100）：§5 只写「默认 20 / 10，上限 100」，本步把「非法即默认」写进实现与用例。
+
+> 收口：按实现修正 —— `parseLimit` 把缺省/非法/非正收敛到 fallback、超限夹到 `kMaxLimit = 100`（默认 20 / 10 在 `server.hpp:22-23`）；依据：`server/src/http/server.cpp:105-119/164-165`、`server/src/http/server.hpp:21-23`、`server/tests/http_test.cpp:140-146`。
+
 15. **读限流覆盖四个 GET 端点**（含 `/metrics` 与 `/health`）：§5 只说「30 次/分钟/IP 滑动窗口」，没说是否只限两个读接口；实现按全部读请求计数，用例覆盖 30 次通过 / 第 31 次 429 / `retry-after: 60` / 窗口滑过恢复 / 客户端表上限 64 按最近使用淘汰。
+
+> 收口：按实现修正 —— 限流是单一关口（`server.cpp:124` 的 `allowRequest` 在分派前对每个请求执行），因此 `/metrics` 与 `/health` 与两个读接口一样计数；客户端表上限 64、缓存 32 在 `server.hpp:24-25`；依据：`server/src/http/server.cpp:124`、`server/src/http/server.hpp:24-25`、`server/tests/http_test.cpp:175/192`。
+
 16. **`ac_tick_jitter_ms_p50/p95` 取幅值**：与 S12 的 `ac_tick_schedule_error_ms_p95` 同口径（分位函数取 |误差|），带符号误差仍由 `TickScheduler::tickScheduleErrorMs()` 与报告里的 `scheduleErrorMsP95` 暴露；`jitterMsP50 ≤ jitterMsP95` 是用例断言。
+
+> 收口：按实现修正 —— `jitterMsP50/P95` 取幅值（`sortRing(..., useMagnitude = true)`），带符号误差仍由 `scheduleErrorMsP95` 暴露；依据：`server/src/report.cpp:89-91`、`server/src/core/scheduler.cpp:32/142/150`。
+
 17. **`ac_tick_skips_total` 补进名字表（S12 §13.1-2 的移交项）**：S12 §5/§8 与 `S14` 的 G8 判据都要它，而 S13 §5 的名单漏了这一条 → 名字表现在 46 行（= §5 的 45 + 这 1 条），并新增「注册表里每一项都必须有名字」的 `static_assert`（本批自审靠它发现这条漏网）。
+
+> 收口：见 §13.1-2 —— 名字已在注册表（`counters.cpp:26`）并被两处用例断言（`replication_test.cpp:384`、`http_test.cpp:100`）；S13 计划 §5 的「调度」行已由本批第三部分补上该名字；依据：`server/src/metrics/counters.cpp:26`、`docs/plans-v2/server/S13-持久化日志指标与诊断报告.md:85`。
+
 18. **`metrics::gaugeCount() == 6` / `counterCount() == 13` 两条等值断言改成 `>=`**（本批：计数 13 → 27、量值 6 → 12）：沿用 S11 §12.1-3 的「名字表只追加」先例；名字仍逐条断言（`isCounterRegistered()` / `isGaugeRegistered()`）。
+
+> 收口：见 §14.2 中-4 —— 两条等值断言已改回精确值：`gaugeCount() == 12` / `counterCount() == 27`；依据：`server/tests/replication_test.cpp:379-380`、§14.2 中-4。
+
 19. **10 万行夹具的生成放进用例**：不给 `--fixture` 时在临时目录生成 10 万行再加载，断言 `linesRead == 100000`、`retained == 10000`、`evicted == 90000`、`corruptLines == 0`，并打印 `retained=10000 corrupt=0`（§6-2 的判据）。
+
+> 收口：按实现修正 —— 夹具仍由用例生成：`store_test.cpp:335-342` 每次写 10 万行到 `--fixture` 指定路径（或临时目录），断言 `linesRead == 100000`、`retained == 10000`；依据：`server/tests/store_test.cpp:335-342`、§14.2 低-6。
+
 20. **§9 的接口名与实际代码的对应**：`render_metrics()` → `metrics::renderMetrics(MetricsInput)`；`build_match_diagnostics(...)` → `report::buildMatchDiagnostics(MatchRunSummary, counters, gauges, scheduler)`；`write_report(...)` → `report::writeReport(dataDir, diagnostics, error?) -> ReportWrite`；`handle_http(request)` → `http::handleRequest(state, deps, request, nowMs) -> Response`；`log(level, evt, fields)` → `log::event(level, evt, EventContext, detail)`（S01 的扁平 `log::write` 仍保留给旧调用点）。
+
+> 收口：按实现修正 —— 五个名字逐一对上：`metrics::renderMetrics`（`metrics.hpp:44`）、`report::buildMatchDiagnostics`（`report.hpp:83`）、`report::writeReport`（`report.hpp:103`）、`http::handleRequest`（`http/server.hpp:86`）、`log::event`（`core/log.hpp`）；依据：同左。
+
 21. **`HttpState`（客户端表 + 读缓存）由调用方持有、显式传参**，不是全局变量：单测可重入，S14/S15 的监听层自己决定生命周期；`kMaxTrackedClients=64`、`kMaxCacheEntries=32` 是内部上限（§5 未规定）。
+
+> 收口：按实现修正 —— `HttpState` 仍由调用方持有并显式传参（定长客户端表 64 + 读缓存 32），运行时的实例是 `Runtime::httpState_`；依据：`server/src/http/server.hpp:65/81-82`、`server/src/server/runtime.hpp:174`。
+
 22. **§7 DoD 的逐条落到见 §17 表格**：日志形状/阈值/19 事件名、46 个名字可渲染、战绩追加与 10 万行上界、报告 8 组与保留 200 份、四端点与限流缓存、本批 5 条新计数都绿；「真实 8787 端点」按第 6 条移交 S14/S15。
+
+> 收口：按实现修正 —— 逐条落到 §17 表格与本轮实测：46 名可渲染、四端点与限流缓存用例绿、全量用例见 §15.4 重测与验收报告；依据：`docs/evidence/server-v2-acceptance.md:49/86`、§17 表格。
+
 23. **生产启动行统一到 §5 的事件形状**（两轴评审 Spec 轴 H1 修的）：`main.cpp` 原来走 S01 的 `log::write()`（`{ts,level,msg}`），与 §5 冻结的 `{ts,level,evt,room,tick,pid,detail}` 不符 → 改为 `log::event(Level::info, "serverStarted", {}, {version/protocol/tickMs})`。事件名沿用 S01 的 `serverStarted`（19 条名单是最小集不是全集，见第 25 条与 §14.2）。
+
+> 收口：按实现修正 —— 启动行就是 §5 的形状（`log::event(Level::info, "serverStarted", {}, {version/protocol/tickMs})`），事件名沿用 S01 的 `serverStarted`（不在 19 名最小集内）；依据：`server/src/main.cpp:39-42`、§14.1-9。
+
 24. **`AC_LOG_FILE` 是 S13 新增的 sink 出口**（§5 只规定 `AC_LOG_LEVEL`）：设了就写该文件（父目录按需创建），未设/为空/打不开则保持当前 sink 并返回 false；`--selftest-log` 与生产启动都受它影响。
+
+> 收口：按实现修正 —— `AC_LOG_FILE` 出口在：`log.cpp:284-285` 读环境变量并切 sink（未设/空/打不开则保持当前 sink），`runServe` 启动时调用（`main.cpp:149`）；依据：`server/src/core/log.cpp:284-285`、`server/src/core/log.hpp:72`、`server/src/main.cpp:149`。
+
 25. **`ticks.jitterMsP95` 与 `ticks.scheduleErrorMsP95` 恒等**（Standards 轴中-3）：两者都取误差环的 P95（§5 冻结了两个字段名，两个名字都保留）；发布路径改成三个采样环各排一次（此前 6 次访问器调用会把 jitter 环排 3 遍、work 环排 2 遍）。报告实例里两个字段同为 167.000 是定义使然，不是抄写错误。
+
+> 收口：按实现修正 —— 两字段同义（都取误差环 P95，定义使然），发布路径三环各排一次（`scheduler.cpp:181-183`）；依据：`server/src/report.cpp:89-91`、`server/src/core/scheduler.cpp:181-183`、§14.2 中-3。
+
 ### 14.2 两轴评审（Standards + Spec 并行，固定点 3fe7e87 ≤ HEAD 2469cd8；S13 改动 = 工作树）
 
 两个只读子代理（禁改文件 / 禁动 git / 禁再起代理）各跑一轴，结论并排记录如下。
@@ -1119,29 +1203,101 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 ### 15.3 计划文本纠正与已声明偏差（S14）
 
 1. **计划 §3 把 `.github/workflows/ci.yml` 记为【新建】，实际 S01 就建了这个文件**：本批只把 `server-perf` 占位作业改成真作业（`needs: quality`、20 min 上限、上传 `server-perf.json`）。
+
+> 收口：已回写 —— `ci.yml` 的 `server-perf` 已是真作业：`needs: quality`，跑 `gate-4p2min` + `--break=G3=0` 反向自检 + `soak-4p5min`，三份报告一起上传；依据：`.github/workflows/ci.yml:44-46/58/62/67/74-76`。
+
 2. **监听层与服务运行时的归属（已裁决，B8）**：S14 §2-3（真 UDP/HTTP）与 S15 §2-3（systemd 起进程、`AC_UDP_PORT=8788`/`AC_HTTP_PORT=8787`）都以前提方式要求它，但两批的 §3 交付物清单都没写。本批交付 `net::TcpListener`/`TcpConnection`、`http::HttpListener`、`server::Runtime` 与 `ac_server --serve` —— 归属**记为 S14**（S15 负责运维接线），计划侧回写见 §19.2。
+
+> 收口：已裁决（B8）—— 归属记为 S14，且已交付（`net::TcpListener`/`http::HttpListener`/`server::Runtime`/`ac_server --serve`），S15 只做运维接线；依据：§19.5 B8、`server/src/net/tcp_listener.hpp`、`server/src/http/listener.hpp`、`server/src/server/runtime.hpp`、`server/src/main.cpp:30`。
+
 3. **机器人不走大厅流程**：v1/v2 协议没有「建房 / 加入 / 准备」的线消息（大厅在 HTTP 面），运行时按「Hello 成功即入房 + 自动 ready」驱动对局开始；大厅协议本身留给 S15 或客户端批次的 ADR。
+
+> 收口：按实现修正 —— 机器人只发 Hello（`bot.cpp:144-154/297`），服务端在运行时里把它算作存活包并自动 ready；依据：`server/tools/bot.cpp:144/297`、`server/src/server/runtime.cpp:423`。
+
 4. **命令通道不做重传与 ack 记账**：可靠通道（`sendCommand`/`recvCommand`）已由 S04 用例覆盖，压测运行时按「一发一收、丢包即丢帧」跑，`msgId/ackBits` 只填不进展；G8 的丢弃计数因此只来自非法方向、超长包与过期命令。
+
+> 收口：按实现修正 —— 全仓无 `CommandChannel` 符号（grep 0 命中），命令通道由运行时的一发一收路径驱动（`runtime.cpp:217` 的 `handleCommand`）；依据：§13.1-17 的收口、`server/src/server/runtime.cpp:217`。
+
 5. **60 只羊由运行时按 `sheepTarget` 直接补足**（复用 `waves::spawnSheepAt`，与波次导演同一条生成路径，不另写第二套），**不经波次预算表**：预算、清波、王波与首领召唤由 S09 用例覆盖，本批只固定负载形状。
+
+> 收口：按实现修正 —— 60 只羊由运行时按 `sheepTarget`（`runtime.hpp:40` 默认 60）直接补足并复用 `waves::spawnSheepAt`，不经预算表；依据：`server/src/server/runtime.hpp:40`、`server/src/server/runtime.cpp:446-456`。
+
 6. **G5 在压测路径上恒为 0**：v2 命令包不含姿态字段（没有可校验的位置），权威路径的硬纠正由 S11 用例产生；G5 取注册表计数（0/人/分 ⇒ pass），报告如实记 0。
+
+> 收口：见 §12.1-13 —— v2 命令包不含姿态字段（没有可校验的位置），权威硬纠正由 S11 用例产生，G5 取注册表计数（恒 0 ⇒ pass）；依据：§12.1-13、`server/src/perf/thresholds.cpp:19`、`docs/evidence/server-v2-acceptance.md:86`。
+
 7. **`latency-200` 的「隔墙命中 = 0」判定留在 S07/S11 用例组**：场景本身验证高延迟 + 1% 丢包下退出码 0、计数可读、快照仍在发；这条偏差写进报告 `note`。
+
+> 收口：按实现修正 —— 该判定确实留在 S07/S11 用例组，本批只在报告 `note` 里写明；依据：`server/tools/gate.cpp:649`。
+
 8. **soak 的「结束后房间数回 0」是场景级检查**（`verdict.isScenarioFailed`），不塞进 8 条冻结门槛：退出码同样是 1，报告 `note` 记 `roomsAfter`。
+
+> 收口：按实现修正 —— 「结束后房间数回 0」是场景级检查并写进报告 `note`（`soak roomsAfter=` 文案），不占 8 条冻结门槛；依据：`server/tools/gate.cpp:634-640`。
+
 9. **G6 替代判据的数值来源**：直接用 `core::scheduleHeadTailGapMs`（S12 已定口径），本批不重算；报告 `measured` 记前后段差、`limit` 记 2 ms（原表在此行只给了 8 ms 一个数）。
+
+> 收口：见 §15.4 A2 —— 判据已改为 gate 自算首尾 1/3 的 P95 差（不再用 `scheduleHeadTailGapMs` 的极差），`simDriftMsMax` 也改成全程最大；依据：§15.4 A2、`server/tools/gate.cpp:687/697`。
+
 10. **报告 JSON 增加 `note` 字段**：§8 风险表要求把替代判据的依据写进报告，冻结字段集是下限、不排斥补充字段。
+
+> 收口：按实现修正 —— 报告含 `note` 字段（`thresholds.cpp:198-199` 序列化），并已按 §15.4 D6 拆成三个不歧义 token；依据：`server/src/perf/thresholds.cpp:198-199`、§15.4 D6。
+
 11. **`bytesPerClientMaxKbps` 的单位是 KB/s（1024 B）**：字段名逐字沿用计划文本，未改名为 KiB/s。
+
+> 收口：按实现修正 —— 字段名逐字沿用计划（`bytesPerClientMaxKbps`），单位是 1024 B 的 KB/s，实测 19–20 KB/s；依据：`server/tools/gate.cpp:559/611`、`docs/evidence/server-v2-acceptance.md:86/88`。
+
 12. **运行时只支持一间房**：门禁场景是 4 人一房；`RoomRegistry` 的多房能力（建房/回收）由 S10 用例覆盖，本批不做多房调度。
+
+> 收口：按实现修正 —— 运行时只有 `registry_` 与单个 `room_` 指针，门禁场景 4 人一房；多房能力由 S10 用例覆盖；依据：`server/src/server/runtime.hpp:165-166`。
+
 13. **`ac_server --serve` 是本批补的最小前置**：`--minutes/--udp-port/--http-port/--seed` 加环境变量 `AC_UDP_PORT/AC_HTTP_PORT/AC_DATA_DIR`，systemd 单元与 `deploy/` 仍属 S15。
+
+> 收口：按实现修正 —— `--serve` 的最小前置就是 `serve_cli.{hpp,cpp}` + `Runtime`，systemd 单元与 `deploy/` 已由 S15 交付；依据：`server/src/server/serve_cli.hpp`、`server/src/main.cpp:31/98`、`deploy/angry-chen-server.service:14`。
+
 14. **数据目录沿用 S13 的 `AC_DATA_DIR`**：S15 起未设时的回落按平台分叉（POSIX `/var/lib/angry-chen`、Windows `data`），部署单元显式注入 POSIX 路径 —— 本条原写「代码里不硬编码」，已被 S15 更正（见 §18.8-1）。
+
+> 收口：见 §18.8-1 / §19.5 B7 —— 默认值保持平台分叉（Windows `data`、POSIX `/var/lib/angry-chen`），测试与工具必须显式注入；依据：§19.5 B7、`server/src/persist/match_store.cpp:626-631`。
+
 15. **工具参数一律 `--key=value`**：PowerShell 下 `--key value` 会被拆成两个 argv（本批实测踩过）。
+
+> 收口：按实现修正（§15.4 A11）—— `--serve` 与三工具都同时接受 `--k=v` 与 `--k v`（usage 已写明「顺序无关，--k=v 与 --k v 等价」）；依据：§15.4 A11、`server/src/main.cpp:31`、`server/src/server/serve_cli.cpp:141`。
+
 16. **`ac_bench` 的前 100 tick 是预热**，不进分位（首次 tick 带分配开销）。
+
+> 收口：按实现修正 —— `ac_bench` 的前 100 tick 不进分位（`bench.cpp:32` 的默认 `warmupTicks = 100`，`:138/143` 的条件）；依据：`server/tools/bench.cpp:32/138/143`。
+
 17. **CPU/RSS 采样的是 gate 进程自己**（= 服务器进程）：Windows 用 `GetProcessTimes`/`GetProcessMemoryInfo`，POSIX 用 `/proc/self/{stat,statm}`；机器人是独立进程，因此不计入（§8）。
+
+> 收口：见 §19.3 —— G1 已改成只采「单独起出来的服务器进程」（`spawnChild` + `processCpuMsOf`），机器人是独立进程因此不计入；依据：§19.3、`server/tools/gate.cpp:242/259/295/302`。
+
 18. **G2 的通道口径**：快照与 MatchState 都算「UDP 载荷出站」（两者都是不可回退的实发字节），按客户端 1 s 增量取最大。
+
+> 收口：按实现修正（未分桶按 §15.4 D5 登记）—— 快照与 MatchState 都按「UDP 载荷出站」计，按客户端 1s 增量取最大；依据：`server/tools/gate.cpp:591/611`、§15.4 D5。
+
 19. **慢消费者（`QueueVerdict::kDisconnect`）在运行时里按「停发」处理**，不断开传输会话（宽限期由会话层推进）；`Disconnect(7)` 出口仍由 S12 用例覆盖。
+
+> 收口：按实现修正 —— `QueueVerdict::kDisconnect` 在运行时只是停发（清空 `endpoint`），不断开传输会话，宽限期由会话层推进；依据：`server/src/server/runtime.cpp:507-511`。
+
 20. **Fragment（type 9）不作为客户端消息接受**：`isClientToServerType` 之外一律计丢弃帧，分片重组由 S04 用例覆盖。
+
+> 收口：按实现修正 —— 修正事实：方向白名单其实**含** `kFragment`（`validate.cpp:70`，与 ADR-009 §5.1 类型表一致），但运行时分派 switch 没有 Fragment 分支（`runtime.cpp:209-235` 落到 `default` 计丢弃帧），所以 Fragment 仍不作为客户端消息被消费；注释 `runtime.cpp:193` 把 Fragment 列为「非法方向」与白名单不符，属注释与实现脱节；依据：`server/src/security/validate.cpp:64-71`、`server/src/server/runtime.cpp:192/209-235`。
+
 21. **既有门禁不动**：全量 468/468（本批新增 7 条 `listener_*`、10 条 `threshold_*`、5 条 `runtime_*`）；**32 组冻结 `--filter` 逐组同数**（`size` 5、`math` 8、`trig` 4、`rng` 6、`quantize` 11、`codec` 15、`hex` 10、`fuzz` 3、`wire` 3、`match` 53、`transport` 9、`reliability` 5、`fragment` 4、`grace` 6、`memory` 3、`world` 6、`entity` 9、`pose` 5、`grid` 4、`alloc` 6、`step` 27、`combat` 45、`fixture` 6、`ai` 36、`waves` 16、`security` 51、`malicious` 36、`motion_authority` 13、`rewind` 12、`room` 8、`matchstate` 9、`log_double` 1）。首轮 4 条新用例名撞车（`…oversized…` 撞 `size`、`…fail` 撞 `ai`、两条 `…match…` 撞 `match`）已改名，机械核对脚本见本节的复现命令。
+
+> 收口：见 §15.4 重测 —— 32 组冻结 `--filter` 逐组同数，本批第三批不触碰任何冻结计数；依据：§15.4 重测、本机全量用例实测（回报见文末）。
+
 22. **非冻结组的计数漂移**（如实登记，不改历史行）：本批三条用例名让 `--filter=schedule` 14→15、`--filter=http` 16→17、`--filter=report` 15→16；`replication` 19、`log` 25、`store` 17 不变。新增组：`listener` 7/7、`threshold` 11/11（本批 10 条 + 既有 1 条用例名含该子串）、`runtime` 6/6。
+
+> 收口：按实现修正 —— 如实登记的三处漂移仍成立（`schedule` 14→15、`http` 16→17、`report` 15→16），新增组 `listener`/`threshold`/`runtime` 保留；依据：本条、§15.4 重测。
+
 23. **`ac_sim_drift_ms` 的墙钟基准必须与 tick 记账基准同源（本批修）**：修前 `latency-200` 的 G6 连续三次判红（`|drift|` 峰值 131–136ms），而低延迟跑次只有 22–30ms —— 差值正好等于「第一个玩家进场 → 开球」（loading）那一段：漂移基准取自 `startScheduler` 的时刻，tick 记账基准取自开球时刻，两者不同源。现在两个基准都在开球那一刻取（见 §15.4 A17），四个跑次的 `drift` 都是 `0.0ms`。同时给 tick 增量加了下溢保护：房间重启会把 `match.counters.ticks` 清零，无符号相减回绕会让 `noteTickRun` 循环 40 亿次（实测直接挂死）。
+
+> 收口：见 §15.4 A17 —— 两个基准都改成开球那一刻取，四个跑次 `drift = 0.0ms`；tick 增量记账在 `runtime.cpp:381-393`（以房间 `counters.skipped/ticks` 增量驱动，房间重启清零不再回绕）；依据：§15.4 A17、`server/src/server/runtime.cpp:381-393/437`。
+
 24. **CLI 与场景名逐字用计划文本**（`ac_bot --players/--minutes/--latency/--loss/--seed`、`ac_bench --ticks/--sheep`、`ac_gate --scenario/--out/--break`），`--host/--port/--port-base/--bot` 是本批补充的可用项。
+
+> 收口：已回写（§15.4 A11）—— 计划 §6/§9 的空格写法可原样跑，补充项 `--host/--port/--port-base/--bot` 也在；依据：§15.4 A11、`server/tools/bench.cpp:36`、`server/src/main.cpp:31`。
+
 
 ### 15.4 两轴评审与处置（固定点 `1a4fcb7`）
 
@@ -1168,10 +1324,10 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | A17 | 规格+规范 | `ac_sim_drift_ms` 的墙钟基准与 tick 记账基准不同源：延迟场景（loading 更长）里 G6 稳定判红 131–136ms | **已修**：两个基准都在开球那一刻取；rebuild 后四个跑次 `drift=0.0ms`（见 §15.3 第 23 条与证据文件 §3.5） |
 | A18 | 规范 | 会话存活与命令校验耦合：被 tick/seq 校验拒掉的包不刷新心跳，soak 跑到 ~33s 会话掉宽限期、房间停摆（`ticks=660/6000`） | **已修**：任何带在册 session 的包都算存活证据；`dropped=0`、`ticks≈expectedTicks` |
 | A19 | 规范 | 机器人拿不到权威服务器 tick（本地钟外推 + `validateClientTick` 严格相等）→ 708/708 条命令被判 staleTick | **已修**：机器人从快照帧读权威 tick；修后 `dropped=0` |
-| D1 | 规范 | `connectTcp(..., timeoutMs)` 的超时不作用于阻塞 `connect`（参数名承诺了没有的保证） | **推迟**：只用于回环（gate/用例），非回环路径在后续接真实部署时再收；已在函数注释里写明 |
-| D2 | 规范 | 百分位口径三份实现（runtime/gate/bench 各一份） | **推迟**：三者数值口径一致（近邻秩），本批不改；S15 做发布收口时并到一处 |
-| D3 | 规范 | `--serve` 必须排在其它选项之前；`src/` 内无信号处理（usage 承诺的 Ctrl+C 收尾不会打印） | **推迟**：§9 的命令就是 `--serve` 打头；信号处理列入 S15 的运维项 |
-| D4 | 规范 | 具名常量漏网（listener 的 65536/50/256/512、gate 的 `+9u`）、`tcp_listener` 里的裸 `-1`、bot 每包一次 `std::vector` 分配、`nowMs()` 助手四份拷贝 | **推迟**：都是风格项，登记在案待 S15 一并收口 |
+| D1 | 规范 | `connectTcp(..., timeoutMs)` 的超时不作用于阻塞 `connect`（参数名承诺了没有的保证） | **已修（C2）**（原记「推迟」）：`connectTcp` 改成非阻塞 connect + `select` 可写等待 + `SO_ERROR` 复核（`timeoutMs <= 0` 仍走阻塞语义），超时真生效；实测 `blackholeConnect timeout=300ms elapsed≈309ms`（本批复跑 310.6ms，用例断言不超过 3×timeout），且连续 64 次超时失败不泄漏 fd；依据：提交 `c7f0826`、`server/src/net/tcp_listener.cpp:239-281`、`server/tests/listener_test.cpp:195-209` |
+| D2 | 规范 | 百分位口径三份实现（runtime/gate/bench 各一份） | **已修（C2）**（原记「推迟」）：三份实现合并到一处 `core/percentile.hpp`（`percentileIndex` / `percentileOfSorted`），gate/bench 的旧下标只留作对照函数、由用例逐 `(count, q)` 比对：`percentileUpper mismatches=0`、`percentileMidpoint mismatches=0`；依据：提交 `688ca13`、`server/src/core/percentile.hpp:21/37`、`server/tests/percentile_test.cpp:45-68` |
+| D3 | 规范 | `--serve` 必须排在其它选项之前；`src/` 内无信号处理（usage 承诺的 Ctrl+C 收尾不会打印） | **已修（C2）**（原记「推迟」）：`main.cpp` 先扫一遍 argv 找 `--serve` 再分派（顺序无关），并新增 `server/shutdown.{hpp,cpp}` 安装 SIGINT/SIGTERM → 优雅退出；用例真发信号并打印 `sigtermReachedHandler=1`；依据：提交 `688ca13`、`server/src/main.cpp:150-153`、`server/src/server/shutdown.hpp:12-19`、`server/tests/serve_cli_test.cpp:130` |
+| D4 | 规范 | 具名常量漏网（listener 的 65536/50/256/512、gate 的 `+9u`）、`tcp_listener` 里的裸 `-1`、bot 每包一次 `std::vector` 分配、`nowMs()` 助手四份拷贝 | **已修（C2）**（原记「推迟」）：listener 的定长常量全部具名（`http/listener.hpp:13-21` 的 256/512/65536/50）、gate 的 `+9u` 变成 `kHttpStatusPrefixBytes`（`tools/gate.cpp:45`）、`nowMs()` 四份拷贝并到 `core/clock.hpp:12`、bot 的延迟队列改成零堆分配的定长环（用例打印 `botPacketQueueAllocations=0`）；`tcp_listener.cpp:133/135` 的 `-1` 是 `recv` 风格返回码而非常量，保留；依据：提交 `688ca13`、`server/src/net/packet_queue.hpp:1-8/28`、`server/tests/alloc_test.cpp:249` |
 | D5 | 规格 | `G2` 未按 `(client, channel)` 分桶，窗口是实际 ~1s 而非严格 1s | **登记**（§15.3 已声明）；实测 19–20KB/s 距 40KB/s 上限有 2 倍余量，分桶留到有第二信道时再做 |
 | D6 | 规范 | 报告的 `note` 里 `headTailGap=` 打的是 S12 快照 `ac_tick_*` 误差环的极差（30ms 量级），与 G6 替代判据判的「首尾 1/3 P95 差」（0.000ms，即 `thresholds` 里的 `measured`）同名不同义 | **已修（C6）**：note 拆成三个不歧义的 token —— `tickRingRange=`（S12 误差环极差）、`headTailP95Gap=`（G6 替代判据真正判的值）、`schedP95Strict=`（严格口径的 P95 原值），实测 `tickRingRange=28ms headTailP95Gap=0ms schedP95Strict=80ms` |
 
@@ -1447,16 +1603,49 @@ sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 ### 18.8 计划文本纠正与已声明偏差（S15）
 
 1. **`AC_DATA_DIR` 的默认值按平台分叉**：§5 冻结 `/var/lib/angry-chen`，但 Windows（本机开发与 CI）上会在 D: 盘造一棵 `/var/lib` 树，所以 `#if defined(_WIN32)` 回落 `data`（本条即登记；§14.1 第 14 条原写「代码里不硬编码」已按本条更正）；部署单元里显式注入 `/var/lib/angry-chen`，Linux 行为与 §5 完全一致。
+
+> 收口：见 §19.5 B7 —— 平台分叉保持（Windows `data` / POSIX `/var/lib/angry-chen`），部署单元显式注入 POSIX 路径，测试与工具必须显式注入；依据：§19.5 B7、`server/src/persist/match_store.cpp:626-631`、`deploy/angry-chen-server.service:14`。
+
 2. **版本注入方式**：`--version` 行与 `/metrics` 的 `ac_server_version` 标签共用 `core/version.hpp` 的 `kVersion`，而它现在读构建期宏 `AC_SERVER_VERSION`（CMake 缓存变量，默认 `0.1.0`）——**发布口径**只由 CMake 注入决定；`version.hpp` 的 `#ifndef` 回落只服务 g++ 直编兜底路径（`build.ps1` 的工具链不可用分支），两者需同改。
+
+> 收口：按实现修正 —— 发布口径只由 CMake 注入：缓存变量 `AC_SERVER_VERSION`（默认 `0.1.0`）→ `target_compile_definitions(... PUBLIC AC_SERVER_VERSION=...)`；`version.hpp:11-16` 的 `#ifndef` 回落只服务 g++ 直编兜底，两者需同改；依据：`server/CMakeLists.txt:12/36`、`server/src/core/version.hpp:10-16`。
+
 3. **安装名与目标名不同**：CMake 目标沿用 `ac_server`（历史名，`ac_tests`/`ac_bot`/`ac_gate`/`ac_bench` 同族），`cmake --install` 后是 `/opt/angry-chen/bin/angry-chen-server`（§5 只冻结了安装后的路径）。
+
+> 收口：按实现修正 —— CMake 目标仍叫 `ac_server`，安装出口用 `install(PROGRAMS ... RENAME angry-chen-server)`，因此 `cmake --install` 后是 `bin/angry-chen-server`；依据：`server/CMakeLists.txt:47-49`、`deploy/angry-chen-server.service:14`。
+
 4. **单元里同时给了环境变量与 CLI 端口**：`EnvironmentFile` 提供 `AC_*`，`ExecStart` 又显式写 `--udp-port=8788 --http-port=8787`（§5 的默认值）；两者一致，但**改端口时要同时改**，否则 CLI 参数赢。
+
+> 收口：按实现修正 —— `EnvironmentFile=/etc/angry-chen/server.env` 提供 `AC_*`，`ExecStart` 又显式写 `--udp-port=8788 --http-port=8787`，改端口要同时改；依据：`deploy/angry-chen-server.service:13-14`、`deploy/nginx.conf:9-11`。
+
 5. **反代监听端口未冻结**：§5 只规定「只转发 HTTP 面」，两份片段按 `:80` 写（Caddy 的 `:80`、Nginx 的 `listen 80`），TLS 终结留给部署方。
+
+> 收口：见 §19.5 B6 —— 两份片段都按 `:80` 写（Caddy `:80`、Nginx `listen 80`），TLS 由部署方终结；依据：§19.5 B6、`deploy/Caddyfile:7`、`deploy/nginx.conf:6`。
+
 6. **`systemd-analyze verify` 与 `caddy validate`/`nginx -t` 在本机（Windows）不可执行**：单元逐字段对照 §5、反代按 `Select-String` 静态校验（§6-4 计数 0），真实语法校验留给 Linux 部署。
+
+> 收口：按实现修正 —— 本机（Windows）仍无法执行 `systemd-analyze verify` / `caddy validate` / `nginx -t`：单元逐字段对照 §5、反代走静态 `Select-String`；依据：`docs/evidence/server-v2-acceptance.md:98/101-102`。
+
 7. **退役清单 ①③⑤⑥ 未验证**（如实登记）：① 需要 v2 客户端批次的 ≥30 分钟联合对局，③ 需要跑对拍链路，⑤ 需要真实 7 天观察窗，⑥ 需要一次回滚演练；本步只交付可执行的部署单元与验收口径，见 `docs/evidence/server-v2-acceptance.md` §5。
+
+> 收口：按实现修正（如实登记）—— ①③⑤⑥ 仍是「未验证」，逐条理由与所需前置写在验收报告 §5；依据：`docs/evidence/server-v2-acceptance.md:59-68`。
+
 8. **运行期产物不入库**：默认落点 `data/` 未被任何 .gitignore 覆盖（S13 起的既有遗漏），本步产生的 `data/matches.ndjson` 已删除；后续批次补 ignore 或改默认落点。
+
+> 收口：已回写 —— 根 `.gitignore` 现含 `/data/`（第 5 行）与门禁/用例数据目录（`/ac-gate-*/`、`**/ac-*-data/`），`git check-ignore -v data` 命中 `.gitignore:5:/data/`，仓库根的 `data/` 不再进 `git status`；依据：`.gitignore:4-11`、`git check-ignore -v data`。
+
 10. **`--serve` 的空格写法与 `--data-dir` 是本步补的**：S14 只给 bot/gate/bench 补了空格写法，`--serve` 仍只认 `--k=v` 且没有 `--data-dir`（计划 §6-2 的命令两种都用了）→ 本步补齐并实测（`--http-port 8799 --data-dir build/acvar` 生效，见验收报告 §2）。
+
+> 收口：已回写（§15.4 D3）—— `--serve` 与 `--data-dir` 都接受 `--k=v` 与 `--k v`，且选项顺序无关；依据：§15.4 D3、`server/src/main.cpp:31/150-153`、`server/src/server/serve_cli.cpp:105/141`。
+
 11. **计划 §6-4/§6-5 的 `Select-String` 模式写成了 `'file_server\|try_files\|root '` 与 `'AC_UDP_PORT\|8788'`**：在 .NET 正则里 `\|` 是**字面竖线**，这两条检查恒为 0 命中（假绿）。本步按 `|` 复跑：§6-4 = 0（结论不变）、§6-5 = 17（service 2 / nginx 3 / README 12），并在验收报告里抄了修正后的模式。
+
+> 收口：按实现修正 —— 修正后的模式（`|` 而不是 `\|`）已抄进验收报告：§6-4 = 0、§6-5 = 17；依据：`docs/evidence/server-v2-acceptance.md:26-27`。
+
 12. **`--serve` 仍需排在其它选项之前**（S14 已登记、S15 未收敛）：§9 的命令就是 `--serve` 打头，单元里也这么写；把选项解析做成顺序无关与 SIGTERM 收尾在 §15.4 D3 里挂着。
+
+> 收口：已修（C2，`688ca13`）—— 选项解析改成先扫 argv 找 `--serve` 再分派（顺序无关），并新增 `server/shutdown.{hpp,cpp}` 的 SIGINT/SIGTERM 优雅退出；依据：提交 `688ca13`、`server/src/main.cpp:150-153`、`server/src/server/serve_cli.cpp:88`、`server/tests/serve_cli_test.cpp:130`。
+
 
 ### 18.9 两轴评审（S15，固定点 `cdf1353`）
 
@@ -1564,3 +1753,9 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 回写后 `node tools/check-docs.mjs` 绿。本节即 §4.2-5 / §5.3-2 / §7.5-8,11 / §14.2 / §15.3-2 / §18.8-1 那些"待裁决"登记的收口记录。
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
+
+### 19.6 环境注记：并行跑门禁会抢冻结端口
+
+一次 `soak-4p5min` 出现过 `udp bind failed on port 8798/8788`：当场查不到残留进程，单跑该场景与整轮重跑都 `verdict=pass`。原因是两个进程同时用同一组冻结端口（UDP 8788 / HTTP 8787，以及 `--port-base` 派生的 8798/8797）—— 这是**环境性端口冲突，不是回归**：端口是 §18.2 的冻结契约，`ac_gate` 的 `--port-base` 只做偏移。
+
+规避办法：并发跑门禁（同机多 job、多代理、CI 与本地同时跑）时给每个进程不同的 `--port-base`（或直接错开 `--udp-port`/`--http-port`），不要让两个 gate/soak 同时用默认端口组；判「环境冲突还是回归」的判据是「单跑与整轮重跑能否 pass + 当场有无残留进程」。
