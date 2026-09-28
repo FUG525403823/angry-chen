@@ -121,7 +121,9 @@ std::string formatTimestamp(std::int64_t epochMs) {
   const std::int64_t month = mp < 10 ? mp + 3 : mp - 9;
   const std::int64_t year = era * 400 + yoe + (month <= 2 ? 1 : 0);
 
-  char buf[40];
+  // 缓冲给足：GCC 的 -Wformat-truncation 按 long long 的最坏取值算（7 段合计 52 字节），
+  // 40 字节会让 ubuntu CI 在 -Werror=format-truncation 下直接红（README §19.1）。
+  char buf[64];
   std::snprintf(buf, sizeof(buf), "%04lld-%02lld-%02lldT%02lld:%02lld:%02lld.%03lldZ",
                 static_cast<long long>(year), static_cast<long long>(month),
                 static_cast<long long>(day), static_cast<long long>(rem / 3600),

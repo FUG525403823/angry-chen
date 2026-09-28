@@ -1227,4 +1227,9 @@ sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 
 ## 19. 已知环境边界（构建期，与 §18 的发布/运维无关）
 
+### 19.1 GCC 与 mingw 的告警差异（S15 复检时发现的 CI 真红）
+
+`ci / server` 在 ubuntu 上失败过一次：`server/src/core/log.cpp` 的时间戳 `snprintf` 目标是 40 字节缓冲，GCC 的 `-Wformat-truncation` 按 `long long` 的最坏取值算成最多 52 字节 ⇒ `-Werror` 直接失败（**同样的代码在 mingw 上不报**）。修法：缓冲给到 64 字节。
+教训：**本机 mingw 通过 ≠ CI 通过**，任何触碰 `-Werror` 的改动都要在 Linux/GCC 上验一遍；现在有一台 Ubuntu 云服务器可复现（见 `docs/evidence/server-v2-acceptance.md` §10）。
+
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
