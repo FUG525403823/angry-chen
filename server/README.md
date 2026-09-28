@@ -638,9 +638,11 @@ server/build/ac_tests.exe                       # TESTS 297/297
 > 收口：按实现修正 —— `hpRatio`/`reviveRatio255` 走 `ac::quantizeRatio`，`reloadLeft10Ms`/`rageLeft100Ms` 走 `floorUnits`（向下取整），`rage` 走百分位量化；依据：`server/src/room/room.cpp:351-362`、`server/tests/match_flow_test.cpp:932`（`matchstate_quantized_fields_follow_hud_rules`）。
 8. **§5.6 的 `matchEnded.flags = durationMs` 无法表示**：S05 冻结的 `sim::Event::flags` 是 **u8**，毫秒放不下 → 时长只存在于 `MatchRuntime.startedAtMs/endedAtMs`（`buildMatchResult` 现算），事件里 `flags = 0`。要让线上事件带时长需先改 S05 的事件结构（§11.2 未做项 3）。
 
-> 待办：`sim::Event::flags` 仍是 `uint8_t`（`server/src/sim/world.hpp:33`），S10 计划 §5.9 的 `flags = durationMs`（`docs/plans-v2/server/S10-房间会话与对局流程.md:107`）无处安放；是否把 `flags` 拓到 u16（会改 `sizeof(Event)` 与全部对拍向量）仍无裁决文本。
+> 收口：已裁决（B 方案）—— flags 保持 u8，matchEnded 不经线载荷带时长；时长由 MatchRuntime.startedAtMs/endedAtMs（快照/结算路径：结算记录 MatchResultRecord.durationMs）提供；依据：用户裁定 + `server/src/sim/world.hpp:23-36`（`flags` 是 `uint8_t`、`sizeof(Event) == 48`）、`server/src/room/match_controller.cpp:190-215/217-242`、`docs/plans-v2/server/S10-房间会话与对局流程.md:107`。
 
 > 待办（C4 第三批）：两种选择的代价已核清 —— (A) 把 `flags` 拓到 u16：要改 S05 §5.1 冻结的事件字段表与 `world.hpp:36` 的 `static_assert(sizeof(Event) == 48u)`，每个事件类型的线载荷随之变（`codec_event_entry_bytes_all_types` 钉住类型↔线号与逐字段字节），14 份跨语言对拍向量必须重导（§8.5）；(B) 不动 `flags`，把 `durationMs` 放到别的字段/载体：事件结构不动，但线上 `matchEnded` 事件永远不带时长，只能从快照或结算路径（`MatchRuntime.startedAtMs/endedAtMs` 已在用）补。需要谁裁决：S05 事件布局是冻结项（计划 §5.1 + ADR-009 的线格式），须由计划侧/用户裁定后才实施；本批不改实现。
+
+> 收口：已裁决（B 方案）—— 不做 (A)：`flags` 保持 u8、`sizeof(Event) == 48u` 与 14 份对拍向量都不动；线上 `matchEnded` 的 `durationMs` 由房间侧在填条目时留 0（`sim::Event::flags` 无时长可带），时长走 `MatchRuntime.startedAtMs/endedAtMs`；依据：用户裁定 + 本节第 8 条收口、`server/src/room/event_map.cpp`（`matchEnded` 的 `durationMs = flags`）。
 
 9. **§5.7-5 的「广播快照与事件」只留缝**：`replicate` 每 tick 调一次，真正的编码/事件通道（`eventId` 幂等）属 S12；今天没有 World→`SnapshotFrame` 投影器。
 
@@ -659,9 +661,11 @@ server/build/ac_tests.exe                       # TESTS 297/297
 > 收口：按实现修正 —— 用例建 200 次、撞 `kMaxRooms = 64` 上限即回收，`createFailureCount` 只统计 32 次冲突重试仍失败；依据：`server/tests/match_flow_test.cpp:234`（`match_room_code_alphabet_uniqueness_and_retry`）、`server/src/room/rooms.cpp:31/70-84`。
 14. **`Session::kills` 是 v1 遗留字段**：v1 `room.ts` 也只写 0 / 照抄、从不累加 → 线上 MatchState 的 `kills` 恒 0（v1 同），真正的击杀数在 `PlayerStats::kills`（结算用）。要让 HUD 显示击杀得先改 ADR-009 的字段来源（§11.2 未做项 4）。
 
-> 待办：`MatchState.kills` 仍恒 0 —— `Session::kills` 的唯一写点把它置 0 / 照抄（`server/src/room/room.cpp:190/216/352`），全仓无累加写点；把 HUD 击杀数接到 `PlayerStats::kills` 需要改 ADR-009 的字段来源，本次无裁决文本。
+> 收口：已裁决（本批落地）—— `MatchState.kills` 改读真实击杀：`buildMatchState` 按 `pid` 取战绩记录的 `PlayerStats::kills`（`noteKill` 累加），无战绩记录时才回落到 `Session::kills`；线格式与 u16 位宽不变，`Session::kills` 保留为 v1 遗留字段（不再被 HUD 读）；依据：用户裁定 + `server/src/room/room.cpp:352-356`、`server/tests/match_flow_test.cpp`（`matchstate_kills_follow_real_kill_stats`）、ADR-009 的「`kills` 字段来源」段。
 
 > 待办（C4 第三批）：改动面已核清 —— `Session::kills`（`server/src/room/session.hpp:21`）今天只有置 0（`room.cpp:190`）与照抄（`room.cpp:216`）两个写点、一个读点（`room.cpp:352` → `MatchState.kills`），全仓无累加点；真正的击杀数在 `noteKill` 累加的 `PlayerStats::kills`（`stats.cpp:25-26`，调用点 `match_controller.cpp:338`），只在结算时被抄进 `PlayerResult`（`match_controller.cpp:232`）。要接线须新增「`Session::kills` ← `PlayerStats::kills`」的写点，或把 `room.cpp:352` 的来源从会话改成结算记录 —— 两者都动 ADR-009 冻结的 `MatchState` 字段来源与客户端 HUD 的读数约定，需用户/ADR 侧裁决；本批不改实现。
+
+> 收口：已裁决 —— 取「改读来源」这条路（改动面最小）：不动 `Session::kills` 的写点、不动线格式，只把 `room.cpp:352` 的读数从会话字段换成 `playerRecordFor(room, pid)->stats.kills`；依据：用户裁定 + `server/src/room/room.cpp:352-356`、ADR-009 的「`kills` 字段来源」段。
 
 15. **昵称剔除集的口径**：v1 只剔除 `<>&"'`，剩下的 `/` 不在允许集 → `<b>alpha</b>` 净化后是 `balpha/b`，**整名被拒**（不是 `balphab`）；用例按此钉住。
 
@@ -875,6 +879,8 @@ server/build/ac_tests.exe                                  # TESTS 402/402
 > 待办：`sim::Event` → `net::EventEntry` 仍无映射函数（全仓 `EventEntry` 只出现在 `server/src/net/codec.hpp:224` 与 `codec.cpp`），事件条目生产仍待房间批次。
 
 > 待办（C4 第三批）：生产方归属已核清 —— 全仓 `net::EventEntry` 只出现在编解码层（`server/src/net/codec.hpp:224`、`codec.cpp:105/197`）与用例里；运行时 `encodeDelta` 的入参不填 `events`（`runtime.cpp:490-498` 只设 world/session/seq/isForceFull，`DeltaInput::events` 默认 nullptr，`delta.hpp:38`），`delta.hpp:6` 也写明该映射属「房间侧接线」，而 S10 房间与 S14 运行循环都没派这一项 → 事件条目生产仍待「房间/广播批次」，需要计划侧把 `sim::Event → net::EventEntry` 映射派给某个批次；本批不臆造映射。
+
+> 收口：已落地（本批 W3，派给「房间/广播侧」并实现）—— ① 映射函数 `server/src/room/event_map.hpp/.cpp`：`mapSimEvent`（类型号与字段次序照 S03 §5.4 与 `net::EventEntry` 的变体；量化口径同 v1 `encodeEventPayload` 的 `clamp(floor(x+0.5))`，命中点走 `ac::quantizePosition` 的厘米 i16；`sheepKilled` 的 `kind` 取 S08 新增的 `Event::kind` 而非 v1 实际写在那个字节上的伤害值，理由写在 `event_map.cpp` 的注释里；type 10 `phaseChange` 两侧都无生产者 ⇒ 不映射、不占 `eventId`）、`projectRoomEvents`（消费 `world.eventCursor`，`eventId` 房间域从 1 起单调递增、永不重用）；② 房间舞台化 `server/src/room/room.cpp:112` 的 `stageFrameEvents`（单帧 ≤ `net::kMaxEventsPerFrame`，超出留 `pendingEvents` 下一 tick 续投，只有 `pendingEvents` 也满才真丢并累计 `Room::eventOverflowCount`），`roomTick` 在复制回调前调用（`room.cpp:440`）；③ 运行时填参 `server/src/server/runtime.cpp:534-535`（`input.events = room.eventEntries`），并补上 `ac_events_sent_total`（`:566`，按实际发出的条数）与 `ac_events_dropped_total`（`:743`，口径 = sim 事件缓冲溢出 + 房间条目缓冲真丢）两个此前没有写入方的计数；④ 用例：`server/tests/match_flow_test.cpp` 的 `room_event_projection_maps_sim_events_to_frozen_wire_types`（9 个可映射类型逐字段断言 + `encodeEventFrame`/`decodeEventFrame` 往返逐条相等）与 `room_event_entries_reach_client_frames_with_monotonic_ids`（按客户端口径 `decodeSnapshot` + `EventIdTracker`：命中在帧里、`eventId` 1→2 单调、同帧重放 `duplicateEventCount = 1`）；⑤ S10 §5.7-5 与 `delta.hpp:6` 的表述已同步。**仍留缺口**：档位降档（如 150/100）被跳过的 tick 上的条目随该 tick 一起丢（S03 §5.3 的可靠 EventChannel 未落地），默认档位 200 每 tick 发帧不受影响。依据：实测 `TESTS 495/495`、`server/src/room/event_map.cpp`、`server/src/room/room.cpp:112-134`。
 
 12. **误差百分位取 `|error|`**：§5 只冻结 `tickScheduleError = 单调时钟 − (首 tick + tickIndex × 50)` 与「P95 ≤ 8 ms」，没说百分位取带符号值还是幅值 → 本批环内存幅值（`|error|`），带符号值仍可经 `scheduleErrorMs` 直接取；`simDriftMs` 保留符号（判据是 `|drift| ≤ 50 ms`）。
 
@@ -1281,6 +1287,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 20. **Fragment（type 9）不作为客户端消息接受**：`isClientToServerType` 之外一律计丢弃帧，分片重组由 S04 用例覆盖。
 
 > 收口：按实现修正 —— 修正事实：方向白名单其实**含** `kFragment`（`validate.cpp:70`，与 ADR-009 §5.1 类型表一致），但运行时分派 switch 没有 Fragment 分支（`runtime.cpp:209-235` 落到 `default` 计丢弃帧），所以 Fragment 仍不作为客户端消息被消费；注释 `runtime.cpp:193` 把 Fragment 列为「非法方向」与白名单不符，属注释与实现脱节；依据：`server/src/security/validate.cpp:64-71`、`server/src/server/runtime.cpp:192/209-235`。
+
+> 收口：已修（本批）—— 上述「实现缺陷」（非计划偏差）：分派 switch 补上 `kFragment` 分支（`server/src/server/runtime.cpp` 的 `case PacketType::kFragment` → 新增 `Runtime::handleFragment`，按 S04 §5.4 的既有 `net::Reassembler` 路径重组，键 = `(session, kFragment, fragId)`，60 tick 超时在 `pollOnce` 里 `expire`）；收齐后把重组出的完整逻辑消息重走一遍 `handlePacket`（`isReassembled = true`，分片里再套分片判坏包，避免自递归）；`:193` 的注释已同步（Fragment 不再列为「非法方向」）。用例：`server/tests/runtime_test.cpp` 的 `runtime_reassembles_client_fragments_without_dropping_them`（未收齐的切片不计丢弃帧；重组的坏内层包只按普通坏包计 1；单片包裹真 KeepAlive 时全链不计丢弃帧）。依据：实测 `TESTS 493/493`、`server/tests/runtime_test.cpp:180-239`。
 
 21. **既有门禁不动**：全量 468/468（本批新增 7 条 `listener_*`、10 条 `threshold_*`、5 条 `runtime_*`）；**32 组冻结 `--filter` 逐组同数**（`size` 5、`math` 8、`trig` 4、`rng` 6、`quantize` 11、`codec` 15、`hex` 10、`fuzz` 3、`wire` 3、`match` 53、`transport` 9、`reliability` 5、`fragment` 4、`grace` 6、`memory` 3、`world` 6、`entity` 9、`pose` 5、`grid` 4、`alloc` 6、`step` 27、`combat` 45、`fixture` 6、`ai` 36、`waves` 16、`security` 51、`malicious` 36、`motion_authority` 13、`rewind` 12、`room` 8、`matchstate` 9、`log_double` 1）。首轮 4 条新用例名撞车（`…oversized…` 撞 `size`、`…fail` 撞 `ai`、两条 `…match…` 撞 `match`）已改名，机械核对脚本见本节的复现命令。
 

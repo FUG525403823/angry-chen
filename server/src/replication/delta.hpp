@@ -4,6 +4,8 @@
 // 冻结段序：通用包头 → 实体块（count u8 + 15 B × n，id 升序）→ 移除列表（removedCount u8 +
 // u16 × m，升序）→ 事件块（eventCount u8 + Σ条目）；未变实体不出现；强制全量时 baselineTick = 0。
 // 事件条目的**来源**（sim::Event → net::EventEntry 的映射）属房间侧接线，不在本步交付物内。
+// 该映射已在「房间/广播批次」落地：`room/event_map.hpp` 的 `mapSimEvent` / `projectRoomEvents`，
+// 房间每 tick 舞台化到 `Room::eventEntries`，`Runtime::onReplicate` 填 `DeltaInput::events/eventCount`。
 #include <cstddef>
 #include <cstdint>
 

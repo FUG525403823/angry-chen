@@ -147,3 +147,56 @@ node tools/export-fixtures.mjs --root <副本> --out <目录>
 2. **`Math.hypot`**：v1 `combat/resolve.ts` 的命中盒对角线用 `Math.hypot`，它**不等于** `sqrt(a*a + b*b)`（逐位）。C++ 侧 `resolve.cpp` 用 `sqrt`，目前只影响"早退候选"（最多 1 ULP，不影响命中集合），本批向量也没有踩到边界；一旦有场景踩到，必须先冻结这条口径。
 3. **投影文本出口是调试口**：`--trace` / `--trace-text`（导出侧）与 `AC_FIXTURE_DUMP` / `AC_FIXTURE_PTEXT`（C++ 侧）只影响输出、不参与比较，别把它们当成协议。
 4. **只读源指纹**：`export-fixtures.mjs` 结束时比对 `packages/shared/src` 的 (文件数, 总字节, mtime)；CI 上若 v1 源被并行任务动过，导出会直接失败（这是有意的）。
+
+## 7. 客户端读取器迁移要点（v2 契约）
+
+> 面向 `client/**` 的维护者。本节只写**读**什么、与旧版差在哪；本批不改客户端代码（`client/**` 冻结）。
+> 契约性质：S07 §5 与 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §8 —— fixture 是**双侧共享生成物**，schema 换代必须两侧同批迁移。盘上现在已是 v2（14 份 / 272 291 B，`node tools/export-fixtures.mjs --check` → `14/14 与盘上逐字节一致`）。
+
+### 7.1 两套 fixture 不要混
+
+| 目录 | 内容 | 谁在读 | 本批是否受影响 |
+|---|---|---|---|
+| `docs/evidence/fixtures/*.json` | 本目录 14 份**对拍向量**（v2 schema） | `client/Assets/Tests/FixtureSuite.cs`、`FixturePredictSuite.cs`（经 `client/Assets/Scripts/Sim/FixtureLoader.cs`） | **受影响**（见 §7.2–7.4） |
+| `server/tests/fixtures/*.hex` | S03 §5.5 的共享**字节**向量（`expect=` 头 + `hex`） | `client/Assets/Tests/CodecSuite.cs` | 不受影响（格式未变） |
+
+### 7.2 v2 顶层键（键序冻结，读取器逐键校验）
+
+```text
+name, version, seed, dtMs, configHash, ticks,
+setup { players[{id,hp,armor}], sheep[{kind,x,z}] },
+director { startWave },
+script [ {from,to,commands[{id,moveX,moveY,yaw,pitch,buttons,switchTo}]} ],
+keyframes [ {tick, entities[], events[], rngState} ],
+snapshot [ {tick, records, encodeHash, decodeHash} ],
+hashChain [ 每 tick 一个 16 位十六进制 ]
+```
+
+| 键 | 类型（实测） | 语义 | 与 v1 读取口径的差别 |
+|---|---|---|---|
+| `version` | number `2` | schema 版本 | 读取器应以 `version == 2` 认形状（旧读取器认的是"有 `ticks` 数组且 `ticks[0].expected`"） |
+| `ticks` | number（例 `60` / `120` / `900`） | tick 数 | **不再是数组**；每 tick 的 `expected` 对象**已不存在** |
+| `setup` | object | 初态（§3 的表） | 初态在文件里，不再靠"`createWorld` 隐含生成 4 名玩家" |
+| `director` | object | `{startWave}` | 导演在 `stepWorld` **之外**，两侧都要外部驱动（§3 末尾） |
+| `script` | array | 按 tick 的 **RLE**（`from`/`to` 闭区间）+ `commands[]` | 旧的 `ticks[t].commands[]` 不复存在；v2 条目**没有 `seq`/`clientTick`**，本地复现需自行补（例：`seq = clientTick = t`） |
+| `keyframes` | array（本批 3–5 个） | `{tick, entities[{id,kind,pos[3],yaw,pitch,hp,flags}], events[{tick,type,flags,subjectId,targetId,x,y,z,value}], rngState{ai,spawn,fx}}` | `entities` 形状与旧 `expected.entities` **相同**（`pos[]`/`yaw`/`pitch`），旧 `FindEntity` 逻辑可直接复用，只需改"从哪里取"；`events[].type` 是**字符串**名（`playerHit`/`sheepKilled`/…） |
+| `snapshot` | array（仅 `snapshot-roundtrip-240t` 非空） | `{tick, records, encodeHash, decodeHash}` | 量化记录块（无报文头）与解码投影的 FNV |
+| `hashChain` | array[string]，长度 = `ticks` | 每 tick 一个链节点（8 B / 16 位十六进制） | **取代**"每帧投影文本落盘" |
+
+### 7.3 比较口径：两侧都**重算**，不再读期望值
+
+- 链：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`；投影文本 = `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`，double 一律 `%.17g`，实体顺序 = `activeIds` 顺序。
+- 所以"读 `ticks[t].expected` 逐位比"的老路要换成**自己算出同一份投影文本再串链**。要覆盖**每一个** tick，就得写**全量投影**（所有实体 + 事件 + 三流 RNG 状态），只算本机实体是接不上链的。
+- 现阶段**最小可用迁移**（不要求一次写完全量投影）：① 形状校验改为 `version == 2` 且 `hashChain.length == ticks`；② 用 `script`（RLE 展开 + 自补 `seq`/`clientTick`）从 `setup` 驱动本地 sim；③ 在 `keyframes[].tick` 那 3–5 个点上对 `entities[]`/`events[]` 逐字段、逐位比（字段名与 v1 投影同名）；④ `hashChain`/`snapshot` 先只校验"长度与十六进制形状"，全量投影就绪后再接链。
+- `configHash` 仍必须一字不差（当前 `19a978ea`）：它是 §5.6 常量表摘要，两侧同源。
+
+### 7.4 客户端当前会红的用例（按读取器代码推断，未运行 Unity 用例）
+
+| 位置 | 现状（读的键） | 为什么会红 |
+|---|---|---|
+| `client/Assets/Scripts/Sim/FixtureLoader.cs:45-46`、`:84-94` | `TicksKey="ticks"`、`ExpectedKey="expected"`；`IsShaped` 要求 `ticks` 是数组且 `ticks[0].expected` 存在 | v2 的 `ticks` 是数字、没有 `expected` ⇒ `Load` 返回 **0 份**（`TickCount` 也会算成 0） |
+| `client/Assets/Tests/FixtureSuite.cs:26-31` | 断言"至少 4 份向量、≥ 1000 帧" | 承上 ⇒ 0 份 ⇒ 断言直接红 |
+| `client/Assets/Tests/FixturePredictSuite.cs:42`、`:73`、`:80`、`:84-87`、`:180` | `Discover` 要 `ticks` 数组；`ChecksFixture` 读 `ticks[t].commands[]` 与 `ticks[t].expected.entities[]` | 两个键都不存在 ⇒ `fixture_predict.manifest` 的覆盖断言先红，逐份用例拿不到命令/实体同样红 |
+| `client/Assets/Tests/FixtureSuite.cs:61-62` | 探针字符串（`$.ticks[1].x` 等） | 只是探针文本，迁移时跟着改路径即可，不是数据问题 |
+
+> 结论：这是 ADR-010 §8 的**双侧契约变更**，不是"服务端单方面换格式"。本批（服务端）只保证 v2 向量在盘上自洽（`--check` 14/14、体积门 272 291 B ≤ 524 288 B）；客户端的读取与比较按 §7.2/§7.3 在客户端批次里迁移。缺口与风险照本目录 §6 的口径登记，本节不放宽任何门限。

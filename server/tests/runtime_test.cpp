@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "metrics/counters.hpp"
 #include "net/codec.hpp"
@@ -173,6 +174,67 @@ AC_TEST(runtime_advances_round_and_replicates_snapshots) {
                       std::span<const std::uint8_t>(frame, bytes));
   runtime.pollOnce(now + 25u);
   AC_CHECK(counterOf(runtime, ac::metrics::CounterId::kFramesIn) >= 2u);
+  runtime.stop();
+}
+
+AC_TEST(runtime_reassembles_client_fragments_without_dropping_them) {
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(testConfig(), &error));
+  ac::net::UdpSocket client{};
+  AC_CHECK(client.bind(0u));
+  const std::uint16_t session = handshake(runtime, client, 0x44556677u, 10000u);
+  AC_CHECK(session != 0u);
+  const ac::net::Endpoint endpoint{kLoopback, runtime.udpPort()};
+  std::uint64_t now = 10100u;
+  const std::uint64_t dropped = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
+
+  ac::net::PacketHeader messageHeader{};
+  messageHeader.version = ac::net::kProtocolVersion;
+  messageHeader.type = static_cast<std::uint8_t>(ac::net::PacketType::kCommand);
+  messageHeader.flags = ac::net::requiredFlags(ac::net::PacketType::kCommand);
+  messageHeader.session = session;
+  messageHeader.seq = 1u;
+  const ac::net::ReliableExt ext{1u, 0u, 0u};
+
+  // ① 逻辑消息 1400 B → 2 片；只送第 0 片：分片包本身**不**计丢弃帧（未收齐时静默挂起）。
+  std::uint8_t junk[1400] = {};
+  const std::vector<std::vector<std::uint8_t>> slices = ac::net::splitMessage(
+      messageHeader, ext, std::span<const std::uint8_t>(junk, sizeof(junk)), 7u);
+  AC_CHECK_EQ(slices.size(), 2u);
+  AC_CHECK(client.sendTo(endpoint, std::span<const std::uint8_t>(slices[0])) > 0);
+  runtime.pollOnce(now += 25u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames), dropped);
+
+  // ② 收齐：重组结果里是一帧版本非法的坏包 —— 切片仍不计丢弃帧，只有被重走分派的内层坏包按普通坏包计 1。
+  AC_CHECK(client.sendTo(endpoint, std::span<const std::uint8_t>(slices[1])) > 0);
+  runtime.pollOnce(now += 25u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames), dropped + 1u);
+
+  // ③ 单片包裹一帧真 KeepAlive（fragCount = 1）：重组 → 重新分派 → 白名单内的包正常消费，丢弃帧不再增长。
+  const std::uint64_t beforeKeepAlive = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
+  std::uint8_t keepAlive[ac::net::kCommonHeaderBytes + ac::net::kReliableExtBytes] = {};
+  ac::net::PacketHeader keepAliveHeader{};
+  keepAliveHeader.version = ac::net::kProtocolVersion;
+  keepAliveHeader.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+  keepAliveHeader.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+  keepAliveHeader.session = session;
+  keepAliveHeader.seq = 2u;
+  {
+    ac::net::ByteWriter writer(keepAlive, sizeof(keepAlive));
+    ac::net::writeHeader(writer, keepAliveHeader);
+    ac::net::writeReliableExt(writer, ac::net::ReliableExt{2u, 0u, 0u});
+    AC_CHECK(!writer.isOverflow);
+  }
+  const std::vector<std::vector<std::uint8_t>> wrapped = ac::net::splitMessage(
+      keepAliveHeader, ac::net::ReliableExt{2u, 0u, 0u},
+      std::span<const std::uint8_t>(keepAlive, sizeof(keepAlive)), 9u);
+  AC_CHECK_EQ(wrapped.size(), 1u);
+  AC_CHECK(client.sendTo(endpoint, std::span<const std::uint8_t>(wrapped[0])) > 0);
+  runtime.pollOnce(now += 25u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames), beforeKeepAlive);
+  std::printf("fragments accepted dropped=%llu (junk inner +1)\n",
+              static_cast<unsigned long long>(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames)));
   runtime.stop();
 }
 

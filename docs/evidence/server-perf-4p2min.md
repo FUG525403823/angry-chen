@@ -153,3 +153,26 @@ Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 解码，会假装 JSON �
 `ac_tests` 全量 `TESTS 468/468`；32 组冻结 `--filter` 逐组与 §15.3 第 21 条记录的数量一致
 （本轮抽查 `size`=5、`match`=53、`security`=51、`room`=8、`replication`=19、`schedule`=15、`log`=25、
 `store`=17、`http`=17、`report`=16），新增组 `listener`=7、`threshold`=11、`runtime`=6。
+
+## 8. 事件条目接线后的复测（W3，2026-09 批次）
+
+> 变更：事件条目的生产落到房间/广播侧（`server/src/room/event_map.hpp/.cpp` 的 `mapSimEvent`/`projectRoomEvents`，
+> `server/src/room/room.cpp` 的 `stageFrameEvents` 舞台化，`server/src/server/runtime.cpp` 填 `DeltaInput::events/eventCount`），
+> 于是快照帧从「`eventCount=0`」变成「本 tick 的条目」。历史段落（§3）保留不动，本节是**同一台机、同一命令**的复测原始输出。
+> 复现命令：`server/build/ac_gate.exe --scenario=<场景> [--minutes=0.5]`。
+
+```text
+gate-4p2min --minutes=0.5                verdict=pass exit=0 duration=30.0s cpuMean=0.64% bw=20.45KB/s snapP95=1015B snapMax=1069B schedP95=69.00ms dropped=0 skips=0
+  G3 measured=1015.000 limit=1228.000 -> pass    G4 measured=1069.000 limit=2048.000 -> pass
+  G6 measured=0.000    limit=2.000    -> pass    G8 measured=0.000    limit=0.000    -> pass
+gate-4p2min --minutes=0.5 --break=G3=0   verdict=fail exit=1   （可失红对照，符合预期）
+soak-4p5min                              verdict=pass exit=0 duration=300.0s bw=20.69KB/s snapP95=988B snapMax=1111B rss=-0.209MB/min dropped=0 skips=0
+latency-200                              verdict=pass exit=0 duration=120.0s bw=20.66KB/s snapP95=1025B snapMax=1111B schedP95=169.00ms dropped=0 skips=0
+```
+
+与 §3 基线（`gate-4p2min` 全量 120s：`snapP95=1000B` / `snapMax=1015B` / `bw=20.15KB/s`；`soak` 955B / 1015B / 20.19；`latency` 985B / 1015B / 20.17）对照：
+
+- **事件块确实抬高了帧字节**：P95 +15 ~ +40 B、帧上限 +36 ~ +96 B（都远在 G3 1228 B / G4 2048 B 之内）；带宽 +0.3 ~ +0.5 KB/s（G2 门 40 KB/s）。
+- `dropped=0`（就是 `metrics.eventsDropped`）⇒ G8 的「事件丢弃」判据仍为 0。单帧 `kMaxEventsPerFrame` 截断**不丢**：超出部分留 `pendingEvents` 下一 tick 续投，只有 `pendingEvents` 也满才累计计入该指标。
+- G1 均值与 §3 **不可直接比**：本轮按 W3 的复现命令带 `--minutes=0.5`（30 s，含 15 s 预热），§3 是 120 s 全量；判定（overall）两次都是 `pass`。
+- 档位降档（如 150/100）被跳过的 tick，其条目随该 tick 一起丢（S03 §5.3 的可靠 EventChannel 未落地）——默认档位 200 每 tick 发帧，三个场景都没踩到。

@@ -177,7 +177,7 @@ void Runtime::receivePackets(std::uint64_t nowMs) {
 }
 
 void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* bytes,
-                           std::size_t size, std::uint64_t nowMs) {
+                           std::size_t size, std::uint64_t nowMs, bool isReassembled) {
   const ac::net::DecodeResult<ac::net::PacketInfo> packet = ac::net::decodePacket(bytes, size);
   if (!packet.isOk) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
@@ -190,7 +190,7 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
     return;
   }
   if (!ac::security::isClientToServerType(info.header.type)) {
-    // 客户端方向没有的快照/事件/MatchState/Fragment：非法方向，丢弃并计数。
+    // 客户端方向没有的快照/事件/MatchState：非法方向，丢弃并计数（Fragment 在白名单里，见下）。
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;
   }
@@ -229,10 +229,46 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
       }
       break;
     }
+    case ac::net::PacketType::kFragment:
+      // §5.1 的 type 9 在方向白名单里（`security::isClientToServerType`）⇒ 必须在这里被处置，
+      // 不能落到 default 计丢弃帧（S14 §15.3-20 的缺陷）。
+      if (isReassembled) {
+        ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+        break;
+      }
+      handleFragment(from, info, payload, payloadBytes);
+      break;
     default:
       ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
       break;
   }
+}
+
+void Runtime::handleFragment(const ac::net::Endpoint& from, const ac::net::PacketInfo& info,
+                             const std::uint8_t* payload, std::size_t payloadBytes) {
+  if (payload == nullptr || !info.hasFragmentHeader) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  // 重组键 = (session, kFragment, fragId)：线上 type 恒为 9（ADR-009 的分片头裁定段），
+  // fragId 在会话内全局唯一，所以快照/事件通道共用同一命名空间。
+  const ac::net::FragmentKey key{
+      info.header.session, static_cast<std::uint8_t>(ac::net::PacketType::kFragment),
+      info.fragment.fragId};
+  const std::uint32_t nowTick =
+      room_ != nullptr && room_->world != nullptr ? room_->world->tick : 0u;
+  const ac::net::Reassembler::Status status =
+      reassembler_.add(key, info.fragment.fragIndex, info.fragment.fragCount,
+                       std::span<const std::uint8_t>(payload, payloadBytes), nowTick,
+                       reassemblyBuffer_);
+  if (status == ac::net::Reassembler::Status::kBadValue) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;  // 整组已丢弃（片数不一致 / index 越界），本片不再计第二次
+  }
+  if (status != ac::net::Reassembler::Status::kComplete) return;  // 未收齐：静默挂起
+  // 收齐：重组结果本身就是一帧完整的 v2 包（逻辑消息），重走一遍分派。
+  handlePacket(from, reassemblyBuffer_.data(), reassemblyBuffer_.size(), lastPollMs_,
+               /*isReassembled=*/true);
 }
 
 void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* frame,
@@ -375,6 +411,8 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
     // 世界却只在 playing 步进；按 world->tick 记会把开局这段算成上千毫秒的假调度误差（实测 1.5s）。
     const auto workStart = std::chrono::steady_clock::now();
     (void)ac::room::updateRoom(*room_, deps_, nowMs);
+    // S04 §5.4：分片组 60 tick 未收齐即整组丢弃（与 Reassembler::add 用同一个 tick 时钟）。
+    if (room_->world != nullptr) (void)reassembler_.expire(room_->world->tick);
     topUpSheep();
     const std::uint32_t workMs = millisBetween(workStart, std::chrono::steady_clock::now());
     // §5 G8：房间因补不上而丢掉的 tick 必须计进调度器（否则 G8 的这一项永远读 0）。
@@ -492,6 +530,9 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
     input.session = client->transportId;
     input.seq = ++client->seq;
     input.lastAckedSeq = 0u;
+    // S03 §5.4 + S10 §5.7-5：本 tick 的事件条目随帧下发（生产在房间侧，见 room/event_map.*）。
+    input.events = room.eventEntries;
+    input.eventCount = room.eventEntryCount;
     input.isForceFull =
         client->isFullSnapshotDue || ac::replication::shouldForceFull(client->baseline, tick);
     const ac::replication::DeltaOutcome outcome =
@@ -521,6 +562,9 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kBytesOut,
                             static_cast<std::uint64_t>(outcome.bytes));
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kFramesOut, 1u);
+    // S03 §5.4 的事件条目随帧上线：按实际发出的条数记（每客户端各记一次）。
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kEventsSent,
+                            static_cast<std::uint64_t>(outcome.eventCount));
   }
 }
 
@@ -691,8 +735,13 @@ void Runtime::publishMetrics(std::uint64_t nowMs) {
   ac::metrics::setGaugeIf(&gauges_, ac::metrics::GaugeId::kSendQueueBytes,
                           static_cast<double>(queueBytes));
   ac::core::publishScheduleGauges(scheduler_, &gauges_);
-  const std::size_t dropped =
-      room_ == nullptr || room_->world == nullptr ? eventsDroppedSeen_ : room_->world->stats.eventsDropped;
+  // G8 的事件丢弃口径 = sim 事件缓冲溢出（S05 §5.1）+ 房间条目缓冲也满时的真丢（room.eventOverflowCount）；
+  // 房间不存在时保持上一拍读数（与旧口径一致，不把「没有房间」算成丢弃）。
+  std::size_t dropped = eventsDroppedSeen_;
+  if (room_ != nullptr && room_->world != nullptr) {
+    dropped = static_cast<std::size_t>(room_->world->stats.eventsDropped) +
+              static_cast<std::size_t>(room_->eventOverflowCount);
+  }
   if (dropped > eventsDroppedSeen_) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kEventsDropped,
                             static_cast<std::uint64_t>(dropped - eventsDroppedSeen_));

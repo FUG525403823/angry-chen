@@ -143,6 +143,8 @@
 
 **记录（v1 同序，每条 = 3 + nameLen + 13 字节）**：`pid` u16@0、`nameLen` u8@2、`name` UTF-8@3（**1–12 字节**，即 `minNameBytes`/`maxNameBytes`）、`ready` u8（0/1）、`weapon` u8（0/1/2）、`hpRatio` u8（量化比）、`kills` u16、`mag` u8、`reserve` u16、`reloadLeft10Ms` u8（10ms 单位）、`rage` u8、`rageLeft100Ms` u8（100ms 单位）、`downed` u8（0/1）、`reviveRatio255` u8（0–255）。
 
+> **`kills` 字段来源（已裁决，本批落地）**：线上 `kills` u16 = 该 `pid` 的**真实击杀数** `PlayerStats::kills`（`noteKill` 累加：`server/src/room/stats.cpp:25-26`，调用点 `server/src/room/match_controller.cpp:335-341`）。房间侧组装 MatchState 时按 `pid` 读战绩记录（`buildMatchState` → `playerRecordFor(room, pid)->stats.kills`，`server/src/room/room.cpp:352-356`），**不再**读 v1 遗留、永不累加的 `Session::kills`（只在加入时置 0、重连时照抄）。载荷布局与 13 字节位宽不变。依据：用户裁定 + `server/tests/match_flow_test.cpp`（`matchstate_kills_follow_real_kill_stats`）。
+
 - **单播且可靠**（type 10）：每个客户端各收到一份内容相同的帧；节拍与触发见 S10 §5.8。
 - **`hostId` 不上线**（v1 同）：客户端把 `pid` 最小者视为主机。
 - 帧长上界：`5 + 4 × (16 + 12) = 117` 字节，远小于 1200 字节单包上限，不分片。

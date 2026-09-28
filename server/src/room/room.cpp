@@ -1,5 +1,7 @@
 #include "room/room.hpp"
 
+#include "room/event_map.hpp"
+
 #include <cstring>
 
 #include "combat/downed.hpp"
@@ -102,6 +104,30 @@ void driveDirector(Room& room, uint64_t nowMs) noexcept {
 
 double hpRatioOf(const ac::sim::Entity& entity) noexcept {
   return entity.maxHp > 0.0 ? entity.hp / entity.maxHp : 0.0;
+}
+
+// §5.7-5 + S03 §5.4：本 tick 的事件条目（sim::Event → net::EventEntry）。
+// 新事件先追加进 pending，再取前 ≤ kMaxEventsPerFrame 条作为本帧条目、其余前移续投；
+// pending 也满时事件才真丢（下一 tick 的 stepWorld 会清事件缓冲），记进 eventOverflowCount。
+void stageFrameEvents(Room& room) noexcept {
+  ac::sim::World& world = *room.world;
+  const uint16_t before = room.pendingEventCount;
+  const std::size_t appended = projectRoomEvents(world, room.pendingEvents, before,
+                                                 Room::kPendingEventCapacity, room.nextEventId);
+  room.pendingEventCount = static_cast<uint16_t>(before + appended);
+  if (world.eventCursor < world.eventCount) {
+    room.eventOverflowCount += static_cast<uint32_t>(world.eventCount - world.eventCursor);
+    world.eventCursor = world.eventCount;  // 丢就要一次计清，不留到下一 tick 重复计
+  }
+  std::size_t frameCount = room.pendingEventCount;
+  if (frameCount > ac::net::kMaxEventsPerFrame) frameCount = ac::net::kMaxEventsPerFrame;
+  for (std::size_t i = 0u; i < frameCount; ++i) room.eventEntries[i] = room.pendingEvents[i];
+  for (std::size_t i = frameCount; i < room.pendingEventCount; ++i) {
+    room.pendingEvents[i - frameCount] = room.pendingEvents[i];
+  }
+  room.pendingEventCount = static_cast<uint16_t>(static_cast<std::size_t>(room.pendingEventCount) -
+                                                frameCount);
+  room.eventEntryCount = static_cast<uint8_t>(frameCount);
 }
 
 uint8_t clampToU8(double value) noexcept {
@@ -349,7 +375,11 @@ std::size_t buildMatchState(Room& room) noexcept {
     player.ready = session->ready ? 1u : 0u;
     player.weapon = alive && session->weaponApplied ? entity->weapon.activeSlot : session->weapon;
     player.hpRatio = alive ? ac::quantizeRatio(hpRatioOf(*entity)) : 0u;
-    player.kills = static_cast<uint16_t>(session->kills > 0xffffu ? 0xffffu : session->kills);
+    // ADR-009「kills 字段来源」：HUD 读数是真实击杀累加器 PlayerStats::kills（noteKill 累加），
+    // 不是 v1 遗留、永不累加的 Session::kills（后者只在加入时置 0、重连时照抄）。
+    const PlayerRecord* const record = playerRecordFor(room, session->pid);
+    const uint32_t kills = record != nullptr ? record->stats.kills : session->kills;
+    player.kills = static_cast<uint16_t>(kills > 0xffffu ? 0xffffu : kills);
     player.mag = alive ? clampToU8(static_cast<double>(entity->weapon.magInSlot[entity->weapon.activeSlot])) : 0u;
     player.reserve = alive ? clampToU16(static_cast<double>(entity->weapon.reserveAmmo)) : 0u;
     player.reloadLeft10Ms =
@@ -406,7 +436,8 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
   } else if (room.phase == MatchPhase::kIntermission) {
     accumulateMatchTime(room, ac::config::kStepDtMs);
   }
-  // §5.7-5：快照与事件广播（S12 的复制流水线）。
+  // §5.7-5：快照与事件广播（S12 的复制流水线）——先把本 tick 的事件条目舞台化，再交给复制回调。
+  stageFrameEvents(room);
   if (deps.replicate != nullptr) deps.replicate(deps.user, room);
   // §5.7-6：MatchState 节拍（每 tick 加 dtMs，>= 1000ms 减 1000 并单播一份）。
   room.matchStateTimerMs += static_cast<int64_t>(ac::config::kStepDtMs);

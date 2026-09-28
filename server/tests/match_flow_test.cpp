@@ -19,6 +19,8 @@
 #include "core/quantize.hpp"
 #include "net/codec.hpp"
 #include "net/memory_transport.hpp"
+#include "replication/delta.hpp"
+#include "room/event_map.hpp"
 #include "room/match_controller.hpp"
 #include "room/phase.hpp"
 #include "room/room.hpp"
@@ -138,10 +140,34 @@ void forceFinalWave(room::Room& room) {
   world.stats.aliveSheep = 0u;
 }
 
+// 采集 room.eventEntries 的复制钩子：按运行时的同一条路径（`encodeDelta`）把条目编进快照帧，
+// 供用例以**客户端口径**（`decodeSnapshot` + `EventIdTracker`）反解。
+struct FrameCapture {
+  ac::replication::ClientBaseline baseline{};
+  std::vector<std::vector<std::uint8_t>> frames{};
+  std::uint16_t seq = 0u;
+  std::uint8_t buffer[ac::net::kMaxSnapshotBytes] = {};
+
+  static void thunk(void* user, room::Room& room) { static_cast<FrameCapture*>(user)->capture(room); }
+
+  void capture(room::Room& room) {
+    ac::replication::DeltaInput input{};
+    input.world = room.world.get();
+    input.session = 1u;
+    input.seq = ++seq;
+    input.events = room.eventEntries;
+    input.eventCount = room.eventEntryCount;
+    input.isForceFull = ac::replication::shouldForceFull(baseline, room.world->tick);
+    const ac::replication::DeltaOutcome outcome =
+        ac::replication::encodeDelta(input, baseline, buffer, sizeof(buffer));
+    AC_CHECK(outcome.isOk);
+    frames.emplace_back(buffer, buffer + outcome.bytes);
+  }
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------- §5.1 阶段机
-
 AC_TEST(match_phase_names_codes_and_validity) {
   AC_CHECK_EQ(static_cast<int32_t>(room::kMatchPhaseCount), 5);
   AC_CHECK_EQ(static_cast<int32_t>(MatchPhase::kLobby), 0);
@@ -727,6 +753,160 @@ AC_TEST(match_stats_map_tick_events_to_players) {
     AC_CHECK_EQ(alpha->stats.kills, 2u);
     AC_CHECK_EQ(alpha->stats.hits, 1u);
   }
+}
+
+AC_TEST(matchstate_kills_follow_real_kill_stats) {
+  Harness harness(2u);
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  harness.startMatch(0u, 2u);
+  room::Room& room = *harness.room;
+  AC_CHECK_EQ(room::buildMatchState(room), 2u);
+  AC_CHECK_EQ(room.matchState.players[0].kills, 0u);
+  // Session::kills 是 v1 遗留字段（只置 0 / 重连照抄，全仓无累加点）：本用例把它当「旧来源」对照。
+  AC_CHECK_EQ(harness.sessions[0].kills, 0u);
+  room.world->eventCount = 0u;  // 只统计本 tick 的事件
+  sim::pushEvent(*room.world, sim::kEventSheepKilled, 0u, 1u, 0u, 0.0, 0.0, 0.0, 0.0);
+  room::accumulateMatchEvents(room);
+  const room::PlayerRecord* const alpha = room::playerRecordFor(room, 1u);
+  AC_CHECK(alpha != nullptr && alpha->stats.kills == 1u);
+  // HUD 读到的 kills 必须跟着真实击杀走（同一 tick 内组装即可见）。
+  AC_CHECK_EQ(room::buildMatchState(room), 2u);
+  AC_CHECK_EQ(room.matchState.players[0].kills, 1u);
+  AC_CHECK_EQ(room.matchState.players[1].kills, 0u);
+  AC_CHECK_EQ(harness.sessions[0].kills, 0u);  // 旧来源原封不动（读数点已改）
+  room.world->eventCount = 0u;
+  sim::pushEvent(*room.world, sim::kEventSheepKilled, ac::config::kHitFlagHeadshot, 1u, 0u, 0.0, 0.0, 0.0,
+                 0.0);
+  room::accumulateMatchEvents(room);
+  AC_CHECK_EQ(room::buildMatchState(room), 2u);
+  AC_CHECK_EQ(room.matchState.players[0].kills, 2u);
+}
+
+AC_TEST(room_event_projection_maps_sim_events_to_frozen_wire_types) {
+  Harness harness;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  sim::World& world = *room.world;
+  world.eventCount = 0u;
+  world.eventCursor = 0u;
+  // 每种可映射类型各一条；字段填成非默认值（全 0 会把「没接上」与「真的是 0」混在一起）。
+  sim::pushEvent(world, sim::kEventPlayerHit, ac::config::kHitFlagHeadshot, 1u, 2u, 1.2, 1.0, -2.5, 25.4);
+  sim::pushEvent(world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 1u, 2u, 0.0, 0.0, 0.0, 0.0, 3u);
+  sim::pushEvent(world, sim::kEventWaveStart, 7u, 0u, 0u, 0.0, 0.0, 0.0, 4.0);
+  sim::pushEvent(world, sim::kEventWaveClear, 123u, 0u, 0u, 0.0, 0.0, 0.0, 4.0);
+  sim::pushEvent(world, sim::kEventPlayerDowned, 0u, 2u, 0u, 0.0, 0.0, 0.0, 0.0);
+  sim::pushEvent(world, sim::kEventReviveProgress, 0u, 3u, 2u, 0.0, 0.0, 0.0, 750.0);
+  sim::pushEvent(world, sim::kEventReviveDone, 0u, 3u, 2u, 0.0, 0.0, 0.0, 42.0);
+  sim::pushEvent(world, sim::kEventRageActivated, 0u, 1u, 1u, 0.0, 0.0, 0.0, 8000.0);
+  sim::pushEvent(world, sim::kEventMatchEnded, 0u, 1u, 0u, 0.0, 0.0, 0.0, 10.0);
+  // type 10（phaseChange）两侧都没有生产者：不可映射、不占 eventId，只被消费掉。
+  sim::pushEvent(world, sim::kEventPhaseChange, 0u, 5u, 0u, 0.0, 0.0, 0.0, 4.0);
+
+  ac::net::EventEntry entries[16] = {};
+  std::uint32_t nextEventId = 1u;
+  const std::size_t mapped = room::projectRoomEvents(world, entries, 0u, 16u, nextEventId);
+  AC_CHECK_EQ(mapped, 9u);
+  AC_CHECK_EQ(nextEventId, 10u);
+  AC_CHECK_EQ(world.eventCursor, world.eventCount);  // 消费到位，跨 tick 不重放
+  for (std::size_t i = 0u; i < mapped; ++i) {
+    AC_CHECK_EQ(static_cast<uint32_t>(ac::net::eventTypeOf(entries[i])), static_cast<uint32_t>(i + 1u));
+    AC_CHECK_EQ(entries[i].eventId, static_cast<uint32_t>(i + 1u));  // 从 1 起单调、帧内升序
+  }
+  const auto* hit = std::get_if<ac::net::PlayerHitEvent>(&entries[0].data);
+  AC_CHECK(hit != nullptr);
+  AC_CHECK_EQ(hit->subjectId, 1u);
+  AC_CHECK_EQ(hit->targetId, 2u);
+  AC_CHECK_EQ(hit->value, 25u);  // 25.4 → floor(25.4+0.5)
+  AC_CHECK_EQ(hit->flags, ac::config::kHitFlagHeadshot);
+  AC_CHECK_EQ(hit->hitX, 120);
+  AC_CHECK_EQ(hit->hitY, 100);
+  AC_CHECK_EQ(hit->hitZ, -250);  // 米 → 厘米（floor(x*100+0.5)）
+  const auto* killed = std::get_if<ac::net::SheepKilledEvent>(&entries[1].data);
+  AC_CHECK(killed != nullptr);
+  AC_CHECK_EQ(killed->targetId, 2u);
+  AC_CHECK_EQ(killed->subjectId, 1u);
+  AC_CHECK_EQ(killed->kind, 3u);
+  AC_CHECK_EQ(std::get_if<ac::net::WaveStartEvent>(&entries[2].data)->budget, 7u);
+  AC_CHECK_EQ(std::get_if<ac::net::WaveClearEvent>(&entries[3].data)->elapsedMs, 123u);
+  AC_CHECK_EQ(std::get_if<ac::net::PlayerDownedEvent>(&entries[4].data)->subjectId, 2u);
+  AC_CHECK_EQ(std::get_if<ac::net::ReviveProgressEvent>(&entries[5].data)->ratio255, 750u);
+  AC_CHECK_EQ(std::get_if<ac::net::ReviveDoneEvent>(&entries[6].data)->targetId, 2u);
+  AC_CHECK_EQ(std::get_if<ac::net::RageActivatedEvent>(&entries[7].data)->durationMs, 8000u);
+  // W1 的裁决（B 方案）：matchEnded 的 durationMs 只能取 u8 flags，房间侧恒 0。
+  AC_CHECK_EQ(std::get_if<ac::net::MatchEndedEvent>(&entries[8].data)->reason, 1u);
+  AC_CHECK_EQ(std::get_if<ac::net::MatchEndedEvent>(&entries[8].data)->wave, 10u);
+  AC_CHECK_EQ(std::get_if<ac::net::MatchEndedEvent>(&entries[8].data)->durationMs, 0u);
+
+  // 编码往返：映射结果与 S03 §5.4 的事件块编码逐字段一致（客户端按既有解码器拿到的就是这些值）。
+  std::uint8_t frame[512] = {};
+  const ac::net::PacketHeader header =
+      makeHeader(PacketType::kEvent, net::requiredFlags(PacketType::kEvent), 3u, 9u);
+  const ac::net::EncodeResult encoded = ac::net::encodeEventFrame(
+      header, net::ReliableExt{9u, 0u, 0u}, 5u, entries, mapped, frame, sizeof(frame));
+  AC_CHECK(encoded.isOk && encoded.bytes > 0u);
+  const ac::net::DecodeResult<ac::net::EventFrame> decoded =
+      ac::net::decodeEventFrame(frame, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.tick, 5u);
+  AC_CHECK_EQ(decoded.value.events.size(), mapped);
+  for (std::size_t i = 0u; i < mapped; ++i) AC_CHECK(decoded.value.events[i] == entries[i]);
+}
+
+AC_TEST(room_event_entries_reach_client_frames_with_monotonic_ids) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  // 一次命中（大厅阶段不步进世界，事件不会被 stepWorld 清掉）：本 tick 就该进客户端可见的帧。
+  sim::pushEvent(*room.world, sim::kEventPlayerHit, ac::config::kHitFlagHeadshot, 1u, 2u, 1.2, 1.0, -2.5,
+                 25.4);
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 1u);
+
+  ac::net::EventIdTracker tracker{};
+  const auto first =
+      ac::net::decodeSnapshot(capture.frames[0].data(), capture.frames[0].size(), &tracker);
+  AC_CHECK(first.isOk);
+  AC_CHECK_EQ(first.value.events.size(), 1u);
+  AC_CHECK_EQ(first.value.duplicateEventCount, 0u);
+  AC_CHECK_EQ(first.value.events[0].eventId, 1u);
+  AC_CHECK_EQ(static_cast<uint32_t>(ac::net::eventTypeOf(first.value.events[0])),
+              static_cast<uint32_t>(ac::net::EventType::kPlayerHit));
+  const auto* hit = std::get_if<ac::net::PlayerHitEvent>(&first.value.events[0].data);
+  AC_CHECK(hit != nullptr);
+  AC_CHECK_EQ(hit->value, 25u);
+  AC_CHECK_EQ(hit->hitX, 120);
+  AC_CHECK_EQ(hit->hitZ, -250);
+
+  // 同一个 eventId 再送到同一个客户端：按 S03 §5.4 静默丢弃（幂等键）。
+  const auto replay =
+      ac::net::decodeSnapshot(capture.frames[0].data(), capture.frames[0].size(), &tracker);
+  AC_CHECK(replay.isOk);
+  AC_CHECK_EQ(replay.value.events.size(), 0u);
+  AC_CHECK_EQ(replay.value.duplicateEventCount, 1u);
+
+  // 下一 tick 的第二条事件：id 接着单调涨（帧内与跨帧都是升序），不被去重。
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  sim::pushEvent(*room.world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 1u, 2u, 0.0, 0.0, 0.0,
+                 0.0, 1u);
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 2u);
+  const auto second =
+      ac::net::decodeSnapshot(capture.frames[1].data(), capture.frames[1].size(), &tracker);
+  AC_CHECK(second.isOk);
+  AC_CHECK_EQ(second.value.events.size(), 1u);
+  AC_CHECK_EQ(second.value.duplicateEventCount, 0u);
+  AC_CHECK_EQ(second.value.events[0].eventId, 2u);
+  AC_CHECK_EQ(static_cast<uint32_t>(ac::net::eventTypeOf(second.value.events[0])),
+              static_cast<uint32_t>(ac::net::EventType::kSheepKilled));
+  std::printf("room events: frame1=1 hit(id=1) frame2=1 sheepKilled(id=2)\n");
 }
 
 AC_TEST(match_shot_deltas_count_shots_fired) {

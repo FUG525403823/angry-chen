@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/scheduler.hpp"
 #include "http/listener.hpp"
@@ -17,6 +18,7 @@
 #include "metrics/gauges.hpp"
 #include "metrics/metrics.hpp"
 #include "net/codec.hpp"
+#include "net/fragment.hpp"
 #include "net/handshake.hpp"
 #include "net/udp_socket.hpp"
 #include "persist/match_store.hpp"
@@ -123,13 +125,19 @@ class Runtime {
   };
 
   void receivePackets(std::uint64_t nowMs);
+  // isReassembled = 本帧来自分片重组（重走分派时置位）：分片里再套分片一律判坏包，
+  // 避免「重组 → 分派 → 再重组」的自递归。
   void handlePacket(const ac::net::Endpoint& from, const std::uint8_t* bytes, std::size_t size,
-                    std::uint64_t nowMs);
+                    std::uint64_t nowMs, bool isReassembled = false);
   // 注意：decode* 系列吃的是**整帧**（内部自己重解包头），不是载荷切片。
   void handleHello(const ac::net::Endpoint& from, const std::uint8_t* frame, std::size_t size,
                    std::uint64_t nowMs);
   void handleResume(const ac::net::Endpoint& from, std::uint16_t session,
                     const std::uint8_t* frame, std::size_t size, std::uint64_t nowMs);
+  // §5.1 方向表把 Fragment（type 9）列为合法的客户端消息：按 S04 §5.4 的既有 Reassembler 路径
+  // 重组，收齐后把「重组出的完整逻辑消息」重新走一遍分派（不新建机制、不新建类型码）。
+  void handleFragment(const ac::net::Endpoint& from, const ac::net::PacketInfo& info,
+                      const std::uint8_t* payload, std::size_t payloadBytes);
   void handleCommand(std::uint16_t session, const std::uint8_t* frame, std::size_t size,
                      std::size_t payloadBytes, std::uint64_t nowMs);
   void purgeReleasedClients();
@@ -189,6 +197,9 @@ class Runtime {
   std::uint64_t lastPollMs_ = 0u;  // 最近一次 pollOnce 的墙上毫秒（漂移计算用）
   std::uint8_t sendBuffer_[ac::net::kMaxSnapshotBytes] = {};
   std::uint8_t recvBuffer_[ac::net::kMaxPacketBytes] = {};
+  // Fragment（type 9）的接收侧重组：键 = (session, kFragment, fragId)，60 tick 超时回收。
+  ac::net::Reassembler reassembler_{};
+  std::vector<std::uint8_t> reassemblyBuffer_{};
 };
 
 }  // namespace ac::server

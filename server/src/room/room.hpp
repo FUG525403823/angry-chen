@@ -67,6 +67,16 @@ struct Room {
   int64_t accumulatorMs = 0;     // §5.7-3 的固定步长累加器
   uint32_t unicastCount = 0u;    // 累计单播次数（节拍 + 立即补发）
   uint32_t immediateCount = 0u;  // 其中由签名变化触发的立即补发次数
+  // §5.7-5 + S03 §5.4：事件条目生产（房间/广播侧）。`eventEntries[0, eventEntryCount)` 是本 tick
+  // 要随帧下发的条目（≤ kMaxEventsPerFrame，S03 §5.3 的单帧上限）；`pendingEvents` 承接上限溢出
+  // 与「本 tick 没排上」的条目，下一 tick 续投（事件不因上限静默丢失）。
+  static constexpr std::size_t kPendingEventCapacity = ac::sim::kMaxEvents;
+  ac::net::EventEntry pendingEvents[kPendingEventCapacity] = {};
+  uint16_t pendingEventCount = 0u;
+  ac::net::EventEntry eventEntries[ac::net::kMaxEventsPerFrame] = {};
+  uint8_t eventEntryCount = 0u;
+  uint32_t nextEventId = 1u;         // 幂等键水位：从 1 起单调递增、全局唯一、永不重用（S03 §5.4）
+  uint32_t eventOverflowCount = 0u;  // pending 也满时才真丢：计入 ac_events_dropped_total（G8）
 };
 
 // 建房：世界 = createWorld(seed) 后清掉占位玩家（v1 createWorldForRoom，pid 从 1 起）。
