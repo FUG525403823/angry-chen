@@ -227,6 +227,115 @@ void killChild(Child& child) {
   child.isRunning = false;
 }
 
+// 这两个可执行路径解析函数定义在本文件靠后处；下面的 G1 独立服务器相要用到它们。
+std::string serverExecutable(const char* argv0);
+std::string botExecutable(const char* argv0, const Options& options);
+
+void sleepForMs(unsigned ms) {
+#if defined(_WIN32)
+  Sleep(ms);
+#else
+  ::usleep(ms * 1000u);
+#endif
+}
+
+#if defined(_WIN32)
+// 只采「指定子进程」的 CPU。G1 必须量单独起出来的服务器进程：进程内托管会把门禁自己的压测工装
+// 一起算进去（实测同一份代码 Windows 8.37% / Linux 48–53%，README §19.3）。
+std::uint64_t processCpuMsOf(const Child& child) {
+  if (!child.isRunning) return 0u;
+  FILETIME created{};
+  FILETIME exited{};
+  FILETIME kernel{};
+  FILETIME user{};
+  if (GetProcessTimes(reinterpret_cast<HANDLE>(child.handle), &created, &exited, &kernel, &user) == 0) {
+    return 0u;
+  }
+  const auto toMs = [](const FILETIME& time) {
+    const std::uint64_t ticks = (static_cast<std::uint64_t>(time.dwHighDateTime) << 32u) |
+                                static_cast<std::uint64_t>(time.dwLowDateTime);
+    return ticks / 10000ull;
+  };
+  return toMs(kernel) + toMs(user);
+}
+#else
+std::uint64_t processCpuMsOf(const Child& child) {
+  if (!child.isRunning) return 0u;
+  char path[64] = {};
+  std::snprintf(path, sizeof(path), "/proc/%d/stat", static_cast<int>(child.pid));
+  std::FILE* file = std::fopen(path, "r");
+  if (file == nullptr) return 0u;
+  char buffer[1024] = {};
+  const std::size_t read = std::fread(buffer, 1u, sizeof(buffer) - 1u, file);
+  std::fclose(file);
+  buffer[read] = '\0';
+  const char* close = std::strrchr(buffer, ')');
+  if (close == nullptr) return 0u;
+  unsigned long long utime = 0ull;
+  unsigned long long stime = 0ull;
+  if (std::sscanf(close + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) != 2) {
+    return 0u;
+  }
+  const long hz = ::sysconf(_SC_CLK_TCK);
+  const double ticksPerSecond = hz > 0 ? static_cast<double>(hz) : 100.0;
+  return static_cast<std::uint64_t>(static_cast<double>(utime + stime) / ticksPerSecond * 1000.0);
+}
+#endif
+
+// G1 专用相（用户裁定，README §19.3）：起一个独立的 ac_server --serve，再用真实 ac_bot 客户端压它，
+// 只采服务器子进程的 CPU。端口用 portBase+10，避免和进程内那一相抢 8788/8787。
+bool measureSoloServerCpu(const char* argv0, const Options& options, int players, double* meanPct,
+                          double* p95Pct, std::size_t* sampleCount, std::string* error) {
+  constexpr double kPhaseSec = 20.0;
+  const std::uint16_t soloUdp = static_cast<std::uint16_t>(options.portBase + 10u);
+  const std::uint16_t soloHttp = static_cast<std::uint16_t>(soloUdp - 1u);
+  *sampleCount = 0u;
+  Child server{};
+  std::vector<std::string> serverArgs{
+      serverExecutable(argv0), "--serve", "--minutes=" + std::to_string((kPhaseSec + 5.0) / 60.0),
+      "--udp-port=" + std::to_string(soloUdp), "--http-port=" + std::to_string(soloHttp),
+      "--data-dir=ac-gate-solo-data", "--seed=" + std::to_string(options.seed)};
+  if (!spawnChild(serverArgs[0], serverArgs, server, error)) return false;
+  Child bots{};
+  std::vector<std::string> botArgs{botExecutable(argv0, options), "--players=" + std::to_string(players),
+                                   "--minutes=" + std::to_string(kPhaseSec / 60.0),
+                                   "--seed=" + std::to_string(options.seed),
+                                   "--port=" + std::to_string(soloUdp)};
+  std::string botError;
+  if (!spawnChild(botArgs[0], botArgs, bots, &botError)) {
+    killChild(server);
+    if (error != nullptr) *error = botError;
+    return false;
+  }
+  std::printf("solo cpu phase udp=%u http=%u players=%d seconds=%.0f\n", static_cast<unsigned>(soloUdp),
+              static_cast<unsigned>(soloHttp), players, kPhaseSec);
+  sleepForMs(3000u);  // 等服务器起来再采样，免得把启动开销算进第一个窗口
+  std::vector<double> samples{};
+  std::uint64_t prevCpu = processCpuMsOf(server);
+  std::uint64_t prevAt = nowMs();
+  const std::uint64_t endAt = prevAt + static_cast<std::uint64_t>(kPhaseSec * 1000.0);
+  while (nowMs() < endAt) {
+    const std::uint64_t now = nowMs();
+    if (now - prevAt >= static_cast<std::uint64_t>(kSampleIntervalMs)) {
+      const std::uint64_t cpu = processCpuMsOf(server);
+      const double windowMs = static_cast<double>(now - prevAt);
+      if (windowMs > 0.0) {
+        samples.push_back(static_cast<double>(cpu >= prevCpu ? cpu - prevCpu : 0u) / windowMs * 100.0);
+      }
+      prevCpu = cpu;
+      prevAt = now;
+    }
+    sleepForMs(20u);
+  }
+  killChild(bots);
+  killChild(server);
+  if (samples.empty()) return false;
+  *meanPct = meanOf(samples);
+  *p95Pct = percentileOf(samples, 0.95);
+  *sampleCount = samples.size();
+  return true;
+}
+
 std::string executableDir(const char* argv0) {
   std::string path = argv0 == nullptr ? std::string() : std::string(argv0);
   const std::size_t slash = path.find_last_of("/\\");
@@ -239,6 +348,14 @@ std::string botExecutable(const char* argv0, const Options& options) {
   return executableDir(argv0) + "\\ac_bot.exe";
 #else
   return executableDir(argv0) + "/ac_bot";
+#endif
+}
+
+std::string serverExecutable(const char* argv0) {
+#if defined(_WIN32)
+  return executableDir(argv0) + "\\ac_server.exe";
+#else
+  return executableDir(argv0) + "/ac_server";
 #endif
 }
 
@@ -398,6 +515,17 @@ int main(int argc, char** argv) {
   config.httpPort = static_cast<std::uint16_t>(options.portBase - 1u);
   config.seed = options.seed;
   config.sheepTarget = scenario->sheep;
+  double soloCpuMeanPct = 0.0;
+  double soloCpuP95Pct = 0.0;
+  std::size_t soloCpuCount = 0u;
+  if (scenario->minutes >= 0.5) {
+    std::string soloError;
+    if (!measureSoloServerCpu(argv[0], options, scenario->players, &soloCpuMeanPct, &soloCpuP95Pct,
+                              &soloCpuCount, &soloError)) {
+      std::fprintf(stderr, "solo cpu phase skipped: %s\n", soloError.c_str());
+      soloCpuCount = 0u;
+    }
+  }
   ac::server::Runtime runtime;
   std::string error;
   if (!runtime.start(config, &error)) {
@@ -527,6 +655,11 @@ int main(int argc, char** argv) {
   ac::perf::PerfSample sample{};
   sample.metrics.cpuMeanPct = meanOf(cpuSamples);
   sample.metrics.cpuP95Pct = percentileOf(cpuSamples, 0.95);
+  if (soloCpuCount > 0u) {
+    // G1 取「单独服务器进程」的实测值（README §19.3）；上面那组进程内样本只留作对照。
+    sample.metrics.cpuMeanPct = soloCpuMeanPct;
+    sample.metrics.cpuP95Pct = soloCpuP95Pct;
+  }
   sample.metrics.bytesPerClientMaxKbps = bytesPerClientMaxKbps;
   sample.metrics.snapshotBytesP95 = metrics.snapshotBytesP95;
   sample.metrics.snapshotBytesMax = static_cast<double>(metrics.snapshotBytesMax);
