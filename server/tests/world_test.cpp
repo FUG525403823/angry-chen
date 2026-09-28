@@ -140,7 +140,7 @@ AC_TEST(world_create_initializes_defaults) {
     AC_CHECK_EQ(sim::arena::kKindDimensions[i].height, kKindSize[i][1]);
   }
   AC_CHECK_EQ(sim::kMaxEntities, 1024u);
-  AC_CHECK_EQ(sim::kSpatialCellCount, 400);
+  AC_CHECK_EQ(sim::kSpatialCellCount, 729);  // 27 × 27；格边长 = SHEEP_AI.neighborRadiusM（与 v1 createSpatialGrid 同参）
   AC_CHECK_EQ(sim::kMaxEvents, 256u);
 
   // 容量取证（README §6 表格引用本行）
@@ -773,16 +773,16 @@ AC_TEST(pose_sample_unknown_id_reports_missing) {
 // ---------- 空间网格（--filter=grid）----------
 
 AC_TEST(grid_build_counts_and_sorts_cells) {
-  AC_CHECK_EQ(sim::kSpatialCellMeters, 4.0);
-  AC_CHECK_EQ(sim::kSpatialCellsPerAxis, 20);
-  AC_CHECK_EQ(sim::kSpatialCellCount, 400);
-  AC_CHECK_EQ(sim::kSpatialCellCount + 1, 401);  // cellStart 401 项
+  AC_CHECK_EQ(sim::kSpatialCellMeters, 3.0);
+  AC_CHECK_EQ(sim::kSpatialCellsPerAxis, 27);
+  AC_CHECK_EQ(sim::kSpatialCellCount, 729);
+  AC_CHECK_EQ(sim::kSpatialCellCount + 1, 730);  // cellStart 730 项
 
-  AC_CHECK_EQ(sim::spatialCellIndex(0.0, 0.0), 10 * 20 + 10);
+  AC_CHECK_EQ(sim::spatialCellIndex(0.0, 0.0), 13 * 27 + 13);
   AC_CHECK_EQ(sim::spatialCellIndex(-40.0, -40.0), 0);
   AC_CHECK_EQ(sim::spatialCellIndex(-39.9, -39.9), 0);
-  AC_CHECK_EQ(sim::spatialCellIndex(39.9, 39.9), 399);
-  AC_CHECK_EQ(sim::spatialCellIndex(40.0, 40.0), 399);   // 上边界夹取
+  AC_CHECK_EQ(sim::spatialCellIndex(39.9, 39.9), 728);
+  AC_CHECK_EQ(sim::spatialCellIndex(40.0, 40.0), 728);   // 上边界夹取
   AC_CHECK_EQ(sim::spatialCellIndex(-40.1, -40.1), 0);   // 下边界夹取
 
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
@@ -815,11 +815,11 @@ AC_TEST(grid_build_counts_and_sorts_cells) {
 }
 
 AC_TEST(grid_clamps_out_of_bounds_coordinates) {
-  AC_CHECK_EQ(sim::spatialCellOf(1000.0), 19);
+  AC_CHECK_EQ(sim::spatialCellOf(1000.0), 26);
   AC_CHECK_EQ(sim::spatialCellOf(-1000.0), 0);
-  AC_CHECK_EQ(sim::spatialCellOf(41.0), 19);
+  AC_CHECK_EQ(sim::spatialCellOf(41.0), 26);
   AC_CHECK_EQ(sim::spatialCellOf(-41.0), 0);
-  AC_CHECK_EQ(sim::spatialCellOf(0.0), 10);
+  AC_CHECK_EQ(sim::spatialCellOf(0.0), 13);
 
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
   AC_CHECK(world != nullptr);
@@ -843,12 +843,12 @@ AC_TEST(grid_clamps_out_of_bounds_coordinates) {
   sim::buildSpatialGrid(*world);
 
   AC_CHECK_EQ(gridItemCount(world->grid), 5u);
-  // 越界坐标各自夹到边界列/行：东 → (cx 19, cz 10)、西 → (0, 10)、北 → (10, 19)、南 → (10, 0)、中心 → (10, 10)
-  const int32_t cellEast = 10 * 20 + 19;
-  const int32_t cellWest = 10 * 20 + 0;
-  const int32_t cellNorth = 19 * 20 + 10;
-  const int32_t cellSouth = 0 * 20 + 10;
-  const int32_t cellMiddle = 10 * 20 + 10;
+  // 越界坐标各自夹到边界列/行：东 → (cx 26, cz 13)、西 → (0, 13)、北 → (13, 26)、南 → (13, 0)、中心 → (13, 13)
+  const int32_t cellEast = 13 * 27 + 26;
+  const int32_t cellWest = 13 * 27 + 0;
+  const int32_t cellNorth = 26 * 27 + 13;
+  const int32_t cellSouth = 0 * 27 + 13;
+  const int32_t cellMiddle = 13 * 27 + 13;
   AC_CHECK_EQ(sim::spatialCellIndex(1000.0, 0.0), cellEast);
   AC_CHECK_EQ(sim::spatialCellIndex(-1000.0, 0.0), cellWest);
   AC_CHECK_EQ(sim::spatialCellIndex(0.0, 1000.0), cellNorth);
@@ -885,6 +885,9 @@ AC_TEST(grid_cell_items_are_ascending) {
   for (uint16_t id = 2u; id <= 64u; id += 3u) AC_CHECK(sim::despawnEntity(*world, id));  // 制造 id 空洞
   AC_CHECK(sim::spawnEntity(*world, sim::EntityKind::kPlayer, vec(-30.0, 0.0, 30.0)).isOk);
   stepEmpty(*world);
+  // 权威 tick 会在建格（阶段 3/9）之后继续推挤位置，网格只是那一刻的快照；要按"条目落在自己格"
+  // 断言就得先按当前坐标重建一次（断言本身不放宽：仍然逐条目核对格索引）。
+  sim::buildSpatialGrid(*world);
 
   // 每格内 EntityId 升序，且每个条目确实落在它所属的格
   std::vector<uint16_t> sequence;

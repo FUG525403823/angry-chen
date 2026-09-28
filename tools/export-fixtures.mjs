@@ -33,6 +33,8 @@ const V1_FLOCKING = 'packages/shared/src/ai/flocking.ts';
 const V1_SHEEP_ATTACK = 'packages/shared/src/ai/sheepAttack.ts';
 const V1_KING_PHASES = 'packages/shared/src/ai/kingPhases.ts';
 const V1_DIRECTOR = 'packages/shared/src/ai/director.ts';
+const V1_CODEC = 'packages/shared/src/net/codec.ts';
+const V1_SNAPSHOT = 'packages/shared/src/snapshot.ts';
 const V1_WAVES_CONFIG = 'packages/shared/src/config/waves.ts';
 // S08 的 configHash 分组：导入结果在 main 里填，configHashText 只读它。
 let s08 = null;
@@ -40,16 +42,27 @@ let s08 = null;
 let s09 = null;
 const TRIG_TABLE_PATH = 'docs/evidence/fixtures/trig-table.json';
 const DEFAULT_OUT = 'docs/evidence/fixtures';
-const SIZE_GATE_BYTES = 2 * 1024 * 1024;
+// 体积门：已裁决改为「对拍向量」口径（README §6 / ADR-010 §8）——每帧只落 8 字节哈希链值 + 少量关键帧，
+// 旧的「14 份 < 2 MB 全量投影」门随口径作废（每 tick 全量投影实测 ≈ 950 B，14 份结构性放不进 2 MB）。
+const SIZE_GATE_FILE_BYTES = 64 * 1024;    // 单份 fixture ≤ 64 KiB
+const SIZE_GATE_TOTAL_BYTES = 512 * 1024;  // 本批（14 份）合计 ≤ 512 KiB
+const SCHEMA_VERSION = 2;
 const TICK_MS = 50;
+// 临时诊断入口：--trace <name> [--trace-ticks N] 逐 tick 打印实体与事件（只用于调场景，不写盘）。
+let TRACE = null;
+let TRACE_TEXT = false;
 
 function parseArgs(argv) {
-  const opts = { root: DEFAULT_ROOT, out: DEFAULT_OUT, check: false, list: false, help: false, only: null };
+  const opts = { root: DEFAULT_ROOT, out: DEFAULT_OUT, check: false, list: false, help: false, only: null,
+    trace: null, traceTicks: 400, traceText: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--root') opts.root = argv[i += 1];
     else if (arg === '--out') opts.out = argv[i += 1];
     else if (arg === '--only') opts.only = (argv[i += 1] ?? '').split(',').filter((name) => name !== '');
+    else if (arg === '--trace') { opts.trace = argv[i += 1]; opts.only = [opts.trace]; }
+    else if (arg === '--trace-ticks') opts.traceTicks = Number(argv[i += 1]);
+    else if (arg === '--trace-text') opts.traceText = true;
     else if (arg === '--check') opts.check = true;
     else if (arg === '--list') opts.list = true;
     else if (arg === '--allow-patched-copy') opts.allowPatchedCopy = true;
@@ -432,10 +445,25 @@ function makeRngProbe(seed) {
 // §5.1 的命令按钮位表（v1 config/input.ts 的 BUTTON 逐值一致）。
 const BUTTON = { fire: 1, sprint: 2, jump: 4, reload: 8, interact: 16, rage: 32, switchWeapon: 64 };
 
-// 羊群/战斗类场景的驱动方式 = 「schema 之外的世界初态」+「每 tick 的脚本化命令」（README §2 的表）：
-// setup(world, v1) 在 createWorld 之后、第一个 tick 之前跑一次。两侧（本脚本与
-// server/tests/fixture_test.cpp 的 createFixtureWorld）必须逐字同表，否则第一个 tick 就失败。
-// 生成原语与 v1 ai/director.ts 的生成路径同形：spawnEntity('sheep') + applySheepKind + state=graze。
+// 初态（setup）随向量一起入库：`createWorld` 之后、第一个 tick 之前执行一次。两侧（本脚本与
+// server/tests/fixture_test.cpp 的 createFixtureWorld）读**同一份数据**，不再维护「逐字同表」的隐含约定：
+// 先按 id 覆盖玩家初态（hp/armor），再按数组顺序生成羊群。生成原语与 v1 ai/director.ts 的生成路径同形：
+// spawnEntity('sheep') + applySheepKind + state=graze（C++ 侧对应 waves::spawnSheepAt）。
+function sheepAt(kind, x, z) {
+  return { kind, x, z };
+}
+
+function playerHp(id, hp, armor) {
+  return { id, hp, armor };
+}
+
+// 玩家出生点（arena.playerSpawnPoints，id = 下标 + 1）：把 yaw 指向某个世界坐标。
+// Math.atan2 已被 patchMath 换成共享整数表，因此这个角度与 C++ 侧同口径。
+function aimAtPlayerSpawn(context, id, targetX, targetZ, pitch) {
+  const spawn = context.config.arena.playerSpawnPoints[id - 1];
+  return { yaw: Math.atan2(targetX - spawn.x, targetZ - spawn.z), pitch };
+}
+
 function spawnSheep(world, v1, kind, x, z) {
   const spawned = v1.spawnEntity(world, 'sheep', x, 0, z);
   if (!spawned.ok) throw new Error('spawnEntity(sheep) 失败：' + spawned.reason);
@@ -443,6 +471,44 @@ function spawnSheep(world, v1, kind, x, z) {
   v1.applySheepKind(entity, kind);
   entity.state = v1.SHEEP_STATE.graze;
   return spawned.id;
+}
+
+function applySetup(world, v1, setup) {
+  for (const override of setup.players) {
+    const entity = v1.getEntity(world, override.id);
+    if (entity === undefined) throw new Error('setup.players：找不到玩家 ' + override.id);
+    entity.hp = override.hp;
+    entity.armor = override.armor;
+  }
+  for (const entry of setup.sheep) spawnSheep(world, v1, entry.kind, entry.x, entry.z);
+}
+
+// 导演的 playerIds：活动、非 idle 的玩家按 activeIds 升序（v1 sim.ts collectPlayerIds；
+// 房间层再叠加「已连接」过滤，向量里没有连接概念）。
+function collectPlayerIds(v1, world) {
+  const out = [];
+  for (const id of world.activeIds) {
+    const entity = v1.getEntity(world, id);
+    if (entity === undefined || !entity.active || entity.kind !== 'player' || entity.idle) continue;
+    out.push(entity.id);
+  }
+  return out;
+}
+
+function normalizeSetup(scenario) {
+  const setup = scenario.setup ?? {};
+  return { players: setup.players ?? [], sheep: setup.sheep ?? [] };
+}
+
+// 关键帧 tick：默认 1 / 25% / 50% / 75% / 100%（末尾必须是关键帧：反例自检改末帧必须能报出字段）。
+function keyframeTicksFor(scenario) {
+  if (scenario.keyframeTicks !== undefined) return scenario.keyframeTicks.slice();
+  const ticks = new Set();
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const tick = fraction === 0 ? 1 : Math.ceil(scenario.ticks * fraction);
+    ticks.add(Math.max(1, Math.min(scenario.ticks, tick)));
+  }
+  return [...ticks].sort((a, b) => a - b);
 }
 
 const SCENARIOS = [
@@ -489,13 +555,7 @@ const SCENARIOS = [
     name: 'rifle-burst-hit-120t',
     seed: 23,
     ticks: 120,
-    setup(world, v1) {
-      spawnSheep(world, v1, 'elite', -4.5, -15);
-      spawnSheep(world, v1, 'grunt', -9, -2);
-      // 远处（>35m 视野）一只始终吃草的咩咩兵：让 §5.2 的「抽取计数 + 重放推导」真正被执行
-      // （吃草每 GRAZE_REPICK_MS=2500ms 抽 2 次 ai 流），否则 rngState 三流比较是空转。
-      spawnSheep(world, v1, 'grunt', 35, -35);
-    },
+    setup: { sheep: [sheepAt('elite', -4.5, -15), sheepAt('grunt', -9, -2), sheepAt('grunt', 35, -35)] },
     commandsFor(tick, ids) {
       return ids.map((id) => {
         if (id === 1) {
@@ -517,10 +577,7 @@ const SCENARIOS = [
     name: 'shotgun-spread-60t',
     seed: 29,
     ticks: 60,
-    setup(world, v1) {
-      spawnSheep(world, v1, 'grunt', -4.5, -2);
-      spawnSheep(world, v1, 'grunt', -7, -3);
-    },
+    setup: { sheep: [sheepAt('grunt', -4.5, -2), sheepAt('grunt', -7, -3)] },
     commandsFor(tick, ids) {
       return ids.map((id) => {
         if (id === 1) {
@@ -540,12 +597,7 @@ const SCENARIOS = [
     name: 'downed-revive-140t',
     seed: 31,
     ticks: 140,
-    setup(world, v1) {
-      const victim = v1.getEntity(world, 1);
-      victim.hp = 8;
-      victim.armor = 0;
-      spawnSheep(world, v1, 'grunt', -4.5, 5.8);
-    },
+    setup: { players: [playerHp(1, 8, 0)], sheep: [sheepAt('grunt', -4.5, 5.8)] },
     commandsFor(tick, ids) {
       return ids.map((id) => {
         if (id === 2) {
@@ -557,19 +609,177 @@ const SCENARIOS = [
       });
     },
   },
+  {
+    // 咩咩兵 AI 与聚集：三只咩咩兵贴在 1 号玩家正面 12–14m 处（视野 35m 内 → 警戒 → 追击 → 撕咬），
+    // 彼此间距 2–4m 覆盖分离/对齐/聚拢三项群集权重；远处（57m，视野外）一只全程吃草的咩咩兵抽 `ai` 流。
+    name: 'sheep-grunt-ai-600t',
+    seed: 37,
+    ticks: 600,
+    setup: {
+      sheep: [sheepAt('grunt', -4.5, -6), sheepAt('grunt', -6.5, -5.5), sheepAt('grunt', -2.5, -6.5),
+        sheepAt('grunt', 35, -35)],
+    },
+    commandsFor() {
+      return [];
+    },
+  },
+  {
+    // 冲撞羊冲锋：冲撞羊在 15m 处（> RAM_CHARGE_TRIGGER_M=12 → 先追击），进入 12m 后蓄力 → 冲锋 →
+    // 撞上静止的 1 号玩家（撞击击退 + 硬直），随后回到追击。远处吃草的咩咩兵负责抽 `ai` 流。
+    name: 'sheep-ram-charge-300t',
+    seed: 41,
+    ticks: 300,
+    setup: { sheep: [sheepAt('ram', -4.5, -8), sheepAt('grunt', 35, -35)] },
+    commandsFor() {
+      return [];
+    },
+  },
+  {
+    // 问界羊保距与问号弹：17m 处（eliteKeep 带 15–25m 内）横向换位（ELITE_STRAFE_MS=1200ms）
+    // 并按 eliteBoltCooldownMs 射问号弹；静止的 4 名玩家吃弹，覆盖投射物生成/飞行/命中/回收。
+    // 注意 v1 的投射物寿命在两侧都被各扣一次（sim.ts 的 aliveMs += dtMs 与 advanceProjectiles 里的
+    // 同一段累加），所以 BOLT_LIFE_MS=3000 实际只有 30 tick × 14m/s ≈ 21m 射程 —— 起始距离必须在 21m 内，
+    // 否则弹丸在到达玩家前就自毁（本条被记账在 README §5：两侧同口径地"短射程"，不是我们的偏差）。
+    name: 'sheep-elite-bolt-300t',
+    seed: 43,
+    ticks: 300,
+    setup: { sheep: [sheepAt('elite', -4.5, -9), sheepAt('grunt', 22, 0)] },
+    commandsFor() {
+      return [];
+    },
+  },
+  {
+    // 羊王阶段：羊王在 (22,2)（玩家 4 距离 18.2m，视野 35m 内；射线不经过谷仓 AABB x∈[-4,4]/z∈[-4,4]），
+    // 4 名玩家第 1 tick 切步枪并瞄准羊王，之后同时单发点射压住伤害速率 →
+    // 跨过 0.66 / 0.33 两条阶段阈值，且阶段 2 与阶段 3 各活过 1 个召唤周期（8s）。
+    name: 'sheep-king-phases-900t',
+    seed: 47,
+    ticks: 900,
+    setup: { sheep: [sheepAt('king', 22, 2), sheepAt('grunt', 35, -35)] },
+    keyframeTicks: [1, 450, 900],
+    commandsFor(tick, ids, context) {
+      if (tick === 1) {
+        return ids.map((id) => {
+          const aim = aimAtPlayerSpawn(context, id, 22, 2, -0.03);
+          return { id, moveX: 0, moveY: 0, yaw: aim.yaw, pitch: aim.pitch, buttons: BUTTON.switchWeapon, switchTo: 1 };
+        });
+      }
+      // 4 人同时单发点射：每 24 tick 全按 1 tick（步枪冷却 2 tick → 各 1 发），
+      // 合计 0.167 发/tick → 羊王 900 tick 内走完 1→2→3 三个阶段、且阶段 2 与阶段 3 各活过 8s（两次召唤）。
+      // 4 人同相位（而不是错相）是为了让命令脚本折叠成「每 24 tick 两段」，不把体积撑到 64 KiB 以上。
+      if ((tick - 3) % 24 !== 0) return [];
+      return ids.map((id) => {
+        const aim = aimAtPlayerSpawn(context, id, 22, 2, -0.03);
+        return { id, moveX: 0, moveY: 0, yaw: aim.yaw, pitch: aim.pitch, buttons: BUTTON.fire };
+      });
+    },
+  },
+  {
+    // 波次导演（1→5 波）：外部每 tick 驱动（DirectorState 在 stepWorld 之外，README §2；
+    // 与 S09/S10 已裁决的 B2 一致）。4 名玩家原地不动、各自从 0°/90°/180°/270° 起每 75 tick 转 22.5°
+    // 扫射（12 个生成点四面来敌），按「打 60 tick / 换弹 40 tick」压制 →
+    // 覆盖计划波次预算、组队顺序、生成点选择、出生抖动、波次开始事件。
+    // 1200 tick 到不了第 5 波（4 次波间 20s = 1600 tick 就已超预算，见 README §5 未交付清单）。
+    name: 'wave-director-1to5-1200t',
+    seed: 53,
+    ticks: 1200,
+    director: { startWave: 1 },
+    keyframeTicks: [1, 600, 1200],
+    commandsFor(tick, ids, context) {
+      // 4 名玩家各自从 0°/90°/180°/270° 起，每 75 tick 转 22.5°，1200 tick 转满一圈：
+      // 羊从 12 个生成点四面过来，扫射能覆盖到多数来向。命令脚本仍然按 75 tick 折叠。
+      const sweep = (2 * PI * Math.floor((tick - 1) / 75)) / 16;
+      return ids.map((id, index) => {
+        const reloading = (tick - 1) % 100 >= 60;
+        return { id, moveX: 0, moveY: 0, yaw: index * (PI / 2) + sweep, pitch: -0.06,
+          buttons: reloading ? BUTTON.reload : BUTTON.fire };
+      });
+    },
+  },
+  {
+    // 快照 round-trip：量化字段「编码 → 解码后位型等价」。1 号玩家切步枪压制、2 号玩家横向走位，
+    // 两只咩咩兵冲上来（覆盖 hpRatio / state / kindFlags / 位置 / 角度的量化边界）；
+    // 在 5 个关键 tick 上记录「编码字节的哈希 + 解码后投影的哈希」（两侧各自 encode/decode 后比对）。
+    name: 'snapshot-roundtrip-240t',
+    seed: 59,
+    ticks: 240,
+    snapshotTicks: [1, 60, 120, 180, 240],
+    setup: { sheep: [sheepAt('grunt', -4.5, -6), sheepAt('grunt', -7, -3)] },
+    commandsFor(tick, ids) {
+      return ids.map((id) => {
+        if (id === 1) {
+          if (tick === 1) {
+            return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.03, buttons: BUTTON.switchWeapon, switchTo: 1 };
+          }
+          const firing = tick <= 60 || tick > 100;
+          return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.03, buttons: firing ? BUTTON.fire : BUTTON.reload };
+        }
+        if (id === 2) return { id, moveX: 1, moveY: 0, yaw: -PI / 2, pitch: 0, buttons: BUTTON.sprint };
+        return { id, moveX: 0, moveY: 0, yaw: PI, pitch: 0, buttons: 0 };
+      });
+    },
+  },
+  {
+    // 三流归属：羊王跨阶段（阶段 2 起每 8s 召唤 4 只咩咩兵 → `spawn` 流）+ 远处吃草羊（`ai` 流），
+    // 4 名玩家切步枪压制以在 600 tick 内打穿 0.66 阈值；`fx` 流按 ADR-010 §5 不参与模拟（恒 0 次抽取）。
+    name: 'rng-streams-600t',
+    seed: 61,
+    ticks: 600,
+    setup: { sheep: [sheepAt('king', 22, 2), sheepAt('grunt', 35, -35), sheepAt('grunt', -35, 35)] },
+    commandsFor(tick, ids, context) {
+      return ids.map((id) => {
+        const aim = aimAtPlayerSpawn(context, id, 22, 2, -0.03);
+        const reloading = tick > 1 && (tick - 2) % 100 >= 60;
+        if (tick === 1) {
+          return { id, moveX: 0, moveY: 0, yaw: aim.yaw, pitch: aim.pitch, buttons: BUTTON.switchWeapon, switchTo: 1 };
+        }
+        // 同 sheep-king-phases-900t：只有 1 号玩家开火，保证 600 tick 内能等到一次召唤（spawn 流）。
+        if (id > 1) return { id, moveX: 0, moveY: 0, yaw: aim.yaw, pitch: aim.pitch, buttons: 0 };
+        return { id, moveX: 0, moveY: 0, yaw: aim.yaw, pitch: aim.pitch,
+          buttons: reloading ? BUTTON.reload : BUTTON.fire };
+      });
+    },
+  },
 ];
 
-function toV1Command(entry, tick, v1) {
-  const command = v1.createCommand();
-  command.seq = tick % 65536;
-  command.tick = tick;
-  command.moveX = entry.moveX;
-  command.moveY = entry.moveY;
-  command.yaw = entry.yaw;
-  command.pitch = entry.pitch;
-  command.buttons = entry.buttons;
-  command.switchTo = entry.switchTo ?? 0;
-  return command;
+function toV1Command(command, v1) {
+  const raw = v1.createCommand();
+  raw.seq = command.seq;
+  raw.tick = command.clientTick;  // v1 的 Command.tick 即 clientTick
+  raw.moveX = command.moveX;
+  raw.moveY = command.moveY;
+  raw.yaw = command.yaw;
+  raw.pitch = command.pitch;
+  raw.buttons = command.buttons;
+  raw.switchTo = command.switchTo;
+  return raw;
+}
+
+// 命令脚本的 RLE 判据：同一 tick 的命令集合逐字段相同就并进上一段（无损，只是折叠重复的 tick）。
+function scriptKey(commands) {
+  return commands.map((command) => [command.id, g17(command.moveX), g17(command.moveY), g17(command.yaw),
+    g17(command.pitch), command.buttons, command.switchTo].join(':')).join('|');
+}
+
+// 快照字段组：编码（15 字节实体记录，按 activeIds 顺序拼接）→ 解码，两侧各自算两个哈希。
+function snapshotEntry(world, v1, tick) {
+  const snapshot = v1.snapshotWorld(world);
+  const width = v1.SNAPSHOT_RECORD_BYTES;
+  const encoded = new Uint8Array(snapshot.entities.length * width);
+  const scratch = new Uint8Array(width);
+  const record = v1.createSnapshotMirror().record;
+  const decoded = [];
+  for (let i = 0; i < snapshot.entities.length; i += 1) {
+    v1.quantizeSnapshotEntity(snapshot.entities[i], scratch, 0);
+    encoded.set(scratch, i * width);
+    v1.readSnapshotRecord(encoded, i * width, record);
+    decoded.push({ id: record.id, kind: v1.ENTITY_KIND_CODE[record.kind], flags: record.flags, xCm: record.xCm,
+      yCm: record.yCm, zCm: record.zCm, yawUnits: record.yawUnits, pitchUnits: record.pitchUnits,
+      hpRatioUnits: record.hpRatioUnits, state: record.state });
+  }
+  return { tick, records: snapshot.entities.length,
+    encodeHash: hash64Hex(fnv1a64(encoded, FNV_OFFSET_BASIS)),
+    decodeHash: hash64Hex(fnv1a64Text(snapshotDecodeText(decoded), FNV_OFFSET_BASIS)) };
 }
 
 function jsonString(text) {
@@ -577,52 +787,162 @@ function jsonString(text) {
   return '"' + text + '"';
 }
 
+// ---------------- 「对拍向量」的字节口径（README §4） ----------------
+// 每 tick 的**全量投影** = 下面这份字段级文本：字段与顺序沿用 v1 冻结 schema（§5.1），double 一律 %.17g。
+// 旧盘上 hp / event.value 用 JS 最短往返表示，也是无损的；统一到 %.17g 不降低逐位强度。
+// 逐帧哈希链：h_i = fnv1a64(投影_i, h_{i-1})，h_0 = FNV 偏移基准。链上只落 8 字节/tick（16 位十六进制）。
+const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const U64_MASK = 0xffffffffffffffffn;
+
+function fnv1a64(bytes, seed) {
+  let hash = seed & U64_MASK;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash = ((hash ^ BigInt(bytes[i])) * FNV_PRIME) & U64_MASK;
+  }
+  return hash;
+}
+
+function fnv1a64Text(text, seed) {
+  return fnv1a64(Buffer.from(text, 'utf8'), seed);
+}
+
+function hash64Hex(value) {
+  return (value & U64_MASK).toString(16).padStart(16, '0');
+}
+
+function assertFnvSelfTest() {
+  // 公开的 FNV-1a 64 测试向量（外部来源，不是本实现自产）：钉住算法本身，防实现漂移。
+  if (fnv1a64Text('', FNV_OFFSET_BASIS) !== FNV_OFFSET_BASIS) throw new Error('fnv self-test: empty');
+  if (hash64Hex(fnv1a64Text('a', FNV_OFFSET_BASIS)) !== 'af63dc4c8601ec8c') throw new Error('fnv self-test: a');
+  if (fnv1a64Text('foobar', FNV_OFFSET_BASIS) !== 0x85944171f73967e8n) throw new Error('fnv self-test: foobar');
+}
+
+function projectionText(tickNumber, commands, entities, events, rng) {
+  const lines = [];
+  lines.push('tick=' + tickNumber);
+  lines.push('dtMs=' + TICK_MS);
+  for (const command of commands) {
+    lines.push('cmd=' + command.id + ',' + command.seq + ',' + command.clientTick + ',' + g17(command.moveX) + ',' +
+      g17(command.moveY) + ',' + g17(command.yaw) + ',' + g17(command.pitch) + ',' + command.buttons + ',' +
+      command.switchTo);
+  }
+  for (const entity of entities) {
+    lines.push('ent=' + entity.id + ',' + entity.kind + ',' + g17(entity.pos[0]) + ',' + g17(entity.pos[1]) + ',' +
+      g17(entity.pos[2]) + ',' + g17(entity.yaw) + ',' + g17(entity.pitch) + ',' + g17(entity.hp) + ',' + entity.flags);
+  }
+  for (const event of events) {
+    lines.push('evt=' + event.tick + ',' + event.type + ',' + event.flags + ',' + event.subjectId + ',' +
+      event.targetId + ',' + g17(event.x) + ',' + g17(event.y) + ',' + g17(event.z) + ',' + g17(event.value));
+  }
+  lines.push('rng=' + rng.ai + ',' + rng.spawn + ',' + rng.fx);
+  return lines.join('\n') + '\n';
+}
+
+// 快照字段组（snapshot-roundtrip-240t）：编码字节的哈希 + 解码后投影的哈希。
+// 编码口径 = S03 §5.4 的 15 字节实体记录（v1 quantizeSnapshotEntity / C++ net::EntityRecord 1:1）；
+// 解码后投影文本逐字段 = id,kind,flags,xCm,yCm,zCm,yawUnits,pitchUnits,hpRatioUnits,state。
+function snapshotDecodeText(records) {
+  const lines = [];
+  for (const record of records) {
+    lines.push('rec=' + record.id + ',' + record.kind + ',' + record.flags + ',' + record.xCm + ',' + record.yCm + ',' +
+      record.zCm + ',' + record.yawUnits + ',' + record.pitchUnits + ',' + record.hpRatioUnits + ',' + record.state);
+  }
+  return lines.join('\n') + '\n';
+}
+
+function setupPlayerLine(entry) {
+  return '{ "id": ' + entry.id + ', "hp": ' + g17(entry.hp) + ', "armor": ' + g17(entry.armor) + ' }';
+}
+
+function setupSheepLine(entry) {
+  return '{ "kind": ' + jsonString(entry.kind) + ', "x": ' + g17(entry.x) + ', "z": ' + g17(entry.z) + ' }';
+}
+
 function entityLine(entity) {
   return '{ "id": ' + entity.id + ', "kind": ' + jsonString(entity.kind) + ', "pos": [' + g17(entity.pos[0]) + ', ' +
     g17(entity.pos[1]) + ', ' + g17(entity.pos[2]) + '], "yaw": ' + g17(entity.yaw) + ', "pitch": ' + g17(entity.pitch) +
-    ', "hp": ' + entity.hp + ', "flags": ' + entity.flags + ' }';
+    ', "hp": ' + g17(entity.hp) + ', "flags": ' + entity.flags + ' }';
 }
 
 function eventLine(event) {
   return '{ "tick": ' + event.tick + ', "type": ' + jsonString(event.type) + ', "flags": ' + event.flags +
-    ', "subjectId": ' + event.subjectId + ', "targetId": ' + event.targetId + ', "value": ' + event.value + ' }';
+    ', "subjectId": ' + event.subjectId + ', "targetId": ' + event.targetId + ', "x": ' + g17(event.x) +
+    ', "y": ' + g17(event.y) + ', "z": ' + g17(event.z) + ', "value": ' + g17(event.value) + ' }';
 }
 
-function commandLine(entry) {
-  return '{ "id": ' + entry.id + ', "seq": ' + entry.seq + ', "clientTick": ' + entry.clientTick +
-    ', "moveX": ' + g17(entry.moveX) + ', "moveY": ' + g17(entry.moveY) + ', "yaw": ' + g17(entry.yaw) +
-    ', "pitch": ' + g17(entry.pitch) + ', "buttons": ' + entry.buttons + ', "switchTo": ' + entry.switchTo + ' }';
+// 命令脚本只记「实际发出的玩家命令」：id / 轴 / 角 / 按钮 / 切枪槽；seq 与 clientTick 由 tick 派生
+// （seq = tick % 65536，clientTick = tick，与 v1 applyCommands 的槽位语义同源，两侧同式）。
+function scriptCommandLine(entry) {
+  return '{ "id": ' + entry.id + ', "moveX": ' + g17(entry.moveX) + ', "moveY": ' + g17(entry.moveY) +
+    ', "yaw": ' + g17(entry.yaw) + ', "pitch": ' + g17(entry.pitch) + ', "buttons": ' + entry.buttons +
+    ', "switchTo": ' + entry.switchTo + ' }';
 }
 
 function serializeFixture(fixture) {
   const lines = [];
   lines.push('{');
   lines.push('  "name": ' + jsonString(fixture.name) + ',');
+  lines.push('  "version": ' + fixture.version + ',');
   lines.push('  "seed": ' + fixture.seed + ',');
+  lines.push('  "dtMs": ' + TICK_MS + ',');
   lines.push('  "configHash": ' + jsonString(fixture.configHash) + ',');
-  lines.push('  "ticks": [');
-  fixture.ticks.forEach((tick, tickIndex) => {
+  lines.push('  "ticks": ' + fixture.ticks + ',');
+  lines.push('  "setup": {');
+  lines.push('    "players": [');
+  fixture.setup.players.forEach((entry, index) => {
+    lines.push('      ' + setupPlayerLine(entry) + (index + 1 < fixture.setup.players.length ? ',' : ''));
+  });
+  lines.push('    ],');
+  lines.push('    "sheep": [');
+  fixture.setup.sheep.forEach((entry, index) => {
+    lines.push('      ' + setupSheepLine(entry) + (index + 1 < fixture.setup.sheep.length ? ',' : ''));
+  });
+  lines.push('    ]');
+  lines.push('  },');
+  lines.push('  "director": { "startWave": ' + fixture.director.startWave + ' },');
+  lines.push('  "script": [');
+  fixture.script.forEach((run, runIndex) => {
     lines.push('    {');
-    lines.push('      "dtMs": ' + tick.dtMs + ',');
+    lines.push('      "from": ' + run.from + ',');
+    lines.push('      "to": ' + run.to + ',');
     lines.push('      "commands": [');
-    tick.commands.forEach((command, commandIndex) => {
-      lines.push('        ' + commandLine(command) + (commandIndex + 1 < tick.commands.length ? ',' : ''));
+    run.commands.forEach((command, commandIndex) => {
+      lines.push('        ' + scriptCommandLine(command) + (commandIndex + 1 < run.commands.length ? ',' : ''));
+    });
+    lines.push('      ]');
+    lines.push('    }' + (runIndex + 1 < fixture.script.length ? ',' : ''));
+  });
+  lines.push('  ],');
+  lines.push('  "keyframes": [');
+  fixture.keyframes.forEach((frame, frameIndex) => {
+    lines.push('    {');
+    lines.push('      "tick": ' + frame.tick + ',');
+    lines.push('      "entities": [');
+    frame.entities.forEach((entity, entityIndex) => {
+      lines.push('        ' + entityLine(entity) + (entityIndex + 1 < frame.entities.length ? ',' : ''));
     });
     lines.push('      ],');
-    lines.push('      "expected": {');
-    lines.push('        "entities": [');
-    tick.entities.forEach((entity, entityIndex) => {
-      lines.push('          ' + entityLine(entity) + (entityIndex + 1 < tick.entities.length ? ',' : ''));
+    lines.push('      "events": [');
+    frame.events.forEach((event, eventIndex) => {
+      lines.push('        ' + eventLine(event) + (eventIndex + 1 < frame.events.length ? ',' : ''));
     });
-    lines.push('        ],');
-    lines.push('        "events": [');
-    tick.events.forEach((event, eventIndex) => {
-      lines.push('          ' + eventLine(event) + (eventIndex + 1 < tick.events.length ? ',' : ''));
-    });
-    lines.push('        ],');
-    lines.push('        "rngState": { "ai": ' + tick.rng.ai + ', "spawn": ' + tick.rng.spawn + ', "fx": ' + tick.rng.fx + ' }');
-    lines.push('      }');
-    lines.push('    }' + (tickIndex + 1 < fixture.ticks.length ? ',' : ''));
+    lines.push('      ],');
+    lines.push('      "rngState": { "ai": ' + frame.rng.ai + ', "spawn": ' + frame.rng.spawn + ', "fx": ' +
+      frame.rng.fx + ' }');
+    lines.push('    }' + (frameIndex + 1 < fixture.keyframes.length ? ',' : ''));
+  });
+  lines.push('  ],');
+  lines.push('  "snapshot": [');
+  fixture.snapshot.forEach((entry, index) => {
+    lines.push('    { "tick": ' + entry.tick + ', "records": ' + entry.records + ', "encodeHash": ' +
+      jsonString(entry.encodeHash) + ', "decodeHash": ' + jsonString(entry.decodeHash) + ' }' +
+      (index + 1 < fixture.snapshot.length ? ',' : ''));
+  });
+  lines.push('  ],');
+  lines.push('  "hashChain": [');
+  fixture.hashChain.forEach((hash, index) => {
+    lines.push('    ' + jsonString(hash) + (index + 1 < fixture.hashChain.length ? ',' : ''));
   });
   lines.push('  ]');
   lines.push('}');
@@ -644,56 +964,126 @@ function flagsOf(entity, nowMs, v1) {
 
 function runScenario(scenario, v1, configHash) {
   const world = v1.createWorld(scenario.seed, v1.CONFIG);
-  if (scenario.setup !== undefined) scenario.setup(world, v1);
+  applySetup(world, v1, normalizeSetup(scenario));
   const probe = makeRngProbe(scenario.seed);
   probe.wrap(world, 'ai');
   probe.wrap(world, 'spawn');
   probe.wrap(world, 'fx');
+
+  // 外部每 tick 驱动导演（README §2；S09/S10 已裁决的 B2）：DirectorState 在 stepWorld 之外，
+  // stepWorld 之后调用 updateDirector，playerCount = 4、rng = world.rng.spawn、playerIds = 非 idle 玩家升序。
+  const director = scenario.director === undefined
+    ? null
+    : { state: v1.createDirectorState(), startWave: scenario.director.startWave };
 
   // 命令槽位只覆盖玩家（v1 applyCommands 按升序玩家位置取槽），羊群/投射物不参与命令分发。
   const ids = world.activeIds.filter((id) => {
     const entity = v1.getEntity(world, id);
     return entity !== undefined && entity.kind === 'player';
   });
-  const ticks = [];
-  const flagSeen = new Set();
+  const playerCount = ids.length;
+  const context = { config: v1.CONFIG, world };
+  if (director !== null) v1.planWave(director.state, director.startWave, playerCount);
+
+  const keyframeTicks = new Set(keyframeTicksFor(scenario));
+  const snapshotTicks = scenario.snapshotTicks ?? [];
+  const script = [];
+  const keyframes = [];
+  const snapshot = [];
+  const hashChain = [];
+  const types = {};
+  let chain = FNV_OFFSET_BASIS;
   let eventCount = 0;
+  const flagSeen = new Set();
 
   for (let tick = 1; tick <= scenario.ticks; tick += 1) {
-    const entries = scenario.commandsFor(tick, ids);
+    const entries = scenario.commandsFor(tick, ids, context);
     const slots = new Array(ids.length).fill(undefined);
     const commands = [];
     for (const entry of entries) {
       const index = ids.indexOf(entry.id);
       if (index < 0) throw new Error(scenario.name + ': command for unknown id ' + entry.id);
-      const seq = tick % 65536;
-      slots[index] = toV1Command(entry, tick, v1);
-      commands.push({ id: entry.id, seq, clientTick: tick, moveX: entry.moveX, moveY: entry.moveY,
-        yaw: entry.yaw, pitch: entry.pitch, buttons: entry.buttons, switchTo: entry.switchTo ?? 0 });
+      const command = { id: entry.id, seq: tick % 65536, clientTick: tick, moveX: entry.moveX, moveY: entry.moveY,
+        yaw: entry.yaw, pitch: entry.pitch, buttons: entry.buttons, switchTo: entry.switchTo ?? 0 };
+      slots[index] = toV1Command(command, v1);
+      commands.push(command);
     }
     v1.stepWorld(world, slots, TICK_MS, null);
+    if (director !== null) {
+      const playerIds = collectPlayerIds(v1, world);
+      v1.updateDirector(world, director.state, playerCount, world.rng.spawn, playerIds);
+    }
 
     const entities = [];
     for (const id of world.activeIds) {
       const entity = v1.getEntity(world, id);
+      if (entity === undefined) continue;
       const flags = flagsOf(entity, world.timeMs, v1);
       flagSeen.add(flags);
       entities.push({ id, kind: entity.kind, pos: [entity.pos.x, entity.pos.y, entity.pos.z],
         yaw: entity.yaw, pitch: entity.pitch, hp: entity.hp, flags });
     }
     const events = world.events.map((event) => ({ tick: event.tick, type: event.type, flags: event.flags,
-      subjectId: event.subjectId, targetId: event.targetId, value: event.value }));
+      subjectId: event.subjectId, targetId: event.targetId, x: event.x, y: event.y, z: event.z, value: event.value }));
     eventCount += events.length;
-    ticks.push({ dtMs: TICK_MS, commands, entities, events,
-      rng: { ai: probe.stateOf('ai'), spawn: probe.stateOf('spawn'), fx: probe.stateOf('fx') } });
+    for (const event of events) types[event.type] = (types[event.type] ?? 0) + 1;
+    const rng = { ai: probe.stateOf('ai'), spawn: probe.stateOf('spawn'), fx: probe.stateOf('fx') };
+
+    chain = fnv1a64Text(projectionText(tick, commands, entities, events, rng), chain);
+    hashChain.push(hash64Hex(chain));
+    if (keyframeTicks.has(tick)) keyframes.push({ tick, entities, events, rng });
+    if (snapshotTicks.indexOf(tick) >= 0) snapshot.push(snapshotEntry(world, v1, tick));
+    if (TRACE !== null && TRACE.name === scenario.name && tick <= TRACE.ticks) {
+      if (TRACE_TEXT) {
+        console.log('[ptext] t' + tick + '|' + projectionText(tick, commands, entities, events, rng).replace(/\n/g, '|'));
+      }
+      const dump = world.activeIds.map((id) => {
+        const entity = v1.getEntity(world, id);
+        if (entity === undefined) return id + '?';
+        const kind = entity.kind === 'projectile' ? 'bolt' : entity.kind;
+        return kind + id + '@' + g17(entity.pos.x) + ',' + g17(entity.pos.z) + ':hp' + g17(entity.hp) +
+          (entity.kind === 'sheep' ? ':st' + entity.state + ':fl' + entity.ai.flock.count + ':v' +
+            g17(entity.vel.x) + ',' + g17(entity.vel.z) : ':v' + g17(entity.vel.x) + ',' + g17(entity.vel.z) +
+            ':knock' + g17(entity.kind === 'player' ? entity.combat.knockMs : 0));
+      }).join(' ');
+      console.log('[trace] t' + tick + ' ' + dump + (events.length === 0 ? '' : ' EVT ' +
+        events.map((event) => event.type + '(' + event.subjectId + '->' + event.targetId + ',' + g17(event.value) + ')').join(',')) +
+        ' rng=' + rng.ai + ',' + rng.spawn + ',' + rng.fx);
+    }
+
+    const previous = script[script.length - 1];
+    if (previous !== undefined && previous.scriptKey === scriptKey(commands)) {
+      previous.to = tick;
+    } else {
+      script.push({ from: tick, to: tick, commands, scriptKey: scriptKey(commands) });
+    }
   }
 
-  const last = ticks[ticks.length - 1];
+  const last = keyframes[keyframes.length - 1];
   return {
-    fixture: { name: scenario.name, seed: scenario.seed, configHash, ticks },
+    fixture: {
+      name: scenario.name,
+      version: SCHEMA_VERSION,
+      seed: scenario.seed,
+      ticks: scenario.ticks,
+      configHash,
+      setup: normalizeSetup(scenario),
+      director: { startWave: director === null ? 0 : director.startWave },
+      script: script.map((run) => ({ from: run.from, to: run.to, commands: run.commands })),
+      keyframes,
+      snapshot,
+      hashChain,
+    },
     evidence: { entities: last.entities.length, events: eventCount, flags: [...flagSeen].sort((a, b) => a - b),
       draws: { ai: probe.taps.ai, spawn: probe.taps.spawn, fx: probe.taps.fx },
-      first: last.entities[0], count: last.entities.length },
+      first: last.entities[0], last: last.entities, runs: script.length, snapshotTicks: snapshot.length, types,
+      keyframeTrace: keyframes.map((frame) => {
+        const sheep = frame.entities.filter((entity) => entity.kind === 'sheep');
+        const top = sheep.reduce((best, entity) => (best === null || entity.hp > best.hp ? entity : best), null);
+        return frame.tick + ':' + sheep.length + (top === null ? '' : ':' + Math.round(top.hp));
+      }),
+      director: director === null ? null : { wave: director.state.wave, planned: director.state.planned,
+        spawned: director.state.spawned, totalSpawns: director.state.totalSpawns, finished: director.state.finished } },
   };
 }
 
@@ -772,6 +1162,9 @@ async function main() {
   }
   assertCrcSelfTest();
   assertG17SelfTest();
+  assertFnvSelfTest();
+  if (opts.trace !== null) TRACE = { name: opts.trace, ticks: opts.traceTicks };
+  TRACE_TEXT = opts.traceText === true;
 
   const root = path.resolve(opts.root);
   const before = sourceFingerprint();
@@ -813,6 +1206,8 @@ const flockingModule = await import(pathToFileURL(path.join(root, V1_FLOCKING)).
 const sheepAttackModule = await import(pathToFileURL(path.join(root, V1_SHEEP_ATTACK)).href);
 const kingModule = await import(pathToFileURL(path.join(root, V1_KING_PHASES)).href);
 const directorModule = await import(pathToFileURL(path.join(root, V1_DIRECTOR)).href);
+const codecModule = await import(pathToFileURL(path.join(root, V1_CODEC)).href);
+const snapshotModule = await import(pathToFileURL(path.join(root, V1_SNAPSHOT)).href);
 const wavesConfig = await import(pathToFileURL(path.join(root, V1_WAVES_CONFIG)).href);
 s09 = {
   sheep: sheepConfig,
@@ -826,8 +1221,17 @@ s09 = {
 };
   const api = { createWorld: v1.createWorld, createCommand: v1.createCommand, stepWorld: v1.stepWorld,
     getEntity: v1.getEntity, CONFIG: v1.CONFIG, isRageActive: rageModule.isRageActive, isReloading: weaponModule.isReloading,
+    collectPlayerIds: (world) => collectPlayerIds(v1, world),
     // 场景 setup 的生成原语（与 v1 ai/director.ts 的生成路径同形；C++ 侧对应 waves::spawnSheepAt）。
-    spawnEntity: v1.spawnEntity, applySheepKind: sheepBrainModule.applySheepKind, SHEEP_STATE: sheepConfig.SHEEP_STATE };
+    spawnEntity: v1.spawnEntity, applySheepKind: sheepBrainModule.applySheepKind, SHEEP_STATE: sheepConfig.SHEEP_STATE,
+    // 波次导演：DirectorState 归驱动方（v1 ai/director.ts；C++ 侧对应 waves::DirectorState）。
+    createDirectorState: directorModule.createDirectorState, planWave: directorModule.planWave,
+    updateDirector: directorModule.updateDirector,
+    // 快照 round-trip：S03 §5.4 的 15 字节实体记录（v1 net/codec.ts 与 C++ net::EntityRecord 1:1）。
+    snapshotWorld: snapshotModule.snapshotWorld, quantizeSnapshotEntity: codecModule.quantizeSnapshotEntity,
+    readSnapshotRecord: codecModule.readSnapshotRecord, createSnapshotMirror: codecModule.createSnapshotMirror,
+    ENTITY_KIND_CODE: v1.ENTITY_KIND_CODE,
+    SNAPSHOT_RECORD_BYTES: v1.SNAPSHOT_RECORD_BYTES };
 
   const hashInfo = configHashText(configModule.CONFIG);
   console.log('[export] root = ' + root);
@@ -848,7 +1252,11 @@ s09 = {
       const file = path.join(outDir, scenario.name + '.json');
       if (!existsSync(file)) throw new Error('--list：缺文件 ' + file);
       const bytes = readFileSync(file);
-      console.log(scenario.name + ' ' + bytes.length + ' ' + createHash('sha256').update(bytes).digest('hex'));
+      const text = bytes.toString('utf8');
+      const parsed = JSON.parse(text);
+      console.log(scenario.name + ' bytes=' + bytes.length + ' ticks=' + parsed.ticks +
+        ' chain=' + parsed.hashChain.length + ' keyframes=' + parsed.keyframes.length +
+        ' sha256=' + createHash('sha256').update(bytes).digest('hex'));
     }
     return;
   }
@@ -862,13 +1270,26 @@ s09 = {
     console.log('[export] ' + scenario.name + ' ticks=' + scenario.ticks + ' entities=' + evidence.entities +
       ' events=' + evidence.events + ' flags=' + JSON.stringify(evidence.flags) +
       ' draws=ai:' + evidence.draws.ai + ',spawn:' + evidence.draws.spawn + ',fx:' + evidence.draws.fx +
-      ' last0=(' + g17(evidence.first.pos[0]) + ',' + g17(evidence.first.pos[1]) + ',' + g17(evidence.first.pos[2]) + ')');
+      ' runs=' + evidence.runs + ' snapshots=' + evidence.snapshotTicks +
+      ' bytes=' + Buffer.byteLength(text) +
+      ' types=' + JSON.stringify(evidence.types) +
+      ' kf=' + evidence.keyframeTrace.join(',') +
+      (evidence.director === null ? '' : ' director=wave' + evidence.director.wave + '/' + evidence.director.planned +
+        ' spawned=' + evidence.director.spawned + ' total=' + evidence.director.totalSpawns) +
+      '\n[export]   last=' + evidence.last.map((entity) => entity.id + ':' + entity.kind + ':' + g17(entity.pos[0]) + ',' +
+        g17(entity.pos[2]) + ':hp' + g17(entity.hp) + ':f' + entity.flags).join(' '));
     totalBytes += Buffer.byteLength(text);
     rendered.push({ name: scenario.name, text, file: path.join(outDir, scenario.name + '.json') });
   }
   // 体积门先于写盘：门失败时不该在盘上留下超限的生成物。
-  if (totalBytes >= SIZE_GATE_BYTES) {
-    throw new Error('体积门超限（本批 ' + selected.length + ' 份）：' + totalBytes + ' >= ' + SIZE_GATE_BYTES);
+  for (const item of rendered) {
+    const bytes = Buffer.byteLength(item.text);
+    if (bytes > SIZE_GATE_FILE_BYTES) {
+      throw new Error('单份体积门超限：' + item.name + ' = ' + bytes + ' > ' + SIZE_GATE_FILE_BYTES);
+    }
+  }
+  if (totalBytes > SIZE_GATE_TOTAL_BYTES) {
+    throw new Error('本批体积门超限（' + selected.length + ' 份）：' + totalBytes + ' > ' + SIZE_GATE_TOTAL_BYTES);
   }
   let written = 0;
   let identical = 0;
@@ -898,9 +1319,10 @@ s09 = {
   } else {
     console.log('[export] 写出 ' + written + ' 份');
   }
-  console.log('[export] 本批 ' + selected.length + ' 份 = ' + totalBytes + ' B（体积门 ' + SIZE_GATE_BYTES + ' B）');
+  console.log('[export] 本批 ' + selected.length + ' 份 = ' + totalBytes + ' B（单份门 ' + SIZE_GATE_FILE_BYTES +
+    ' B / 总量门 ' + SIZE_GATE_TOTAL_BYTES + ' B）');
   // §6 的取证命令是 Get-ChildItem <dir> -Recurse -File | Measure-Object Length -Sum：它会把 S02 的
-  // trig-table.json 和本目录的 README.md 也算进门限 -> 在这一行复现同一个数字（见 README §8.3 第 9 条）。
+  // trig-table.json 和本目录的 README.md 也算进来 -> 在这一行复现同一个数字（README §6：**只打印、不设门**）。
   let dirBytes = 0;
   let dirFiles = 0;
   if (existsSync(outDir)) {
@@ -908,8 +1330,8 @@ s09 = {
     dirFiles = files.length;
     for (const file of files) dirBytes += statSync(file).size;
   }
-  const overGate = dirBytes >= SIZE_GATE_BYTES ? '，超出目录门限 ' + (dirBytes - SIZE_GATE_BYTES) + ' B' : '';
-  console.log('[export] --out 目录合计 = ' + dirBytes + ' B / ' + dirFiles + ' 个文件（含 trig-table.json 与 README.md' + overGate + '）');
+  console.log('[export] --out 目录合计 = ' + dirBytes + ' B / ' + dirFiles + ' 个文件' +
+    '（含 trig-table.json 与 README.md；本门只按 14 份 *.json 判定）');
   const after = sourceFingerprint();
   if (after.newest !== before.newest || after.bytes !== before.bytes || after.files !== before.files) {
     throw new Error('只读源仓库被写入了：' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));

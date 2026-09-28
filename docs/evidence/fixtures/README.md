@@ -1,47 +1,101 @@
 # 跨语言对拍向量（fixture）
 
-> 冻结契约：S07 §5（schema / 比较规则 / 再生成纪律）与 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §6。
+> 冻结契约：S07 §5（口径 / 比较规则 / 再生成纪律）与 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §6、§8。
 > 真值来源：冻结的 v1 实现 `D:\projects\tmp\angry-chen-bak`——**全程只读**，任何补丁与导出只作用于可写派生副本。
+> 本批口径变更：**存「怎么跑」而不是「跑出来的每一帧」**（种子 + 初态 + 命令脚本 + 每 tick 全量投影的哈希链 + 少量关键帧）。
+> 两侧都**重算**同一份全量投影再比对，逐位强度不变；每 tick 落到盘上的是 8 字节链节点（16 位十六进制），不再是 ~950 B 的投影文本。
 
-## 1. 清单（本批 7 份：S07 §5.3 的前 4 行 + 3 份战斗类）
+## 1. 清单（14 份，S07 §5.3 全部交付）
 
-| fixture | 场景 | tick | 实体 | 关键覆盖 | 字节 | SHA256 |
+| 场景 | 文件名 | 字节 | ticks | 哈希链长度 | 用例名 | 状态 |
 |---|---|---|---|---|---|---|
-| `still-60t.json` | 静止 | 60 | 4 | 缺命令分支（前 30 tick 传 0 条命令）、位姿不动 | 54474 | `f8ae76e4e216b06c741c31eb06cdda7e561ccd372c5c4cdcdbd0576b422df3bd` |
-| `straight-line-240t.json` | 直线移动 | 240 | 4 | 步行 0.225 m/tick 与冲刺 0.315 m/tick、方向反转、积分精度 | 326155 | `b8d0da2dc708a9d129835c5ae9149631d49fc66a8f55d13fdeea14c8a77148d2` |
-| `barn-collision-400t.json` | 碰撞（谷仓） | 400 | 4 | 谷仓推离到 z=±4.4 与速度清零（x=±1.5 两名玩家） | 545965 | `6f67c0e3ec241d32131d474784e9458051af5addf11e97082b595c79d23f4cfc` |
-| `fence-bounds-400t.json` | 边界（栅栏） | 400 | 4 | `limit = 40 - 0.25 - 0.4 = 39.35` 的 +z / -x 两侧夹取 | 519906 | `366d5e6d56db9149cb093b3af314c5b649d148f4443fb2777dbebb91e5afa82f` |
-| `rifle-burst-hit-120t.json` | 连射命中 | 120 | 4 玩家 + 问界羊 + 2 咩咩兵（+问号弹） | 切枪到步枪、射速节流（rpm 600 → 每 2 tick 一发）、散布累积与爆头×2、换弹 2000ms、移动目标命中与投射物；远处吃草的羊抽 6 次 `ai` 流 | 206114 | `e8c369655072fe7e3b0bea4cc884a494a94e3e81e8d6610815559ffe8005745a` |
-| `shotgun-spread-60t.json` | 霰弹散布 | 60 | 4 玩家 + 2 咩咩兵 | 切枪到 3 号槽、8 弹丸与 `seq` 派生抖动（±4°）、rpm 70 的节流（60 tick 仅 3 次击发） | 85188 | `2c05a23deeda14fe3c5b24bb1cfd3d6375ad0b2975c7bc29c9fe6fe8ec35db82` |
-| `downed-revive-140t.json` | 倒地救援 | 140 | 4 玩家 + 咩咩兵 | 倒地位 bit0、救援进度事件（每 5%）、松手中断（`reviverId` 归零）、3s 完成后 hp = 50% 上限 | 212927 | `199b8c23cf11b6374a07cc2ac6e4739eb8e04c002b6d64b403bd819e38aebe79` |
+| 静止（缺命令分支） | `still-60t.json` | 5 171 | 60 | 60 | `fixture_still_60t` | 通过 |
+| 直线移动（步行/冲刺/反向） | `straight-line-240t.json` | 10 673 | 240 | 240 | `fixture_line_move_240t` | 通过 |
+| 谷仓碰撞 | `barn-collision-400t.json` | 14 012 | 400 | 400 | `fixture_barn_collision_400t` | 通过 |
+| 栅栏边界 | `fence-bounds-400t.json` | 13 810 | 400 | 400 | `fixture_fence_bounds_400t` | 通过 |
+| 步枪连射命中 | `rifle-burst-hit-120t.json` | 10 740 | 120 | 120 | `fixture_rifle_burst_hit_120t` | 通过 |
+| 霰弹散布 | `shotgun-spread-60t.json` | 6 771 | 60 | 60 | `fixture_shotgun_spread_60t` | 通过 |
+| 倒地救援 | `downed-revive-140t.json` | 10 263 | 140 | 140 | `fixture_downed_revive_140t` | 通过 |
+| 咩咩兵追踪与撕咬 | `sheep-grunt-ai-600t.json` | 21 043 | 600 | 600 | `fixture_sheep_grunt_600t` | 通过 |
+| 冲锋羊冲撞 | `sheep-ram-charge-300t.json` | 12 565 | 300 | 300 | `fixture_sheep_ram_charge_300t` | 通过 |
+| 问界羊保距与问号弹 | `sheep-elite-bolt-300t.json` | 12 581 | 300 | 300 | `fixture_sheep_elite_bolt_300t` | 通过 |
+| 羊王阶段与召唤 | `sheep-king-phases-900t.json` | 55 049 | 900 | 900 | `fixture_sheep_king_phases_900t` | 通过 |
+| 波次导演 1→5 | `wave-director-1to5-1200t.json` | 56 505 | 1 200 | 1 200 | `fixture_wave_director_1to5_1200t` | 通过（§6 缺口 1） |
+| 量化快照 round-trip | `snapshot-roundtrip-240t.json` | 13 161 | 240 | 240 | `fixture_snapshot_roundtrip_240t` | 通过 |
+| RNG 三流归属 | `rng-streams-600t.json` | 29 947 | 600 | 600 | `fixture_stream_ownership_600t` | 通过 |
 
-总体积 **1 950 729 B**，门限 2 097 152 B（§5.5 / ADR-010 §8）→ **余量仅 146 423 B**，见 §5/§6 的体积门冲突：其后的 7 份场景向量在本门限下已放不进来。
+总体积 **272 291 B**；单份最大 **56 505 B**（`wave-director-1to5-1200t`）。门限（S07 §5.5 / ADR-010 §8）：**单份 ≤ 65 536 B、14 份合计 ≤ 524 288 B** → 分别余 8 031 B / 252 000 B。
 
-命令流（每份都是 4 名玩家、同一套命令槽位语义）：
+旧门限「14 份 < 2 MB」**作废**，理由见 §5：旧口径要把每 tick 全量投影文本落盘（实测 ~950 B/tick），14 份必然 > 6 MB；新口径只落哈希链（~8 B/tick）与 3–5 个关键帧，14 份缩到 272 KB，而比较仍是逐 tick、逐字段、逐位。
 
-- `still-60t`：tick 1–30 传 **0 条命令**（走 v1 `applyCommandToState(state, undefined)` 的速度归零分支）；tick 31–60 传 4 条全零命令。
-- `straight-line-240t`：tick 1–120 `moveX=1, yaw=+PI/2, buttons=0`（+x 步行 4.5 m/s）；tick 121–240 `moveX=1, yaw=-PI/2, buttons=2`（-x 冲刺 6.3 m/s）。
-- `barn-collision-400t`：全程 `moveX=1, yaw=PI`（-z 步行）。x=±1.5 的两名玩家被谷仓挡住并清零 z 速度；x=±4.5 的两名玩家从谷仓外侧走过、最终被远端栅栏夹到 -39.35。
-- `fence-bounds-400t`：玩家 1/2 `yaw=0`（+z）被夹到 +39.35；玩家 3/4 `yaw=-PI/2`（-x）被夹到 -39.35。
-- `rifle-burst-hit-120t`：1 号玩家 tick 1 `buttons=64 (switchWeapon), switchTo=1`，之后全程 `yaw=PI`（朝向 -z）、`pitch=-0.03`（**必须俯射**：射击起点是眼高 1.6m，羊的命中盒顶只有 1.15–1.29m）；tick 2–60 按住开火（30 发打空弹匣）、tick 61–100 按住换弹、tick 101–120 再开火。2 号玩家向 +z 步行、4 号玩家向 -x 步行、3 号玩家原地不动。
-- `shotgun-spread-60t`：1 号玩家 tick 1 `buttons=64, switchTo=2`，tick 2 起按住开火（rpm 70 → `t=100/957/1814ms` 三次击发）；2 号玩家向 -x 冲刺。
-- `downed-revive-140t`：1 号玩家初态 hp=8 / armor=0（§2 的初态约定）后全程零命令；2 号玩家 tick 1–8 向 -x 走（`moveX=1, yaw=-PI/2`）靠近 1 号玩家，tick 9–28 按住 `interact` 推进救援、tick 29–33 松手（中断）、tick 34–140 继续按住直到完成。
+`--filter=fixture` 共 19 个用例：上表 14 个 + `fixture_fnv_self_test`（FNV-1a 自检）+ 4 个"篡改必须被抓到"的负向用例（`fixture_tampered_projection_reports_diff` / `fixture_tampered_digest_tick_diff` / `fixture_tampered_script_tick_diff` / `fixture_tampered_hash_fails_before_ticks`）。
 
-## 2. 世界初态（schema 之外的隐含约定）
+## 2. 向量口径（schema `version = 2`）
 
-`seed` 交给 `createWorld(seed)`，而 v1 的 `createWorld` 会**立刻按 `arena.playerSpawnPoints` 生成 4 名玩家**（id 1..4 升序，hp/armor 取 `entity.baseStats.player` = 100/50，team 0，y=0）。C++ 侧必须按同一语义构造（`server/tests/fixture_test.cpp` 的 `createFixtureWorld`）；`commands[]` 的**槽位**语义与 v1 `applyCommands` 一致：第 k 条命令给升序第 k 名玩家，缺命令的槽位速度归零。
+一份向量 = 跑这个场景所需的最小信息 + 校验用的压缩产物。键序冻结，读取器逐键校验（`server/tests/fixture_io.cpp`）：
 
-羊群/战斗类场景还需要第二层初态（生成羊、覆盖玩家初态），它同样**不在 schema 里**：导出侧是 `tools/export-fixtures.mjs` 每个场景的 `setup(world)`，C++ 侧是 `fixture_test.cpp::applyScenarioSetup(name, world)`，两侧逐字同表。生成原语与 v1 `ai/director.ts` 的生成路径同形（`spawnEntity('sheep')` → `applySheepKind` → `state = graze`；C++ 复用 `waves::spawnSheepAt`）：
+```text
+name, version, seed, dtMs, configHash, ticks,
+setup { players[{id,hp,armor}], sheep[{kind,x,z}] },
+director { startWave },
+script [ {from,to,commands[{id,moveX,moveY,yaw,pitch,buttons,switchTo}]} ],   # 按 tick 的 RLE
+keyframes [ {tick, entities[], events[], rngState} ],
+snapshot [ {tick, records, encodeHash, decodeHash} ],
+hashChain [ 每 tick 一个 16 位十六进制 ]
+```
 
-| fixture | 初态（`createWorld` 之后、第一个 tick 之前） |
+- **全量投影（每 tick 的字节口径）**：字段级文本，字段与顺序沿用 v1 冻结 schema（§5.1），double 一律 `%.17g`：
+  `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`。实体顺序 = `activeIds` 顺序。
+- **逐帧哈希链**：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`。两侧都按 `%.17g` 重算同一段文本再串链，链上只落 8 字节/tick。
+- **关键帧**：少量 tick 的**全量投影**（实体 + 事件 + 三流 RNG 状态）。命中不一致时先比关键帧，能直接给出**字段名**（例：`entities[2].pos.x`、`snapshot.encodeHash`），比链哈希更好定位；链负责覆盖**每一个** tick。
+- **快照组**（仅 `snapshot-roundtrip-240t`）：`encodeHash` = 对 v1 量化后的 15 字节实体记录块直接算 FNV（无报文头）；`decodeHash` = 对解码后的字段投影文本算 FNV。两侧分别走真实量化器/真实解码器。
+- **`configHash`** = §5.6 常量表（武器与散布、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则）的 8 位十六进制摘要，两侧必须一字不差（当前 `19a978ea`）。
+- **强度说明**：旧口径把每帧投影**存**下来比，新口径把每帧投影**重算**出来比——比较的字节表示完全相同（同一份 `%.17g` 文本、同一 FNV），所以"逐位"强度没有下降；新口径另外把事件从"只比条数"升级为逐字段比较（x/y/z/value）。**唯一的信息损失**是非关键帧只留 8 字节摘要，字段级差异要靠 §6 的 `[ptext]` 出口再跑一次定位——这是本次体积门换来的取舍，已记在 ADR-010 §8。
+
+## 3. 世界初态（`setup`，两侧同表）
+
+`seed` 交给 `createWorld(seed)`，而 v1 的 `createWorld` 会**立刻按 `arena.playerSpawnPoints` 生成 4 名玩家**（id 1..4 升序，hp/armor 取 `entity.baseStats.player` = 100/50，team 0，y=0）。C++ 侧同语义（`fixture_test.cpp::createFixtureWorld`）。
+
+第二层初态现在**在文件里**（`setup`），读取器逐字段校验，不再是"隐含约定"：
+
+| 场景 | `setup.players` | `setup.sheep`（kind@(x,z)） | `director.startWave` |
+|---|---|---|---|
+| `still-60t` / `straight-line-240t` / `barn-collision-400t` / `fence-bounds-400t` | — | — | 0 |
+| `rifle-burst-hit-120t` | — | `elite@(-4.5,-15)` `grunt@(-9,-2)` `grunt@(35,-35)` | 0 |
+| `shotgun-spread-60t` | — | `grunt@(-4.5,-2)` `grunt@(-7,-3)` | 0 |
+| `downed-revive-140t` | id1 `hp=8, armor=0` | `grunt@(-4.5,5.8)` | 0 |
+| `sheep-grunt-ai-600t` | — | `grunt@(-4.5,-6)` `grunt@(-6.5,-5.5)` `grunt@(-2.5,-6.5)` `grunt@(35,-35)` | 0 |
+| `sheep-ram-charge-300t` | — | `ram@(-4.5,-8)` `grunt@(35,-35)` | 0 |
+| `sheep-elite-bolt-300t` | — | `elite@(-4.5,-9)` `grunt@(22,0)` | 0 |
+| `sheep-king-phases-900t` | — | `king@(22,2)` `grunt@(35,-35)` | 0 |
+| `rng-streams-600t` | — | `king@(22,2)` `grunt@(35,-35)` `grunt@(-35,35)` | 0 |
+| `snapshot-roundtrip-240t` | — | `grunt@(-4.5,-6)` `grunt@(-7,-3)` | 0 |
+| `wave-director-1to5-1200t` | — | — | 1 |
+
+生成原语与 v1 `ai/director.ts` 的生成路径同形（`spawnEntity('sheep')` → `applySheepKind` → `state = graze`；C++ 复用 `waves::spawnSheepAt`）。`(35,-35)` / `(-35,35)` / `(22,0)` 这类远点羊用来保证 `ai`/`spawn` 流有确定次数的抽取（§6 缺口 3）。
+
+**导演约定**：`DirectorState` 在 `stepWorld` **之外**，由外部每 tick 驱动（S09 §5.7 / OQ-11 已冻结）。两侧循环都是 `stepWorld(...)` → `planWave/updateDirector(...)`（首帧之前先 `planWave`），所以 `wave-director-1to5-1200t` 的 `spawn` 流消费与羊群生成能逐位对齐。
+
+## 4. 命令脚本（`script`）
+
+`script` 只记录**实际发出的玩家命令**，按 tick 的 RLE（`from`/`to` 闭区间）。槽位语义与 v1 `applyCommands` 一致：第 k 条命令给**升序第 k 名玩家**，缺命令的槽位速度归零（`commands: []` 即"全缺"分支）。
+
+| 场景 | 命令模式 |
 |---|---|
-| `rifle-burst-hit-120t` | `elite @ (-4.5, -15)`、`grunt @ (-9, -2)`、`grunt @ (35, -35)`（全程在 35m 视野外的吃草羊，用来抽 `ai` 流） |
-| `shotgun-spread-60t` | `grunt @ (-4.5, -2)`、`grunt @ (-7, -3)` |
-| `downed-revive-140t` | 1 号玩家 `hp = 8`、`armor = 0`；`grunt @ (-4.5, 5.8)` |
+| `still-60t` | tick 1–30 传 0 条（速度归零分支）；31–60 传 4 条全零 |
+| `straight-line-240t` | 1–120 `moveX=1, yaw=+PI/2`（+x 步行 4.5 m/s）；121–240 `moveX=1, yaw=-PI/2, buttons=2`（-x 冲刺 6.3 m/s） |
+| `barn-collision-400t` | 全程 `moveX=1, yaw=PI`（-z 步行）：x=±1.5 被谷仓挡住并清零 z 速度，x=±4.5 从谷仓外侧走到远端栅栏被夹到 -39.35 |
+| `fence-bounds-400t` | 玩家 1/2 `yaw=0`（+z）夹到 +39.35；玩家 3/4 `yaw=-PI/2`（-x）夹到 -39.35 |
+| `rifle-burst-hit-120t` | 1 号 tick 1 `switchWeapon→1`，之后 `yaw=PI`、`pitch=-0.03`（**必须俯射**：射击起点眼高 1.6 m，羊命中盒顶 1.15–1.29 m）；2–60 开火（30 发打空）、61–100 换弹、101–120 再开火 |
+| `shotgun-spread-60t` | 1 号 tick 1 `switchWeapon→2`，tick 2 起按住开火（rpm 70 → 60 tick 内 3 次击发）；2 号向 -x 冲刺 |
+| `downed-revive-140t` | 1 号全程零命令；2 号 1–8 向 -x 走、9–28 按住 `interact`、29–33 松手（中断）、34–140 按住到完成 |
+| `sheep-grunt-ai-600t` / `sheep-ram-charge-300t` / `sheep-elite-bolt-300t` | 全 300/600 tick 空命令：玩家不动，纯看羊形 AI 自己走（追踪、冲锋、保距+问号弹） |
+| `sheep-king-phases-900t` | 78 段脉冲：每 24 tick 只发 1 tick 的四条开火命令（其余空），把 2400 hp 的羊王压到 66%/33% 两个阈值并触发召唤 |
+| `wave-director-1to5-1200t` | 36 段：交替"按住开火 / 切枪 / 停火"，让 1–5 波按预算出生并被清掉 |
+| `snapshot-roundtrip-240t` | 4 段（含 1 号 tick 1 切枪），第 1/60/120/180/240 tick 各取一次量化快照 |
+| `rng-streams-600t` | 13 段开火/停火交替，既打羊王又让玩家被咬，覆盖 `ai`/`spawn` 两个流的多次抽取 |
 
-新增场景时**必须两侧同时改这张表**，否则第一个 tick 就会以 `entities[i].*` 失败（这层约定与 4 名玩家出生点一样，是"两侧同表"的隐含初态，不是可以从文件里读出来的东西）。
-
-## 3. 再生成（工作目录 = 仓库根）
+## 5. 再生成与体积门（工作目录 = 仓库根）
 
 ```text
 node tools/export-fixtures.mjs                 # 写盘（缺派生副本时自动从只读源复制，排除 node_modules/.git）
@@ -51,41 +105,45 @@ node tools/export-fixtures.mjs --only <name[,name]>   # 只渲染选中的子集
 node tools/export-fixtures.mjs --root <副本> --out <目录>
 ```
 
-导出侧对 v1 做了两件事（都只作用于进程内 / 可写副本，源仓库不变）：
+**体积门**：单份 ≤ 65 536 B、14 份合计 ≤ 524 288 B（`export-fixtures.mjs` 的 `SIZE_GATE_FILE_BYTES` / `SIZE_GATE_TOTAL_BYTES`），写盘**之前**判定。当前 272 291 B / 最大 56 505 B。
+
+> **旧门限「14 份 < 2 MB」作废**（ADR-010 §8）：它是给旧口径（每 tick 全量投影落盘）定的，在旧口径下 14 份必然放不下（7 份已达 1 950 729 B，实测 ~950 B/tick）。新口径把"逐帧证据"换成"逐帧哈希链 + 少量关键帧"，同一批场景缩到 272 KB，剩下的余量足够后续场景继续加。门限从"2 MB 只为装下文本"改成"64 KB/份、512 KB/批"，判据不变：**仍然是每一 tick 的同一份 `%.17g` 投影逐位比较**。
+
+导出侧对 v1 做了三件事（都只作用于进程内 / 可写副本，源仓库不变）：
 
 1. **共享整数表替换**：把 v1 的 `Math.sin/cos/atan2/asin` 换成 `docs/evidence/fixtures/trig-table.json` 上的 `sinUnits/cosUnits/angleUnitsFromVector/angleUnitsFromRatio`（与 `server/src/core/trig_table.hpp` 1:1 同口径）。
-2. **RNG 状态口径**（§5.2）：用计数包装统计每流抽取次数，再用同一推导 `derived = (imul(seed>>>0, 2654435761) + streamId) >>> 0`（ai 1 / spawn 2 / fx 3）重放同样次数得到 `mulberry32` 的内部状态 `a`。C++ 侧直接读 `World::rng.<stream>.a`（每 tick 比较三流状态）。
-3. **基线纪律（可判定）**：默认拒绝 `--root` 指向只读源；启动时逐文件比对派生副本与只读源（`packages/shared/src`，不一致直接失败，除非显式 `--allow-patched-copy`）；结束时比对只读源的 (文件数, 总字节, 最新 mtime) 指纹，被写入即报错；体积门在写盘**之前**判定（门失败时不留下超限生成物）。
+2. **RNG 状态口径**（§5.2）：用计数包装统计每流抽取次数，再用同一推导 `derived = (imul(seed>>>0, 2654435761) + streamId) >>> 0`（ai 1 / spawn 2 / fx 3）重放同样次数得到 `mulberry32` 的内部状态 `a`。C++ 侧直接读 `World::rng.<stream>.a`。
+3. **基线纪律（可判定）**：默认拒绝 `--root` 指向只读源；启动时逐文件比对派生副本与只读源（`packages/shared/src`，不一致直接失败，除非显式 `--allow-patched-copy`）；结束时比对只读源的 (文件数, 总字节, 最新 mtime) 指纹，被写入即报错。`Math.round`/`Math.hypot` 这类 JS 语义差异**不在**本批补丁内（见 §6 风险 1/2）。
 
-## 4. 判读不通过
+## 6. 判读不通过、已知缺口与风险
 
 比较器只打印**第一处**差异，格式冻结：`DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>`（double 用 `bit_cast<uint64_t>` 的 16 位十六进制）。处理顺序：
 
-1. `field=configHash` 且 `comparedTicks=0` → 常量表两侧已经漂移（先查 `server/src/config/**`、`server/src/sim/arena.hpp`）。
-2. 某个 tick 的 `entities[i].pos/yaw/...` → 先确认 v1 侧没被改动（`git -C D:\projects\tmp\angry-chen-bak status` 必须干净、且该仓库只读），再查 C++ 侧的运算顺序（ADR-010 §2：`pos += vel * dt` 的求值顺序不得"优化"）。
-3. fixture 是**生成物**：禁止手工编辑。数值规则变更必须先改 v1 或显式重建向量，再两侧同时改（ADR-010 §7）。
-4. `entities[].hp` 是 **double**，不是整数：v1 的护甲吸收会把玩家 hp 打成小数（例：步枪命中后 `96.8`）→ 读取器按 double 解析、比较仍走 `bit_cast` 逐位（`fixture_io.hpp` 的 `FixtureEntity::hp`）。同一 tick 的 `flags` 位表两侧同源：bit0 `downed` / bit1 `rageMode` / bit2 `reloading` / bit5 `idle` 有来源（`reloading` 用该 tick 结束后的 `world.timeMs` 判 `isRageActive`/`isReloading`），bit3/bit4 两侧都不产出（恒 0）。
+1. `field=configHash`（`comparedTicks=0`）→ 常量表两侧已漂移：先查 `server/src/config/**`、`server/src/sim/arena.hpp`。
+2. `field=hashChain` → 该 tick 的**全量投影**已经不一致。打开两侧的投影文本出口对表（`node tools/export-fixtures.mjs --trace <name> --trace-ticks <n> --trace-text` 与 C++ 的 `AC_FIXTURE_PTEXT=1` + `AC_FIXTURE_DUMP=<tick>`），逐字段找到第一个不同的字符；`field=entities[i].*` / `evt[...]` / `rng` 这类关键帧字段名则直接给出出错字段。
+3. `field=snapshot.encodeHash` → 15 字节量化记录块（无报文头、无计数字节）逐字节不一致：查 `quantizeSnapshotEntity` 与 `net::writeEntityRecord` 的字段/位宽。`snapshot.decodeHash` ≠ 则是解码投影字段不一致。
+4. fixture 是**生成物**：禁止手工编辑。数值规则变更必须先改 v1 或显式重建向量，再两侧同时改（ADR-010 §7）。**禁止改期望值迁就实现**——本批 4 处不一致全部是 C++ 侧实现缺陷（见下文），改的是实现，不是向量。
+5. `entities[].hp` 是 **double**（护甲吸收会产生小数，例：步枪命中后 `96.8`）→ 读取器按 double 解析、比较走 `bit_cast` 逐位。`flags` 位表两侧同源：bit0 `downed` / bit1 `rageMode` / bit2 `reloading` / bit5 `idle`。
 
-## 5. 尚未交付的场景与所有者（S07 §5.3 的其余 7 行）
+**本批由向量抓到的 C++ 实现缺陷（全部已修，改的是实现）**：
 
-**卡点先说清楚：不是能力缺口，是体积门。** 冻结的 §5.5 体积门是「14 份 < 2 MB」，而 §5.1 又冻结了「每 tick 全量投影 + `%.17g`」：已交付 7 份占 **1 950 729 B**，只剩 **146 423 B**；而每 tick 一条实体投影的实测代价是 **950.2 B/tick**（用 `downed-revive-140t` 反推：212 927 B 减去 560 条命令行 79 903 B 后 / 140 tick，5 实体 + 空命令的口径），所以**最小的**剩余场景（`sheep-ram-charge-300t`：300 tick ×（4 玩家 + 1 冲撞羊）+ 空命令）也要 ≈ **285 051 B > 146 423 B**；连"一只羊都不生成"的下界（300 tick × 4 名常驻玩家 ≈ 240 KB，`fence-bounds-400t` 反推 ≈800 B/tick）也已经超了。C++ 侧的羊形 AI/冲锋/问号弹/羊王/波次导演/救援都已就位（`--filter=ai` 36/36、`--filter=waves` 16/16），这 7 份现在缺的是"放得下的向量格式或分档门限"，见 §6 第 3 条（**需裁决**）。
+| # | 缺陷 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `resetWorld` 的 memset 把 `FlockNeighbors::capacity` 清零，而 `resetFlockNeighbors` 没恢复 | 邻居列表恒空 → C++ 羊群聚集完全失效（v1 有 1–2 个邻居） | `server/src/ai/sheep_state.hpp`：`resetFlockNeighbors` 里写回 `kSheepMaxNeighbors` |
+| 2 | 空间网格格边长用 4 m / 20×20，v1 是 `createSpatialGrid(SHEEP_AI.neighborRadiusM)` = 3 m / 27×27 | 分离遍历的**配对次序**不同 → 位置差 ~1e-3（tick 269/317/342 起） | `server/src/sim/spatial_grid.hpp`：`kSpatialCellMeters = kSheepAi.neighborRadiusM`、`kSpatialCellsPerAxis = 27` |
+| 3 | 分离遍历按"格对"分组（同格、东、南、东南、西南），v1 是"按实体 a：同格 j>i → 东/北/东北/西北" | 浮点累加次序不同 → 1 ULP 级位置差（tick 269 起） | `server/src/sim/collision.cpp`：`separateEntities` 逐字对齐 v1 的两层循环与偏移表；方向先取 `1/distance` 再乘（`dx / d` 与 `dx * (1 / d)` 可能差 1 ULP） |
+| 4 | 快照哈希从 `kSnapshotHeadBytes`（22 B，到 `baselineTick` 为止）起算，漏掉了 1 字节记录数 | 记录块整体错位 1 字节 → `snapshot.encodeHash` 必错 | `server/tests/fixture_test.cpp`：块起点 = `kSnapshotHeadBytes + 1`（报文格式本身不动） |
 
-| fixture（§5.3） | 依赖的 C++ 能力 | 现状与卡点 |
-|---|---|---|
-| `sheep-grunt-ai-600t` | 羊形 AI 与聚集（S09） | 能力就位（本批已用咩咩兵/问界羊跑通同一条 AI 路径）；卡 §5.5 体积门（600 tick × 5 实体 + 空命令 ≈ 570 KB） |
-| `sheep-ram-charge-300t` | 冲锋/硬直（S09） | 同上（≈285 KB，已超余量） |
-| `sheep-elite-bolt-300t` | 距离保持与投射物生命周期（S09） | 能力就位（`rifle-burst-hit-120t` 已含问界羊的保距与问号弹投影）；卡体积门 |
-| `sheep-king-phases-900t` | 阶段阈值与召唤（S09） | 能力就位；卡体积门（900 tick ⇒ ≥ 855 KB），且要跨阶段阈值必须先造伤害（同一份向量同时要覆盖羊王 + 玩家射击）；召唤抖动是 `spawn` 流的消费方之一 |
-| `wave-director-1to5-1200t` | 波次预算与出生点选择（S09） | **两处卡点**：① 体积门（1200 tick ⇒ ≥ 1.1 MB，1–5 波还要几十只羊）；② 导演仍未接进 tick 循环（OQ-11：`DirectorState` 归房间/对局流程，两侧的 `stepWorld` 都不调用 `updateDirector`，见 `server/README.md` §10.1-3/§10.1-4）——要入库得先冻结"外部每 tick 驱动导演"的约定 |
-| `snapshot-roundtrip-240t` | 量化快照 round-trip（S12） | **格式卡点**：冻结的 schema（§5.3）只有 `expected.{entities,events,rngState}`，没有承载"编码→解码后位型等价"的字段；要表达它就得往 schema 里加字段组（本批不允许发明新格式），或按 S12 的自有向量类型另立一类 |
-| `rng-streams-600t` | 三流归属（依赖上面全部消费方） | `spawn` 流的两处消费方是波次导演（出生点选择/抖动）与羊王召唤抖动，`ai` 流是吃草重选（本批已由 `rifle-burst-hit-120t` 抽到 6 次），`fx` 流按 ADR-010 不得参与模拟 → 要覆盖"三流归属"仍需导演/羊王进场；另加体积门（600 tick） |
+**已知覆盖缺口（诚实记录，不能在报告里含糊）**：
 
-导出时刻就有消费者，才能验证"这份向量到底在测什么"——所以它们随各自的计划一起入库，而不是现在冻一批没人验证过的语义猜测。同一原因：§5.6 的 `configHash` 覆盖「武器表与散布常量、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则」，这些组在 C++ 侧落地前，任何 14 场景的 hash 都不可能通过（本批已全部落地，`configHash = 19a978ea` 两侧一致）。
+1. `wave-director-1to5-1200t` 名字里的 **1→5 只是意图**：1200 tick 内导演只走到 **wave 1**（18 只已达本波上限，`spawned=18/total=18`）。要真覆盖 1–5 需要 5 波 × （波内清理 + 20 s 间歇），远超 1200 tick；名字按人类裁决保留，缺口记在这里。
+2. `sheep-elite-bolt-300t` 的问号弹只在**距离 ≤ ~21 m** 时命中：v1 的 `advanceProjectiles` 把 `aliveMs` 加了两次（`BOLT_LIFE_MS=3000` → 实际 30 tick 生命周期），保距羊停在 ~25–35 m 就永远打不到。该行为是 v1 冻结语义，向量按原样记录（不许"修好"v1）。
+3. `rng-streams-600t` 的 `fx` 流**抽取次数为 0**（没有任何表现层消费者），所以它验证的是 `ai`/`spawn` 两流的归属与状态推进；`fx` 只保证"两侧读取器都读到 0 次抽取后的同一状态"。
+4. 羊王 2400 hp 与 4 人满 DPS 不相容（4 人连续开火 ~150 tick 就能打死），所以 `sheep-king-phases-900t` 用 24 tick 一次的脉冲射击把节奏压到 900 tick 才跨两个阈值；`playerDowned` 事件因此只在后段出现。
 
-**本次交付后的现状**：导出器已补上「生成羊群 + 空命令」的驱动（`scenario.setup` + `--only`，见 §2/§3），羊群 AI、冲锋/撕咬、问号弹、倒地救援、护甲吸收小数 hp、`reloading`/`downed` 位都已进入逐位对拍（`--filter=fixture` 9/9、全量 `TESTS 471/471`）；§5.3 的 14 行里 **7 行已交付、7 行待裁决**，卡点如上表（全部是体积门，另有两处格式/链路卡点）。
+**风险（留给后续计划）**：
 
-## 6. 交给后续计划的已知风险
-
-1. **`Math.round`**：v1/JS 的语义是 `floor(x + 0.5)`（`-1.5 → -1`），C 的 `std::round`/`llround` 是「远离 0」（`-1.5 → -2`）。跨语言量化必须用 `floor(x + 0.5)`（S02 `quantizeAngle` 已经是这个口径）。
-2. **`Math.hypot`**：v1 `combat/resolve.ts:176` 用 `Math.hypot(halfWidthM, halfDepthM)` 算羊形命中盒对角线；它**不等于** `sqrt(a*a + b*b)`（逐位）。S08 落地前必须先冻结这条口径。
-3. **体积门**：§5.5 的「14 份 < 2 MB」与 §5.1 的「每 tick 全量投影 + `%.17g`」不相容——**本批已经撞到墙上**：7 份 = 1 950 729 B（门限 2 097 152 B，余 146 423 B），而剩余 7 份里最小的一份也要 ≈285 KB（§5 的实测口径）。需要裁决：放宽为最短往返表示，或按里程碑分档抬高门限 / 把口径改回"对拍向量文件"。注意 §6 的取证命令是**目录口径**（`Get-ChildItem -Recurse -File | Measure-Object Length -Sum`），当前实测 ≈**2.674 MB / 9 个文件**（含 S02 的 `trig-table.json` 709 640 B 与本 README；精确字节每次由脚本打印，且会随本文件自身的大小微动）——已超门限约 576 KB；`export-fixtures.mjs` 每次都会把这行数字打印出来。
+1. **`Math.round`**：v1/JS 语义是 `floor(x + 0.5)`（`-1.5 → -1`），C 的 `std::round`/`llround` 是"远离 0"（`-1.5 → -2`）。跨语言量化必须用 `floor(x + 0.5)`（S02 `quantizeAngle` 已经是这个口径）。
+2. **`Math.hypot`**：v1 `combat/resolve.ts` 的命中盒对角线用 `Math.hypot`，它**不等于** `sqrt(a*a + b*b)`（逐位）。C++ 侧 `resolve.cpp` 用 `sqrt`，目前只影响"早退候选"（最多 1 ULP，不影响命中集合），本批向量也没有踩到边界；一旦有场景踩到，必须先冻结这条口径。
+3. **投影文本出口是调试口**：`--trace` / `--trace-text`（导出侧）与 `AC_FIXTURE_DUMP` / `AC_FIXTURE_PTEXT`（C++ 侧）只影响输出、不参与比较，别把它们当成协议。
+4. **只读源指纹**：`export-fixtures.mjs` 结束时比对 `packages/shared/src` 的 (文件数, 总字节, mtime)；CI 上若 v1 源被并行任务动过，导出会直接失败（这是有意的）。

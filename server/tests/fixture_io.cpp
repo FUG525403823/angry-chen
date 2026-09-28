@@ -224,13 +224,7 @@ bool readUint8(Reader& reader, uint8_t& out, const char* what) {
 bool readCommand(Reader& reader, FixtureCommand& out) {
   if (!reader.literal('{')) return false;
   if (!reader.key("id")) return false;
-  if (!readUint16(reader, out.id, "commands[].id")) return false;
-  if (!reader.literal(',')) return false;
-  if (!reader.key("seq")) return false;
-  if (!readUint16(reader, out.seq, "commands[].seq")) return false;
-  if (!reader.literal(',')) return false;
-  if (!reader.key("clientTick")) return false;
-  if (!readUint32(reader, out.clientTick, "commands[].clientTick")) return false;
+  if (!readUint16(reader, out.id, "script[].commands[].id")) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("moveX")) return false;
   if (!reader.doubleValue(out.moveX)) return false;
@@ -245,10 +239,10 @@ bool readCommand(Reader& reader, FixtureCommand& out) {
   if (!reader.doubleValue(out.pitch)) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("buttons")) return false;
-  if (!readUint8(reader, out.buttons, "commands[].buttons")) return false;
+  if (!readUint8(reader, out.buttons, "script[].commands[].buttons")) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("switchTo")) return false;
-  if (!readUint8(reader, out.switchTo, "commands[].switchTo")) return false;
+  if (!readUint8(reader, out.switchTo, "script[].commands[].switchTo")) return false;
   return reader.literal('}');
 }
 
@@ -301,46 +295,28 @@ bool readEvent(Reader& reader, FixtureEvent& out) {
   if (!reader.key("targetId")) return false;
   if (!readUint16(reader, out.targetId, "events[].targetId")) return false;
   if (!reader.literal(',')) return false;
+  if (!reader.key("x")) return false;
+  if (!reader.doubleValue(out.x)) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("y")) return false;
+  if (!reader.doubleValue(out.y)) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("z")) return false;
+  if (!reader.doubleValue(out.z)) return false;
+  if (!reader.literal(',')) return false;
   if (!reader.key("value")) return false;
-  int64_t value = 0;
-  if (!reader.signedValue(value)) return false;
-  out.value = static_cast<int32_t>(value);
+  // value 按 double 读：v1 的事件值有小数（护甲吸收后的伤害），整数读取器会造成假差异。
+  if (!reader.doubleValue(out.value)) return false;
   return reader.literal('}');
 }
 
-bool readTick(Reader& reader, FixtureTick& out) {
+// 关键帧：tick + entities + events + rngState。实体顺序 = v1 world.activeIds 的插入顺序（可能有空洞、
+// 也可能不是升序：id 复用后新实体排在末尾），所以两侧都不许对它排序或要求升序。
+bool readKeyframe(Reader& reader, FixtureKeyframe& out) {
   if (!reader.literal('{')) return false;
-  if (!reader.key("dtMs")) return false;
-  if (!readUint32(reader, out.dtMs, "ticks[].dtMs")) return false;
-  if (out.dtMs != ac::config::kStepDtMs) {
-    reader.fail("ticks[].dtMs must be 50 (S06 §5.1 固定步长)");
-    return false;
-  }
+  if (!reader.key("tick")) return false;
+  if (!readUint32(reader, out.tick, "keyframes[].tick")) return false;
   if (!reader.literal(',')) return false;
-  if (!reader.key("commands")) return false;
-  if (!reader.literal('[')) return false;
-  reader.skipWhitespace();
-  if (reader.cursor < reader.end && *reader.cursor != ']') {
-    while (true) {
-      FixtureCommand command;
-      if (!readCommand(reader, command)) return false;
-      if (!out.commands.empty() && command.id <= out.commands.back().id) {
-        reader.fail("ticks[].commands must be ascending by id");
-        return false;
-      }
-      out.commands.push_back(command);
-      reader.skipWhitespace();
-      if (reader.cursor < reader.end && *reader.cursor == ',') {
-        ++reader.cursor;
-        continue;
-      }
-      break;
-    }
-  }
-  if (!reader.literal(']')) return false;
-  if (!reader.literal(',')) return false;
-  if (!reader.key("expected")) return false;
-  if (!reader.literal('{')) return false;
   if (!reader.key("entities")) return false;
   if (!reader.literal('[')) return false;
   reader.skipWhitespace();
@@ -348,11 +324,7 @@ bool readTick(Reader& reader, FixtureTick& out) {
     while (true) {
       FixtureEntity entity;
       if (!readEntity(reader, entity)) return false;
-      if (!out.entities.empty() && entity.id <= out.entities.back().id) {
-        reader.fail("expected.entities must be ascending by id");
-        return false;
-      }
-      out.entities.push_back(entity);
+      out.entities.push_back(std::move(entity));
       reader.skipWhitespace();
       if (reader.cursor < reader.end && *reader.cursor == ',') {
         ++reader.cursor;
@@ -370,7 +342,7 @@ bool readTick(Reader& reader, FixtureTick& out) {
     while (true) {
       FixtureEvent event;
       if (!readEvent(reader, event)) return false;
-      out.events.push_back(event);
+      out.events.push_back(std::move(event));
       reader.skipWhitespace();
       if (reader.cursor < reader.end && *reader.cursor == ',') {
         ++reader.cursor;
@@ -392,8 +364,127 @@ bool readTick(Reader& reader, FixtureTick& out) {
   if (!reader.key("fx")) return false;
   if (!readUint32(reader, out.rng.fx, "rngState.fx")) return false;
   if (!reader.literal('}')) return false;
-  if (!reader.literal('}')) return false;
   return reader.literal('}');
+}
+
+bool readSetup(Reader& reader, FixtureSetup& out) {
+  if (!reader.literal('{')) return false;
+  if (!reader.key("players")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor != ']') {
+    while (true) {
+      FixturePlayerSetup player;
+      if (!reader.literal('{')) return false;
+      if (!reader.key("id")) return false;
+      if (!readUint16(reader, player.id, "setup.players[].id")) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("hp")) return false;
+      if (!reader.doubleValue(player.hp)) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("armor")) return false;
+      if (!reader.doubleValue(player.armor)) return false;
+      if (!reader.literal('}')) return false;
+      out.players.push_back(player);
+      reader.skipWhitespace();
+      if (reader.cursor < reader.end && *reader.cursor == ',') {
+        ++reader.cursor;
+        continue;
+      }
+      break;
+    }
+  }
+  if (!reader.literal(']')) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("sheep")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor != ']') {
+    while (true) {
+      FixtureSheepSetup sheep;
+      if (!reader.literal('{')) return false;
+      if (!reader.key("kind")) return false;
+      if (!reader.stringValue(sheep.kind)) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("x")) return false;
+      if (!reader.doubleValue(sheep.x)) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("z")) return false;
+      if (!reader.doubleValue(sheep.z)) return false;
+      if (!reader.literal('}')) return false;
+      out.sheep.push_back(std::move(sheep));
+      reader.skipWhitespace();
+      if (reader.cursor < reader.end && *reader.cursor == ',') {
+        ++reader.cursor;
+        continue;
+      }
+      break;
+    }
+  }
+  if (!reader.literal(']')) return false;
+  return reader.literal('}');
+}
+
+// 命令脚本的一段：{ from, to, commands[] }。按 tick 折叠，段内每条命令逐字段相同。
+bool readRun(Reader& reader, FixtureRun& out) {
+  if (!reader.literal('{')) return false;
+  if (!reader.key("from")) return false;
+  if (!readUint32(reader, out.from, "script[].from")) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("to")) return false;
+  if (!readUint32(reader, out.to, "script[].to")) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("commands")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor != ']') {
+    while (true) {
+      FixtureCommand command;
+      if (!readCommand(reader, command)) return false;
+      if (!out.commands.empty() && command.id <= out.commands.back().id) {
+        reader.fail("script[].commands must be ascending by id");
+        return false;
+      }
+      out.commands.push_back(command);
+      reader.skipWhitespace();
+      if (reader.cursor < reader.end && *reader.cursor == ',') {
+        ++reader.cursor;
+        continue;
+      }
+      break;
+    }
+  }
+  if (!reader.literal(']')) return false;
+  if (!reader.literal('}')) return false;
+  if (out.from == 0u || out.to < out.from) {
+    reader.fail("script[] run must satisfy 1 <= from <= to");
+    return false;
+  }
+  return true;
+}
+
+bool readHashHex(Reader& reader, uint64_t& out, const char* what) {
+  std::string text;
+  if (!reader.stringValue(text)) return false;
+  if (text.size() != 16u) {
+    reader.fail(std::string(what) + ": expected 16 hex chars");
+    return false;
+  }
+  uint64_t value = 0u;
+  for (const char c : text) {
+    uint64_t digit = 0u;
+    if (c >= '0' && c <= '9') {
+      digit = static_cast<uint64_t>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      digit = static_cast<uint64_t>(c - 'a') + 10u;
+    } else {
+      reader.fail(std::string(what) + ": expected lowercase hex");
+      return false;
+    }
+    value = (value << 4) | digit;
+  }
+  out = value;
+  return true;
 }
 
 bool readFixture(Reader& reader, Fixture& out) {
@@ -401,23 +492,120 @@ bool readFixture(Reader& reader, Fixture& out) {
   if (!reader.key("name")) return false;
   if (!reader.stringValue(out.name)) return false;
   if (!reader.literal(',')) return false;
+  if (!reader.key("version")) return false;
+  if (!readUint32(reader, out.version, "version")) return false;
+  if (out.version != kFixtureSchemaVersion) {
+    reader.fail("version must be 2（对拍向量口径，见 README §4）");
+    return false;
+  }
+  if (!reader.literal(',')) return false;
   if (!reader.key("seed")) return false;
   if (!readUint32(reader, out.seed, "seed")) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("dtMs")) return false;
+  uint32_t dtMs = 0u;
+  if (!readUint32(reader, dtMs, "dtMs")) return false;
+  if (dtMs != kFixtureDtMs) {
+    reader.fail("dtMs must be 50 (S06 §5.1 固定步长)");
+    return false;
+  }
   if (!reader.literal(',')) return false;
   if (!reader.key("configHash")) return false;
   if (!reader.stringValue(out.configHash)) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("ticks")) return false;
+  if (!readUint32(reader, out.ticks, "ticks")) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("setup")) return false;
+  if (!readSetup(reader, out.setup)) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("director")) return false;
+  if (!reader.literal('{')) return false;
+  if (!reader.key("startWave")) return false;
+  if (!readUint32(reader, out.startWave, "director.startWave")) return false;
+  if (!reader.literal('}')) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("script")) return false;
   if (!reader.literal('[')) return false;
   reader.skipWhitespace();
   if (reader.cursor < reader.end && *reader.cursor == ']') {
-    reader.fail("ticks must not be empty (S07 §5.4 禁止抽样跳过)");
+    reader.fail("script must not be empty (每 tick 的命令脚本是必需的)");
     return false;
   }
   while (true) {
-    FixtureTick tick;
-    if (!readTick(reader, tick)) return false;
-    out.ticks.push_back(std::move(tick));
+    FixtureRun run;
+    if (!readRun(reader, run)) return false;
+    out.script.push_back(std::move(run));
+    reader.skipWhitespace();
+    if (reader.cursor < reader.end && *reader.cursor == ',') {
+      ++reader.cursor;
+      continue;
+    }
+    break;
+  }
+  if (!reader.literal(']')) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("keyframes")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor == ']') {
+    reader.fail("keyframes must not be empty");
+    return false;
+  }
+  while (true) {
+    FixtureKeyframe frame;
+    if (!readKeyframe(reader, frame)) return false;
+    out.keyframes.push_back(std::move(frame));
+    reader.skipWhitespace();
+    if (reader.cursor < reader.end && *reader.cursor == ',') {
+      ++reader.cursor;
+      continue;
+    }
+    break;
+  }
+  if (!reader.literal(']')) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("snapshot")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor != ']') {
+    while (true) {
+      FixtureSnapshot entry;
+      if (!reader.literal('{')) return false;
+      if (!reader.key("tick")) return false;
+      if (!readUint32(reader, entry.tick, "snapshot[].tick")) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("records")) return false;
+      if (!readUint32(reader, entry.records, "snapshot[].records")) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("encodeHash")) return false;
+      if (!readHashHex(reader, entry.encodeHash, "snapshot[].encodeHash")) return false;
+      if (!reader.literal(',')) return false;
+      if (!reader.key("decodeHash")) return false;
+      if (!readHashHex(reader, entry.decodeHash, "snapshot[].decodeHash")) return false;
+      if (!reader.literal('}')) return false;
+      out.snapshot.push_back(entry);
+      reader.skipWhitespace();
+      if (reader.cursor < reader.end && *reader.cursor == ',') {
+        ++reader.cursor;
+        continue;
+      }
+      break;
+    }
+  }
+  if (!reader.literal(']')) return false;
+  if (!reader.literal(',')) return false;
+  if (!reader.key("hashChain")) return false;
+  if (!reader.literal('[')) return false;
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor == ']') {
+    reader.fail("hashChain must not be empty");
+    return false;
+  }
+  while (true) {
+    uint64_t value = 0u;
+    if (!readHashHex(reader, value, "hashChain[]")) return false;
+    out.hashChain.push_back(value);
     reader.skipWhitespace();
     if (reader.cursor < reader.end && *reader.cursor == ',') {
       ++reader.cursor;
@@ -427,6 +615,20 @@ bool readFixture(Reader& reader, Fixture& out) {
   }
   if (!reader.literal(']')) return false;
   if (!reader.literal('}')) return false;
+  if (out.hashChain.size() != out.ticks) {
+    reader.fail("hashChain length must equal ticks");
+    return false;
+  }
+  if (!out.scriptCoversAllTicks()) {
+    reader.fail("script must cover every tick in 1..ticks without gaps");
+    return false;
+  }
+  for (const FixtureKeyframe& frame : out.keyframes) {
+    if (frame.tick == 0u || frame.tick > out.ticks) {
+      reader.fail("keyframes[].tick out of range");
+      return false;
+    }
+  }
   return reader.finish();
 }
 
@@ -480,6 +682,118 @@ bool loadFixtureFile(const std::string& path, Fixture& out, std::string& error) 
 
 bool loadFixtureByName(const std::string& name, Fixture& out, std::string& error) {
   return loadFixtureFile(fixtureDir() + "/" + name + ".json", out, error);
+}
+
+bool Fixture::scriptCoversAllTicks() const {
+  uint32_t expected = 1u;
+  for (const FixtureRun& run : script) {
+    if (run.from != expected) return false;
+    expected = run.to + 1u;
+  }
+  return expected == ticks + 1u;
+}
+
+bool Fixture::commandAt(uint32_t tick, std::vector<FixtureCommand>& out) const {
+  out.clear();
+  if (tick == 0u || tick > ticks) return false;
+  for (const FixtureRun& run : script) {
+    if (tick < run.from || tick > run.to) continue;
+    out = run.commands;
+    // seq / clientTick 由 tick 派生（与导出侧同式），不落盘。
+    for (FixtureCommand& command : out) {
+      command.seq = static_cast<uint16_t>(tick % 65536u);
+      command.clientTick = tick;
+    }
+    return true;
+  }
+  return false;
+}
+
+uint64_t fnv1a64(const void* data, std::size_t length, uint64_t seed) noexcept {
+  const auto* bytes = static_cast<const unsigned char*>(data);
+  uint64_t hash = seed;
+  for (std::size_t i = 0; i < length; ++i) {
+    hash ^= static_cast<uint64_t>(bytes[i]);
+    hash *= kFnvPrime;
+  }
+  return hash;
+}
+
+uint64_t fnv1a64Text(const std::string& text, uint64_t seed) noexcept {
+  return fnv1a64(text.data(), text.size(), seed);
+}
+
+std::string hash64Hex(uint64_t value) {
+  char buffer[32];
+  const int written = std::snprintf(buffer, sizeof buffer, "%016llx", static_cast<unsigned long long>(value));
+  return std::string(buffer, written > 0 ? static_cast<std::size_t>(written) : 0u);
+}
+
+bool selfTestFnv() {
+  // 公开的 FNV-1a 64 测试向量：钉住算法本身（与导出侧 assertFnvSelfTest 同一组），防实现漂移。
+  if (fnv1a64Text("", kFnvOffsetBasis) != kFnvOffsetBasis) return false;
+  if (hash64Hex(fnv1a64Text("a", kFnvOffsetBasis)) != "af63dc4c8601ec8c") return false;
+  if (fnv1a64Text("foobar", kFnvOffsetBasis) != 0x85944171f73967e8ull) return false;
+  return true;
+}
+
+std::string projectionText(uint32_t tick, const std::vector<FixtureCommand>& commands,
+                           const std::vector<FixtureEntity>& entities,
+                           const std::vector<FixtureEvent>& events, const FixtureRng& rng) {
+  std::string text;
+  text += "tick=" + std::to_string(tick) + "\n";
+  text += "dtMs=" + std::to_string(kFixtureDtMs) + "\n";
+  for (const FixtureCommand& command : commands) {
+    text += "cmd=" + std::to_string(command.id) + "," + std::to_string(command.seq) + "," +
+            std::to_string(command.clientTick) + "," + g17(command.moveX) + "," + g17(command.moveY) + "," +
+            g17(command.yaw) + "," + g17(command.pitch) + "," + std::to_string(command.buttons) + "," +
+            std::to_string(command.switchTo) + "\n";
+  }
+  for (const FixtureEntity& entity : entities) {
+    text += "ent=" + std::to_string(entity.id) + "," + entity.kind + "," + g17(entity.posX) + "," + g17(entity.posY) +
+            "," + g17(entity.posZ) + "," + g17(entity.yaw) + "," + g17(entity.pitch) + "," + g17(entity.hp) + "," +
+            std::to_string(entity.flags) + "\n";
+  }
+  for (const FixtureEvent& event : events) {
+    text += "evt=" + std::to_string(event.tick) + "," + event.type + "," + std::to_string(event.flags) + "," +
+            std::to_string(event.subjectId) + "," + std::to_string(event.targetId) + "," + g17(event.x) + "," +
+            g17(event.y) + "," + g17(event.z) + "," + g17(event.value) + "\n";
+  }
+  text += "rng=" + std::to_string(rng.ai) + "," + std::to_string(rng.spawn) + "," + std::to_string(rng.fx) + "\n";
+  return text;
+}
+
+std::vector<SnapshotRecordFields> decodeSnapshotRecords(const uint8_t* block, uint32_t count) {
+  std::vector<SnapshotRecordFields> out;
+  out.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* record = block + static_cast<std::size_t>(i) * kSnapshotRecordBytes;
+    SnapshotRecordFields fields;
+    fields.id = static_cast<uint16_t>(record[0] | (static_cast<uint16_t>(record[1]) << 8));
+    fields.kind = static_cast<uint8_t>(record[2] & 0x03u);
+    fields.flags = static_cast<uint8_t>((record[2] >> 2) & 0x3Fu);
+    fields.xCm = static_cast<int16_t>(record[3] | (static_cast<uint16_t>(record[4]) << 8));
+    fields.yCm = static_cast<int16_t>(record[5] | (static_cast<uint16_t>(record[6]) << 8));
+    fields.zCm = static_cast<int16_t>(record[7] | (static_cast<uint16_t>(record[8]) << 8));
+    fields.yawUnits = static_cast<uint16_t>(record[9] | (static_cast<uint16_t>(record[10]) << 8));
+    fields.pitchUnits = static_cast<uint16_t>(record[11] | (static_cast<uint16_t>(record[12]) << 8));
+    fields.hpRatioUnits = record[13];
+    fields.state = record[14];
+    out.push_back(fields);
+  }
+  return out;
+}
+
+std::string snapshotDecodeText(const std::vector<SnapshotRecordFields>& records) {
+  std::string text;
+  for (const SnapshotRecordFields& record : records) {
+    text += "rec=" + std::to_string(record.id) + "," + std::to_string(record.kind) + "," +
+            std::to_string(record.flags) + "," + std::to_string(record.xCm) + "," + std::to_string(record.yCm) + "," +
+            std::to_string(record.zCm) + "," + std::to_string(record.yawUnits) + "," +
+            std::to_string(record.pitchUnits) + "," + std::to_string(record.hpRatioUnits) + "," +
+            std::to_string(record.state) + "\n";
+  }
+  return text;
 }
 
 std::string configHashText() {

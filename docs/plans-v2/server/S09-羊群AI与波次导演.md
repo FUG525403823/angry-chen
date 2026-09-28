@@ -94,6 +94,8 @@
 | 清波 | 计划生成完毕且活动羊数为 0 → `waveClear`；`w >= 10` 再发 `matchEnded` 并置 `finished`，否则立刻为下一波组队并等波间结束 |
 
 > **已裁决（B2，`DirectorState` 留在 `stepWorld` 之外）**。原问题：本份 §4 要求把导演「接进 `step.cpp` 的阶段 11」，而 §9 把 `DirectorState&` 冻结为**外部状态**，S06 §5.1 冻死的 `stepWorld(World&, const Command*, uint32_t, uint32_t)` 没有它的入口；本节的波间 20s / 最短 5s 时钟也没有推进者。**裁决：`DirectorState` 保持在世界步进之外**（外部驱动、确定性优先，不把它塞进 `World`、不动 S06 的冻结签名）——由 S10 的房间持有（`Room::director`）并每 tick 在 `stepWorld` 之外调用 `updateDirector`，波间时钟由房间的 `intermissionMs` 推进。依据 `server/README.md` §11（`Room::director`、`updateRoom` 六步）、§10.1-3、§11.2-10。本份 §4 的「接进阶段 11」据此理解为「命中判定、击退、问号弹生命周期、羊王阶段与召唤接进阶段 11」，导演节奏（组队/生成节流/清波）由 S10 在 `stepWorld` 之外驱动。
+>
+> **对拍向量据此导出**（`docs/evidence/fixtures/wave-director-1to5-1200t.json`）：`director.startWave = 1`，两侧的 tick 循环都是 `stepWorld(...)` → `updateDirector(..., spawn 流, 玩家表, 人数)`，首帧之前先 `planWave`。该向量 1200 tick 内只走到 **wave 1**（4 人 `base = 9` → 预算 `round(9 × 2.05) = 18`，`spawned = 18 / total = 18`）；1→5 的真实覆盖需要 5 波 ×（清波 + 20 s 间歇），远超 1200 tick，缺口记在 `docs/evidence/fixtures/README.md` §6。
 
 ### 5.5 羊王阶段
 
@@ -110,15 +112,16 @@
 |---|---|
 | 生成 | 精英羊在 `ranged` 状态且冷却为 0 时，对 25m 内最近的玩家生成投射物 |
 | 初速与位置 | 水平朝向目标，速度 `14` m/s；出生点 `(x, pos.y + 0.6, z)`；生成后朝向写为目标方向 |
-| 生命周期 | `3000` ms；越界（`halfSize - thickness = 39.5`）或飞入谷仓 AABB 即销毁 |
+| 生命周期 | `3000` ms；越界（`halfSize - thickness = 39.5`）或飞入谷仓 AABB 即销毁。**v1 冻结行为**：`advanceProjectiles` 在推进阶段对存活时间加了一次、投射物自身移动阶段又加了一次，`3000 ms` 实际只够飞 ~1500 ms ≈ 21 m——C++ 逐字保留，对拍向量按原样记录（`docs/evidence/fixtures/README.md` §6 缺口 2，不得「修好」v1） |
 | 命中 | 与玩家的水平距离 ≤ `0.22 + 0.4 = 0.62` m 即命中：按 `elite` 的 `damage 14` 结算（无部位、无衰减、无击退），命中后销毁 |
 | 伤害来源 | 归因到投射物 `ownerId`，事件 `subjectId` 为精英羊、`targetId` 为受害者 |
 
 ### 5.7 遍历顺序与 RNG 流归属
 
 - 实体遍历一律按 `activeIds` 的严格升序（S05 §5.1，由空闲表二分维护）；禁止遍历 `unordered_map` 等哈希容器；邻居收集按 `(distanceSq, EntityId)` 排序破平局，保证结果与遍历顺序无关。
+- **分离（`resolveEntitySeparation`）的遍历顺序是逐位契约**：网格格边长与格数由 v1 `createSpatialGrid(SHEEP_AI.neighborRadiusM)` 决定 = **3.0 m / 27×27**（不是 4 m / 20×20），遍历为「按格升序 → 格内实体升序 → 先同格 `j > i`，再该实体的东/北/东北/西北四个邻格」。顺序会改变浮点累加次序（每次推挤都是 `pos ±= …` 的读改写），"同一批对、不同次序"在逐位对拍下不等价——本批由 `sheep-grunt-ai-600t`（t269）与 `sheep-king-phases-900t`（t438）抓到，见 `docs/evidence/fixtures/README.md` §6。
 - 意图计算与落地分两趟：先按升序算全部意图（只读世界），再按升序写速度与朝向，避免"先动的羊影响后动的羊"。
-- 流归属（冻结）：**`ai` 流**只服务吃草点重选与任何单羊随机；**`spawn` 流**服务波次出生点选择、出生抖动、羊王召唤抖动；**`fx` 流**禁止被模拟读取，测试断言其抽取次数恒为 0。
+- 流归属（冻结）：**`ai` 流**只服务吃草点重选与任何单羊随机；**`spawn` 流**服务波次出生点选择、出生抖动、羊王召唤抖动；**`fx` 流**禁止被模拟读取，测试断言其抽取次数恒为 0（`rng-streams-600t` 覆盖：该场景 `fx` 抽取次数实测 0，只有 `ai`/`spawn` 在动）。
 - 目标选择打分：`score = aggro[i] + 1 / (1 + distance)`，仅对 `sightM` 内且可见（谷仓遮挡判定通过）的玩家参与；现目标保留门槛为其 `aggro * 1.5`。
 - 角度与超越函数（S 条）：AI 需要的 `atan2` / `asin` 一律走 S02 的 `ac::angleUnitsFromVector(dx, dz)` / `ac::angleUnitsFromRatio(r)`（基于 `kAtanUnits` / `kAsinUnits` 查表，结果经 `dequantizeAngle` 变回 double 弧度）；`server/src/ai/**` 与 `server/src/waves/**` **禁用** `sin` / `cos` / `atan2` / `asin` / `exp` / `pow`（需要三角时用 S02 的 `sinUnits` / `cosUnits`）。
 

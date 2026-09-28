@@ -65,27 +65,22 @@ void separatePair(Entity& a, Entity& b) noexcept {
     b.pos.x += push;
     return;
   }
+  // 方向按 v1 的写法先取倒数再乘（dx / distance 与 dx * (1 / distance) 可能差 1 ULP，
+  // 而对拍是逐位比较，必须同式）。
   const double distance = std::sqrt(distSq);
-  const double push = (minDistance - distance) / 2.0;
-  const double nx = dx / distance;
-  const double nz = dz / distance;
-  a.pos.x -= nx * push;
-  a.pos.z -= nz * push;
-  b.pos.x += nx * push;
-  b.pos.z += nz * push;
+  const double inverse = 1.0 / distance;
+  const double nx = dx * inverse;
+  const double nz = dz * inverse;
+  const double half = (minDistance - distance) / 2.0;
+  a.pos.x -= nx * half;
+  a.pos.z -= nz * half;
+  b.pos.x += nx * half;
+  b.pos.z += nz * half;
 }
 
-// cellA / cellB 的笛卡尔积；同格时跳过 j <= i，保证每个无序对只处理一次。
-void separateCellPairs(World& world, int32_t cellA, int32_t cellB) noexcept {
-  const SpatialGrid& grid = world.grid;
-  for (int32_t i = grid.cellStart[cellA]; i < grid.cellStart[cellA + 1]; ++i) {
-    Entity& a = world.entities[grid.cellItems[i] - 1u];
-    const int32_t start = cellA == cellB ? i + 1 : grid.cellStart[cellB];
-    for (int32_t j = start; j < grid.cellStart[cellB + 1]; ++j) {
-      separatePair(a, world.entities[grid.cellItems[j] - 1u]);
-    }
-  }
-}
+// 邻域偏移 = v1 SEPARATION_OFFSETS（东 / 北 / 东北 / 西北）：每对无序格只从西/南侧访问一次。
+constexpr int32_t kNeighborOffsetX[4] = {1, 0, 1, -1};
+constexpr int32_t kNeighborOffsetZ[4] = {0, 1, 1, 1};
 
 }  // namespace
 
@@ -98,22 +93,32 @@ void collideStatic(MoveState& state, const ac::config::ArenaConfig& arena, doubl
   clampToFence(state, arena, radius);   // 后边界夹取
 }
 
+// 遍历顺序逐字对齐 v1 resolveEntitySeparation：按格升序 → 格内实体升序 → 先同格 j > i，
+// 再该实体的四个邻格。顺序会改变浮点累加次序（每次推挤都是 pos ±= ... 的读改写），
+// 所以「同一批对、不同顺序」在逐位对拍下不等价。
 void separateEntities(World& world) noexcept {
-  for (int32_t cz = 0; cz < kSpatialCellsPerAxis; ++cz) {
-    for (int32_t cx = 0; cx < kSpatialCellsPerAxis; ++cx) {
-      const int32_t cell = cz * kSpatialCellsPerAxis + cx;
-      separateCellPairs(world, cell, cell);  // 同格
-      if (cx + 1 < kSpatialCellsPerAxis) {
-        separateCellPairs(world, cell, cell + 1);  // 东
+  const SpatialGrid& grid = world.grid;
+  const int32_t cols = kSpatialCellsPerAxis;
+  const int32_t rows = kSpatialCellsPerAxis;
+  const int32_t cells = cols * rows;
+  for (int32_t cell = 0; cell < cells; ++cell) {
+    const int32_t start = grid.cellStart[cell];
+    const int32_t end = grid.cellStart[cell + 1];
+    if (start >= end) continue;
+    const int32_t cx = cell % cols;
+    const int32_t cz = (cell - cx) / cols;
+    for (int32_t i = start; i < end; ++i) {
+      Entity& a = world.entities[grid.cellItems[i] - 1u];
+      for (int32_t j = i + 1; j < end; ++j) {
+        separatePair(a, world.entities[grid.cellItems[j] - 1u]);
       }
-      if (cz > 0) {
-        const int32_t south = cell - kSpatialCellsPerAxis;
-        separateCellPairs(world, cell, south);  // 南
-        if (cx + 1 < kSpatialCellsPerAxis) {
-          separateCellPairs(world, cell, south + 1);  // 东南
-        }
-        if (cx > 0) {
-          separateCellPairs(world, cell, south - 1);  // 西南
+      for (int32_t o = 0; o < 4; ++o) {
+        const int32_t nx = cx + kNeighborOffsetX[o];
+        const int32_t nz = cz + kNeighborOffsetZ[o];
+        if (nx < 0 || nz < 0 || nx >= cols || nz >= rows) continue;
+        const int32_t neighbor = nz * cols + nx;
+        for (int32_t j = grid.cellStart[neighbor]; j < grid.cellStart[neighbor + 1]; ++j) {
+          separatePair(a, world.entities[grid.cellItems[j] - 1u]);
         }
       }
     }

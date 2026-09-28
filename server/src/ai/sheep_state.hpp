@@ -37,6 +37,10 @@ inline void resetTargetState(TargetState& state) noexcept {
 }
 
 inline void resetFlockNeighbors(FlockNeighbors& neighbors) noexcept {
+  // capacity 是编译期常量（§5.7：容量恒为 SHEEP_AI.maxNeighbors），但 resetWorld 的 memset 会把实体表
+  // 连它一起清零，重生的实体再也不会恢复默认成员初值 —— 这里显式写回，否则 insertNeighborByDistance
+  // 会因 count >= capacity(0) 直接丢弃所有邻居，羊群分离/对齐/聚集整段失效（对拍里表现为邻居数为 0）。
+  neighbors.capacity = ac::config::kSheepMaxNeighbors;
   neighbors.count = 0;
   neighbors.centroidX = 0.0;
   neighbors.centroidZ = 0.0;

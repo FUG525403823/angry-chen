@@ -252,11 +252,18 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 
 ### 6.4 空间网格（§5.4）
 
-4m 单元格、20×20 = 400 格，`cellStart[401]` + `cellItems[1024]`；每 tick 两趟计数排序按 `activeIds`
+**3m 单元格、27×27 = 729 格**，`cellStart[730]` + `cellItems[1024]`；每 tick 两趟计数排序按 `activeIds`
 升序重建，因此**每格内 `EntityId` 升序**；`kind == projectile` 不入网格；越界坐标按
-`clamp(floor((x + 40) / 4), 0, 19)` 夹到边界格（查询只会多访问、不会漏配对）；
+`clamp(floor((x + 40) / 3), 0, 26)` 夹到边界格（查询只会多访问、不会漏配对）；
 `forEachNeighbor` 的访问顺序是 `cz` 升序 → `cx` 升序 → 格内下标升序（确定性契约）。
-若遥测显示单次邻居查询经常超过 64 个实体，按 S05 §8 风险项改成 2m 格。
+
+> **格边长是逐位契约，不是可调实现参数**：v1 `sim.ts` 用 `createSpatialGrid(SHEEP_AI.neighborRadiusM, …)`
+> 建格，即 `cellSizeM = 3.0`、`cols = ceil(2 × 40 / 3) = 27`。格划分决定 `resolveEntitySeparation`
+> 的**配对次序**，而每次推挤都是 `pos ±= …` 的读改写，次序不同会改变浮点累加结果。
+> 本批对拍向量先按 4m/20×20（400 格）实现，`sheep-grunt-ai-600t`（t269）与 `sheep-king-phases-900t`（t438）
+> 出现 ~1e-3 的位置偏差；改成 3m/27×27 后两侧逐位一致。所以 `kSpatialCellMeters` 直接取
+> `config::kSheepAi.neighborRadiusM` 并加 `static_assert`（`sim/spatial_grid.hpp`）。
+> 若遥测显示单次邻居查询经常超过 64 个实体，**不能**随手改格边长——先评估对拍影响（S05 §8 风险项）。
 
 ### 6.5 计划文本纠正与已声明偏差（S05）
 
@@ -308,9 +315,13 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 `min(pushLeft, pushRight) <= min(pushBack, pushForward)` 选 x 面或 z 面，并清零该轴速度），**后**边界夹取
 （`limit = halfSize - thickness / 2 - radius = 39.35`，x、z 各自夹取并清零该轴速度）。
 
-`separateEntities(world)`：单趟、同格 `i < j` 与东/南/东南/西南四格半邻域各一次（每个无序对恰好处理一次），
-预筛 `(2 × 0.5)^2 = 1.0`，重叠时双方各推 `(minDistance - distance) / 2`（半径按 `kind` 取 §5.4 表，
-`distance < 1e-6` 时按 `(+1, 0)` 推）。**推离总量守恒**：一次配对只搬动这两个实体，且位移等大反向。
+`separateEntities(world)`：单趟，遍历顺序**逐字对齐 v1 `resolveEntitySeparation`**——按格升序 → 格内实体升序
+→ 先同格 `j > i`，再该实体的**东/北/东北/西北**四个邻格（每个无序对恰好处理一次），
+预筛 `(2 × 0.5)^2 = 1.0`，重叠时先把距离归一化（`inverse = 1 / distance`，`nx = dx * inverse`，`nz = dz * inverse`）
+再双方各推 `(minDistance - distance) / 2`（半径按 `kind` 取 §5.4 表，`distance < 1e-6` 时按 `(+1, 0)` 推）。
+**次序与归一化形式都是逐位契约**：先 `dx / d` 还是 `dx * (1 / d)` 可能差 1 ULP，配对次序改变则浮点累加次序改变——
+本批由 `sheep-grunt-ai-600t`（t269 的 1 ULP 位置差）与 `sheep-king-phases-900t`（t438）抓到，
+见 §6.4 与 `docs/evidence/fixtures/README.md` §6。**推离总量守恒**：一次配对只搬动这两个实体，且位移等大反向。
 投射物不入网格（S05 §6.4），所以分离只作用于玩家/羊/掉落物。
 
 ### 7.3 `localStep` 契约（§5.6，客户端预测复用）
@@ -346,20 +357,20 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
-对拍向量的唯一真值是**冻结的 v1 实现**（`D:\projects\tmp\angry-chen-bak`，**全程只读**）：`tools/export-fixtures.mjs` 在可写派生副本（默认 `D:\projects\tmp\angry-chen-fixture`，缺失时从只读源复制、排除 `node_modules`/`.git`）上把 v1 的 `Math.sin/cos/atan2/asin` 换成 `docs/evidence/fixtures/trig-table.json` 的共享整数表，逐 tick 投影实体/事件/RNG 状态写成纯文本 JSON 入库；`server/tests/fixture_io.cpp` + `fixture_test.cpp` 用同一批向量逐位复现，**首个**差异以 `DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>` 报出。
+对拍向量的唯一真值是**冻结的 v1 实现**（`D:\projects\tmp\angry-chen-bak`，**全程只读**）：`tools/export-fixtures.mjs` 在可写派生副本（默认 `D:\projects\tmp\angry-chen-fixture`，缺失时从只读源复制、排除 `node_modules`/`.git`）上把 v1 的 `Math.sin/cos/atan2/asin` 换成 `docs/evidence/fixtures/trig-table.json` 的共享整数表，导出**对拍向量**——种子 + 初态 `setup` + 命令脚本 `script` + `configHash` + 少量**关键帧**（全量投影）+ **逐帧哈希链**（每 tick 全量投影的 FNV-1a-64，盘上 8 B/tick）+ 快照组；`server/tests/fixture_io.cpp` + `fixture_test.cpp` **重算**同一命令脚本、走同一 tick 循环逐位复现，**首个**差异以 `DIFF <fixture> tick=<n> field=<path> expected=<hex> actual=<hex>` 报出。口径与体积门的裁决见 §8.5；清单/初态表/判读流程在 [`docs/evidence/fixtures/README.md`](../docs/evidence/fixtures/README.md)。
 
 | 命令（工作目录 = 仓库根） | 作用 |
 | --- | --- |
 | `node tools/export-fixtures.mjs` | 写盘（自动派生副本；`--root`/`--out` 可覆盖） |
 | `node tools/export-fixtures.mjs --check` | 幂等校验：与盘上逐字节比较，不写盘 |
-| `node tools/export-fixtures.mjs --list` | 清单：`name bytes sha256`，并打印 `configHash` 覆盖组 |
+| `node tools/export-fixtures.mjs --list` | 清单：`name bytes sha256`，并打印 `configHash` 覆盖组与体积门 |
 | `server/build/ac_tests.exe --filter=fixture` | C++ 侧逐 tick 逐字段逐位复现（S07 §6） |
 
 清单、世界初态约定、再生成与判读流程、以及尚未交付场景的所有者表都在 [`docs/evidence/fixtures/README.md`](../docs/evidence/fixtures/README.md)。
 
-### 8.1 覆盖范围与链序冲突（**需裁决**）
+### 8.1 覆盖范围与链序冲突（**已裁决**：见 §8.5）
 
-§5.3 列了 14 个场景，其中 10 个（连射/霰弹/倒地救援、四种羊形 AI、羊王、波次导演、快照 round-trip、三流归属）依赖 **S08/S09/S12** 才存在的能力；§5.6 的 `configHash` 还覆盖「武器表与散布常量、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则」这些 C++ 侧此刻并不存在的常量表 → 任何 14 场景的 `configHash` 都不可能通过。本份只交付**移动类 4 份**（§5.3 前 4 行）与完整管线（导出脚本、schema 读取、`configHash` 重算、逐位比较、DIFF 报告、自检），其余 10 份随各自拥有其行为的计划一起导出：**导出时刻就有消费者，才能验证一份向量到底在测什么**，避免把没人验证过的语义猜测冻成真值。
+§5.3 列了 14 个场景，其中 10 个（连射/霰弹/倒地救援、四种羊形 AI、羊王、波次导演、快照 round-trip、三流归属）依赖 **S08/S09/S12** 才存在的能力；§5.6 的 `configHash` 还覆盖「武器表与散布常量、战斗常数、羊形参数/AI 参数/状态转移表/命中盒、波次规则」这些 C++ 侧此刻并不存在的常量表 → 任何 14 场景的 `configHash` 都不可能通过。本份只交付**移动类 4 份**（§5.3 前 4 行）与完整管线（导出脚本、schema 读取、`configHash` 重算、逐位比较、DIFF 报告、自检），其余 10 份随各自拥有其行为的计划一起导出：**导出时刻就有消费者，才能验证一份向量到底在测什么**，避免把没人验证过的语义猜测冻成真值。→ **已裁决（§8.5）**：S08/S09/S12 的能力都已就位，14 份全部交付。
 
 ### 8.2 实测（`--filter=fixture` = 6/6）
 
@@ -391,7 +402,20 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 - **驱动扩展**（`tools/export-fixtures.mjs`）：场景可带 `setup(world)` 建世界初态（生成羊群、覆盖玩家初态）；命令槽位只发给**玩家**（羊群不再占用槽位）；新增 `--only <name[,name]>` 只渲染子集（体积门按本次选中的批次判定）。C++ 侧同一张表在 `fixture_test.cpp::applyScenarioSetup`，生成原语复用 `waves::spawnSheepAt`（与 v1 `ai/director.ts` 的 `spawnEntity`+`applySheepKind`+`graze` 同形）。
 - **两处 schema 加宽（都不放松比较）**：① `entities[].hp` 由整数改 **double**——v1 的护甲吸收会写出 `96.8`，整数读取器会拒绝整份向量；比较改走 `diff.doubleField`（逐位，比原来的整数截断更严，既有 4 份的整数 hp 逐字节不变）。② `flags` 补 bit0 `downed` / bit1 `rageMode` / bit2 `reloading`：`entityFlagsOf(entity, world.timeMs)`，bit3/bit4 两侧都不产出。
 - **RNG 覆盖收口**：`rifle-burst-hit-120t` 放了一只 35m 视野外的吃草羊（每 2500ms 抽 2 次 `ai` 流）→ 实测 `draws=ai:6,spawn:0,fx:0`，§8.3-13 记的"§5.2 的计数包装 + 重放推导没有被任何向量执行"到此结束；`spawn`/`fx` 仍为 0，原因见 `docs/evidence/fixtures/README.md` §5 的 `rng-streams-600t` 行。
-- **仍未交付的 7 份卡在冻结的体积门，不是能力缺口**：C++ 侧的羊形 AI / 冲锋 / 问号弹 / 羊王三阶段 / 波次导演 / 倒地救援都已就位（`--filter=ai` 36/36、`--filter=waves` 16/16）。已交付 7 份 = 1 950 729 B，余量 146 423 B；实测记录长度 950.2 B/tick ⇒ **最小**的剩余场景（`sheep-ram-charge-300t`：300 tick × 5 实体 + 空命令）≈285 051 B 已超余量。另有两处非体积卡点：`wave-director-1to5-1200t` 需要把导演接进 tick 循环（OQ-11），`snapshot-roundtrip-240t` 需要冻结 schema 里不存在的快照字段组。逐条见 `docs/evidence/fixtures/README.md` §5（**需裁决**：§5.5 / ADR-010 §8 的体积门）。
+- **仍未交付的 7 份卡在冻结的体积门，不是能力缺口**：C++ 侧的羊形 AI / 冲锋 / 问号弹 / 羊王三阶段 / 波次导演 / 倒地救援都已就位（`--filter=ai` 36/36、`--filter=waves` 16/16）。已交付 7 份 = 1 950 729 B，余量 146 423 B；实测记录长度 950.2 B/tick ⇒ **最小**的剩余场景（`sheep-ram-charge-300t`：300 tick × 5 实体 + 空命令）≈285 051 B 已超余量。另有两处非体积卡点：`wave-director-1to5-1200t` 需要把导演接进 tick 循环（OQ-11），`snapshot-roundtrip-240t` 需要冻结 schema 里不存在的快照字段组。逐条见 `docs/evidence/fixtures/README.md` §5（**需裁决**：§5.5 / ADR-010 §8 的体积门）。→ **已在 §8.5 裁决**：体积门改为「单份 ≤ 64 KB、单批 ≤ 512 KB」（旧 2 MB 门作废），两处非体积卡点（OQ-11 的导演驱动约定、快照字段组）也一并落地。
+
+### 8.5 本次回写：对拍向量口径（14 份全交付，`--filter=fixture` = 19/19）
+
+- **口径变更（ADR-010 §8）**：fixture 不再存「每 tick 全量投影」，改存「怎么跑」——种子 + 初态 `setup`（玩家覆盖项 + 羊形同形表）+ 命令脚本 `script`（按 tick 的 RLE，只记录实际发出的玩家命令）+ `configHash` + **关键帧**（少数 tick 的全量投影）+ **逐帧哈希链**（每 tick 全量投影算 FNV-1a-64 再串链，盘上 8 B/tick）+ **快照组**（`encodeHash` 对量化后的 15 字节记录块、`decodeHash` 对解码后字段投影）。两侧都**重算**同一份 `%.17g` 投影文本再逐位比较，所以逐位强度不降；事件同时从「只比条数」升级为逐字段（`x`/`y`/`z`/`value`）。**唯一损失**：非关键帧只留 8 字节摘要，字段级定位要重跑调试出口（`--trace-text` 与 `AC_FIXTURE_PTEXT`）。
+- **体积门**：单份 ≤ 65 536 B、单批 14 份 ≤ 524 288 B；旧「14 份 < 2 MB」**作废**（旧口径 ~950 B/tick，14 份必然 > 6 MB）。实测 **272 291 B / 最大单份 56 505 B**（`wave-director-1to5-1200t`）；`--check` 打印 `check ok：14/14 与盘上逐字节一致`。
+- **全 14 份交付**：4 份移动类 + 3 份战斗类（§8.4）+ 7 份新向量（`sheep-grunt-ai-600t`、`sheep-ram-charge-300t`、`sheep-elite-bolt-300t`、`sheep-king-phases-900t`、`wave-director-1to5-1200t`、`snapshot-roundtrip-240t`、`rng-streams-600t`）。用例名 `fixture_*` 与文件名不重名；`--filter=fixture` 19/19 = 14 场景 + `fixture_fnv_self_test` + 4 个反例自检（改投影/改脚本/改链节点/改 `configHash`）。
+- **两处前置约定落地**：① `snapshot-roundtrip-240t` 冻结了快照字段组（`records`/`encodeHash`/`decodeHash`，tick 1/60/120/180/240）；② `wave-director-1to5-1200t` 冻结「外部每 tick 驱动导演」——`DirectorState` 在 `stepWorld` **之外**，两侧循环都是 `stepWorld(...)` → `updateDirector(...)`（首帧前先 `planWave`），`director.startWave = 1`（S09 §5.4 / S10 §5.7 的回写）。
+- **本批向量抓到并修掉的 C++ 实现缺陷（4 处，全部改实现，不动期望值）**：
+  1. `resetFlockNeighbors` 没恢复 `FlockNeighbors::capacity`（被 `resetWorld` 的 memset 清零）→ 邻居列表恒空、羊群聚集完全失效（`server/src/ai/sheep_state.hpp`）。
+  2. 空间网格格边长 4 m / 20×20，v1 是 `createSpatialGrid(SHEEP_AI.neighborRadiusM)` = **3 m / 27×27** → 分离配对次序不同，位置差 ~1e-3（`server/src/sim/spatial_grid.hpp`，见 §6.4）。
+  3. 分离遍历按「格对」分组、归一化用 `dx / d`，v1 是「按实体 a：同格 `j>i` → 东/北/东北/西北」且先取 `1/d` 再乘 → 1 ULP 级位置差（`server/src/sim/collision.cpp`，见 §7.2）。
+  4. 快照哈希从 `kSnapshotHeadBytes`（22 B，到 `baselineTick` 为止）起算，漏了 1 字节记录数 → 记录块整体错位（`server/tests/fixture_test.cpp`；报文格式本身未动）。
+- **仍存在的能力缺口（已记入 `docs/evidence/fixtures/README.md` §6，体积不再是理由）**：`wave-director-1to5-1200t` 1200 tick 内只走到 **wave 1**（预算 18/18）；`sheep-elite-bolt-300t` 的问号弹只在 ≤ ~21 m 命中（v1 `advanceProjectiles` 把 `aliveMs` 加两次，属冻结语义，按原样记录）；`rng-streams-600t` 的 `fx` 流抽取次数为 0。
 
 ## 9. 战斗（S08 §5 冻结）
 
@@ -1111,6 +1135,13 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | `--filter` 计数（本次） | 既有 32 组逐组同数，只有 `fixture` 6/6 → **9/9**（新用例名不含其它组的子串；已复测 ai 36/36、combat 45/45、step 27/27、waves 16/16、entity 9/9、world 6/6、rng 6/6、size 5/5、match 53/53） |
 | schema 加宽（本次） | `entities[].hp` 整数 → double（v1 护甲吸收写出 96.8；读取按 double、比较仍 `bit_cast` 逐位）；`flags` 补 bit0 `downed` / bit1 `rageMode` / bit2 `reloading`（`entityFlagsOf(entity, world.timeMs)`） |
 | 计划偏差清单（本次） | §8.4 的四条：① 场景初态（生成羊 / 覆盖玩家 hp）是 schema 之外"两侧同表"的约定；② `hp` 为 double；③ 事件仍只比条数（本批新增事件仍未比载荷）；④ 其余 7 份被 §5.5 体积门挡住（**需裁决**），另有 `snapshot-roundtrip-240t` 的 schema 缺口与 `wave-director-1to5-1200t` 的导演未接 tick（OQ-11） |
+| `node tools/export-fixtures.mjs`（本次：对拍向量口径 + 14 份全交付） | **14 份 = 272 291 B**（单份门 65 536 B / 总门 524 288 B，最大单份 56 505 B）；`--check` = `check ok：14/14 与盘上逐字节一致`；`configHash = 19a978ea` 未变；旧门限「14 份 < 2 MB」按 ADR-010 §8 **作废** |
+| `server/build/ac_tests.exe --filter=fixture`（本次） | 末行 `TESTS 19/19`：14 份向量逐 tick 逐字段逐位一致（60/60/120/140/240/240/300/300/400/400/600/600/900/1200 tick）+ `fixture_fnv_self_test` + 4 个反例自检（`fixture_tampered_*`） |
+| 全量回归（本次） | `server/build/ac_tests.exe` 末行 `TESTS 481/481`（S14 的 468 + 战斗类 3 + 本批 10），退出码 0；`server/build/ac_server.exe` 同步重建成功 |
+| `--filter` 计数（本次） | 既有 32 组**逐组与 S13 同数**（size 5/5、math 8/8、trig 4/4、rng 6/6、quantize 11/11、codec 15/15、hex 10/10、fuzz 3/3、wire 3/3、match 53/53、transport 9/9、reliability 5/5、fragment 4/4、grace 6/6、memory 3/3、world 6/6、entity 9/9、pose 5/5、grid 4/4、alloc 6/6、step 27/27、combat 45/45、ai 36/36、waves 16/16、security 51/51、malicious 36/36、motion_authority 13/13、rewind 12/12、room 8/8、matchstate 9/9、log_double 1/1），只有 `fixture` 6/6 → **19/19**；另 `--filter=store` = 17/17。新增 10 个用例名全带 `fixture_` 前缀，且逐一避开了 32 组已占用子串（`fixture_sheep_grunt_600t` 不含 `ai`、`fixture_stream_ownership_600t` 不含 `rng`/`report`、两条 `fixture_tampered_*_tick_diff` 不含 `match`/`size`），故 `ai` 等组计数未动 |
+| 对拍向量口径（本次，ADR-010 §8 / S07 §5.1） | 每份向量 = 种子 + 初态 `setup` + 命令脚本 `script`（按 tick 的 RLE）+ `configHash` + 关键帧（全量投影）+ 逐帧哈希链（FNV-1a-64，8 B/tick）+ 快照组；两侧重算同一份 `%.17g` 投影文本再逐位比较，事件升级为逐字段比较 |
+| 向量抓到的实现缺陷（本次，全部改实现） | ① `resetFlockNeighbors` 丢 `capacity` → 羊群聚集失效；② 空间网格 4 m/20×20 → **3 m/27×27**（`SHEEP_AI.neighborRadiusM`）；③ 分离遍历次序与归一化形式 → 逐字对齐 v1；④ 快照记录块起点漏 1 字节记录数。详见 §6.4 / §7.2 / §8.5 与 `docs/evidence/fixtures/README.md` §6 |
+| 计划偏差清单（本次） | §8.5：① 体积门由「14 份 < 2 MB」改为「单份 ≤ 64 KB、单批 ≤ 512 KB」（旧门作废，README §5 记录理由）；② 非关键帧只留 8 字节摘要（字段级定位需重跑调试出口）；③ 三处能力缺口照实记录（导演 1200 tick 只到 wave 1、问号弹 ≤ ~21 m 命中是 v1 双加 `aliveMs` 的冻结语义、`fx` 流 0 次抽取）；④ 空间网格格边长按 v1 修正属**实现缺陷修复**，不是放宽冻结值 |
 ## 18. 发布、运维与验收（S15 §5 冻结）
 
 当前发布版号 **0.1.0**（`--version` 行：`ac_server 0.1.0 protocol=1 tick=50ms`），协议版本 **1**（独立于语义化版本，不随发布变动）。版号的唯一来源是构建期注入的 `AC_SERVER_VERSION`（`server/CMakeLists.txt`，同时供 `/metrics` 的 `ac_server_version` 标签）。

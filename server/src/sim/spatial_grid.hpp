@@ -1,26 +1,31 @@
 #pragma once
-// S05 §5.4：4m 均匀网格（20 × 20 = 400 格）、两趟计数排序重建、按半径遍历邻居。
+// S05 §5.4：3m 均匀网格（27 × 27 = 729 格）、两趟计数排序重建、按半径遍历邻居。
+// 格边长必须与 v1 同参：v1 sim.ts 用 createSpatialGrid(SHEEP_AI.neighborRadiusM, maxEntities) 建格，
+// cols = ceil(2 × halfSize / cellSizeM) = ceil(80 / 3) = 27。格划分决定分离遍历的配对次序，
+// 而每次推挤都是 pos ±= …（读改写），次序不同会改变浮点累加结果，逐位对拍下不等价。
 #include <cstddef>
 #include <cstdint>
 
+#include "config/sheep.hpp"
 #include "core/math.hpp"
 #include "sim/arena.hpp"
 #include "sim/entity_table.hpp"
 
 namespace ac::sim {
 
-inline constexpr double kSpatialCellMeters = 4.0;
-inline constexpr int32_t kSpatialCellsPerAxis = 20;  // ceil(80 / 4)
+inline constexpr double kSpatialCellMeters = ac::config::kSheepAi.neighborRadiusM;  // 3.0
+inline constexpr int32_t kSpatialCellsPerAxis = 27;  // ceil(2 × 40 / 3)
+static_assert(kSpatialCellMeters == 3.0, "格边长必须等于 v1 createSpatialGrid 的入参 neighborRadiusM");
 inline constexpr int32_t kSpatialCellCount = kSpatialCellsPerAxis * kSpatialCellsPerAxis;
 
 struct SpatialGrid {
-  int32_t cellStart[kSpatialCellCount + 1]{};  // 前缀和，§5.4 的 401 项
+  int32_t cellStart[kSpatialCellCount + 1]{};  // 前缀和，729 + 1 = 730 项
   uint16_t cellItems[kMaxEntities]{};          // 存 EntityId，容量恒等于实体容量
 };
 static_assert(sizeof(SpatialGrid::cellItems) == kMaxEntities * sizeof(uint16_t),
               "§5.5：cellItems 容量必须与 kMaxEntities 恒等");
 
-// §5.4：cx = clamp(floor((x + 40) / 4), 0, 19)，越界夹取到边界格（只会多访问、不会漏配对）。
+// §5.4：cx = clamp(floor((x + 40) / 3), 0, 26)，越界夹取到边界格（只会多访问、不会漏配对）。
 inline int32_t spatialCellOf(double coordinate) noexcept {
   const double shifted = (coordinate + arena::kArenaHalfSizeMeters) / kSpatialCellMeters;
   if (!(shifted > 0.0)) return 0;  // 负数与 NaN 一律落到边界格
@@ -28,7 +33,7 @@ inline int32_t spatialCellOf(double coordinate) noexcept {
   return cell > kSpatialCellsPerAxis - 1 ? kSpatialCellsPerAxis - 1 : cell;
 }
 
-// §5.4：cell = cz * 20 + cx。
+// §5.4：cell = cz * 27 + cx。
 inline int32_t spatialCellIndex(double x, double z) noexcept {
   return spatialCellOf(z) * kSpatialCellsPerAxis + spatialCellOf(x);
 }
