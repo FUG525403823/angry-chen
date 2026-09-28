@@ -107,13 +107,20 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 
 | 陷阱 | 症状 | 处理 |
 |---|---|---|
-| **非 32 位十六进制的资产 guid** | Unity 把引用**静默清零**成 `{fileID: 0}`，不报错 | 全部重生为 32 hex；新增守卫用例 `assets.guid_references_resolve` 防复发 |
+| **资产 guid 的格式与悬空引用** | 本引擎给**新资产默认生成 56 字符 base64 guid**（B1 的 3 个新 .meta、B6 的新 .meta 都如此），而仓库原先 133 个 .meta 也是这种格式。当时 `GraphicsSettings` 指向的 URP guid `09b520d1…` **在任何 .meta 里都不存在**，直接原因就是这条悬空引用；把它指向 base64 guid 时观察到 Unity 回写 `{fileID: 0}`，但那条路径上还有 `RenderPipelineSetup.Ensure()` 会重置管线，**所以"Unity 清零非 32hex 引用"并未被证明**。 | 现状：全部 .meta 统一为 32 hex（133 + 4 个新资产），引用全部解析、守卫 `assets.guid_references_resolve` 通过。**新资产仍会生成 56 字符 guid，提交前用同一脚本归一**（见下方命令），别手写 guid |
 | **无 BOM 的 UTF-8 `.ps1` 含中文** | Windows PowerShell 5.1 按 ANSI 解码，中文字节解出引号 ⇒ 解析失败 | `build.ps1`/`frame-bench.ps1`/`selftest.ps1` 均带 BOM |
 | **假绿打点** | 没接线也 `Mark` ⇒ 值恒 0 ⇒ 该段预算永远通过 | 打点只在真做功时；`fx/draw/overlay` 三条都有"未接线 ⇒ 不打点"的用例守着 |
 | 编辑器副作用 | 打开工程会改 `ProjectSettings.asset`（bundle id、像素密度） | 每次回退、不入库 |
 | 并发写入 | 与服务端链共用仓库 | 逐条检查退出码；提交只带自己路径；**fixture 冻结向量被单方面改写会让客户端自测变红（见 A7）** |
 
 ---
+
+### 归一 .meta guid 的命令（每次新增资产后跑一次）
+```powershell
+# 把 Assets 下所有非 32 hex 的 guid 确定性重生（SHA1(旧 guid) 前 32 位），并同步重写引用
+# 注意：新资产没有被任何资产引用时最安全；被引用时本步会一并改写引用
+```
+（脚本实录见提交 `22b452a`；B1/B6 的三个与一个新 .meta 用同样办法归一为 `7207a46b…`/`68555ed4…`/`8ce4fc24…`/`8e6057cb…`。）
 
 ## D. 各计划状态
 
