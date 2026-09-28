@@ -195,10 +195,12 @@ class Runtime {
   std::size_t eventsDroppedSeen_ = 0u;
   // 房间内建 tick 跳过的上一拍读数（§5 G8 的 tick 跳过项，评审：以前没人喂这个计数）。
   std::uint32_t skippedSeen_ = 0u;
-  // tick 记账基准：开球那一刻对齐到房间的 tick 计数，开球前的 tick 一律不算进调度器。
+  // tick 记账基准：房间的 tick 计数每局从 0 起（tryStartMatch 清 MatchCounters），这里只按增量记账。
   std::uint32_t countedTicks_ = 0u;
-  // 漂移的墙钟基准：必须与 countedTicks_ 同一时刻取（开球），否则「等玩家/等 loading」的那段
-  // 会整段算成模拟落后（实测 200ms RTT 场景是 135ms，低延迟场景是 22ms —— 正好等于 loading 时长）。
+  // 漂移的墙钟基准。**当前恒 0**：唯一的赋值点曾与上面那段死分支同在（`tryStartMatch` 返回时相位
+  // 是 kLoading，判 kPlaying 永不成立），所以 `simDriftMs()` 一直走 `tickBaseMs_ == 0` 的短路返回 0，
+  // 报告里的 `ticks.simDriftMsMax` 与 `/metrics ac_sim_drift_ms` 因此恒 0。接线会同时改变 G6 替代
+  // 判据的输入（|drift| ≤ 50 ms）与门禁读数，按 §14.1-27 登记为待裁决项，本批不动。
   std::uint64_t tickBaseMs_ = 0u;
   std::uint64_t lastPollMs_ = 0u;  // 最近一次 pollOnce 的墙上毫秒（漂移计算用）
   std::uint8_t sendBuffer_[ac::net::kMaxSnapshotBytes] = {};

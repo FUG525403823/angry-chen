@@ -19,11 +19,11 @@ namespace {
 
 std::uint32_t wallMs32(std::uint64_t nowMs) noexcept { return static_cast<std::uint32_t>(nowMs); }
 
-std::uint32_t millisBetween(std::chrono::steady_clock::time_point from,
-                            std::chrono::steady_clock::time_point to) noexcept {
+// S13 §5 的工作量样本要亚毫秒分辨率：整毫秒四舍五入会把 <1 ms 的房间更新压成恒 0（云端复验观察项）。
+double millisBetween(std::chrono::steady_clock::time_point from,
+                     std::chrono::steady_clock::time_point to) noexcept {
   const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(to - from).count();
-  if (micros <= 0) return 0u;
-  return static_cast<std::uint32_t>((micros + 500) / 1000);
+  return micros <= 0 ? 0.0 : static_cast<double>(micros) / 1000.0;
 }
 
 // §5.3 的反量化：轴 /127，角度按 u16 单位；量化表在 core/quantize.hpp，这里不另设系数。
@@ -412,12 +412,13 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
     ensureMatchRunning(nowMs);
     // 计「房间真正执行的 tick」而不是 world->tick 增量：loading/intermission 也按 50ms 走 tick，
     // 世界却只在 playing 步进；按 world->tick 记会把开局这段算成上千毫秒的假调度误差（实测 1.5s）。
+    const ac::room::MatchPhase phaseBeforeUpdate = room_->phase;
     const auto workStart = std::chrono::steady_clock::now();
     (void)ac::room::updateRoom(*room_, deps_, nowMs);
     // S04 §5.4：分片组 60 tick 未收齐即整组丢弃（与 Reassembler::add 用同一个 tick 时钟）。
     if (room_->world != nullptr) (void)reassembler_.expire(room_->world->tick);
     topUpSheep();
-    const std::uint32_t workMs = millisBetween(workStart, std::chrono::steady_clock::now());
+    const double workMs = millisBetween(workStart, std::chrono::steady_clock::now());
     // §5 G8：房间因补不上而丢掉的 tick 必须计进调度器（否则 G8 的这一项永远读 0）。
     const std::uint32_t skippedTotal = room_->match.counters.skipped;
     if (skippedTotal > skippedSeen_) {
@@ -430,8 +431,18 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
     countedTicks_ = executedTicks;
     // tickIndex 必须与世界的 tick 同步：没推进就不记账（否则轮询次数会把调度误差灌成假的）。
     for (std::uint32_t i = 0u; i < advanced; ++i) {
-      const std::uint32_t share = i + 1u == advanced ? workMs : workMs / advanced;
+      // 本轮房间更新的总耗时按本轮执行的 tick 数均摊：只有最后一份吃掉整数除法的余数。
+      const double share = i + 1u == advanced ? workMs : workMs / static_cast<double>(advanced);
       (void)ac::core::noteTickRun(scheduler_, nowMs, share, &counters_, &gauges_);
+    }
+    // S13 §5：报告里的 ticks 组以「本局首个 tick」为原点。loading→playing 的那一拍就是本局首个 tick
+    //（世界从这一拍开始步进、durationMs 也从这一拍起算），把采样原点钉在它的**理想时刻**上：
+    // 房间累加器的残差正是这一拍迟到的那一段，扣掉它之后各 tick 的误差就是「相对 50 ms 网格迟到了多久」。
+    if (advanced > 0u && phaseBeforeUpdate == ac::room::MatchPhase::kLoading &&
+        room_->phase == ac::room::MatchPhase::kPlaying) {
+      const auto residual =
+          static_cast<std::uint64_t>(room_->accumulatorMs > 0 ? room_->accumulatorMs : 0);
+      ac::core::beginTickEpoch(scheduler_, nowMs > residual ? nowMs - residual : nowMs, 1u);
     }
   }
 
@@ -506,17 +517,10 @@ void Runtime::ensureMatchRunning(std::uint64_t nowMs) {
   }
   if (host != nullptr) {
     ac::room::tryStartMatch(*room_, *host);
-    if (room_->phase == ac::room::MatchPhase::kPlaying) {
-      // §5 G6：tick 调度误差只在比赛进行中有意义。世界只在 playing 步进，调度器若从
-      // 进程启动就算起，会把「等第一位玩家进场」的这一段算成上千毫秒的假误差（本批实测 1.5s）。
-      ac::core::startScheduler(scheduler_, nowMs, 0u);
-      // 开球即对齐房间的累加器：包在门口等玩家/等进程启动的那段墙钟时间不是「欠下的 tick」，
-      // 否则首帧会把 1.5s（≈30 tick）一次性补/丢（本批实测 skips 与 1.5s 假误差同源）。
-      room_->lastUpdateMs = nowMs;
-      room_->accumulatorMs = 0;
-      countedTicks_ = room_->match.counters.ticks;
-      tickBaseMs_ = nowMs;
-    }
+    // 这里不再重锚调度器：tryStartMatch 只把相位推到 kLoading（loading 倒计时 1500 ms），
+    // kPlaying 是 30 拍之后在 roomTick 内部翻的 —— 旧代码在这里判 kPlaying，永远不成立，
+    // 于是 tick 时序一路按「进程首个 tick」取样（云端复验实测 jitterP50/P95 ≈ 2055 ms）。
+    // 本局的调度原点改由 pollOnce 在 loading→playing 的那一拍上打（beginTickEpoch）。
   }
   (void)nowMs;
 }
@@ -707,7 +711,7 @@ std::size_t Runtime::clientStats(ClientStat* out, std::size_t capacity) const no
 
 RuntimeMetrics Runtime::metrics() const {
   RuntimeMetrics out{};
-  out.ticks = scheduler_.tickIndex;
+  out.ticks = scheduler_.tickIndex;  // 进程级累计（/health 的 ticks）；报告里的 ticks.total 是 epoch 口径
   out.clients = clientCount();
   out.rooms = roomCount();
   out.players = room_ == nullptr ? 0u : ac::room::activePlayerCount(*room_);

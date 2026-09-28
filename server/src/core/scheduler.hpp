@@ -3,6 +3,8 @@
 //
 // 冻结口径：
 //   tickScheduleError = 单调时钟 − (首 tick 时刻 + 已计 tick 数 × 50)，P95 ≤ 8 ms；
+//   「首 tick 时刻」= 本局 epoch 的基准（beginTickEpoch 在 loading→playing 的首个 tick 上打），
+//   未打基准时退回 startScheduler 的时刻；
 //   simDrift = (world.timeMs − simStartMs) − (now − wallStartMs)，|drift| ≤ 50 ms；
 //   单房间工作量预算 8 ms：超出则让出事件循环，已计 tick 数**不扣除**（让出 ≠ 丢 tick）。
 #include <cstddef>
@@ -26,12 +28,23 @@ struct SimClock {
   uint64_t wallStartMs = 0u;
 };
 
+// S13 §5：诊断报告里的 ticks 组是「本局」的量，而 tickIndex/tickSkips 是进程级累计账本
+//（`/health` 的 ticks 与 G8 的跳过计数都读它）。两者用 epoch 分开：开球（loading→playing 的首个
+// tick）时打基准，报告侧只读基准以来的差值与采样环。
+struct TickEpoch {
+  bool isActive = false;
+  uint64_t firstTickGridMs = 0u;  // 本局首个 tick 的理想时刻（房间累加器残差已扣除）
+  uint32_t tickIndex = 0u;        // 打基准时的已执行 tick 数
+  uint32_t tickSkips = 0u;        // 打基准时的丢 tick 数
+};
+
 struct TickScheduler {
   SimClock simClock{};
+  TickEpoch epoch{};
   uint32_t tickIndex = 0u;       // 已执行的 tick 数
   uint32_t tickSkips = 0u;       // 真正的丢 tick（追帧上限等），与让出分开计
   uint32_t budgetExceeded = 0u;  // 让出次数
-  uint32_t lastWorkMs = 0u;
+  double lastWorkMs = 0.0;       // 最近一个 tick 的工作量（毫秒，亚毫秒分辨率）
   double jitterMs[kScheduleSampleCount] = {};
   std::size_t jitterCount = 0u;
   std::size_t jitterNext = 0u;
@@ -51,9 +64,17 @@ inline uint32_t accountedTicks(const TickScheduler& scheduler) noexcept {
 }
 
 void startScheduler(TickScheduler& scheduler, uint64_t nowMs, uint32_t simStartMs = 0u) noexcept;
+// 开球打基准（S13 §5）：firstTickGridMs = 本局首个 tick 的**理想时刻**，ticksAlreadyCounted = 该 tick
+// 是否已记账（1 = 已记，epoch 把它算作第 0 个）。顺带清空三个采样环 —— loading 阶段与上一局的样本
+// 都不该进本局报告。tickIndex/tickSkips/budgetExceeded 不动（仍是进程级账本）。
+void beginTickEpoch(TickScheduler& scheduler, uint64_t firstTickGridMs,
+                    uint32_t ticksAlreadyCounted = 1u) noexcept;
+// 本局（epoch）以来的已执行 tick 数与丢 tick 数；未打基准时退化成进程级累计值。
+uint32_t epochTickCount(const TickScheduler& scheduler) noexcept;
+uint32_t epochTickSkipCount(const TickScheduler& scheduler) noexcept;
 uint32_t pendingTicks(const TickScheduler& scheduler, uint64_t nowMs) noexcept;
 double scheduleErrorMs(const TickScheduler& scheduler, uint64_t nowMs) noexcept;
-bool noteTickRun(TickScheduler& scheduler, uint64_t nowMs, uint32_t elapsedMs,
+bool noteTickRun(TickScheduler& scheduler, uint64_t nowMs, double workMs,
                  ac::metrics::CounterRegistry* counters = nullptr,
                  ac::metrics::GaugeRegistry* gauges = nullptr) noexcept;
 void noteTickSkip(TickScheduler& scheduler, uint32_t skipped = 1u,

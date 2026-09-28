@@ -429,3 +429,125 @@ AC_TEST(runtime_persists_match_record_and_report_on_match_end) {
   AC_CHECK(afterRestart.find("\"" + matchId + "\"") != std::string::npos);
   restarted.stop();
 }
+
+// S13 云端复验观察项：报告里的 tick 时序曾取到「进程首个 tick → 本 tick」的墙钟（实测 jitterMsP50/P95
+// ≈ 2055 ms、scheduleErrorMsP95 ≈ 2056 ms），`workMsP95` 又被整毫秒截断成恒 0。本用例在**同一进程**里
+// 连打两局长短不同的对局：每局的时序量必须只反映本局 —— ②`ticks.total × 50` 落在本局 `durationMs` 上
+// （不随进程存活时间增长）、①抖动/调度误差远小于本局时长、③工作量是亚毫秒分辨率下的真实测量。
+AC_TEST(runtime_report_tick_timing_is_match_scoped) {
+  ac::test::TempDir dir("runtime-tick-timing");
+  AC_CHECK(dir.isReady());
+  const std::string dataDir = dir.file("data");
+  std::error_code code;
+  std::filesystem::create_directories(dataDir, code);
+
+  ac::server::RuntimeConfig config = testConfig();
+  config.dataDir = dataDir;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket client{};
+  AC_CHECK(client.bind(0u));
+
+  std::uint64_t now = 10000u;
+  std::uint32_t seq = 0u;
+  // 会话靠包续命：3s 不发包就掉进宽限期，房间停摆（见 runtime_tick_clock_tracks_wall_clock_while_playing）。
+  const auto keepAlive = [&](int index) {
+    if (index % 4 != 0) return;
+    std::uint8_t frame[64] = {};
+    const std::size_t bytes = encodeCommandFrame(frame, sizeof(frame), botSession(runtime),
+                                                static_cast<std::uint16_t>(++seq),
+                                                static_cast<std::uint32_t>(index));
+    if (bytes > 0u) {
+      (void)client.sendTo(ac::net::Endpoint{kLoopback, runtime.udpPort()},
+                          std::span<const std::uint8_t>(frame, bytes));
+    }
+  };
+  const auto numberAfter = [](const std::string& text, const char* needle) -> double {
+    const std::size_t at = text.find(needle);
+    if (at == std::string::npos) return -1.0;
+    return std::strtod(text.c_str() + at + std::strlen(needle), nullptr);
+  };
+  // 上一局的 MatchState/快照还在 socket 缓冲里：不清空的话握手会把旧包当成 HelloAck 而判失败。
+  const auto drainClient = [&]() -> int {
+    std::uint8_t scratch[1024] = {};
+    ac::net::Endpoint from{};
+    int drained = 0;
+    for (int i = 0; i < 20000; ++i) {
+      if (client.recvFrom(from, std::span<std::uint8_t>(scratch, sizeof(scratch))) <= 0) break;
+      ++drained;
+    }
+    return drained;
+  };
+
+  std::string previousMatchId{};
+  const int playPolls[2] = {80, 400};
+  for (int round = 0; round < 2; ++round) {
+    const int drained = drainClient();
+    const std::uint16_t session = handshake(runtime, client, 0x55667788u + static_cast<std::uint32_t>(round), now);
+    std::printf("round=%d drained=%d session=%u clients=%zu\n", round, drained, session,
+                runtime.clientCount());
+    AC_CHECK(session != 0u);
+    // 25/30ms 交替步进：均匀步进会让迟到量恰好为 0，量不出「抖动」这一项。
+    for (int i = 0; i < 100; ++i) {
+      runtime.pollOnce(now += (i % 2 == 0 ? 25u : 30u));
+      keepAlive(i);
+    }
+    AC_CHECK(runtime.metrics().players >= 1u);
+    for (int i = 0; i < playPolls[round]; ++i) {
+      runtime.pollOnce(now += (i % 2 == 0 ? 25u : 30u));
+      keepAlive(i);
+    }
+    // 掉线 → 房间清空 → endMatch。40/50ms 步进：每拍至多执行 1 个 tick（迟到量 ≤ 一步），
+    // 不会触发追帧上限（不产生跳过），也不会把一堆 tick 挤进同一拍。
+    for (int i = 0; i < 1000 && runtime.clientCount() > 0u; ++i) {
+      runtime.pollOnce(now += (i % 2 == 0 ? 40u : 50u));
+    }
+    AC_CHECK_EQ(runtime.clientCount(), static_cast<std::size_t>(0));
+    runtime.pollOnce(now += 25u);  // 上一拍已 endMatch：这一拍 ensureMatchRunning 落盘
+
+    const ac::persist::MatchStore* store = runtime.store();
+    AC_CHECK(store != nullptr);
+    if (store == nullptr) break;
+    const std::vector<ac::persist::MatchResultRecord> recent = store->listRecent(2u);
+    const ac::persist::MatchResultRecord* record = nullptr;
+    for (const ac::persist::MatchResultRecord& candidate : recent) {
+      if (candidate.matchId != previousMatchId) {
+        record = &candidate;
+        break;
+      }
+    }
+    AC_CHECK(record != nullptr);  // 第二局必须是另一局（同进程内换了 matchId）
+    if (record == nullptr) break;
+    previousMatchId = record->matchId;
+
+    const std::string report = ac::test::readTextFile(dataDir + "/reports/" + record->matchId + ".json");
+    AC_CHECK(!report.empty());
+    const double durationMs = numberAfter(report, "\"durationMs\":");
+    const double ticksTotal = numberAfter(report, "\"ticks\":{\"total\":");
+    const double jitterP50 = numberAfter(report, "\"jitterMsP50\":");
+    const double jitterP95 = numberAfter(report, "\"jitterMsP95\":");
+    const double scheduleP95 = numberAfter(report, "\"scheduleErrorMsP95\":");
+    const double workP95 = numberAfter(report, "\"workMsP95\":");
+    const double workP99 = numberAfter(report, "\"workMsP99\":");
+    std::printf("round=%d matchId=%s duration=%.0fms ticks=%0.f jitterP50=%.3f jitterP95=%.3f "
+                "schedP95=%.3f workP95=%.3f workP99=%.3f\n",
+                round, record->matchId.c_str(), durationMs, ticksTotal, jitterP50, jitterP95,
+                scheduleP95, workP95, workP99);
+    AC_CHECK(durationMs > 1000.0);
+    AC_CHECK(jitterP50 >= 0.0 && jitterP50 <= jitterP95);
+    // ① 抖动/调度误差是「本局每 tick 相对 50ms 网格的迟到量」：不超过一步轮询的量级，
+    //   远小于对局时长（旧行为取进程首个 tick 起的墙钟，这里是数千毫秒）。
+    AC_CHECK(jitterP95 > 0.0);
+    AC_CHECK(jitterP95 <= 60.0);
+    AC_CHECK(scheduleP95 > 0.0);
+    AC_CHECK(scheduleP95 <= 60.0);
+    // ② ticks.total 是本局自己的账（含波间 tick、不含 loading 倒计时）：× 50 落在本局 durationMs 上。
+    //   旧行为把「进程首个 tick 起的全部 tick」写进来，这一项会随进程存活时间线性增长。
+    AC_CHECK(std::fabs(ticksTotal * 50.0 - durationMs) <= 500.0);
+    // ③ 工作量有真实测量点（房间更新 <1ms 时旧行为四舍五入成 0）。
+    AC_CHECK(workP95 > 0.0);
+    AC_CHECK_EQ(workP95 <= workP99, true);
+  }
+  runtime.stop();
+}

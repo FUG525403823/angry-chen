@@ -84,8 +84,11 @@ MatchDiagnostics buildMatchDiagnostics(const MatchRunSummary& summary,
   diagnostics.matchId = summary.matchId;
   diagnostics.durationMs = summary.durationMs;
 
-  diagnostics.ticks.total = scheduler.tickIndex;
-  diagnostics.ticks.skipped = scheduler.tickSkips;
+  // S13 §5：ticks 组一律是「本局」的量 —— 调度器在 loading→playing 的首个 tick 上打 epoch 基准
+  //（core/scheduler.hpp），这里只读基准以来的账；tickIndex/tickSkips 本身仍是进程级累计（/health
+  // 的 ticks、G8 的跳过计数读它）。
+  diagnostics.ticks.total = ac::core::epochTickCount(scheduler);
+  diagnostics.ticks.skipped = ac::core::epochTickSkipCount(scheduler);
   diagnostics.ticks.jitterMsP50 = ac::core::tickJitterP50Ms(scheduler);
   diagnostics.ticks.jitterMsP95 = ac::core::tickJitterP95Ms(scheduler);
   diagnostics.ticks.scheduleErrorMsP95 = ac::core::tickScheduleErrorP95Ms(scheduler);

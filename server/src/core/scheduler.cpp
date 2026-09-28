@@ -54,10 +54,11 @@ double percentileOf(const double* samples, std::size_t count, double fraction,
 
 void startScheduler(TickScheduler& scheduler, uint64_t nowMs, uint32_t simStartMs) noexcept {
   scheduler.simClock = SimClock{simStartMs, nowMs};
+  scheduler.epoch = TickEpoch{};
   scheduler.tickIndex = 0u;
   scheduler.tickSkips = 0u;
   scheduler.budgetExceeded = 0u;
-  scheduler.lastWorkMs = 0u;
+  scheduler.lastWorkMs = 0.0;
   scheduler.jitterCount = 0u;
   scheduler.jitterNext = 0u;
   scheduler.lastRunWallMs = 0u;
@@ -72,6 +73,36 @@ void startScheduler(TickScheduler& scheduler, uint64_t nowMs, uint32_t simStartM
   }
 }
 
+void beginTickEpoch(TickScheduler& scheduler, uint64_t firstTickGridMs,
+                    uint32_t ticksAlreadyCounted) noexcept {
+  TickEpoch epoch;
+  epoch.isActive = true;
+  epoch.firstTickGridMs = firstTickGridMs;
+  epoch.tickIndex = scheduler.tickIndex >= ticksAlreadyCounted
+                        ? scheduler.tickIndex - ticksAlreadyCounted
+                        : 0u;
+  epoch.tickSkips = scheduler.tickSkips;
+  scheduler.epoch = epoch;
+  // 三个环从本局起算：只清计数即可（写点总是先落槽位再增计数，count 之外的槽位不会被读）。
+  scheduler.jitterCount = 0u;
+  scheduler.jitterNext = 0u;
+  scheduler.intervalCount = 0u;
+  scheduler.intervalNext = 0u;
+  scheduler.workCount = 0u;
+  scheduler.workNext = 0u;
+  // 间隔误差的「上一次 tick」也要接到本局首个 tick 上，否则本局第一个间隔样本会把两局之间的
+  // 那一大段墙钟算成间隔误差。
+  scheduler.lastRunWallMs = firstTickGridMs;
+}
+
+uint32_t epochTickCount(const TickScheduler& scheduler) noexcept {
+  return scheduler.tickIndex - scheduler.epoch.tickIndex;
+}
+
+uint32_t epochTickSkipCount(const TickScheduler& scheduler) noexcept {
+  return scheduler.tickSkips - scheduler.epoch.tickSkips;
+}
+
 uint32_t pendingTicks(const TickScheduler& scheduler, uint64_t nowMs) noexcept {
   const uint64_t elapsedMs =
       nowMs > scheduler.simClock.wallStartMs ? nowMs - scheduler.simClock.wallStartMs : 0u;
@@ -81,16 +112,21 @@ uint32_t pendingTicks(const TickScheduler& scheduler, uint64_t nowMs) noexcept {
 }
 
 double scheduleErrorMs(const TickScheduler& scheduler, uint64_t nowMs) noexcept {
-  const double expectedMs = static_cast<double>(accountedTicks(scheduler)) * static_cast<double>(kTickMs);
-  const double actualMs = static_cast<double>(
-      nowMs > scheduler.simClock.wallStartMs ? nowMs - scheduler.simClock.wallStartMs : 0u);
+  // 原点优先用本局 epoch 的「首 tick 理想时刻」；没打过基准时退回 startScheduler 的时刻。
+  const uint64_t originMs =
+      scheduler.epoch.isActive ? scheduler.epoch.firstTickGridMs : scheduler.simClock.wallStartMs;
+  const uint32_t baseTicks =
+      scheduler.epoch.isActive ? scheduler.epoch.tickIndex + scheduler.epoch.tickSkips : 0u;
+  const double expectedMs =
+      static_cast<double>(accountedTicks(scheduler) - baseTicks) * static_cast<double>(kTickMs);
+  const double actualMs = static_cast<double>(nowMs > originMs ? nowMs - originMs : 0u);
   return actualMs - expectedMs;
 }
 
-bool noteTickRun(TickScheduler& scheduler, uint64_t nowMs, uint32_t elapsedMs,
+bool noteTickRun(TickScheduler& scheduler, uint64_t nowMs, double workMs,
                  ac::metrics::CounterRegistry* counters, ac::metrics::GaugeRegistry* gauges) noexcept {
-  scheduler.lastWorkMs = elapsedMs;
-  // 误差按「本 tick 的应到时刻」取样：第 i 个 tick 应在 wallStart + i × 50 ms 执行。
+  scheduler.lastWorkMs = workMs;
+  // 误差按「本 tick 的应到时刻」取样：本局第 i 个 tick 应在 epoch 基准 + i × 50 ms 执行。
   scheduler.jitterMs[scheduler.jitterNext] = scheduleErrorMs(scheduler, nowMs);
   // S13 §5：间隔误差（相邻两次 tick 的墙上间隔 − 50 ms）与工作量各留一份样本。
   if (scheduler.tickIndex > 0u && nowMs > scheduler.lastRunWallMs) {
@@ -100,14 +136,14 @@ bool noteTickRun(TickScheduler& scheduler, uint64_t nowMs, uint32_t elapsedMs,
     if (scheduler.intervalCount < kScheduleSampleCount) ++scheduler.intervalCount;
   }
   scheduler.lastRunWallMs = nowMs;
-  scheduler.workMs[scheduler.workNext] = static_cast<double>(elapsedMs);
+  scheduler.workMs[scheduler.workNext] = workMs;
   scheduler.workNext = (scheduler.workNext + 1u) % kScheduleSampleCount;
   if (scheduler.workCount < kScheduleSampleCount) ++scheduler.workCount;
   ++scheduler.tickIndex;
   scheduler.jitterNext = (scheduler.jitterNext + 1u) % kScheduleSampleCount;
   if (scheduler.jitterCount < kScheduleSampleCount) ++scheduler.jitterCount;
 
-  const bool isOverBudget = elapsedMs > kRoomTickBudgetMs;
+  const bool isOverBudget = workMs > static_cast<double>(kRoomTickBudgetMs);
   if (isOverBudget) {
     ++scheduler.budgetExceeded;  // 让出事件循环：累积量不扣除（让出 ≠ 丢 tick）
     ac::metrics::bumpCounter(counters, ac::metrics::CounterId::kRoomBudgetExceeded);
