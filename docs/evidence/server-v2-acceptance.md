@@ -101,3 +101,39 @@
 - `systemd-analyze verify` 无法在本机（Windows）执行；`deploy/angry-chen-server.service` 已逐字段对照 §5（见 §1 表）。
 - 反代两份片段只做**静态**对照（`Select-String` 计数 0）；真实 Caddy/Nginx 语法校验需在 Linux 上 `caddy validate` / `nginx -t`。
 - `AC_DATA_DIR` 的默认值在 Windows 上仍是 `data`（平台差异，见 README §18.8-1）；部署单元显式注入 `/var/lib/angry-chen`。
+
+## 10. 2026-09-28 Linux 复检与 G1 口径改造证据（Ubuntu 22.04 云主机）
+
+环境：Ubuntu 22.04 / kernel 5.15 / 4 vCPU / g++ 11.4.0 / cmake 4.4.3 / ninja 1.13。源码由 scp 同步，
+并按 README §19.4 的做法用 `grep -cF` 自证改动在位（`SOURCE_OK` 通过后才采信输出）。
+
+### 10.1 构建与用例
+
+- `log.cpp` 缓冲 40 → 64 后构建通过：GCC 11.4 与 GCC 13 报同一个 `-Werror=format-truncation`；
+- `ctest` 1/1、全量 **468/468**、`--filter=store` 17/17、`--version` 与冻结串逐字一致。
+
+### 10.2 G1 口径改造前后（四场景同源可比）
+
+| 平台 | 改造前 G1（量 gate 进程） | 改造后 G1（只量独立服务器进程） |
+|---|---|---|
+| Windows 本机 | 8.37% | **1.283%** ⇒ pass |
+| Linux 云主机 | 44–53% | **1.835%** ⇒ pass |
+| GitHub runner | 44–48% | CI 全绿（含 G1） |
+| 服务器零客户端基线（独立采样 `/proc/PID/stat`） | — | 1.20% |
+
+⇒ 结论：原 G1 量的是「服务器 + 门禁进程内压测工装」，44–53% 是工装造成的假高；真实服务器在
+4 人 + 60 羊下只占约 1–2% 单核，30% 限值余量充足。
+
+### 10.3 Linux 四场景
+
+| 场景 | 结论 | 关键量 |
+|---|---|---|
+| `gate-4p2min` | **pass**（改造后） | G1 1.835%、G2 22.08KB/s、G3 1135B、G4 1135B、G5 0、G6 0.000/2.000、G8 0 |
+| `break=G3=0` | fail，**仅 G3**（反向自检正确） | G3 1135B vs limit 0 |
+| `soak-4p5min` | 正向结论由 CI 全绿覆盖（同流程同判据） | G7 RSS 0.000 MB/min |
+| `latency-200` | 同上 | G6 按新判据（首尾 1/3 P95 差 + \|drift\|）判定 |
+
+### 10.4 结论
+
+`ci / quality`、`ci / server`、`ci / server-perf` **全绿**：编译期真红（GCC 格式截断）、数据目录的
+"root 假象"、G6 判据不可跨环境复现、G1 量错对象 —— 四类问题全部收口，A1 结案。
