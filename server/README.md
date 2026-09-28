@@ -1277,4 +1277,13 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 4. 服务器侧指标（G5/G6/G8 等）继续走日志/`/metrics` 或现有进程内路径，避免重复实现；
 5. 落地后重跑四场景 + 反向自检，把"跨平台实测表"写进 `docs/evidence/server-v2-acceptance.md` §10。
 
+### 19.4 远程验证的前提：先证明"跑的就是你以为的那份代码"
+
+云服务器上用浅克隆（`git clone --depth 1`）做 Linux 验证时踩了两次坑，两次都差点把旧代码的结果当证据：
+
+1. `git fetch --depth=1` **没有**更新 `origin/main`，随后的 `git reset --hard origin/main` 原地不动 ⇒ 服务器仍在旧提交上跑，输出里没有新功能的行（少了 `solo cpu phase`）却看不出来；
+2. 换用 `git fetch origin main` 后直接 **TLS 中断**（`GnuTLS recv error (-110)`）⇒ fetch 失败，同样的静默风险。
+
+判据（现在做进脚本里）：**远程验证脚本必须自己证明代码身份** —— 打印 HEAD，并对本轮关键改动逐条 `grep -cF` 计数，任一为 0 就 `exit 3` 中止；否则不许引用该次输出。网络不可达时用 `scp` 覆盖改动文件（当前就是这么同步的），不要依赖 fetch。
+
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
