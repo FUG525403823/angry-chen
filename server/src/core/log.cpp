@@ -1,5 +1,6 @@
 #include "core/log.hpp"
 
+#include "core/clock.hpp"
 #include "core/json_text.hpp"
 
 #include <chrono>
@@ -132,12 +133,6 @@ std::string formatTimestamp(std::int64_t epochMs) {
   return std::string(buf);
 }
 
-std::int64_t nowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 }  // namespace
 
 const char* levelName(Level level) noexcept {
@@ -224,7 +219,7 @@ void close() {
 
 void write(Level level, std::string_view evt, std::initializer_list<Field> fields) {
   if (levelValue(level) < levelValue(gMinLevel)) return;
-  writeLine(formatLine(nowMs(), level, evt, fields));
+  writeLine(formatLine(ac::core::wallMs(), level, evt, fields));
 }
 
 int levelValue(Level level) noexcept {
@@ -362,7 +357,7 @@ void event(Level level, std::string_view evt, const EventContext& ctx,
            std::initializer_list<DetailField> detail) {
   if (levelValue(level) < levelValue(gMinLevel)) return;
   EventContext resolved = ctx;
-  if (resolved.ts == 0) resolved.ts = nowMs();
+  if (resolved.ts == 0) resolved.ts = ac::core::wallMs();
   writeLine(formatEventLine(level, evt, resolved, detail));
 }
 

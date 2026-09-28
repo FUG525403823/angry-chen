@@ -11,7 +11,7 @@ constexpr std::uint32_t loopbackIpv4() noexcept { return 0x7F000001u; }
 inline constexpr std::size_t kWriteFailureStatus = 500u;
 
 std::string formatClientId(std::uint32_t ipv4) {
-  char buffer[24];
+  char buffer[kClientIdBufferBytes];
   std::snprintf(buffer, sizeof(buffer), "%u.%u.%u.%u", static_cast<unsigned>((ipv4 >> 24) & 0xFFu),
                 static_cast<unsigned>((ipv4 >> 16) & 0xFFu), static_cast<unsigned>((ipv4 >> 8) & 0xFFu),
                 static_cast<unsigned>(ipv4 & 0xFFu));
@@ -20,7 +20,7 @@ std::string formatClientId(std::uint32_t ipv4) {
 
 // 请求头读完（\r\n\r\n）即停；超过上限返回 false。
 bool readRequestHead(ac::net::TcpConnection& connection, std::string& out) {
-  std::uint8_t buffer[256];
+  std::uint8_t buffer[kRequestReadChunkBytes];
   while (out.find("\r\n\r\n") == std::string::npos) {
     if (out.size() >= kMaxRequestBytes) return false;
     const int got = connection.recv(buffer, kRequestTimeoutMs);
@@ -53,10 +53,10 @@ bool parseRequestLine(const std::string& head, Request& out) {
 // 响应写完后再把残留请求读空：带未读数据 close 会让对端收到 RST，
 // 客户端就拿不到刚写出的响应（超长请求头这条路径踩过，S14 实测）。
 void drainInput(ac::net::TcpConnection& connection) noexcept {
-  std::uint8_t scratch[512];
+  std::uint8_t scratch[kDrainChunkBytes];
   std::size_t drained = 0u;
-  while (drained < 65536u) {
-    const int got = connection.recv(scratch, 50);
+  while (drained < kDrainBudgetBytes) {
+    const int got = connection.recv(scratch, kDrainTimeoutMs);
     if (got <= 0) break;
     drained += static_cast<std::size_t>(got);
   }

@@ -13,9 +13,13 @@
 #include <malloc.h>
 #endif
 
+#include <array>
+#include <cstdint>
+
 #include "config/player.hpp"
 #include "core/math.hpp"
 #include "core/rng.hpp"
+#include "net/packet_queue.hpp"
 #include "world_test_support.hpp"
 #include "sim/entity_table.hpp"
 #include "sim/step.hpp"
@@ -214,6 +218,41 @@ AC_TEST(alloc_neighbor_scan_is_heap_free) {
   std::printf("neighborScanAllocations=%zu\n", allocations);
   AC_CHECK(visited > 0u);
   AC_CHECK_EQ(allocations, 0u);
+}
+
+// D4：机器人的延迟包队列（net/packet_queue.hpp）必须零堆分配 —— 旧实现每个包 new 一次
+// std::vector<uint8_t>，30Hz × 4 机器人整跑次上万次分配。用例走「入队 → 到点出队」的同一循环形状。
+AC_TEST(alloc_bot_packet_queue_is_heap_free) {
+  std::array<std::uint8_t, ac::net::kMaxPacketBytes> payload{};
+  payload.fill(0x5Au);
+  ac::net::DelayedPacketQueue queue{};
+
+  const AllocationScope window;
+  std::size_t accepted = 0u;
+  std::size_t flushed = 0u;
+  for (std::size_t round = 0u; round < 1000u; ++round) {
+    for (std::size_t i = 0u; i < 8u; ++i) {
+      if (queue.push(static_cast<std::uint64_t>(round * 10u + i), payload.data(), 1200u)) {
+        ++accepted;
+      }
+    }
+    for (std::size_t i = 0u; i < queue.count();) {
+      if (queue.at(i).dueMs <= static_cast<std::uint64_t>(round * 10u + 8u)) {
+        ++flushed;
+        queue.eraseAt(i);
+      } else {
+        ++i;
+      }
+    }
+  }
+  const std::size_t allocations = window.since();
+  std::printf("botPacketQueueAllocations=%zu accepted=%zu flushed=%zu dropped=%zu\n", allocations,
+              accepted, flushed, queue.droppedCount());
+  AC_CHECK_EQ(allocations, 0u);
+  AC_CHECK_EQ(queue.droppedCount(), 0u);
+  AC_CHECK_EQ(accepted, 8000u);
+  AC_CHECK_EQ(flushed, 8000u);
+  AC_CHECK_EQ(queue.count(), 0u);
 }
 
 AC_TEST(alloc_tick_loop_is_heap_free) {

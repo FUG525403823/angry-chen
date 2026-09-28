@@ -1,5 +1,7 @@
 #include "core/scheduler.hpp"
 
+#include "core/percentile.hpp"
+
 namespace ac::core {
 namespace {
 
@@ -16,11 +18,9 @@ void insertionSort(double* values, std::size_t count) noexcept {
 }
 
 // 最近秩（nearest-rank）取分位：样本量 ≤ 64，误差在 §5 预算的量级之下。
+// 口径实现合并到 core/percentile.hpp（§15.4 D2）；本处固定用取样环自始至今的 round((N-1)·q) 规则。
 std::size_t percentileIndex(std::size_t count, double fraction) noexcept {
-  const double position = static_cast<double>(count - 1u) * fraction;
-  std::size_t index = static_cast<std::size_t>(position + 0.5);
-  if (index >= count) index = count - 1u;
-  return index;
+  return ac::core::percentileIndex(count, fraction, ac::core::PercentileRule::kMidpointRank);
 }
 
 // 取样环的公共口径：取 count 个样本（可选取幅值）、插入排序、最近秩取分位。

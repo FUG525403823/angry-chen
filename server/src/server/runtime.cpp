@@ -4,6 +4,7 @@
 #include <span>
 
 #include "config/waves.hpp"
+#include "core/clock.hpp"
 #include "core/log.hpp"
 #include "core/quantize.hpp"
 #include "core/scheduler.hpp"
@@ -71,9 +72,7 @@ bool Runtime::start(const RuntimeConfig& config, std::string* error) {
   }
   udpPort_ = udp_.boundPort();
 
-  startMs_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                            std::chrono::steady_clock::now().time_since_epoch())
-                                            .count());
+  startMs_ = ac::core::nowMs();
   ac::room::initRoomRegistry(registry_, wallMs32(startMs_));
   registry_.worldSeed = config_.seed;
   room_ = ac::room::createRoom(registry_, startMs_);

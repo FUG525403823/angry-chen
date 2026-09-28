@@ -1,10 +1,13 @@
 // ServerProcess 入口（S01）。S13 接上版本同源、日志阈值、指标渲染与战绩存储自检；
 // 网络监听与房间循环由后续批次（S14/S15）接线。
+#include "core/clock.hpp"
 #include "core/log.hpp"
 #include "core/version.hpp"
 #include "metrics/metrics.hpp"
 #include "persist/match_store.hpp"
 #include "server/runtime.hpp"
+#include "server/serve_cli.hpp"
+#include "server/shutdown.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -24,8 +27,9 @@ void printUsage(const char* argv0) {
   std::printf("  --selftest-log    向 stdout 写一条结构化启动日志后退出\n");
   std::printf("  --selftest-metrics 向 stdout 渲染一遍 /metrics 文本后退出\n");
   std::printf("  --selftest-store  打开 AC_DATA_DIR 下的战绩存储并打印常驻/坏行计数与两条存储指标后退出\n");
-  std::printf("  --serve           启动服务器运行时（UDP 游戏面 + HTTP 诊断面），直到 --minutes 到时或 Ctrl+C\n");
-  std::printf("                    环境变量 AC_UDP_PORT / AC_HTTP_PORT / AC_DATA_DIR；选项 --minutes= --udp-port= --http-port= --seed=\n");
+  std::printf("  --serve           启动服务器运行时（UDP 游戏面 + HTTP 诊断面），直到 --minutes 到时或 SIGINT/SIGTERM\n");
+  std::printf("                    选项 --minutes= --udp-port= --http-port= --data-dir= --seed= --log-level=（顺序无关，--k=v 与 --k v 等价）\n");
+  std::printf("                    环境变量 AC_UDP_PORT / AC_HTTP_PORT / AC_DATA_DIR / AC_LOG_LEVEL；同名的 CLI 选项优先\n");
   std::printf("  无参数            向 stderr 写一条结构化启动日志后退出\n");
 }
 
@@ -88,43 +92,29 @@ std::uint16_t portFromEnv(const char* name, std::uint16_t fallback) {
   return value > 0 && value < 65536 ? static_cast<std::uint16_t>(value) : fallback;
 }
 
-std::uint64_t steadyNowMs() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
-// S14 §2-3 / S15 §5：常驻服务模式（端口与数据目录全部来自环境变量，便于 systemd 接管）。
+// S14 §2-3 / S15 §5：常驻服务模式。选项解析搬到 ac::server::parseServeArgs（顺序无关，见 D3），
+// 停止走 SIGINT/SIGTERM → 停止标志 → 本循环收尾（退出码 0；第二个信号强杀）。
 int runServe(int argc, char** argv) {
-  ac::server::RuntimeConfig config{};
-  config.udpPort = portFromEnv("AC_UDP_PORT", config.udpPort);
-  config.httpPort = portFromEnv("AC_HTTP_PORT", config.httpPort);
-  double minutes = 0.0;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view arg = argv[i];
-    const std::size_t eq = arg.find('=');
-    // §6/§9 的计划命令是空格分隔（`--http-port 8787 --data-dir build/acvar`）；与三个工具一样两种写法都收。
-    std::string_view key = arg;
-    std::string value;
-    if (eq != std::string_view::npos) {
-      key = arg.substr(0u, eq);
-      value = std::string(arg.substr(eq + 1u));
-    } else if (i + 1 < argc && argv[i + 1][0] != '-') {
-      value = std::string(argv[++i]);
-    } else {
-      continue;
+  ac::server::ServeOptions options{};
+  options.config.udpPort = portFromEnv("AC_UDP_PORT", options.config.udpPort);
+  options.config.httpPort = portFromEnv("AC_HTTP_PORT", options.config.httpPort);
+  std::string parseError;
+  if (!ac::server::parseServeArgs(argc, argv, options, &parseError)) {
+    if (options.isHelp) {
+      printUsage(argv[0]);
+      return 0;
     }
-    if (key == "--minutes") minutes = std::atof(value.c_str());
-    else if (key == "--udp-port") config.udpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
-    else if (key == "--http-port") config.httpPort = static_cast<std::uint16_t>(std::atoi(value.c_str()));
-    else if (key == "--data-dir") config.dataDir = value;
-    else if (key == "--seed") config.seed = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+    std::fprintf(stderr, "serve failed: %s\n", parseError.c_str());
+    printUsage(argv[0]);
+    return 2;
   }
+  // CLI 的 --log-level 在 AC_LOG_LEVEL（main 开头已应用）之后生效，即 CLI 优先。
+  if (options.isLogLevelSet) ac::log::setMinLevel(options.logLevel);
+  ac::server::installShutdownHandlers();
 
   ac::server::Runtime runtime;
   std::string error;
-  if (!runtime.start(config, &error)) {
+  if (!runtime.start(options.config, &error)) {
     std::fprintf(stderr, "serve failed: %s\n", error.c_str());
     return 1;
   }
@@ -132,17 +122,21 @@ int runServe(int argc, char** argv) {
                  {ac::log::DetailField("udpPort", static_cast<std::uint32_t>(runtime.udpPort())),
                   ac::log::DetailField("httpPort", static_cast<std::uint32_t>(runtime.httpPort())),
                   ac::log::DetailField("dataDir", std::string_view(runtime.dataDir()))});
-  const std::uint64_t startMs = steadyNowMs();
+  const std::uint64_t startMs = ac::core::nowMs();
   const std::uint64_t endMs =
-      minutes > 0.0 ? startMs + static_cast<std::uint64_t>(minutes * 60000.0) : 0u;
-  while (endMs == 0u || steadyNowMs() < endMs) {
-    runtime.pollOnce(steadyNowMs());
+      options.minutes > 0.0 ? startMs + static_cast<std::uint64_t>(options.minutes * 60000.0) : 0u;
+  while (!ac::server::isStopRequested() && (endMs == 0u || ac::core::nowMs() < endMs)) {
+    runtime.pollOnce(ac::core::nowMs());
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  ac::log::event(ac::log::Level::info, "shutdownRequested", {}, {});
-  runtime.stop();
+  ac::log::event(ac::log::Level::info, "shutdownRequested", {},
+                 {ac::log::DetailField("reason", std::string_view(
+                                                     ac::server::isStopRequested() ? "signal" : "minutes")),
+                  ac::log::DetailField("requests", ac::server::shutdownRequestCount())});
+  runtime.stop();  // 停止 accept/tick、释放 UDP/HTTP 端口与房间、store 随 Runtime 析构落盘
   ac::log::event(ac::log::Level::info, "shutdownComplete", {},
                  {ac::log::DetailField("ticks", runtime.metrics().ticks)});
+  ac::log::close();  // 日志 sink 落盘（文件 sink 时是唯一能保证 defer 到进程结束的一步）
   return 0;
 }
 
@@ -152,6 +146,11 @@ int main(int argc, char** argv) {
   try {
     ac::log::applyLogLevelFromEnv();
     ac::log::applyLogFileFromEnv();
+    // D3：先扫一遍 argv 找 --serve，再分派 —— `ac_server --http-port 8799 --serve` 与
+    // `ac_server --serve --http-port 8799` 等价（旧实现要求 --serve 必须打头）。
+    for (int i = 1; i < argc; ++i) {
+      if (std::string_view(argv[i]) == "--serve") return runServe(argc, argv);
+    }
     for (int i = 1; i < argc; ++i) {
       const std::string_view arg = argv[i];
       if (arg == "--version") {
@@ -170,7 +169,6 @@ int main(int argc, char** argv) {
       }
       if (arg == "--selftest-metrics") return runSelftestMetrics();
       if (arg == "--selftest-store") return runSelftestStore();
-      if (arg == "--serve") return runServe(argc, argv);
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       printUsage(argv[0]);
       return 2;

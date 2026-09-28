@@ -14,7 +14,9 @@
 #include <thread>
 #include <vector>
 
+#include "core/clock.hpp"
 #include "core/log.hpp"
+#include "core/percentile.hpp"
 #include "core/scheduler.hpp"
 #include "core/version.hpp"
 #include "net/tcp_listener.hpp"
@@ -39,6 +41,9 @@ constexpr int kSampleIntervalMs = 1000;
 constexpr int kRssSampleEverySeconds = 1;  // §5 G7 行写的是「1s 采样线性回归」（§15.3 登记）
 constexpr double kBytesPerKb = 1024.0;
 constexpr std::size_t kMaxClientStats = 16u;
+// D4：HTTP 状态行解析里的两个裸数字（"HTTP/1.1 " 之后是 3 位状态码）。
+constexpr std::size_t kHttpStatusPrefixBytes = 9u;    // strlen("HTTP/1.1 ")
+constexpr std::size_t kHttpStatusLineMinBytes = 12u;  // "HTTP/1.1 200" 的总长下界
 
 struct ScenarioDef {
   const char* name;
@@ -65,21 +70,13 @@ struct Options {
   double minutes = 0.0;  // >0 表示调试用短跑，只覆盖时长（§15.3 登记的非计划选项）
 };
 
-std::uint64_t nowMs() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
-// 近邻秩分位（升序输入），与 core/metrics 同口径：sorted[ceil(q * N) - 1]。
+// 近邻秩分位（升序输入），与 core/scheduler 的取样环同属 core/percentile.hpp 的口径：
+// 本处固定用工具链自始至今的 ceil(q·N)-1 规则（§15.4 D2 要求逐位不变）。
 double percentileOf(std::vector<double> values, double q) {
   if (values.empty()) return 0.0;
   std::sort(values.begin(), values.end());
-  std::size_t rank = static_cast<std::size_t>(std::ceil(q * static_cast<double>(values.size())));
-  if (rank == 0u) rank = 1u;
-  if (rank > values.size()) rank = values.size();
-  return values[rank - 1u];
+  return ac::core::percentileOfSorted(values.data(), values.size(), q,
+                                      ac::core::PercentileRule::kNearestRankUpper);
 }
 
 double meanOf(const std::vector<double>& values) {
@@ -312,10 +309,10 @@ bool measureSoloServerCpu(const char* argv0, const Options& options, int players
   sleepForMs(3000u);  // 等服务器起来再采样，免得把启动开销算进第一个窗口
   std::vector<double> samples{};
   std::uint64_t prevCpu = processCpuMsOf(server);
-  std::uint64_t prevAt = nowMs();
+  std::uint64_t prevAt = ac::core::nowMs();
   const std::uint64_t endAt = prevAt + static_cast<std::uint64_t>(kPhaseSec * 1000.0);
-  while (nowMs() < endAt) {
-    const std::uint64_t now = nowMs();
+  while (ac::core::nowMs() < endAt) {
+    const std::uint64_t now = ac::core::nowMs();
     if (now - prevAt >= static_cast<std::uint64_t>(kSampleIntervalMs)) {
       const std::uint64_t cpu = processCpuMsOf(server);
       const double windowMs = static_cast<double>(now - prevAt);
@@ -402,10 +399,10 @@ std::string httpGet(ac::server::Runtime& runtime, const char* target) {
   request += " HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n";
   (void)connection.sendAll(request.data(), request.size());
   std::string response{};
-  const std::uint64_t deadline = nowMs() + 2000u;
+  const std::uint64_t deadline = ac::core::nowMs() + 2000u;
   std::uint8_t buffer[512] = {};
-  while (nowMs() < deadline) {
-    runtime.pollOnce(nowMs());
+  while (ac::core::nowMs() < deadline) {
+    runtime.pollOnce(ac::core::nowMs());
     const int got = connection.recv(buffer, 5);
     if (got > 0) {
       response.append(reinterpret_cast<const char*>(buffer), static_cast<std::size_t>(got));
@@ -419,17 +416,17 @@ std::string httpGet(ac::server::Runtime& runtime, const char* target) {
 }
 
 std::size_t statusOf(const std::string& response) {
-  if (response.size() < 12u) return 0u;
-  return static_cast<std::size_t>(std::atoi(response.c_str() + 9u));
+  if (response.size() < kHttpStatusLineMinBytes) return 0u;
+  return static_cast<std::size_t>(std::atoi(response.c_str() + kHttpStatusPrefixBytes));
 }
 
 // §5 G6：替代判据只在「本机定时器粒度 > 8ms」时启用（否则一律按 8ms 硬卡）。
 double measureTimerGranularityMs() {
   double finest = 0.0;
-  std::uint64_t previous = nowMs();
+  std::uint64_t previous = ac::core::nowMs();
   for (int i = 0; i < 64; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    const std::uint64_t now = nowMs();
+    const std::uint64_t now = ac::core::nowMs();
     const double delta = static_cast<double>(now - previous);
     previous = now;
     if (delta > 0.0 && (finest == 0.0 || delta < finest)) finest = delta;
@@ -566,14 +563,14 @@ int main(int argc, char** argv) {
   std::uint64_t lastDriftTick = 0u;
   ac::server::ClientStat stats[kMaxClientStats] = {};
 
-  const std::uint64_t startWallMs = nowMs();
+  const std::uint64_t startWallMs = ac::core::nowMs();
   const std::uint64_t endWallMs =
       startWallMs + static_cast<std::uint64_t>(scenario->minutes * 60000.0);
   std::uint64_t prevCpuMs = processCpuMs();
-  std::uint64_t prevCpuAtMs = nowMs();
+  std::uint64_t prevCpuAtMs = ac::core::nowMs();
   int second = 0;
-  while (nowMs() < endWallMs) {
-    runtime.pollOnce(nowMs());
+  while (ac::core::nowMs() < endWallMs) {
+    runtime.pollOnce(ac::core::nowMs());
     // 漂移在「刚执行完一个 tick」的时刻采样：tick 之间量到的是相位锯齿（天然 ±一个 tick），
     // 不是落后量；tick 边界上量到的才是「这个 tick 迟到了多少」。
     const ac::server::RuntimeMetrics live = runtime.metrics();
@@ -581,7 +578,7 @@ int main(int argc, char** argv) {
       lastDriftTick = live.ticks;
       driftSamples.push_back(std::fabs(live.simDriftMs));
     }
-    const std::uint64_t now = nowMs();
+    const std::uint64_t now = ac::core::nowMs();
     if (now - prevCpuAtMs >= kSampleIntervalMs) {
       const double windowMs = static_cast<double>(now - prevCpuAtMs);
       const std::uint64_t cpuMs = processCpuMs();
@@ -622,7 +619,7 @@ int main(int argc, char** argv) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  const double durationSec = static_cast<double>(nowMs() - startWallMs) / 1000.0;
+  const double durationSec = static_cast<double>(ac::core::nowMs() - startWallMs) / 1000.0;
   killChild(child);
 
   // §2-3：HTTP 面在负载之后仍可服务（运行中的存活证明写进报告 note）。

@@ -13,6 +13,12 @@ namespace ac::http {
 inline constexpr std::size_t kMaxRequestBytes = 8192u;  // 请求行 + 头，超出即 500 并断开
 inline constexpr int kRequestTimeoutMs = 2000;
 inline constexpr int kAcceptBacklog = 32;
+// S15 §15.4 D4：把实现里的裸数字提成具名常量（取值来源 = S14 落地时的实测值，本批不改动任何一个）。
+inline constexpr std::size_t kRequestReadChunkBytes = 256u;  // 读请求头时每次 recv 的栈缓冲
+inline constexpr std::size_t kDrainChunkBytes = 512u;        // 收尾丢弃残留请求的栈缓冲
+inline constexpr std::size_t kDrainBudgetBytes = 65536u;     // 单条连接最多丢弃的残留字节
+inline constexpr int kDrainTimeoutMs = 50;                   // 丢弃阶段每次 recv 的就绪等待
+inline constexpr std::size_t kClientIdBufferBytes = 24u;     // "255.255.255.255" + NUL
 
 // 每个请求前刷新一次依赖：metrics 文本与进程快照必须现渲染（缓存由 handleRequest 自己管）。
 struct HttpListenerDeps {

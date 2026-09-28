@@ -7,3 +7,5 @@
 /ac-gate-data/
 /ac-gate-solo-data/
 /ac-runtime-test-data/
+# 运行时数据目录（工具在任意 cwd 运行时都会生成）
+**/ac-*-data/

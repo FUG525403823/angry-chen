@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "config/waves.hpp"
+#include "core/percentile.hpp"
 #include "core/quantize.hpp"
 #include "core/rng.hpp"
 #include "core/version.hpp"
@@ -58,13 +59,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
   return true;
 }
 
-// 与 S12/S13 同口径的近邻秩分位（升序输入）：sorted[ceil(q * N) - 1]。
+// 与 S12/S13 同口径的近邻秩分位（调用方已升序排序）：实现见 core/percentile.hpp，
+// 本处固定用 ceil(q·N)-1 规则（§15.4 D2 要求逐位不变）。
 double percentile(const std::vector<double>& sorted, double q) {
-  if (sorted.empty()) return 0.0;
-  std::size_t rank = (sorted.size() * static_cast<std::size_t>(q * 100.0) + 99u) / 100u;
-  if (rank == 0u) rank = 1u;
-  if (rank > sorted.size()) rank = sorted.size();
-  return sorted[rank - 1u];
+  return ac::core::percentileOfSorted(sorted.data(), sorted.size(), q,
+                                      ac::core::PercentileRule::kNearestRankUpper);
 }
 
 std::uint32_t microsSince(std::chrono::steady_clock::time_point from) {

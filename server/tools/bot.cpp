@@ -11,9 +11,11 @@
 #include <string>
 #include <vector>
 
+#include "core/clock.hpp"
 #include "core/quantize.hpp"
 #include "core/rng.hpp"
 #include "net/codec.hpp"
+#include "net/packet_queue.hpp"
 #include "net/udp_socket.hpp"
 
 namespace {
@@ -85,12 +87,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
   return true;
 }
 
-// 出向延迟队列：--latency 时命令先入队，到点（now + latency/2）再发，模拟 RTT 的一半。
-struct QueuedPacket {
-  std::uint64_t dueMs = 0u;
-  std::vector<std::uint8_t> bytes{};
-};
-
+// 出向/入向延迟队列都在 net/packet_queue.hpp（D4：定长缓冲 + 定长容量，
+// 消除旧实现里「每包一次 std::vector 分配」）。
 struct Bot {
   ac::net::UdpSocket socket{};
   ac::net::Endpoint server{};
@@ -110,16 +108,9 @@ struct Bot {
   std::uint64_t commandsSent = 0u;
   std::uint64_t snapshotsIn = 0u;
   std::uint64_t matchStatesIn = 0u;
-  std::vector<QueuedPacket> outbox{};
-  std::vector<QueuedPacket> inbox{};  // 入向延迟队列（RTT 是往返口径，双向都要延）
+  ac::net::DelayedPacketQueue outbox{};
+  ac::net::DelayedPacketQueue inbox{};  // 入向延迟队列（RTT 是往返口径，双向都要延）
 };
-
-std::uint64_t nowMs() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
 
 void sendBytes(Bot& bot, const std::uint8_t* bytes, std::size_t size) {
   const int sent = bot.socket.sendTo(bot.server, std::span<const std::uint8_t>(bytes, size));
@@ -133,11 +124,12 @@ void enqueueOrSend(Bot& bot, const Options& options, const std::uint8_t* bytes,
                    std::size_t size);
 
 void flushOutbox(Bot& bot) {
-  const std::uint64_t now = nowMs();
-  for (std::size_t i = 0u; i < bot.outbox.size();) {
-    if (bot.outbox[i].dueMs <= now) {
-      sendBytes(bot, bot.outbox[i].bytes.data(), bot.outbox[i].bytes.size());
-      bot.outbox.erase(bot.outbox.begin() + static_cast<std::ptrdiff_t>(i));
+  const std::uint64_t now = ac::core::nowMs();
+  for (std::size_t i = 0u; i < bot.outbox.count();) {
+    const ac::net::QueuedPacket& packet = bot.outbox.at(i);
+    if (packet.dueMs <= now) {
+      sendBytes(bot, packet.bytes.data(), packet.size);
+      bot.outbox.eraseAt(i);
     } else {
       ++i;
     }
@@ -200,10 +192,9 @@ void enqueueOrSend(Bot& bot, const Options& options, const std::uint8_t* bytes,
     sendBytes(bot, bytes, size);
     return;
   }
-  QueuedPacket packet{};
-  packet.dueMs = nowMs() + halfLatencyMs(options);
-  packet.bytes.assign(bytes, bytes + size);
-  bot.outbox.push_back(std::move(packet));
+  if (!bot.outbox.push(ac::core::nowMs() + halfLatencyMs(options), bytes, size)) {
+    std::fprintf(stderr, "bot outbox full: dropping packet\n");
+  }
 }
 
 // 单条响应的处理（入向延迟队列到点后也走这里）。
@@ -220,7 +211,7 @@ void handleResponse(Bot& bot, const std::uint8_t* buffer, std::size_t size) {
         bot.hasSession = true;
         bot.session = packet.value.header.session;
         bot.serverTick = ack.value.serverTick;
-        bot.ackAtMs = nowMs();
+        bot.ackAtMs = ac::core::nowMs();
         break;
       }
       case ac::net::PacketType::kSnapshot: {
@@ -261,23 +252,24 @@ void drainIncoming(Bot& bot, const Options& options) {
       handleResponse(bot, buffer, static_cast<std::size_t>(got));
       continue;
     }
-    QueuedPacket packet{};
-    packet.dueMs = nowMs() + halfLatencyMs(options);
-    packet.bytes.assign(buffer, buffer + got);
-    bot.inbox.push_back(std::move(packet));
+    if (!bot.inbox.push(ac::core::nowMs() + halfLatencyMs(options), buffer,
+                        static_cast<std::size_t>(got))) {
+      std::fprintf(stderr, "bot inbox full: dropping packet\n");
+    }
   }
 }
 
 // 到点的入向包按到达顺序交给处理函数。
 void flushInbox(Bot& bot) {
-  const std::uint64_t now = nowMs();
-  for (std::size_t i = 0u; i < bot.inbox.size();) {
-    if (bot.inbox[i].dueMs > now) {
+  const std::uint64_t now = ac::core::nowMs();
+  for (std::size_t i = 0u; i < bot.inbox.count();) {
+    const ac::net::QueuedPacket& packet = bot.inbox.at(i);
+    if (packet.dueMs > now) {
       ++i;
       continue;
     }
-    handleResponse(bot, bot.inbox[i].bytes.data(), bot.inbox[i].bytes.size());
-    bot.inbox.erase(bot.inbox.begin() + static_cast<std::ptrdiff_t>(i));
+    handleResponse(bot, packet.bytes.data(), packet.size);
+    bot.inbox.eraseAt(i);
   }
 }
 
@@ -303,13 +295,13 @@ int main(int argc, char** argv) {
       return 1;
     }
     sendHello(bot, options);
-    bot.lastHelloMs = nowMs();
+    bot.lastHelloMs = ac::core::nowMs();
   }
 
-  const std::uint64_t startMs = nowMs();
+  const std::uint64_t startMs = ac::core::nowMs();
   const std::uint64_t endMs = startMs + static_cast<std::uint64_t>(options.minutes * 60000.0);
-  while (nowMs() < endMs) {
-    const std::uint64_t now = nowMs();
+  while (ac::core::nowMs() < endMs) {
+    const std::uint64_t now = ac::core::nowMs();
     for (Bot& bot : bots) {
       flushOutbox(bot);
       flushInbox(bot);
