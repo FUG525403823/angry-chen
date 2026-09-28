@@ -39,7 +39,11 @@ namespace Ac.Boot
         private readonly Reconciler _reconciler = new Reconciler();
         private readonly CommandBuffer _commands = new CommandBuffer();
         private readonly Interpolation.RenderClock _clock = new Interpolation.RenderClock();
+        // 本地身份 = pid（= 玩家实体 id）。服务端不回 pid，只能按昵称从 MatchState 认领：
+        // 过渡方案与代价写在 Ac.Net.LocalIdentity 的类注释里。
+        private readonly LocalIdentity _identity = new LocalIdentity();
         private SnapshotFrame _scratchFrame;
+        private ushort _localPlayerId;
 
         private HudSample _sample;
         private StepCommand _pending;
@@ -63,7 +67,42 @@ namespace Ac.Boot
         public IFrameWorkSink Draw { get; set; }         // 有绘制提交才打点（见 IFrameWorkSink）
         public IFrameWorkSink Overlay { get; set; }      // 上层界面（屏幕流/调试面板）每帧都做功
         public EventIdTracker Events { get; set; }
-        public ushort LocalPlayerId { get; set; }
+
+        // 本地身份。写入视图镜像的那一步就在这里（GameLoop 是持有 SnapshotView 的那个缝），
+        // 不另开一条"同时改两处"的通路：SnapshotView.LocalPlayerId 与它恒等（0 = 没有本地实体）。
+        public ushort LocalPlayerId
+        {
+            get { return _localPlayerId; }
+            set
+            {
+                _localPlayerId = value;
+                if (_view != null) _view.SetLocalPlayer(value);
+            }
+        }
+
+        // 玩家在大厅输入的昵称（已清洗）。身份解析的输入；变化时若手里已有 MatchState 就立刻重解析。
+        public string LocalName
+        {
+            get { return _identity.Name; }
+            set
+            {
+                _identity.SetName(value);
+                if (MatchStateCount > 0) ResolveLocalPlayer();
+            }
+        }
+
+        public LocalIdentity Identity { get { return _identity; } }
+        public int IdentityChanges { get; private set; }
+
+        // 身份重解析的唯一入口：MatchState 到达、昵称变化、换房/重连/自己中途进出对局都走这里。
+        // 返回解析出的 pid（0 = 玩家表里没有本地昵称 ⇒ 没有本地实体）。
+        public ushort ResolveLocalPlayer()
+        {
+            if (!_identity.Resolve(LastMatchState.Players)) return LocalPlayerId;
+            LocalPlayerId = _identity.Pid;
+            IdentityChanges += 1;
+            return LocalPlayerId;
+        }
 
         // 事件缝：HUD 之外，特效层也要按事件生成弹着/血屑（此前事件只有 Hud 一个消费者，Effects 在生产里零调用）。
         // 委托字段而不是事件列表：热路径上不分配。
@@ -126,6 +165,8 @@ namespace Ac.Boot
                     _intermissionMs = state.IntermissionMs;
                     LastMatchState = state;
                     MatchStateCount += 1;
+                    // 相位/成员变化都在这一拍里：本地身份也在这里重解析（换房、重连、中途进出对局）。
+                    ResolveLocalPlayer();
                     return;
                 }
                 case PacketType.Event:

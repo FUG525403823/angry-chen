@@ -13,6 +13,18 @@ namespace Ac.Boot
         public readonly Lobby Lobby = new Lobby();
         public readonly Results Results = new Results();
         public readonly Intermission Intermission = new Intermission();
+        // 昵称键入捕获：GameLoopDriver 把本帧的 Input.inputString 交进来的落点（C12 §4）。
+        public readonly NameInput NameInput = new NameInput();
+
+        // 键入字符 → 昵称。只在大厅相位接收：对局里的按键属于 InputSampler（移动/开火），不是昵称。
+        // 返回昵称是否真的变了；没有输入时不碰名字（也不分配）。
+        public bool CaptureName(string typedThisFrame)
+        {
+            if (!LobbyVisible) return false;
+            if (!NameInput.Feed(typedThisFrame)) return false;
+            Lobby.SetName(NameInput.Text);
+            return true;
+        }
 
         public byte Phase { get; private set; }
         public int Wave { get; private set; }

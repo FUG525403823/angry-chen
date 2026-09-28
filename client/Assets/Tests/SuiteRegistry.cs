@@ -23,6 +23,7 @@ namespace Ac.Tests
             HudSuite.Register();
             AudioSuite.Register();
             LobbySuite.Register();
+            IdentitySuite.Register();
             SettingsSuite.Register();
             PerfSuite.Register();
             BootSuite.Register();

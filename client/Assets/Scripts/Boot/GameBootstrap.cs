@@ -236,9 +236,13 @@ namespace Ac.Boot
             if (loop == null) return;
             // 调试面板（C13 §5）：热键取自键位表第 ActionDebugPanel 条（默认 "F3"），不再硬编码；
             // 面板默认关着，不要每帧刷屏。
-            if (GameBootstrap.Presentation != null && Input.GetKeyDown(GameBootstrap.DebugPanelKey))
+            var presentation = GameBootstrap.Presentation;
+            if (presentation != null)
             {
-                GameBootstrap.Presentation.ToggleDebugPanel();
+                if (Input.GetKeyDown(GameBootstrap.DebugPanelKey)) presentation.ToggleDebugPanel();
+                // 大厅昵称（C12 §4）：唯一的输入源是 Input.inputString。只在大厅相位读它 ——
+                // 对局里的按键属于 InputSampler，且这样非大厅相位连这个属性都不碰。
+                if (presentation.Flow.LobbyVisible) presentation.Flow.CaptureName(Input.inputString);
             }
             loop.Frame(Time.unscaledDeltaTime * 1000.0);
         }

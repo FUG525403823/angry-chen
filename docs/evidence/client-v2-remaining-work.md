@@ -52,8 +52,19 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 ### A4. `Send` / `Track` 拒收回滚语义（跨服务端）
 `UdpTransport` 在 `Enqueue` 之前就把可靠消息挂进重传表（`UdpTransport.cs:237-242`），被积压封顶拒收的消息会留在表里"待发但永不出队"。是否回滚取决于 S04 语义。
 
-### A5. **本地玩家身份**（协议层缺口，需要设计）
-呈现层已接上传输（`GameBootstrap.AttachTransport` → `Loop.OnPacket`），相位数一到达屏幕流就会切；但**没人给 `GameLoop.LocalPlayerId` 赋值**，真实出包时相机/HUD 绑不到本地玩家。协议里"客户端身份从哪来"（握手分配？房间槽位？）需要你或服务端链定。
+### A5. **本地玩家身份** ✅ 已按"玩家自己输入昵称"落地（客户端侧），但**真连仍落不下来**——见 A8
+服务端 v1 的定论：**`pid` 就是玩家实体的 `EntityId`**（`server/src/room/match_controller.hpp:21`：`room.world.entities[pid - 1]`）。身份消费方早已就位（`GameLoop.LocalPlayerId`、`SnapshotView.SetLocalPlayer`、`PresentationLayer` 的屏幕流与相机/HUD 绑定），缺的是"我是谁"。
+
+已实现（客户端）：大厅相位捕获键入 → `Ac.UI.NameInput`（char 缓冲 + 缓存字符串，非输入帧零分配）→ `Lobby.SetName`（清洗/校验 1–12 字节，与 wire 上限一致）→ `GameLoop.LocalName`；MatchState（type=10）到达或改名时，`Net/LocalIdentity.cs` 按玩家行 `Name` 与本地昵称**序数相等**认领 pid（同名多行取最小 pid 并记 `AmbiguousCount`；名字不在表里 ⇒ `pid=0`，不留旧 pid），写入 `GameLoop.LocalPlayerId` 并同步 `SnapshotView`。用例 8 条（含"相机/HUD 真绑到认领出的实体"与"身份已解析下 60 帧 0 分配"），变异测试两处各自打红。
+
+### A8. **服务端需要一个"上报昵称"的通道**（客户端已就绪，卡在协议）
+实测：客户端 `Net/` 没有加入/上报昵称的报文；`Handshake` 的 Hello(12B=nonce+token) 与 HelloAck(8B=serverTick+salt) 都不带昵称与 pid；**服务端自己把昵称兜底填成 `"player"`**（`server/src/room/room.cpp:176`），且重连"只按令牌匹配、昵称不参与身份判定"（`room.cpp:208`），pid 只在 MatchState 里下发（`server/src/net/codec.hpp:338-363`）。
+
+后果：现在的按名认领只是**过渡方案**（类注释与用例都写明"服务端一回 pid 必须整体替换"），真连时只有当玩家恰好输入 `player` 才会点亮。**要你或服务端链定**其中一条：
+1. 在 Hello 载荷里加昵称字段（客户端已能清洗/校验 1–12 字节），或
+2. 新增一条"加入房间/上报昵称"消息，并在回复里**回显 pid**（这样客户端可以直接用 pid，删掉按名认领）。
+
+附带一项：`View/EntityViews.cs` 的 `SetLocalPlayer` 仍无调用者（计划未点名）——等身份权威化后一并接。
 
 ### A6.（可选）IL2CPP 模块
 `-Backend auto` 现走 Mono 兜底并在日志与 `manifest.json` 标注 `backend=mono`。要发 IL2CPP 包需补装 IL2CPP（Windows x64）模块 + VS C++ 工作负载。

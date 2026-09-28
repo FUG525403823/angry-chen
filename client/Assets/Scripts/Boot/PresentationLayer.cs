@@ -204,6 +204,11 @@ namespace Ac.Boot
             _loop = loop;
             if (loop == null) return;
             loop.EventApplied = OnEventApplied;
+            // 昵称 → 本地身份：大厅里键入的昵称进 Lobby（清洗），清洗后的值转给帧回路去认领 MatchState 的行。
+            // 先减后加：Attach 可以重复调用（Start 不是一次性的），订阅只许留一条。
+            Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
+            Flow.Lobby.OnNameChanged += OnLobbyNameChanged;
+            loop.LocalName = Flow.Lobby.Name;
             _seenMatchStates = loop.MatchStateCount;
             if (loop.MatchStateCount > 0) Flow.Apply(loop.LastMatchState, loop.LocalPlayerId);
         }
@@ -350,6 +355,7 @@ namespace Ac.Boot
             // §5.6：销毁时把指针锁复位。锁着指针退出（或退出 Play）会留下一个点不动的鼠标。
             if (Fps != null) Fps.ReleasePointerLock();
             Flow.Lobby.OnPhaseChanged -= OnPhaseChanged;
+            Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
             Batching.SetQualityTier(_savedTier);
             Kill(_sheepMaterial);
             Kill(_emblemMaterial);
@@ -382,6 +388,12 @@ namespace Ac.Boot
             // §5.6：进入对局才锁指针，离开对局必须释放（否则结算界面上鼠标是死的）
             if (phase == Hud.PhasePlaying) Fps.RequestPointerLock();
             else Fps.ReleasePointerLock();
+        }
+
+        // 大厅昵称 → 帧回路的本地身份。名字一变就重解析；名字没变不会走到这里（Lobby.SetName 去重）。
+        private void OnLobbyNameChanged(string name)
+        {
+            if (_loop != null) _loop.LocalName = name;
         }
 
         private void SyncCamera()

@@ -22,10 +22,21 @@ namespace Ac.UI
         public int PhaseChangeCount { get; private set; }
 
         public event Action<byte> OnPhaseChanged;
+        // 清洗后的昵称变化：本地身份解析（过渡方案，见 Ac.Net.LocalIdentity）靠它去认领 MatchState 里的行。
+        public event Action<string> OnNameChanged;
 
         public Lobby() { Name = string.Empty; Phase = Hud.PhaseLobby; }
 
-        public void SetName(string raw) { Name = SanitizeName(raw); }
+        // 同名不重入：键入被清洗掉的字符（如 "<"）不该产生一次"变化"。
+        public void SetName(string raw)
+        {
+            var sanitized = SanitizeName(raw);
+            if (string.Equals(sanitized, Name, StringComparison.Ordinal)) return;
+            Name = sanitized;
+            var handler = OnNameChanged;
+            if (handler != null) handler(Name);
+        }
+
         public bool IsNameValid { get { return IsValidName(Name); } }
 
         // 昵称：剥离控制字符与 <>&"'，去掉首尾空白，再按 12 字节截断
