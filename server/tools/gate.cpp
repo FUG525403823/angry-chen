@@ -556,7 +556,9 @@ int main(int argc, char** argv) {
                                                     static_cast<double>(ac::version::kTickMs))) +
           " intervalP95=" + std::to_string(static_cast<long long>(metrics.tickIntervalErrorP95Ms)) +
           "ms workP95=" + std::to_string(static_cast<long long>(metrics.tickWorkP95Ms)) +
-          "ms headTailGap=" + std::to_string(static_cast<long long>(metrics.scheduleHeadTailGapMs)) +
+          "ms tickRingRange=" + std::to_string(static_cast<long long>(metrics.scheduleHeadTailGapMs)) +
+          "ms headTailP95Gap=" + std::to_string(static_cast<long long>(sample.scheduleHeadTailGapMs)) +
+          "ms schedP95Strict=" + std::to_string(static_cast<long long>(metrics.scheduleErrorP95Ms)) +
           "ms timerGranularity=" + std::to_string(static_cast<long long>(timerGranularityMs)) + "ms";
   for (std::size_t i = 0u; i < ac::perf::kThresholdCount; ++i) sample.isMeasured[i] = true;
   sample.isMeasured[static_cast<std::size_t>(ac::perf::ThresholdId::kRssSlope)] = scenario->isSoak;

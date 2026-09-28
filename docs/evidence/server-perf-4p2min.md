@@ -125,9 +125,11 @@ verdict, exitCode, note, thresholds, metrics`；
 读该文件要用 UTF-8（`[System.IO.File]::ReadAllText(path,[Text.Encoding]::UTF8)`）：
 Windows PowerShell 5.1 的 `Get-Content -Raw` 按 ANSI 解码，会假装 JSON 坏了。
 
-**note 里的 `headTailGap` 不是 G6 判的那个值**：note 打的是 S12 快照里 `ac_tick_*` 误差环的极差（30ms 量级），
-G6 替代判据判的是 gate 自己按 1s 序列算的「首尾 1/3 的 P95 差」（0.000ms，就是 `thresholds` 里的 `measured`）。
-两个名字撞车是本批遗留的文案问题，登记在 §15.4 D6。
+**note 里的 `headTailGap`（已改名，C6/D6）**：S14 那几次跑的原文里 `headTailGap` 打的是 S12 快照 `ac_tick_*` 误差环的极差（30ms 量级），
+而 G6 替代判据判的是 gate 自己按 1s 序列算的「首尾 1/3 的 P95 差」（0.000ms，就是 `thresholds` 里的 `measured`）——**同名不同义**。
+现已拆成三个不歧义的 token：`tickRingRange=`（误差环极差）、`headTailP95Gap=`（G6 真正判的值）、`schedP95Strict=`（严格 8ms 口径的 P95 原值），
+本文件上半部分是**修复前**的原始捕获（保留作史），新跑次的 note 形如
+`ticks=140 expectedTicks=60 intervalP95=14ms workP95=0ms tickRingRange=28ms headTailP95Gap=0ms schedP95Strict=80ms timerGranularity=15ms`。
 
 ## 6. 本轮为此修掉的实现缺陷（都是跑门禁才暴露的）
 

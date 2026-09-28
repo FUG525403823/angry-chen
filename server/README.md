@@ -814,7 +814,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 保留未改（判断项，登记为已知取舍）：`json_text::appendEscaped` 逐字符建临时 `std::string`（SSO 内无堆分配，且不在 tick 路径）；19 条事件名表在生产代码里没有消费者（生产者直接传字面量，表是测试使用的契约表，且 S01 的 `serverStarted` 本就不在 19 条内）；`ProcessSnapshot` 的 6/7 个字段暂无生产写入方（§14.1-8 已登记只登记不冒充接线，S14/S15 接线时优先收口中-1）。
 
-**待裁决（移交计划侧，不是本步缺陷）**：仓库里目前**没有 TCP 监听层**（`server/src` 无 socket/listen/accept，`8787` 只出现在计划文本里）。S14 §2 把「监听已就位」当既成前提，而 S14/S15 的交付物清单都没把「实现监听并绑定 8787」派给任何一份 → 需要计划侧指定归属（本步只交纯处理层 `handleRequest`，见 §14.1-6）。
+**已裁决（B8）**：本步当时仓库里确实**没有 TCP 监听层**（`server/src` 无 socket/listen/accept，`8787` 只出现在计划文本里），S14/S15 的交付物清单也都没派归属。**S14/S15 后来补上了**：`net::TcpListener`、`http::HttpListener`、`server::Runtime` + `ac_server --serve`，并实测绑定 8787/8788（见 §15、§18）。归属**记为 S14**，计划侧回写见 §19.2。
 
 **Spec 轴移交项（登记，不冒充已接线）**：9 条计数（`ac_bytes_out/in_total`、`ac_frames_out/in_total`、`ac_events_sent/dropped_total`、`ac_grace_{starts,reconnects,timeouts}_total`）与 6 个进程字段在 `server/src` 内暂无自增写入方；19 个事件名只有 3 个有生产调用点；`ac_corrupt_lines_total`/`ac_records_retained` 目前只由 `--selftest-store` 填；读缓存随淘汰失效原本只有代码证据（本批新增 `http_cache_invalidated_by_store_eviction` 用例补齐）。
 
@@ -870,7 +870,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 ### 15.3 计划文本纠正与已声明偏差（S14）
 
 1. **计划 §3 把 `.github/workflows/ci.yml` 记为【新建】，实际 S01 就建了这个文件**：本批只把 `server-perf` 占位作业改成真作业（`needs: quality`、20 min 上限、上传 `server-perf.json`）。
-2. **监听层与服务运行时没有归属批次（待裁决）**：S14 §2-3（真 UDP/HTTP）与 S15 §2-3（systemd 起进程、`AC_UDP_PORT=8788`/`AC_HTTP_PORT=8787`）都以前提的方式要求它，但两批的 §3 交付物清单都没写。本批交付 `net::TcpListener`/`TcpConnection`、`http::HttpListener`、`server::Runtime` 与 `ac_server --serve`，并把归属问题登记在此**待裁决**。
+2. **监听层与服务运行时的归属（已裁决，B8）**：S14 §2-3（真 UDP/HTTP）与 S15 §2-3（systemd 起进程、`AC_UDP_PORT=8788`/`AC_HTTP_PORT=8787`）都以前提方式要求它，但两批的 §3 交付物清单都没写。本批交付 `net::TcpListener`/`TcpConnection`、`http::HttpListener`、`server::Runtime` 与 `ac_server --serve` —— 归属**记为 S14**（S15 负责运维接线），计划侧回写见 §19.2。
 3. **机器人不走大厅流程**：v1/v2 协议没有「建房 / 加入 / 准备」的线消息（大厅在 HTTP 面），运行时按「Hello 成功即入房 + 自动 ready」驱动对局开始；大厅协议本身留给 S15 或客户端批次的 ADR。
 4. **命令通道不做重传与 ack 记账**：可靠通道（`sendCommand`/`recvCommand`）已由 S04 用例覆盖，压测运行时按「一发一收、丢包即丢帧」跑，`msgId/ackBits` 只填不进展；G8 的丢弃计数因此只来自非法方向、超长包与过期命令。
 5. **60 只羊由运行时按 `sheepTarget` 直接补足**（复用 `waves::spawnSheepAt`，与波次导演同一条生成路径，不另写第二套），**不经波次预算表**：预算、清波、王波与首领召唤由 S09 用例覆盖，本批只固定负载形状。
@@ -924,7 +924,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | D3 | 规范 | `--serve` 必须排在其它选项之前；`src/` 内无信号处理（usage 承诺的 Ctrl+C 收尾不会打印） | **推迟**：§9 的命令就是 `--serve` 打头；信号处理列入 S15 的运维项 |
 | D4 | 规范 | 具名常量漏网（listener 的 65536/50/256/512、gate 的 `+9u`）、`tcp_listener` 里的裸 `-1`、bot 每包一次 `std::vector` 分配、`nowMs()` 助手四份拷贝 | **推迟**：都是风格项，登记在案待 S15 一并收口 |
 | D5 | 规格 | `G2` 未按 `(client, channel)` 分桶，窗口是实际 ~1s 而非严格 1s | **登记**（§15.3 已声明）；实测 19–20KB/s 距 40KB/s 上限有 2 倍余量，分桶留到有第二信道时再做 |
-| D6 | 规范 | 报告的 `note` 里 `headTailGap=` 打的是 S12 快照 `ac_tick_*` 误差环的极差（30ms 量级），与 G6 替代判据判的「首尾 1/3 P95 差」（0.000ms，即 `thresholds` 里的 `measured`）同名不同义 | **推迟**：只是 note 文案；改字段名要重跑四场景，S15 收口时一并改 |
+| D6 | 规范 | 报告的 `note` 里 `headTailGap=` 打的是 S12 快照 `ac_tick_*` 误差环的极差（30ms 量级），与 G6 替代判据判的「首尾 1/3 P95 差」（0.000ms，即 `thresholds` 里的 `measured`）同名不同义 | **已修（C6）**：note 拆成三个不歧义的 token —— `tickRingRange=`（S12 误差环极差）、`headTailP95Gap=`（G6 替代判据真正判的值）、`schedP95Strict=`（严格口径的 P95 原值），实测 `tickRingRange=28ms headTailP95Gap=0ms schedP95Strict=80ms` |
 
 **本轮修复后的重测**：全量 `TESTS 468/468`、32 组冻结 `--filter` 逐组同数（抽查 `size`=5、`match`=53、`security`=51、`room`=8、`replication`=19、`schedule`=15、`log`=25、`store`=17、`http`=17、`report`=16，新增 `listener`=7、`threshold`=11、`runtime`=6）；`gate-4p2min`、`soak-4p5min`、`latency-200` 三个场景 `verdict=pass exit=0`，反向自检 `--break=G3=0` `verdict=fail exit=1`；基准三段 step/project/encode p50 = 13/1/24us。原始输出见 `docs/evidence/server-perf-4p2min.md`。
 
