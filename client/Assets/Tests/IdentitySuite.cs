@@ -259,6 +259,7 @@ namespace Ac.Tests
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(3, (long)rig.Loop.View.LocalPlayerId);          // 镜像的本地指针同步
+                SelfTest.Equal(3, (long)rig.Loop.Views.LocalPlayerId);         // 视图池的本地指针同一处同步（此前零调用者）
                 SelfTest.Equal(1, (long)rig.Loop.IdentityChanges);
                 SelfTest.Equal(1, (long)rig.Loop.Identity.MatchedCount);
                 SelfTest.Equal(0, (long)rig.Loop.Identity.AmbiguousCount);

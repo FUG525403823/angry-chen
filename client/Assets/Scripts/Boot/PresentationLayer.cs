@@ -78,6 +78,11 @@ namespace Ac.Boot
         public ViewModel ViewModel { get; private set; }
         public DebugPanel DebugPanel { get; private set; }
         public ScreenFlow Flow { get; private set; }
+        // 上屏：布局模型（Ac.UI，可无头单测）+ 薄 IMGUI 适配层（Ac.Boot，只在有显示设备时才画）
+        public OverlayModel Overlay { get; private set; }
+        public OverlayRenderer OverlayRenderer { get; private set; }
+        // 布局模型被产出过多少次（用例用它证明"接上了"，也证明 TickOverlay 没有偷偷每帧做这件事）
+        public int OverlayBuilds { get; private set; }
 
         public bool MaterialsReady { get { return _sheepMaterial != null; } }
         public int FxTicks { get; private set; }
@@ -181,6 +186,13 @@ namespace Ac.Boot
             Flow = new ScreenFlow();
             DebugPanel = new DebugPanel();
             Flow.Lobby.OnPhaseChanged += OnPhaseChanged;
+            // 上屏：HUD/准星/大厅/结算/波间/调试面板此前都是纯数据类，全仓没有一个 OnGUI
+            //（"装配了但没渲染器"）。布局模型挂在装配根下由适配层的 OnGUI 读取。
+            Overlay = new OverlayModel();
+            var overlayObject = new GameObject(OverlayRenderer.RendererName);
+            overlayObject.transform.SetParent(_root.transform, false);
+            OverlayRenderer = overlayObject.AddComponent<OverlayRenderer>();
+            OverlayRenderer.Bind(this);
 
             Batching.SetQualityTier(settings.QualityTier);
             Effects.SetReducedMotion(settings.ReduceMotion);
@@ -224,6 +236,31 @@ namespace Ac.Boot
         }
 
         public void ToggleDebugPanel() { DebugPanel.Toggle(); }
+
+        // 布局模型的输入：全部从既有对象读，本层不推相位、不算身份（OverlayModel 也不自己算）。
+        public OverlaySources Sources()
+        {
+            var sources = default(OverlaySources);
+            var loop = _loop;
+            var flow = Flow;
+            sources.Hud = loop == null ? null : loop.Hud;
+            sources.Lobby = flow == null ? null : flow.Lobby;
+            sources.Intermission = flow == null ? null : flow.Intermission;
+            sources.Results = flow == null ? null : flow.Results;
+            sources.Debug = DebugPanel;
+            sources.Players = loop == null ? null : loop.LastMatchState.Players;
+            sources.SelfPid = loop == null ? 0 : loop.LocalPlayerId;
+            return sources;
+        }
+
+        // 产出一帧绘制项。OnGUI（真上屏）与无头用例走的是同一条路径，所以用例断言的就是生产路径。
+        public int BuildOverlay(int widthPx, int heightPx)
+        {
+            if (_disposed || Overlay == null) return 0;
+            var count = Overlay.Build(Sources(), widthPx, heightPx);
+            OverlayBuilds += 1;
+            return count;
+        }
 
         // 程序化网格的只读取用口：用例要断言"生成出来的网格真的有顶点"，而它们只挂在本层内部
         public Mesh SheepMeshFor(SheepKind kind) { return _sheepMeshes[(int)kind]; }
@@ -364,6 +401,9 @@ namespace Ac.Boot
             for (var i = 0; i < _arenaParts.Length; i++) Kill(_arenaParts[i]);
             for (var i = 0; i < _sheepMeshes.Length; i++) { Kill(_sheepMeshes[i]); Kill(_emblemMeshes[i]); }
             Kill(_root);
+            // 适配层是与根一起被销毁的（OnDestroy 里回收它自己建的纹理）：这里把引用也断掉，
+            // 免得用例拿到一个"Unity 假 null"的组件。
+            OverlayRenderer = null;
         }
 
         // ---- 内部 ----

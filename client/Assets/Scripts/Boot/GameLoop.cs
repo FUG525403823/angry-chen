@@ -77,6 +77,10 @@ namespace Ac.Boot
             {
                 _localPlayerId = value;
                 if (_view != null) _view.SetLocalPlayer(value);
+                // 视图池的本地指针此前**没有任何生产调用者**（EntityViews.SetLocalPlayer 全仓只有测试在用）。
+                // 身份解析成功处就是它的第一个生产调用点，语义与 SnapshotView.SetLocalPlayer 同一处：
+                // 两条镜像的本地指针必须恒等，否则插值/吸附会拿"没有本地实体"的分支。
+                if (_views != null) _views.SetLocalPlayer(value);
             }
         }
 
