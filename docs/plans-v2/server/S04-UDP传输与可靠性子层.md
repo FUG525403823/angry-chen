@@ -41,7 +41,7 @@
 | `kInitialRtoMs` | 200 | 首次重传等待 |
 | `kRtoBackoff` | 1.5 | 退避倍数 |
 | `kMaxRtoMs` | 1000 | RTO 上限 |
-| `kMaxRetransmits` | 5 | 累计重传达 5 次即判对端失联并进入宽限期，即**第 6 次重传之前**判失联（与 `kRtoTableMs` 的 5 项同长） |
+| `kMaxRetransmits` | 5 | 累计重传达 5 次即判对端失联并进入宽限期，即**第 6 次重传之前**判失联（与 `kRtoTableMs` 的 5 项同长）；判失联时点 = **t = 3625ms**（已按实现回写，见 §5.3 的 C4 裁定） |
 | `kRtoTableMs[5]` | `{200, 300, 450, 675, 1000}` | 第 1–5 次重传的等待（`200 * 1.5^(n-1)` 取整，禁 `pow`）；表长恒等于 `kMaxRetransmits`，第 6 次重传不存在 |
 | `kKeepAliveMs` | 500 | 心跳周期 |
 | `kDisconnectMs` | 3000 | 未收到任何包即判断线 |
@@ -67,16 +67,22 @@ struct ReliableState { uint32_t sendMsgId = 1; uint32_t ackBase = 0; uint32_t ac
 // 收到 msgId = m 时（m 从 1 起）：
 //   k = m - ackBase;
 //   if (k >= 1) { ackBits = (k >= 32 ? 0u : (ackBits << k)); ackBits |= (1u << (k - 1)); ackBase = m; }
+//   ↑ 已按实现修正（C4 批次）：k >= 33 时位图显式清零；k == 32 仍得 0x80000000。原句只护住左移，`1u << (k - 1)` 在 k >= 33 时是未定义行为。依据：server/src/net/reliability.cpp:19-22、server/tests/transport_test.cpp:131。
+//   if (k >= 1) { ackBits = (k >= 33u ? 0u : ((k >= 32u ? 0u : (ackBits << k)) | (1u << (k - 1u)))); ackBase = m; }
 //   else { d = ackBase - m; if (d >= 1 && d <= 32) ackBits |= (1u << (d - 1)); }
 ```
 - bit i 表示 `msgId == ackBase - 1 - i` 已收到；`k >= 32` 时左移先清零（避免移位宽度未定义）。
 - 重复 `msgId`（位图已置位）直接丢弃，不计入错误；`msgId` 与通道 `seq` 相互独立：`seq` 用于丢旧快照与顺序诊断，`msgId` 用于去重与 ack。
 - 重传：仅 `flags.reliable = 1` 且载荷 > 0 的消息进重传表；第 n 次重传等待 `kRtoTableMs[n-1]`（n = 1..5）；累计重传达到 `kMaxRetransmits = 5`（即第 6 次重传之前）→ 判失联 → 进入宽限期并回 `Disconnect(reason=3)`。
+
+> **已裁决（C4 批次，按实现回写）**：判失联时点 = **t = 3625ms**。推导：发送时刻 0；第 1–5 次重传分别在 200 / 500 / 950 / 1625 / 2625ms 发出（逐项等待 `kRtoTableMs` = 200、300、450、675、1000）；第 5 次之后再等表尾 1000ms，于 **3625ms** 判失联，**不产生第 6 次重传**（`collectDue(3625)` 为空）。**以实现与用例为准**。依据：`server/src/net/reliability.cpp:75-84`、`server/tests/transport_test.cpp:208`；README §5.2 行为要点 / §5.3-5。
 - 收到 ack（`msgId` 被位图确认）即从重传表移除；`ackOnly` 包参与确认，自身不进重传表。
 
 ### 5.4 分片
 - 发送：逻辑消息 > `kMaxFragmentPayload` 时切成 ≤ `kMaxFragments` 片，每片 = 通用包头 + 分片头 + 1176B 载荷切片，`type = 9`；快照分片不可靠，事件分片可靠。
 - 重组：键 = `(session, channelType, fragId)`；按 `fragIndex` 落位，`fragCount > 8` 或 `fragIndex >= fragCount` 立即判 `kBadValue` 丢弃整组。
+
+> **已裁决（C4 批次，按实现裁定）**：重组键 = **`(session, fragId)`**（原 `channelType` 上不了线）；`fragId` 在会话内全局唯一，`type` 字段保留但恒为 `kFragment`。依据：`docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md` 的分片头裁定段、`server/src/net/fragment.hpp:27-39`、`server/src/net/fragment.cpp:25`、`server/README.md` §5.3-3。
 - 收齐后整体交给上层解码；组超时 60 tick 未收齐则丢弃并计 `kFragmentTimeout`。
 
 ### 5.5 握手字段与时序
@@ -93,7 +99,7 @@ struct ReliableState { uint32_t sendMsgId = 1; uint32_t ackBase = 0; uint32_t ac
 `Disconnect.reason` 语义（冻结 1–7，与客户端逐字一致）：
 - 1 `versionMismatch`：入站包 `version != 1`（§5.2）。
 - 2 `tokenInvalid`：`Resume` 的 `reconnectToken`（u32）与会话记录不符，或宽限期已过。
-- 3 `timeout`：可靠消息累计重传达到 `kMaxRetransmits = 5`（第 6 次重传之前）判失联（§5.3）。
+- 3 `timeout`：可靠消息累计重传达到 `kMaxRetransmits = 5`（第 6 次重传之前）判失联（§5.3）。判失联时点 = **t = 3625ms**（已按实现回写，见 §5.3 的 C4 裁定）。
 - 4 `serverShutdown`：对局结束或服务端停机。
 - 5 `malformedPacket`：解码失败（`kTruncated`/`kBadLength`/`kBadValue`/`kUnknownEvent`）计数达阈值后丢弃会话（工程约定 §7）。
 - 6 `rateLimited`：单位时间入站包数或字节数超过配额。

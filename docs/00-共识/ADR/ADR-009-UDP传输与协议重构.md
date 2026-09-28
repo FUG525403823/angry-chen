@@ -62,6 +62,9 @@
 | 10 | `fragIndex` | u8 | 分片序号（0 起） |
 | 11 | `fragCount` | u8 | 分片总数（上限 8） |
 
+> **已裁决（C4 批次，按实现裁定）**：**分片重组键 = `(session, fragId)`**。分片包的包头 `type` 恒为 `9`（`kFragment`），原通道身份不上线，§5.4 写的 `channelType` 无法从线上还原；`fragId` 在**同一会话内全局唯一**（快照与事件共用一个命名空间），因此**不给分片头加通道字段**（那要改本 ADR + 两端编解码）。
+> 实现口径：`server/src/net/fragment.hpp:27-39` 的 `FragmentKey` **保留 `type` 字段但线上恒为 `kFragment`**（`server/src/net/fragment.cpp:25` 的 `sliceHeader.type = kFragment`），等效按 `(session, fragId)` 分组。依据：`server/README.md` §5.3-3、§5.2 行为要点；客户端链 C03 必须与之一致。
+
 ### 报文上限与预算
 
 | 项 | 值 |
