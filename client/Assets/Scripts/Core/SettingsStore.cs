@@ -49,6 +49,8 @@ namespace Ac.Core
         public const float FovMax = 100f;
 
         public const int ActionCount = 14;
+        // 第 14 条（下标 13）是调试面板热键：Boot 侧不许再硬编码 F3，一律按这个下标读键位表。
+        public const int ActionDebugPanel = 13;
 
         // 顺序即 keyBindings 下标，逐条照抄 C05 §5.2
         public static readonly string[] KeyBindings =

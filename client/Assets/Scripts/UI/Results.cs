@@ -182,10 +182,17 @@ namespace Ac.UI
         // §5 阶段表：ended 才显示结算。显隐只由服务器下发的 phase 驱动。
         public static bool VisibleOf(byte phase) { return phase == Hud.PhaseEnded; }
 
+        public const byte UnseenPhase = 255;      // 还没收到过任何相位
+        private byte _lastPhase = UnseenPhase;
+
+        // 服务端的 match state 是 1 Hz 周期下发：相位没变就不该重发榜单请求，否则整局每秒拉一次榜
+        //（把结算接口和带宽当心跳用）。只有"刚刚进入 ended"这一次才请求。
         public void ApplyPhase(byte phase)
         {
+            var entered = phase != _lastPhase;
+            _lastPhase = phase;
             Visible = VisibleOf(phase);
-            if (Visible) RequestFetch();
+            if (Visible && entered) RequestFetch();
         }
     }
 }

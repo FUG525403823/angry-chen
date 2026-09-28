@@ -47,11 +47,15 @@ namespace Ac.UI
 
         public void Toggle() { Visible = !Visible; if (Visible) _elapsedMs = RefreshMs; }
 
+        // 本帧到点该刷新了吗（只读判断，不改状态）：调用方用它决定要不要花代价造 DebugSample
+        //（分位排序、版本行、实例计数都在样本里）。到点判据只有这一份，Tick 自己走的也是它。
+        public bool RefreshDue(float dtMs) { return Visible && _elapsedMs + dtMs >= RefreshMs; }
+
         public void Tick(float dtMs, in DebugSample sample)
         {
             if (!Visible) return;                       // 不可见时不采样：别让面板自己拉高帧时间
             _elapsedMs += dtMs;
-            if (_elapsedMs < RefreshMs) return;
+            if (!RefreshDue(0f)) return;                // 到点判据只有一份（RefreshDue），这里不重写阈值
             _elapsedMs = 0f;
             SampleCount += 1;
             Build(in sample);

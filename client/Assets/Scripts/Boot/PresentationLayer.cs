@@ -58,6 +58,9 @@ namespace Ac.Boot
         private int _seenMatchStates;
         private int _savedTier;
         private bool _disposed;
+        // 版本行是计算属性（含非常量 BuildCommit）：构造期拼一次就冻住。帧内再取一次就是一次字符串分配
+        //（+ int 装箱），而帧预算的托管分配上限是 0 B。
+        private readonly string _versionLine;
 
         public GameObject Root { get { return _root; } }
         public Camera MainCamera { get; private set; }
@@ -78,6 +81,7 @@ namespace Ac.Boot
 
         public bool MaterialsReady { get { return _sheepMaterial != null; } }
         public int FxTicks { get; private set; }
+        // overlay 的计数与打点同义：只有该段真的做功（切了相位 / 刷了面板）的帧才 +1
         public int OverlayTicks { get; private set; }
         public int DrawTicks { get; private set; }
         public int HitFxCount { get; private set; }
@@ -99,6 +103,7 @@ namespace Ac.Boot
         private PresentationLayer(in SettingsSnapshot settings)
         {
             _savedTier = Batching.QualityTier;
+            _versionLine = VersionInfo.VersionLine;
             // 三条呈现缝只造一次：它们被 GameLoop 每帧调用，属性里 new 等于每帧一次分配（帧基准判 0 B/帧）
             _fxSink = new FxStage(this);
             _drawSink = new DrawStage(this);
@@ -218,6 +223,8 @@ namespace Ac.Boot
         // 程序化网格的只读取用口：用例要断言"生成出来的网格真的有顶点"，而它们只挂在本层内部
         public Mesh SheepMeshFor(SheepKind kind) { return _sheepMeshes[(int)kind]; }
         public Mesh EmblemMeshFor(SheepKind kind) { return _emblemMeshes[(int)kind]; }
+        // 面板 versionLine 字段的来源：构造期拼好的那一份（用例断言它不是每次现拼的）
+        public string VersionLine { get { return _versionLine; } }
 
         // ---- 三段呈现工作（由 GameLoop 按段调用；打点规则见 IFrameWorkSink） ----
 
@@ -233,19 +240,30 @@ namespace Ac.Boot
         public bool TickOverlay(double dtMs)
         {
             if (_disposed) return false;
-            OverlayTicks += 1;
-            _elapsedMs += dtMs;
             var loop = _loop;
-            if (loop != null)
+            // 没接线（单机 / 帧基准）：屏幕流与面板都没有输入源，这一段**什么都不做** ⇒ 不打点。
+            // 旧写法无条件 return true，等于给一个空段每帧发一张"预算内"的通行证（审查点名的假绿）。
+            if (loop == null) return false;
+
+            var worked = false;
+            if (loop.MatchStateCount != _seenMatchStates)
             {
-                if (loop.MatchStateCount != _seenMatchStates)
-                {
-                    _seenMatchStates = loop.MatchStateCount;
-                    Flow.Apply(loop.LastMatchState, loop.LocalPlayerId);
-                }
-                DebugPanel.Tick((float)dtMs, Sample());
+                _seenMatchStates = loop.MatchStateCount;
+                Flow.Apply(loop.LastMatchState, loop.LocalPlayerId);
+                worked = true;
             }
-            return true;
+            // 面板不可见就不采样：Sample() 要读版本行、分位与实例计数，而 C13 §5 的语义本来就是
+            // "不可见不刷新"（DebugPanel.Tick 立刻 return）。关着面板还每帧算统计是白烧。
+            // 可见时也只在**到点的那一帧**造样本（250ms 一次），不是每帧——分位是 O(n log n)。
+            if (DebugPanel.Visible)
+            {
+                _elapsedMs += dtMs;                       // 供快照速率用（面板自己的节拍在 RefreshDue 里）
+                var sample = DebugPanel.RefreshDue((float)dtMs) ? Sample() : default(DebugSample);
+                DebugPanel.Tick((float)dtMs, sample);
+                worked = true;
+            }
+            if (worked) OverlayTicks += 1;
+            return worked;
         }
 
         public bool TickDraw(double dtMs)
@@ -320,7 +338,17 @@ namespace Ac.Boot
         {
             if (_disposed) return;
             _disposed = true;
-            if (_loop != null) _loop.EventApplied = null;
+            // 三条缝全部摘干净：只摘 EventApplied 的话，销毁后 GameLoop 每帧还在给 fx/overlay/draw
+            // 打≈0 的点——等于让这三段的预算永远"通过"（审查点名的假绿）。
+            if (_loop != null)
+            {
+                if (_loop.EventApplied != null) _loop.EventApplied -= OnEventApplied;
+                if (ReferenceEquals(_loop.Fx, _fxSink)) _loop.Fx = null;
+                if (ReferenceEquals(_loop.Draw, _drawSink)) _loop.Draw = null;
+                if (ReferenceEquals(_loop.Overlay, _overlaySink)) _loop.Overlay = null;
+            }
+            // §5.6：销毁时把指针锁复位。锁着指针退出（或退出 Play）会留下一个点不动的鼠标。
+            if (Fps != null) Fps.ReleasePointerLock();
             Flow.Lobby.OnPhaseChanged -= OnPhaseChanged;
             Batching.SetQualityTier(_savedTier);
             Kill(_sheepMaterial);
@@ -405,13 +433,22 @@ namespace Ac.Boot
         private DebugSample Sample()
         {
             var sample = default(DebugSample);
-            sample.VersionLine = VersionInfo.VersionLine;
+            sample.VersionLine = _versionLine;
             var loop = _loop;
             if (loop == null) return sample;
             sample.PlayerTick = loop.LocalSteps;
             sample.ServerTick = (int)loop.View.AppliedTick;
-            // 会话层（C03）还没接进自举：离线时 Transport 为空，网络四项老老实实报 n/a
-            sample.HasNetwork = loop.Transport != null;
+            // 传输接上了才有网络四项；离线时老老实实报 n/a（HasNetwork=false）
+            var transport = loop.Transport;
+            sample.HasNetwork = transport != null;
+            if (transport != null)
+            {
+                var stats = transport.Stats;
+                sample.PingMs = (float)stats.RttMs;
+                sample.LossPercent = stats.PacketLossPermille / 10f;
+                sample.InboundBytesPerSec = (float)stats.BytesInPerSec;
+                sample.OutboundBytesPerSec = (float)stats.BytesOutPerSec;
+            }
             sample.HasFrameTimes = loop.Profiler.FilledFrames > 0;
             sample.FrameTimeP95Ms = loop.Profiler.FrameP95Ms();
             // 剖析器没有"最大值"口径，用 P99 顶上（面板的告警阈值本来就是 FrameBudget.FrameP99BudgetMs）

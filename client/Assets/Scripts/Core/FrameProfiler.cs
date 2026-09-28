@@ -42,9 +42,17 @@ namespace Ac.Core
 
         private readonly float[] _samples = new float[StageCount * WindowFrames];   // 列主序：stage * WindowFrames + frame
         private readonly float[] _frameMs = new float[WindowFrames];
-        private readonly float[] _scratch = new float[WindowFrames];
         private readonly float[] _frame = new float[StageCount];
         private readonly float[] _lastFrame = new float[StageCount];
+
+        // 分位排序是"被问到时才算"的惰性结果：8 段 + 帧级各一份排好序的副本，标记它对应哪一次 End。
+        // 之前每次查询都重排 240 个样本，面板一帧问两次 P95/P99 就是两次 O(n log n) 排序——而面板
+        // 关着的时候这次计算纯粹是白烧（PresentationLayer 现在连 Sample() 都不会调，这里是第二道闸）。
+        private readonly float[][] _stageSorted = new float[StageCount][];
+        private readonly float[] _frameSorted = new float[WindowFrames];
+        private readonly int[] _stageSortedAt = new int[StageCount];
+        private int _frameSortedAt;
+        private const int NeverSorted = -1;
 
         private long _frameStartTicks;
         private long _markTicks;
@@ -61,8 +69,18 @@ namespace Ac.Core
         // （排序后取哪个下标）根本没有办法被验证——C14 标准轴说的"P95 <= P99 恒真"就是这么来的。
         private readonly Func<long> _ticksSource;
 
-        public FrameProfiler() { }
-        public FrameProfiler(Func<long> ticksSource) { _ticksSource = ticksSource; }
+        public FrameProfiler() : this(null) { }
+
+        public FrameProfiler(Func<long> ticksSource)
+        {
+            _ticksSource = ticksSource;
+            for (var i = 0; i < StageCount; i++)
+            {
+                _stageSorted[i] = new float[WindowFrames];
+                _stageSortedAt[i] = NeverSorted;
+            }
+            _frameSortedAt = NeverSorted;
+        }
 
         private long NowTicks() { return _ticksSource == null ? Stopwatch.GetTimestamp() : _ticksSource(); }
 
@@ -74,7 +92,8 @@ namespace Ac.Core
         {
             Array.Clear(_samples, 0, _samples.Length);
             Array.Clear(_frameMs, 0, _frameMs.Length);
-            for (var i = 0; i < StageCount; i++) _frame[i] = 0f;
+            for (var i = 0; i < StageCount; i++) { _frame[i] = 0f; _stageSortedAt[i] = NeverSorted; }
+            _frameSortedAt = NeverSorted;
             Cursor = 0;
             FilledFrames = 0;
             TotalFrames = 0;
@@ -132,15 +151,29 @@ namespace Ac.Core
         public float P95Ms(FrameStage stage) { return PercentileMs((int)stage, 0.95); }
         public float P99Ms(FrameStage stage) { return PercentileMs((int)stage, 0.99); }
 
+        // 排序次数（不是查询次数）：惰性缓存的判据——同一批样本重复问 P95/P99 只排一次，
+        // 没人问就一次都不排。用例用它证明"面板关着时统计一次都没算"。
+        public int SortsComputed { get; private set; }
+
         private float PercentileMs(int stageIndex, double q)
         {
             if (stageIndex < 0 || stageIndex >= StageCount) return 0f;
             var count = FilledFrames;
             if (count <= 0) return 0f;
+            return SortedStage(stageIndex, count)[PercentileIndex(q, count)];
+        }
+
+        // §5 测量方法 3 的口径不变（排序后取 ceil(q*n)-1）；变的只是"排一次、缓存到下一次 End"。
+        private float[] SortedStage(int stageIndex, int count)
+        {
+            var sorted = _stageSorted[stageIndex];
+            if (_stageSortedAt[stageIndex] == TotalFrames) return sorted;
             var offset = stageIndex * WindowFrames;
-            for (var i = 0; i < count; i++) _scratch[i] = _samples[offset + i];
-            Array.Sort(_scratch, 0, count);
-            return _scratch[PercentileIndex(q, count)];
+            for (var i = 0; i < count; i++) sorted[i] = _samples[offset + i];
+            Array.Sort(sorted, 0, count);
+            _stageSortedAt[stageIndex] = TotalFrames;
+            SortsComputed += 1;
+            return sorted;
         }
 
         public float FrameP95Ms() { return FramePercentile(0.95); }
@@ -150,9 +183,17 @@ namespace Ac.Core
         {
             var count = FilledFrames;
             if (count <= 0) return 0f;
-            for (var i = 0; i < count; i++) _scratch[i] = _frameMs[i];
-            Array.Sort(_scratch, 0, count);
-            return _scratch[PercentileIndex(q, count)];
+            return SortedFrame(count)[PercentileIndex(q, count)];
+        }
+
+        private float[] SortedFrame(int count)
+        {
+            if (_frameSortedAt == TotalFrames) return _frameSorted;
+            for (var i = 0; i < count; i++) _frameSorted[i] = _frameMs[i];
+            Array.Sort(_frameSorted, 0, count);
+            _frameSortedAt = TotalFrames;
+            SortsComputed += 1;
+            return _frameSorted;
         }
 
         public bool StageOverBudget(int stageIndex)

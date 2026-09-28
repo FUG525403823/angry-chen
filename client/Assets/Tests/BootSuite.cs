@@ -15,6 +15,61 @@ namespace Ac.Tests
             SelfTest.Add("boot.frame_loop", ChecksFrameLoop);
             SelfTest.Add("boot.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("boot.stage_sinks", ChecksStageSinks);
+            SelfTest.Add("boot.server_config", ChecksServerConfig);
+        }
+
+        // 传输/会话的配置面（B1 审查点 5）：地址只从配置来，且编辑器/批处理一律不连服务器；
+        // 调试面板热键（审查点 8）必须跟着 SettingsDefaults.KeyBindings 走，不许再硬编码 F3。
+        private static void ChecksServerConfig()
+        {
+            string host;
+            int port;
+            SelfTest.True(GameBootstrap.TryParseServer("10.0.0.5:9999", out host, out port) && host == "10.0.0.5" && port == 9999,
+                "host:port 解析", host + ":" + port);
+            SelfTest.True(GameBootstrap.TryParseServer(" 127.0.0.1:8787 ", out host, out port) && host == "127.0.0.1" && port == 8787,
+                "两端空白容错", host + ":" + port);
+            SelfTest.True(GameBootstrap.TryParseServer("play.example.com:20000", out host, out port) && host == "play.example.com",
+                "域名 + 端口", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("127.0.0.1", out host, out port), "缺端口判失败（不许悄悄连默认端口）", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("127.0.0.1:", out host, out port), "空端口判失败", host);
+            SelfTest.True(!GameBootstrap.TryParseServer(":8787", out host, out port), "缺 host 判失败", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("127.0.0.1:0", out host, out port), "端口 0 判失败", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("127.0.0.1:70000", out host, out port), "端口越界判失败", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("127.0.0.1:udp", out host, out port), "非数字端口判失败", host);
+            SelfTest.True(!GameBootstrap.TryParseServer("", out host, out port), "空串 = 不配置", host);
+
+            SelfTest.True(!GameBootstrap.ShouldConnect("127.0.0.1", 8787, true, false), "编辑器不连服务器", "去连了");
+            SelfTest.True(!GameBootstrap.ShouldConnect("127.0.0.1", 8787, false, true), "批处理不连服务器", "去连了");
+            SelfTest.True(GameBootstrap.ShouldConnect("127.0.0.1", 8787, false, false), "出包且配置了地址才连", "没连");
+            SelfTest.True(!GameBootstrap.ShouldConnect(null, 8787, false, false), "没地址不连", "去连了");
+            SelfTest.True(!GameBootstrap.ShouldConnect("127.0.0.1", 0, false, false), "端口非法不连", "去连了");
+            // 自检进程自己必须被判为"不连"：这条挂了就说明测试路径会去开真套接字
+            SelfTest.True(!GameBootstrap.ShouldConnect(GameBootstrap.DefaultServerHost, GameBootstrap.DefaultServerPort,
+                UnityEngine.Application.isEditor, UnityEngine.Application.isBatchMode), "自检进程不许连服务器", "会去连");
+            SelfTest.True(GameBootstrap.DefaultServerPort > 0 && GameBootstrap.DefaultServerPort < 65536, "默认端口在范围内",
+                GameBootstrap.DefaultServerPort.ToString());
+            SelfTest.True(GameBootstrap.Loop == null || GameBootstrap.Loop.Transport == null,
+                "自检进程里帧回路不许挂着传输（测试路径不连服务器）", "挂着传输");
+
+            // 键位表 → KeyCode：14 条默认项每条都要认得（表改了却忘了改映射，这里就红）。
+            // 表就是这套键名的全集（InputSampler 的 14 个动作用的是同一套名字），没有第二个候选表。
+            for (var i = 0; i < SettingsDefaults.KeyBindings.Length; i++)
+            {
+                SelfTest.True(GameBootstrap.KeyOf(SettingsDefaults.KeyBindings[i]) != UnityEngine.KeyCode.None,
+                    "键位表第 " + i + " 条要认得", SettingsDefaults.KeyBindings[i]);
+            }
+            SelfTest.True(SettingsDefaults.KeyBindings[SettingsDefaults.ActionDebugPanel] == "F3", "默认表里调试面板就是 F3",
+                SettingsDefaults.KeyBindings[SettingsDefaults.ActionDebugPanel]);
+            var custom = (string[])SettingsDefaults.KeyBindings.Clone();
+            custom[SettingsDefaults.ActionDebugPanel] = "O";          // 把面板热键改到表里另一个键
+            SelfTest.True(GameBootstrap.DebugPanelKeyFor(custom) == UnityEngine.KeyCode.O,
+                "调试面板热键必须跟着键位表走（不许硬编码 F3）", GameBootstrap.DebugPanelKeyFor(custom).ToString());
+            SelfTest.True(GameBootstrap.DebugPanelKeyFor(SettingsDefaults.KeyBindings) == UnityEngine.KeyCode.F3,
+                "默认表解析出 F3", GameBootstrap.DebugPanelKeyFor(SettingsDefaults.KeyBindings).ToString());
+            var broken = (string[])SettingsDefaults.KeyBindings.Clone();
+            broken[SettingsDefaults.ActionDebugPanel] = "NotAKey";
+            SelfTest.True(GameBootstrap.DebugPanelKeyFor(broken) == UnityEngine.KeyCode.F3,
+                "表里写了不认识的键名 → 退回默认表的同一条（而不是代码里的字面量）", GameBootstrap.DebugPanelKeyFor(broken).ToString());
         }
 
         private static GameLoop NewLoop(int entities, out SnapshotFrame frame)

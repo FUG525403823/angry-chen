@@ -45,4 +45,4 @@
 
 ## 4. 仍未装配（C15/后续）
 
-音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`AmmoLedger`/武器 HUD 数值、HUD 字符串渲染与场景 UI、`ArenaMesh/Colliders` 实例化；`Batching` §5 的档位表（剔除/阴影/实例上限）目前**没有生产调用者**，`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。
+音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**仍未做**：HUD 字符串渲染与场景 UI（全仓 `OnGUI|Canvas|DrawTexture|Blit` 命中 0 ⇒ 上屏只有竞技场网格与羊的实例化绘制）、`AmmoLedger`/武器 HUD 数值、生产路径上的本地玩家身份（`GameLoop.LocalPlayerId` 无人赋值）。`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。详见 `client-v2-remaining-work.md`。
