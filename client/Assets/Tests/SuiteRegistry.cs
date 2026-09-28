@@ -26,6 +26,7 @@ namespace Ac.Tests
             SettingsSuite.Register();
             PerfSuite.Register();
             BootSuite.Register();
+            PresentationSuite.Register();
             ReleaseSuite.Register();
             AssetGateSuite.Register();
             Vec3Suite.Register();

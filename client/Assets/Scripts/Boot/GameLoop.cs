@@ -1,3 +1,4 @@
+using System;
 using Ac.Core;
 using Ac.Net;
 using Ac.Sim;
@@ -16,6 +17,14 @@ namespace Ac.Boot
     public interface IFrameStageSink
     {
         void Tick(double dtMs);
+    }
+
+    // 第二类呈现缝：Tick 返回"本帧是否真的做了功"。draw / overlay 用它，因为这两段的功不是恒有的——
+    // 没有任何实例可提交、着色器不可用时，**必须不给 draw 打点**：打了点、值恒 0，10ms 的 draw 预算
+    // 就永远"通过"（审查点名的假绿；FrameBench 的缺段判 UNVERIFIED 正是为这种情况准备的）。
+    public interface IFrameWorkSink
+    {
+        bool Tick(double dtMs);
     }
 
     public sealed class GameLoop
@@ -51,8 +60,19 @@ namespace Ac.Boot
         public UdpTransport Transport { get; set; }      // 离线（单机/帧基准）时为 null
         public IFrameStageSink Fx { get; set; }
         public IFrameStageSink Audio { get; set; }
+        public IFrameWorkSink Draw { get; set; }         // 有绘制提交才打点（见 IFrameWorkSink）
+        public IFrameWorkSink Overlay { get; set; }      // 上层界面（屏幕流/调试面板）每帧都做功
         public EventIdTracker Events { get; set; }
         public ushort LocalPlayerId { get; set; }
+
+        // 事件缝：HUD 之外，特效层也要按事件生成弹着/血屑（此前事件只有 Hud 一个消费者，Effects 在生产里零调用）。
+        // 委托字段而不是事件列表：热路径上不分配。
+        public Action<HudEvent> EventApplied { get; set; }
+
+        // 最近一次 type=10 的相位载荷：屏幕流（Lobby/Intermission/Results/Roster）由它驱动，
+        // 而相位本身不能只靠 Sample.Phase（HudSample 装不下 players 表）。
+        public MatchStatePayload LastMatchState { get; private set; }
+        public int MatchStateCount { get; private set; }
 
         public int Frames { get; private set; }
         public int SnapshotsApplied { get; private set; }
@@ -65,6 +85,8 @@ namespace Ac.Boot
         public EntityViews Views { get { return _views; } }
         public Hud Hud { get { return _hud; } }
         public HudSample Sample { get { return _sample; } }
+        // 本地已推进的模拟子步数（调试面板的 playerTick）。没有它，面板只能拿 AppliedTick 冒充本地 tick。
+        public int LocalSteps { get { return _predictor.Steps; } }
 
         public void QueueCommand(in StepCommand command)
         {
@@ -102,6 +124,8 @@ namespace Ac.Boot
                     _phase = state.Phase;
                     _wave = state.Wave;
                     _intermissionMs = state.IntermissionMs;
+                    LastMatchState = state;
+                    MatchStateCount += 1;
                     return;
                 }
                 case PacketType.Event:
@@ -132,6 +156,8 @@ namespace Ac.Boot
             hudEvent.ReviveRatio255 = entry.Ratio255;
             _hud.PushEvent(hudEvent);
             EventsApplied += 1;
+            var handler = EventApplied;
+            if (handler != null) handler(hudEvent);
         }
 
         public void Frame(double dtMs)
@@ -183,6 +209,11 @@ namespace Ac.Boot
             _hud.Apply(_sample);
             _hud.Tick((float)dtMs);
             _profiler.Mark(FrameStage.Hud);
+
+            // ⑥ 上层界面与绘制提交：放在 HUD 之后，这样屏幕流拿到的是**本帧**的采样（相位/波次）。
+            //    overlay 恒做功（屏幕流 + 调试面板），draw 只在真的提了绘制时打点。
+            if (Overlay != null && Overlay.Tick(dtMs)) _profiler.Mark(FrameStage.Overlay);
+            if (Draw != null && Draw.Tick(dtMs)) _profiler.Mark(FrameStage.Draw);
 
             _profiler.End();
             Frames += 1;

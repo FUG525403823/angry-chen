@@ -61,6 +61,14 @@ namespace Ac.View
 
         public void SetLocalPlayer(ushort id) { LocalPlayerId = id; }
 
+        // 只读遍历口：呈现层要按 id 顺序把本帧的活动实体交给实例池（TryGet 之外没有别的读法，
+        // 而反射私有数组显然不是办法）。下标越界返回 0——0 不是合法实体 id。
+        public ushort ActiveIdAt(int index)
+        {
+            if (index < 0 || index >= _activeCount) return 0;
+            return _activeIds[index];
+        }
+
         public bool TryGet(ushort id, out EntityView view)
         {
             view = null;
