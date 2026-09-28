@@ -1,4 +1,5 @@
 // S14 §2-3：HTTP 监听层的端到端用例（真实 TCP 回环，不碰 8787 之外的端口）。
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -186,4 +187,30 @@ AC_TEST(listener_stops_accepting_after_stop) {
   ac::net::TcpConnection connection = server.connect("/health");
   AC_CHECK(!connection.isOpen());
   AC_CHECK_EQ(server.serveOnce(2000u), static_cast<std::size_t>(0));
+}
+
+// S15 §15.4 D1：connectTcp 的超时必须真生效。192.0.2.1 是 RFC 5737 的 TEST-NET-1（黑洞地址），
+// 不会回 SYN-ACK；若本机直接回不可达也算通过（两条路径都是「快速失败」），关键是**不许挂住**。
+// 上限 3×timeout 同时排除了「实现偷偷按系统默认 ~21s 超时返回」。
+AC_TEST(listener_connect_timeout_is_enforced) {
+  constexpr int kTimeoutMs = 300;
+  constexpr std::uint32_t kBlackHole = 0xC0000201u;  // 192.0.2.1
+  const auto started = std::chrono::steady_clock::now();
+  ac::net::TcpConnection connection = ac::net::connectTcp(kBlackHole, 9u, kTimeoutMs);
+  const double elapsedMs = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+  std::printf("blackholeConnect timeout=%dms elapsed=%.1fms open=%d\n", kTimeoutMs, elapsedMs,
+              connection.isOpen() ? 1 : 0);
+  AC_CHECK(!connection.isOpen());
+  AC_CHECK(elapsedMs < 3.0 * static_cast<double>(kTimeoutMs));
+  // 失败路径必须不泄漏 fd：连续 64 次超时失败后仍能连上真实监听者。
+  for (int i = 0; i < 64; ++i) {
+    const ac::net::TcpConnection failed = ac::net::connectTcp(kBlackHole, 9u, 1);
+    AC_CHECK(!failed.isOpen());
+  }
+  Server server("listen");
+  AC_CHECK(server.isStarted);
+  const std::string text = server.roundTrip("/health", 1000u);
+  AC_CHECK(text.rfind("HTTP/1.1 200 OK", 0u) == 0u);
 }

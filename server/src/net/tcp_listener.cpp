@@ -10,6 +10,7 @@
 #else
 #include <arpa/inet.h>
 #include <cerrno>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/select.h>
@@ -68,6 +69,46 @@ std::intptr_t createStreamSocket() noexcept {
   return toHandle(::socket(AF_INET, SOCK_STREAM, 0));
 }
 
+int lastSocketError() noexcept {
+#if defined(_WIN32)
+  return ::WSAGetLastError();
+#else
+  return errno;
+#endif
+}
+
+// 非阻塞开关：非阻塞 connect 用它切进去，成功后切回阻塞（recv/sendAll 的既有语义不变）。
+bool setBlocking(NativeSocket socket, bool isBlocking) noexcept {
+#if defined(_WIN32)
+  u_long mode = isBlocking ? 0ul : 1ul;
+  return ::ioctlsocket(socket, FIONBIO, &mode) == 0;
+#else
+  const int flags = ::fcntl(socket, F_GETFL, 0);
+  if (flags < 0) return false;
+  const int updated = isBlocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+  return ::fcntl(socket, F_SETFL, updated) == 0;
+#endif
+}
+
+// 「连接还在进行中」的两种平台表述：Windows WSAEWOULDBLOCK/WSAEINPROGRESS，POSIX EINPROGRESS/EALREADY。
+bool isConnectInProgress(int error) noexcept {
+#if defined(_WIN32)
+  return error == WSAEWOULDBLOCK || error == WSAEINPROGRESS || error == WSAEALREADY;
+#else
+  return error == EINPROGRESS || error == EALREADY || error == EWOULDBLOCK;
+#endif
+}
+
+// 可写只说明「有结果了」；SO_ERROR 才是 connect 的权威结论（0 = 已建立）。
+int pendingSocketError(NativeSocket socket) noexcept {
+  int soError = 0;
+  SockLen length = static_cast<SockLen>(sizeof(soError));
+  if (::getsockopt(socket, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&soError), &length) != 0) {
+    return lastSocketError();
+  }
+  return soError;
+}
+
 }  // namespace
 
 TcpConnection::~TcpConnection() { close(); }
@@ -124,7 +165,7 @@ void TcpConnection::close() noexcept {
 TcpListener::~TcpListener() { close(); }
 
 TcpListener::TcpListener(TcpListener&& other) noexcept : handle_(other.handle_), port_(other.port_) {
-  other.handle_ = std::intptr_t{-1};
+  other.handle_ = TcpListener::kInvalid;
   other.port_ = 0u;
 }
 
@@ -133,7 +174,7 @@ TcpListener& TcpListener::operator=(TcpListener&& other) noexcept {
   close();
   handle_ = other.handle_;
   port_ = other.port_;
-  other.handle_ = std::intptr_t{-1};
+  other.handle_ = TcpListener::kInvalid;
   other.port_ = 0u;
   return *this;
 }
@@ -195,6 +236,8 @@ void TcpListener::close() noexcept {
   port_ = 0u;
 }
 
+// 超时语义见 tcp_listener.hpp 的 connectTcp 注释：timeoutMs > 0 走非阻塞 connect + select 可写 +
+// SO_ERROR 复核；timeoutMs <= 0 保持阻塞语义。任何失败分支都在返回前关闭 socket（不泄漏 fd/handle）。
 TcpConnection connectTcp(std::uint32_t ipv4, std::uint16_t port, int timeoutMs) noexcept {
   const std::intptr_t handle = createStreamSocket();
   if (handle == kInvalidHandle) return TcpConnection{};
@@ -203,17 +246,38 @@ TcpConnection connectTcp(std::uint32_t ipv4, std::uint16_t port, int timeoutMs) 
   remote.sin_family = AF_INET;
   remote.sin_addr.s_addr = htonl(ipv4);
   remote.sin_port = htons(port);
-  if (::connect(socket, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) != 0) {
-    closeNative(socket);
-    return TcpConnection{};
+
+  if (timeoutMs <= 0) {
+    if (::connect(socket, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) != 0) {
+      closeNative(socket);
+      return TcpConnection{};
+    }
+  } else {
+    if (!setBlocking(socket, false)) {
+      closeNative(socket);
+      return TcpConnection{};
+    }
+    if (::connect(socket, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote)) != 0) {
+      if (!isConnectInProgress(lastSocketError())) {  // 立刻失败（拒绝/无路由）：不必等
+        closeNative(socket);
+        return TcpConnection{};
+      }
+      if (!isReady(socket, true, timeoutMs)) {  // 到点仍不可写（或 select 出错）：按超时失败
+        closeNative(socket);
+        return TcpConnection{};
+      }
+      if (pendingSocketError(socket) != 0) {  // 可写但被拒：SO_ERROR 非 0
+        closeNative(socket);
+        return TcpConnection{};
+      }
+    }
+    if (!setBlocking(socket, true)) {
+      closeNative(socket);
+      return TcpConnection{};
+    }
   }
   setNoDelay(socket);
-  if (timeoutMs > 0) {
-    // 连接建立后立刻可写；这里只做一次就绪探测，避免调用方误以为超时保证。
-    isReady(socket, true, timeoutMs);
-  }
-  TcpConnection connection{handle, ipv4};
-  return connection;
+  return TcpConnection{handle, ipv4};
 }
 
 }  // namespace ac::net

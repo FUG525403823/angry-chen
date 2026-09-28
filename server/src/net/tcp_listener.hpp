@@ -38,6 +38,8 @@ class TcpConnection {
 
 class TcpListener {
  public:
+  static constexpr std::intptr_t kInvalid = -1;  // 移动后置位用同一个具名常量（D4：消灭裸 -1）
+
   TcpListener() noexcept = default;
   ~TcpListener();
 
@@ -52,14 +54,23 @@ class TcpListener {
   TcpConnection accept() noexcept;          // 失败返回未打开的连接
   std::uint16_t boundPort() const noexcept { return port_; }
   void close() noexcept;
-  bool isOpen() const noexcept { return handle_ != std::intptr_t{-1}; }
+  bool isOpen() const noexcept { return handle_ != kInvalid; }
 
  private:
-  std::intptr_t handle_ = -1;
+  std::intptr_t handle_ = kInvalid;
   std::uint16_t port_ = 0u;
 };
 
-// 客户端连接（用例与工具用）：失败返回未打开的连接。面向回环地址，不做重试。
+// 客户端连接（用例、门禁与机器人用）：失败返回未打开的连接（handle 已关闭，不泄漏）。
+//
+// 超时契约（S15 §15.4 D1 修订）：
+//   timeoutMs > 0 —— 真实的连接超时。实现走「非阻塞 connect + 等待可写」：
+//     POSIX  `connect` 返回 -1 且 errno == EINPROGRESS/EALREADY，
+//     Windows `connect` 返回 SOCKET_ERROR 且 WSAGetLastError() == WSAEWOULDBLOCK/WSAEINPROGRESS；
+//     随后 `select` 等可写（POSIX 亦可用 poll，本实现统一用 select），到点即失败并关闭 socket。
+//     可写**不等于**连接成功：还必须 `getsockopt(SO_ERROR)` 为 0（被拒/不可达在这一步暴露）。
+//   timeoutMs <= 0 —— 阻塞 connect，无超时保证（沿用旧调用方的语义，只有回环这类必然立刻返回的场景可用）。
+// 连接成功后恢复阻塞模式，后续 recv/sendAll 的语义与旧实现一致。
 TcpConnection connectTcp(std::uint32_t ipv4, std::uint16_t port, int timeoutMs) noexcept;
 
 }  // namespace ac::net
