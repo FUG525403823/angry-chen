@@ -93,6 +93,8 @@
 | 出怪表 | 全部羊按 `grunt, ram, elite, king` 的顺序消耗平面数组；生成即 `applySheepKind` 并置 `graze` |
 | 清波 | 计划生成完毕且活动羊数为 0 → `waveClear`；`w >= 10` 再发 `matchEnded` 并置 `finished`，否则立刻为下一波组队并等波间结束 |
 
+> **已裁决（B2，`DirectorState` 留在 `stepWorld` 之外）**。原问题：本份 §4 要求把导演「接进 `step.cpp` 的阶段 11」，而 §9 把 `DirectorState&` 冻结为**外部状态**，S06 §5.1 冻死的 `stepWorld(World&, const Command*, uint32_t, uint32_t)` 没有它的入口；本节的波间 20s / 最短 5s 时钟也没有推进者。**裁决：`DirectorState` 保持在世界步进之外**（外部驱动、确定性优先，不把它塞进 `World`、不动 S06 的冻结签名）——由 S10 的房间持有（`Room::director`）并每 tick 在 `stepWorld` 之外调用 `updateDirector`，波间时钟由房间的 `intermissionMs` 推进。依据 `server/README.md` §11（`Room::director`、`updateRoom` 六步）、§10.1-3、§11.2-10。本份 §4 的「接进阶段 11」据此理解为「命中判定、击退、问号弹生命周期、羊王阶段与召唤接进阶段 11」，导演节奏（组队/生成节流/清波）由 S10 在 `stepWorld` 之外驱动。
+
 ### 5.5 羊王阶段
 
 | 项 | 规则 |

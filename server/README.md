@@ -1286,4 +1286,19 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 
 判据（现在做进脚本里）：**远程验证脚本必须自己证明代码身份** —— 打印 HEAD，并对本轮关键改动逐条 `grep -cF` 计数，任一为 0 就 `exit 3` 中止；否则不许引用该次输出。网络不可达时用 `scp` 覆盖改动文件（当前就是这么同步的），不要依赖 fetch。
 
+### 19.5 B 部分裁决的回写台账（本次）
+
+| 条目 | 裁决 | 回写到 |
+|---|---|---|
+| B1 | ADR-009 的分片头条件**按实现**修正：分片包（`type=9`）一律带分片头，`moreFragments` 语义 = "本包是分片"，末片靠 `fragIndex+1==fragCount` 识别 | `docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md` |
+| B2 | `DirectorState` 留在 `stepWorld` 之外（房间持有、步进后驱动），确定性优先 | `docs/plans-v2/server/S09-…`、`S10-…`、`docs/02-需求分析.md`（OQ-11） |
+| B3 | `stepWorld` 以 S06 §9 的 4 参签名为准（`commandCount` 显式传入） | `docs/plans-v2/server/S10-…` |
+| B4 | 保持 50ms 相位时钟，不引入可变步长/插值 | `docs/plans-v2/server/S10-…` |
+| B5 | 投射物不参与静态碰撞（与 v1 一致，也不入网格） | `docs/plans-v2/server/S06-…` |
+| B6 | 反向代理监听 `:80`，TLS 由部署方终结（仓库不内置证书/ACME） | `docs/plans-v2/server/S15-…` |
+| B7 | `AC_DATA_DIR` 默认值保持平台分叉 + **测试与工具必须显式注入**（§19.2） | `docs/plans-v2/server/S13-…`、`S15-…` |
+| B8 | 监听层与服务运行时（`TcpListener`/`HttpListener`/`Runtime`/`--serve`）归属记为 **S14** | `docs/plans-v2/server/S14-…`、`S15-…` |
+
+回写后 `node tools/check-docs.mjs` 绿。本节即 §4.2-5 / §5.3-2 / §7.5-8,11 / §14.2 / §15.3-2 / §18.8-1 那些"待裁决"登记的收口记录。
+
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。

@@ -46,9 +46,15 @@
 | 12 | `ackBase` | u32 | 已收到的最大 `msgId` |
 | 16 | `ackBits` | u32 | `ackBase` 之前的 32 位位图（1 = 已收到） |
 
-### 分片头（`flags.moreFragments = 1` 时紧随通用包头，4 字节）
+### 分片头（`type = 9`（分片包）时紧随通用包头，4 字节）
 
-> 勘误（C02 施工时发现，2026-09-24）：原表述的第二个条件「或 `fragCount > 1`」不可判定——读通用包头时还看不到 `fragCount`，条件自相矛盾；与 S03 §5.1 的 `payloadOffset` 公式、`wire.hpp` 与客户端 `PacketReader.Read` 的实现（只看 `flags` 位 1）均不符，故删去。
+> **原问题（C02 施工时发现、S03/S04 期登记，2026-09-24）**：原表述是「`flags.moreFragments = 1` **或** `fragCount > 1` 时紧随通用包头」。第二个条件不可判定——读通用包头时还看不到 `fragCount`；而若把 `moreFragments` 读作「后面还有分片」，末分片就不置该位，也就无处携带 `fragId`/`fragIndex`，S04 的本地重组无法完成。
+>
+> **已裁决（B1，按实现修正 ADR，不反过来改代码）**：
+> 1. **在场条件只有一个：该包是分片包（`type = 9`）**，末分片的 4 字节分片头同样在场；原「或 `fragCount > 1`」已删（读包头时不可判定）。
+> 2. 实现口径：`server/src/net/wire.hpp` 的 `payloadOffset = 8 + 12×reliable + 4×moreFragments`、`decodePacket` 的 `hasFragmentHeader` 只看该位；`server/src/net/codec.cpp` 对 `type 9` 要求置 `flags.moreFragments`（不置即 `DecodeFailure::kBadValue`）；`server/src/net/fragment.cpp` 的 `splitMessage` 对**每一片（含末片）**都置该位。
+> 3. 于是线上**任一分片都带分片头**：`moreFragments` 在 v2 分片里的语义是「本包是分片」，**不是**「后面还有分片」；末片靠 `fragIndex + 1 == fragCount` 识别，接收侧不得用 `moreFragments` 判断末片，也不得用它决定是否存在 4 字节分片头。
+> 4. 依据：`server/README.md` §4.2-5（本条原始登记）、§5.1/§5.2 行为要点、§4.1 的 `fragment.hex`（`type 9` + `moreFragments`，slice 0/2）。ADR 与实现不一致时按工程约定 §8 先改 ADR。
 
 | 偏移 | 字段 | 类型 | 说明 |
 |---|---|---|---|

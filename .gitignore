@@ -3,3 +3,7 @@
 
 # S15 登记：AC_DATA_DIR 未设时的默认落点（测试与 --serve 都会写），属运行期产物
 /data/
+# 运行时产物：门禁/用例的数据目录（README §19.2 要求测试与工具显式注入，别提交）
+/ac-gate-data/
+/ac-gate-solo-data/
+/ac-runtime-test-data/
