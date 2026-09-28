@@ -1254,6 +1254,7 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 | `ac_server --serve` 零客户端（`/proc/PID/stat` 独立采样） | **1.20%** 单核 |
 | `ac_bench` 单帧 `stepWorld` | p50 **16µs** / p95 17µs（20Hz ⇒ 约 0.03% 单核） |
 | `ac_gate` 整进程（4 客户端 + 60 羊，**进程内**托管） | **51–53%** ⇒ G1 判红 |
+| GitHub Actions runner（2 vCPU，`ci / server-perf` 实跑） | **48.33%** ⇒ G1 判红；同次 G6 已按新判据 pass（0.000/2.000） |
 | Windows 同代码 | **8.37%** |
 
 ⇒ G1 现在量的是"服务器 + 门禁自己的进程内压测工装"，同一份代码跨平台差 6 倍，在共用 runner 上不可复现。
