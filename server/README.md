@@ -1245,4 +1245,26 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 2. `ac_gate` 是工具不是生产进程：未显式设置 `AC_DATA_DIR` 时用构建目录下的相对路径 `ac-gate-data`；
 3. 结论入判据：**任何依赖"默认绝对路径可写"的用例都是环境依赖**，必须在测试里注入。
 
+### 19.3 G1 口径改造（用户已裁定"单独起服务器进程，只采它"，待实施）
+
+**实测依据**（Ubuntu 22.04 / 4 vCPU 云主机，`docs/evidence/server-v2-acceptance.md` §10）：
+
+| 测量 | 值 |
+|---|---|
+| `ac_server --serve` 零客户端（`/proc/PID/stat` 独立采样） | **1.20%** 单核 |
+| `ac_bench` 单帧 `stepWorld` | p50 **16µs** / p95 17µs（20Hz ⇒ 约 0.03% 单核） |
+| `ac_gate` 整进程（4 客户端 + 60 羊，**进程内**托管） | **51–53%** ⇒ G1 判红 |
+| Windows 同代码 | **8.37%** |
+
+⇒ G1 现在量的是"服务器 + 门禁自己的进程内压测工装"，同一份代码跨平台差 6 倍，在共用 runner 上不可复现。
+**裁定**：G1 改为量**单独起出来的服务器进程**，语义回到计划原意「4 人 + 60 羊单核占用」。
+
+实施步骤（基础设施已具备：`gate.cpp` 的 `spawnChild`/`killChild` 跨平台，`ac_bot` 是真 UDP 客户端 `--players/--minutes/--latency/--loss`）：
+
+1. `processCpuMs()`/`processRssMb()` 增加"对指定子进程采样"的重载（POSIX `/proc/<pid>/stat`、Windows `OpenProcess`+`GetProcessTimes`/`GetProcessMemoryInfo`），G1/G7 走它；
+2. G1 阶段：`spawnChild(ac_server --serve --udp-port --http-port --data-dir --minutes)` + `spawnChild(ac_bot --players=4 ...)`，只采服务器子进程；
+3. G2–G8 仍在现有进程内场景测（G1 阶段只补 CPU/RSS 这两个"进程级"量）；
+4. 服务器侧指标（G5/G6/G8 等）继续走日志/`/metrics` 或现有进程内路径，避免重复实现；
+5. 落地后重跑四场景 + 反向自检，把"跨平台实测表"写进 `docs/evidence/server-v2-acceptance.md` §10。
+
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
