@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -391,26 +390,6 @@ namespace Ac.Core
             return builder.ToString();
         }
 
-        private static string Unescape(string text)
-        {
-            if (string.IsNullOrEmpty(text) || text.IndexOf('\\') < 0) return text;
-            var builder = new StringBuilder(text.Length);
-            for (var i = 0; i < text.Length; i++)
-            {
-                if (text[i] == '\\' && i + 1 < text.Length)
-                {
-                    i += 1;
-                    var escape = text[i];
-                    if (escape == 'n') builder.Append('\n');
-                    else if (escape == 't') builder.Append('\t');
-                    else if (escape == 'r') builder.Append('\r');
-                    else builder.Append(escape);
-                }
-                else builder.Append(text[i]);
-            }
-            return builder.ToString();
-        }
-
         private static string Float(float value)
         {
             return value.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
@@ -427,187 +406,115 @@ namespace Ac.Core
         {
             snapshot = SettingsDefaults.Default();
             sourceVersion = 1;
-            Dictionary<string, string> flat;
-            if (!TryReadFlat(json, out flat)) return false;
+            JsonValue root;
+            // B5：JSON 的词法/语法只有 MiniJson 一份实现；这里只做"取键 + 类型不符回落"的薄适配
+            try { root = MiniJson.Parse(json); }
+            catch (JsonException) { return false; }
+            if (root.Kind != JsonKind.Object) return false;
 
-            var version = ReadVersion(flat);
+            var version = ReadVersion(root);
             sourceVersion = version;
             if (version > SettingsDefaults.SchemaVersion)
             {
                 snapshot.SchemaVersion = version;
                 return true;                                     // 只读：内存用默认值，文件保留
             }
-            var v1 = !flat.ContainsKey("schemaVersion") || version <= 1;
+            var v1 = !HasMember(root, "schemaVersion") || version <= 1;
 
             snapshot.SchemaVersion = SettingsDefaults.SchemaVersion;
-            snapshot.QualityTier = v1 ? SettingsDefaults.QualityTier : SettingsDefaults.ClampTier(ReadInt(flat, "qualityTier", SettingsDefaults.QualityTier));
-            snapshot.MasterVolume = SettingsDefaults.ClampVolume(ReadFloat(flat, "masterVolume", SettingsDefaults.MasterVolume));
-            snapshot.SfxVolume = SettingsDefaults.ClampVolume(ReadFloat(flat, "sfxVolume", SettingsDefaults.SfxVolume));
-            snapshot.MusicVolume = v1 ? SettingsDefaults.MusicVolume : SettingsDefaults.ClampVolume(ReadFloat(flat, "musicVolume", SettingsDefaults.MusicVolume));
-            snapshot.Sensitivity = SettingsDefaults.ClampSensitivity(ReadFloat(flat, "sensitivity", SettingsDefaults.Sensitivity));
-            snapshot.Fov = SettingsDefaults.ClampFov(ReadFloat(flat, "fov", SettingsDefaults.Fov));
-            snapshot.CrosshairColor = v1 ? SettingsDefaults.CrosshairColor : SettingsDefaults.NearestCrosshairColor(ReadInt(flat, "crosshairColor", SettingsDefaults.CrosshairColor));
-            snapshot.ColorblindSafe = ReadBool(flat, "colorblindSafe", SettingsDefaults.ColorblindSafe);
-            snapshot.ReduceMotion = ReadBool(flat, "reduceMotion", SettingsDefaults.ReduceMotion);
-            snapshot.KeyBindings = v1 ? (string[])SettingsDefaults.KeyBindings.Clone() : ReadKeys(flat);
+            snapshot.QualityTier = v1 ? SettingsDefaults.QualityTier : SettingsDefaults.ClampTier(ReadInt(root, "qualityTier", SettingsDefaults.QualityTier));
+            snapshot.MasterVolume = SettingsDefaults.ClampVolume(ReadFloat(root, "masterVolume", SettingsDefaults.MasterVolume));
+            snapshot.SfxVolume = SettingsDefaults.ClampVolume(ReadFloat(root, "sfxVolume", SettingsDefaults.SfxVolume));
+            snapshot.MusicVolume = v1 ? SettingsDefaults.MusicVolume : SettingsDefaults.ClampVolume(ReadFloat(root, "musicVolume", SettingsDefaults.MusicVolume));
+            snapshot.Sensitivity = SettingsDefaults.ClampSensitivity(ReadFloat(root, "sensitivity", SettingsDefaults.Sensitivity));
+            snapshot.Fov = SettingsDefaults.ClampFov(ReadFloat(root, "fov", SettingsDefaults.Fov));
+            snapshot.CrosshairColor = v1 ? SettingsDefaults.CrosshairColor : SettingsDefaults.NearestCrosshairColor(ReadInt(root, "crosshairColor", SettingsDefaults.CrosshairColor));
+            snapshot.ColorblindSafe = ReadBool(root, "colorblindSafe", SettingsDefaults.ColorblindSafe);
+            snapshot.ReduceMotion = ReadBool(root, "reduceMotion", SettingsDefaults.ReduceMotion);
+            snapshot.KeyBindings = v1 ? (string[])SettingsDefaults.KeyBindings.Clone() : ReadKeys(root);
             return true;
         }
 
-        private static string[] ReadKeys(Dictionary<string, string> flat)
+        // ---- 取值适配：类型不符/缺失一律回落给定的默认值（§5：不整份丢弃），未知键直接读不到 ----
+
+        private static bool HasMember(JsonValue root, string key)
         {
-            var keys = (string[])SettingsDefaults.KeyBindings.Clone();
-            string raw;
-            if (!flat.TryGetValue("keyBindings", out raw)) return keys;
-            var parts = raw.Split(',');
-            for (var i = 0; i < SettingsDefaults.ActionCount && i < parts.Length; i++)
-            {
-                var name = parts[i].Trim();
-                if (name.Length >= 2 && name[0] == '"' && name[name.Length - 1] == '"') name = name.Substring(1, name.Length - 2);
-                if (name.Length > 0) keys[i] = Unescape(name);
-            }
-            return keys;
+            JsonValue ignored;
+            return TryMember(root, key, out ignored);
         }
 
-        // 版本号按浮点读：合法的 2.0 / 2e0 不能被当成"缺版本号"（那会把 v2 文件当 v1 迁移并丢键）
-        private static int ReadVersion(Dictionary<string, string> flat)
+        // 重复键取最后一次出现，沿用旧扁平读取的 last-wins
+        private static bool TryMember(JsonValue root, string key, out JsonValue value)
         {
-            string raw;
-            if (!flat.TryGetValue("schemaVersion", out raw)) return 1;
-            float value;
-            if (!float.TryParse(raw.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value)) return 1;
-            if (float.IsNaN(value) || value < 0f) return 1;
+            for (var i = root.Count - 1; i >= 0; i--)
+            {
+                var member = root.MemberAt(i);
+                if (member.Key == key) { value = member.Value; return true; }
+            }
+            value = null;
+            return false;
+        }
+
+        // 数字只认 Number；带引号的数字串沿用旧读取的容错（"0.80" 也当数字），其余一律 NaN（= 类型不符）
+        private static double Number(JsonValue root, string key)
+        {
+            JsonValue value;
+            if (!TryMember(root, key, out value)) return double.NaN;
+            if (value.Kind == JsonKind.Number) return value.AsDouble();
+            if (value.Kind != JsonKind.String) return double.NaN;
+            double parsed;
+            return double.TryParse(value.AsString().Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsed) ? parsed : double.NaN;
+        }
+
+        // 版本号按数值读：合法的 2.0 / 2e0 不能被当成"缺版本号"（那会把 v2 文件当 v1 迁移并丢键）
+        private static int ReadVersion(JsonValue root)
+        {
+            var value = Number(root, "schemaVersion");
+            if (double.IsNaN(value) || value < 0.0) return 1;
+            if (value > SettingsDefaults.SchemaVersion) return int.MaxValue;   // 只读；顺带避开 (int) 溢出
             return (int)value;
         }
 
-        private static int ReadInt(Dictionary<string, string> flat, string key, int fallback)
+        private static int ReadInt(JsonValue root, string key, int fallback)
         {
-            string raw;
-            if (!flat.TryGetValue(key, out raw)) return fallback;
-            int value;
-            return int.TryParse(raw.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out value) ? value : fallback;
+            var value = Number(root, key);
+            if (double.IsNaN(value) || value != Math.Floor(value) || value < int.MinValue || value > int.MaxValue) return fallback;
+            return (int)value;
         }
 
-        private static float ReadFloat(Dictionary<string, string> flat, string key, float fallback)
+        private static float ReadFloat(JsonValue root, string key, float fallback)
         {
-            string raw;
-            if (!flat.TryGetValue(key, out raw)) return fallback;
-            float value;
-            return float.TryParse(raw.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value) ? value : fallback;
+            var value = Number(root, key);
+            return double.IsNaN(value) ? fallback : (float)value;
         }
 
-        private static bool ReadBool(Dictionary<string, string> flat, string key, bool fallback)
+        private static bool ReadBool(JsonValue root, string key, bool fallback)
         {
-            string raw;
-            if (!flat.TryGetValue(key, out raw)) return fallback;
-            var text = raw.Trim();
+            JsonValue value;
+            if (!TryMember(root, key, out value)) return fallback;
+            if (value.Kind == JsonKind.Bool) return value.AsBool();
+            if (value.Kind != JsonKind.String) return fallback;
+            var text = value.AsString().Trim();
             if (text == "true") return true;
             if (text == "false") return false;
             return fallback;
         }
 
-        // 极简扁平 JSON 读取：顶层对象 → 键到原始值的映射；数组原样保留成一个串。
-        // 未知键读出来但不使用（§5：未知键丢弃），坏 JSON 返回 false。
-        private static bool TryReadFlat(string json, out Dictionary<string, string> flat)
+        // 键位数组：短了的部分保持默认表；非字符串元素与空串一律保持默认
+        private static string[] ReadKeys(JsonValue root)
         {
-            flat = new Dictionary<string, string>();
-            if (string.IsNullOrEmpty(json)) return false;
-            var i = 0;
-            Skip(json, ref i);
-            if (i >= json.Length || json[i] != '{') return false;
-            i += 1;
-            while (true)
+            var keys = (string[])SettingsDefaults.KeyBindings.Clone();
+            JsonValue value;
+            if (!TryMember(root, "keyBindings", out value) || value.Kind != JsonKind.Array) return keys;
+            var count = value.Count < SettingsDefaults.ActionCount ? value.Count : SettingsDefaults.ActionCount;
+            for (var i = 0; i < count; i++)
             {
-                Skip(json, ref i);
-                if (i >= json.Length) return false;
-                if (json[i] == '}') return true;
-                if (json[i] == ',') { i += 1; continue; }
-                if (json[i] != '"') return false;
-                var key = ReadString(json, ref i);
-                Skip(json, ref i);
-                if (i >= json.Length || json[i] != ':') return false;
-                i += 1;
-                Skip(json, ref i);
-                if (!ReadValue(json, ref i, out var value)) return false;
-                flat[key] = value;
+                var item = value[i];
+                if (item.Kind != JsonKind.String) continue;
+                var name = item.AsString();
+                if (name.Length > 0) keys[i] = name;
             }
-        }
-
-        private static void Skip(string json, ref int i)
-        {
-            while (i < json.Length && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r')) i += 1;
-        }
-
-        private static string ReadString(string json, ref int i)
-        {
-            var builder = new StringBuilder();
-            i += 1;                                   // 跳过开引号
-            while (i < json.Length && json[i] != '"')
-            {
-                if (json[i] == '\\' && i + 1 < json.Length)
-                {
-                    i += 1;
-                    var escape = json[i];
-                    if (escape == 'n') builder.Append('\n');
-                    else if (escape == 't') builder.Append('\t');
-                    else if (escape == 'r') builder.Append('\r');
-                    else builder.Append(escape);            // \" 与 \\ 还原成原字符
-                }
-                else builder.Append(json[i]);
-                i += 1;
-            }
-            i += 1;
-            return builder.ToString();
-        }
-
-        private static bool ReadValue(string json, ref int i, out string value)
-        {
-            value = string.Empty;
-            if (i >= json.Length) return false;
-            if (json[i] == '"') { value = ReadString(json, ref i); return true; }
-            if (json[i] == '[')
-            {
-                var start = i;
-                var depth = 0;
-                while (i < json.Length)
-                {
-                    if (json[i] == '[') depth += 1;
-                    else if (json[i] == ']')
-                    {
-                        depth -= 1;
-                        if (depth == 0) { i += 1; break; }
-                    }
-                    else if (json[i] == '"') { ReadString(json, ref i); continue; }
-                    i += 1;
-                }
-                if (i - start - 1 < 0 || json.Length == 0 || i == start) return false;   // 数组没闭合 → 坏 JSON，不许抛异常
-                if (i - start - 2 < 0) return false;
-                value = json.Substring(start + 1, i - start - 2).Trim();
-                return true;
-            }
-            if (json[i] == '{')
-            {
-                var start = i;                                  // 未知的嵌套对象：整块跳过，不影响其余键
-                var depth = 0;
-                while (i < json.Length)
-                {
-                    if (json[i] == '{') depth += 1;
-                    else if (json[i] == '}')
-                    {
-                        depth -= 1;
-                        if (depth == 0) { i += 1; break; }
-                    }
-                    else if (json[i] == '"') { ReadString(json, ref i); continue; }
-                    i += 1;
-                }
-                value = json.Substring(start, i - start);
-                return true;
-            }
-            var end = i;
-            while (end < json.Length && json[end] != ',' && json[end] != '}' && json[end] != ' ' && json[end] != '\n' && json[end] != '\r' && json[end] != '\t') end += 1;
-            if (end == i) return false;
-            value = json.Substring(i, end - i);
-            i = end;
-            return true;
+            return keys;
         }
     }
 }

@@ -44,6 +44,44 @@ namespace Ac.Tests
             SelfTest.Add("settings.truncated_json", ChecksTruncatedJson);
             SelfTest.Add("settings.readonly_survives_reset", ChecksReadOnlySurvivesReset);
             SelfTest.Add("settings.readonly_resets_across_loads", ChecksReadOnlyResetsAcrossLoads);
+            SelfTest.Add("settings.reads_via_minijson", ChecksReadsThroughMiniJson);
+        }
+
+        // B5：设置的读取路径必须过 MiniJson。下面几条只有真解析器做得到（\uXXXX 解码、拒绝尾随内容 /
+        // 行内尾逗号 / 前导零），谁再塞回一份私有扁平读取，这几条先红。
+        private static void ChecksReadsThroughMiniJson()
+        {
+            SettingsSnapshot escaped;
+            const string escapedJson = @"{""schemaVersion"": 2, ""keyBindings"": [""\u0057"", ""\uD83D\uDE00""]}";
+            SelfTest.True(SettingsStore.TryParse(escapedJson, out escaped), "含 \\uXXXX 转义的文件能读", "读失败");
+            SelfTest.True(escaped.KeyBindings[0] == "W", "\\u0057 解码成 W（旧扁平读取会留下 u0057）", escaped.KeyBindings[0]);
+            SelfTest.True(escaped.KeyBindings[1].Length == 2, "代理对解成一个字符（旧扁平读取会留下 uD83DuDE00）", escaped.KeyBindings[1].Length.ToString());
+            SelfTest.True(escaped.KeyBindings[2] == "A", "数组短了的部分保持默认表", escaped.KeyBindings[2]);
+
+            // 键顺序、缩进、制表、CRLF 都不影响取值
+            SettingsSnapshot shuffled;
+            const string shuffledJson = "{\r\n\t\"fov\"\t:\t81,\n  \"sensitivity\": 1.25,\n  \"schemaVersion\": 2\n}";
+            SelfTest.True(SettingsStore.TryParse(shuffledJson, out shuffled), "乱序 + 空白 + CRLF 的文件能读", "读失败");
+            SelfTest.True(shuffled.Fov == 81f && shuffled.Sensitivity == 1.25f, "乱序键取值正确", shuffled.Fov.ToString("R"));
+
+            SettingsSnapshot bad;
+            SelfTest.True(!SettingsStore.TryParse("{\"fov\": 80,}", out bad), "行内尾逗号判坏 JSON（旧扁平读取会放过）", "判成合法");
+            SelfTest.True(!SettingsStore.TryParse("{\"fov\": 80} extra", out bad), "尾随内容判坏 JSON（旧扁平读取会放过）", "判成合法");
+            SelfTest.True(!SettingsStore.TryParse("{\"fov\": 08}", out bad), "前导零判坏 JSON（旧扁平读取会放过）", "判成合法");
+
+            // 重复键沿用旧扁平读取的 last-wins
+            SettingsSnapshot dup;
+            SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 2, \"fov\": 60, \"fov\": 90}", out dup), "重复键能读", "读失败");
+            SelfTest.True(dup.Fov == 90f, "重复键取最后一次出现", dup.Fov.ToString("R"));
+
+            // 写出的文件必须能被同一份读取器原样读回（非 ASCII + 引号 + 反斜杠键名）
+            var store = new SettingsStore();
+            SelfTest.True(store.SetKeyBinding(0, "Key\u00e9\"\\"), "带 é/引号/反斜杠的键名可以绑", "被拒");
+            SettingsSnapshot roundtrip;
+            SelfTest.True(SettingsStore.TryParse(SettingsStore.Serialize(store.Get()), out roundtrip), "自写自读", "读失败");
+            SelfTest.True(roundtrip.KeyBindings[0] == "Key\u00e9\"\\", "非 ASCII + 转义键名往返一致", roundtrip.KeyBindings[0]);
+            SelfTest.Equal(14, (long)roundtrip.KeyBindings.Length);
+            SelfTest.True(roundtrip.KeyBindings[1] == "S", "往返不影响相邻键位", roundtrip.KeyBindings[1]);
         }
 
         // 审计：Load 的提前返回不复位 ReadOnlyFile → 装过 v3 之后所有落盘被静默丢弃。
