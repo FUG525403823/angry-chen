@@ -21,6 +21,14 @@ namespace Ac.Core
 
         public static int CaseCount { get { return _cases.Count; } }
 
+        // B6 的守门用例要核对"计划里点名的用例前缀是否真的注册了"，这里给出已注册 id 的只读快照。
+        public static string[] CaseIds()
+        {
+            var ids = new string[_cases.Count];
+            for (var i = 0; i < _cases.Count; i++) ids[i] = _cases[i].Id;
+            return ids;
+        }
+
         // C01 §9 / C02 §6.2 冻结的入口名：Ac.Core.SelfTest.Run。
         // 只跑 Core 层用例（Ac.Core 的 references 为空，见 CoreCases 的说明）。
         public static void Run()

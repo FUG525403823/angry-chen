@@ -96,6 +96,11 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 ### B5. JSON 读取去重 ✅
 `SettingsStore` 自带的第二套解析（`TryReadFlat`/`Skip`/`ReadString`/`ReadValue`/`ReadKeys`/`ReadVersion`/`ReadInt`/`ReadFloat`/`ReadBool` + 死代码 `Unescape`）删除，读取改用 `Core/MiniJson.cs` + 薄适配；写端未动（613 → 520 行，-165/+72）。行为对既有覆盖等价、在旧实现确实错的地方变严：尾逗号/根对象后尾随内容/前导零/裸控制字符/`NaN`/`Infinity` 现在整份判坏并回落默认值；`\uXXXX`（含代理对）真正解码；`schemaVersion` 超版本现在返回 `int.MaxValue`（只读），不再因 `(int)` 溢出得到垃圾版本被 v1 迁移覆盖。新增 `settings.reads_via_minijson`（15 断言），换回旧实现必红。
 
+### B6. 计划文本漂移 ✅（登记 + 机器守门，不改上游计划）
+上游 15 份计划里，多数（C01/C02/C04/C05/C06/C08/C09/C10/C14/C15）本来就写的是统一入口 `Ac.Tests.SuiteRegistry.RunAll`，与实现一致。**4 份计划**点名了独立文件与独立入口（C11 `audio_test.cs`/`AudioTest.Run`/`AUDIO-TEST OK…`、C12 `lobby_flow_test.cs`/`LobbyFlowTest.Run`/`LOBBY-T…`、C13 `settings_test.cs`/`SettingsTest`、C07 回滚里的 `arena_mesh_test.cs`，另 C04 回滚里的 `interpolation_test.cs`），实现统一成 `*Suite.cs` + `SuiteRegistry.RunAll`。
+
+处理方式（**不重写计划、不造空壳入口**——造壳只为对齐名字等于给门禁造假绿）：把对照关系登记在 `docs/evidence/client-plan-alias.md`，并新增守门用例 `plan.alias_table_covers_plans`：从全部计划文本里抽出被点名的测试文件与 `Ac.Tests.<X>.Run` 入口，要求每一个**要么真实存在、要么在别名表里**；表里每条目标必须真实存在、映射的用例前缀必须真的有已注册用例。判别力当场兑现：首次运行就抓到表里漏掉的 `interpolation_test.cs` 变红，补进表后转绿。以后任何人在计划里写一个不存在的测试文件或入口，这条用例立刻红。
+
 ---
 
 ## C. 已知陷阱（入库的教训）

@@ -31,6 +31,7 @@ namespace Ac.Tests
             AssetGateSuite.Register();
             Vec3Suite.Register();
             RngSuite.Register();
+            PlanAliasSuite.Register();   // B6：必须最后注册（要核对前面所有用例前缀是否真的存在）
             QuantizeSuite.Register();
             CodecSuite.Register();
             FixtureSuite.Register();
