@@ -35,6 +35,7 @@ void printUsage(const char* argv0) {
 
 void writeStartupLog() {
   // 生产启动行也走 §5 的事件形状（S13 起两条写口统一到 event，旧 write() 只留给 S01 的用例）。
+  // `serverStarted` 是 S01 的名字、不在 §5 的 19 名最小集里，所以走 string_view 重载（C3 决策）。
   ac::log::event(ac::log::Level::info, "serverStarted", {},
                  {ac::log::DetailField("version", std::string_view(ac::version::kVersion)),
                   ac::log::DetailField("protocol", ac::version::kProtocol),
@@ -55,7 +56,7 @@ int runSelftestStore() {
   std::string error;
   const std::unique_ptr<ac::persist::MatchStore> store = ac::persist::openMatchStore(dataDir, &error);
   if (store == nullptr) {
-    ac::log::event(ac::log::Level::error, "store.error", {},
+    ac::log::event(ac::log::Level::error, ac::log::EventName::kStoreError, {},
                    {ac::log::DetailField("dir", dataDir), ac::log::DetailField("error", error)});
     std::fprintf(stderr, "store open failed: %s\n", error.c_str());
     return 1;
@@ -118,7 +119,7 @@ int runServe(int argc, char** argv) {
     std::fprintf(stderr, "serve failed: %s\n", error.c_str());
     return 1;
   }
-  ac::log::event(ac::log::Level::info, "listening", {},
+  ac::log::event(ac::log::Level::info, ac::log::EventName::kListening, {},
                  {ac::log::DetailField("udpPort", static_cast<std::uint32_t>(runtime.udpPort())),
                   ac::log::DetailField("httpPort", static_cast<std::uint32_t>(runtime.httpPort())),
                   ac::log::DetailField("dataDir", std::string_view(runtime.dataDir()))});
@@ -129,12 +130,12 @@ int runServe(int argc, char** argv) {
     runtime.pollOnce(ac::core::nowMs());
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  ac::log::event(ac::log::Level::info, "shutdownRequested", {},
+  ac::log::event(ac::log::Level::info, ac::log::EventName::kShutdownRequested, {},
                  {ac::log::DetailField("reason", std::string_view(
                                                      ac::server::isStopRequested() ? "signal" : "minutes")),
                   ac::log::DetailField("requests", ac::server::shutdownRequestCount())});
   runtime.stop();  // 停止 accept/tick、释放 UDP/HTTP 端口与房间、store 随 Runtime 析构落盘
-  ac::log::event(ac::log::Level::info, "shutdownComplete", {},
+  ac::log::event(ac::log::Level::info, ac::log::EventName::kShutdownComplete, {},
                  {ac::log::DetailField("ticks", runtime.metrics().ticks)});
   ac::log::close();  // 日志 sink 落盘（文件 sink 时是唯一能保证 defer 到进程结束的一步）
   return 0;

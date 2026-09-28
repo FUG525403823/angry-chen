@@ -180,6 +180,9 @@ AC_TEST(runtime_serves_health_and_metrics_over_http) {
   ac::server::Runtime runtime;
   std::string error;
   AC_CHECK(runtime.start(testConfig(), &error));
+  // process_ 只在 Runtime::publishMetrics 里写（运行循环每次 pollOnce 调它），所以先推一次
+  // 时钟，两个端点的数字才都来自「已经填过的快照」而不是默认值。
+  runtime.pollOnce(19990u);
   const std::string health = httpGet(runtime, "/health", 20000u);
   AC_CHECK(health.rfind("HTTP/1.1 200 OK", 0u) == 0u);
   AC_CHECK(health.find("\"protocolVersion\":1") != std::string::npos);
@@ -187,7 +190,36 @@ AC_TEST(runtime_serves_health_and_metrics_over_http) {
   AC_CHECK(metrics.rfind("HTTP/1.1 200 OK", 0u) == 0u);
   AC_CHECK(metrics.find("ac_frames_in_total") != std::string::npos);
   AC_CHECK(metrics.find("ac_rooms 1") != std::string::npos);
-  std::printf("http health=%zuB metrics=%zuB\n", health.size(), metrics.size());
+  // C3：ProcessSnapshot 的生产写入方是 Runtime::publishMetrics（runtime.cpp），两个读方
+  // （/metrics 渲染、/health JSON）必须给出同一份快照的数 —— 这里在真运行时上再钉一遍。
+  const auto healthNumber = [&health](std::string_view key) -> std::string {
+    const std::string needle = "\"" + std::string(key) + "\":";
+    const std::size_t at = health.find(needle);
+    if (at == std::string::npos) return {};
+    const std::size_t begin = at + needle.size();
+    const std::size_t end = health.find_first_of(",}", begin);
+    return health.substr(begin, end - begin);
+  };
+  const auto metricsNumber = [&metrics](std::string_view name) -> std::string {
+    const std::string needle = "\n" + std::string(name) + " ";  // 带换行：避开 # HELP 行
+    const std::size_t at = metrics.find(needle);
+    if (at == std::string::npos) return {};
+    const std::size_t begin = at + needle.size();
+    const std::size_t end = metrics.find_first_of("\r\n", begin);
+    return metrics.substr(begin, end - begin);
+  };
+  AC_CHECK_EQ(healthNumber("rooms"), metricsNumber("ac_rooms"));
+  AC_CHECK_EQ(healthNumber("connections"), metricsNumber("ac_connections"));
+  AC_CHECK_EQ(healthNumber("players"), metricsNumber("ac_players"));
+  AC_CHECK_EQ(healthNumber("graceActive"), metricsNumber("ac_grace_active"));
+  AC_CHECK_EQ(healthNumber("recordsRetained"), metricsNumber("ac_records_retained"));
+  AC_CHECK_EQ(healthNumber("rooms"), std::string("1"));
+  // uptimeSeconds 随请求时刻变化（两次请求各推一段时钟），只断言两端点都有这一项。
+  AC_CHECK(!healthNumber("uptimeSeconds").empty());
+  AC_CHECK(!metricsNumber("ac_uptime_seconds").empty());
+  std::printf("http health=%zuB metrics=%zuB rooms=%s players=%s retained=%s\n", health.size(),
+              metrics.size(), healthNumber("rooms").c_str(), healthNumber("players").c_str(),
+              healthNumber("recordsRetained").c_str());
   runtime.stop();
 }
 

@@ -122,9 +122,39 @@ void reportUncaught(std::string_view what, const EventContext& ctx = {});
 // §5 G8：进程内已落盘的 error.uncaught 条数（单线程使用，性能门禁直接读它）。
 unsigned uncaughtCount() noexcept;
 
-// §5 的事件名最小集（名字即契约，新增名要同步改清单与断言）。
+// §5 的事件名最小集（名字即契约，新增名要同步改清单与断言）。生产调用点用下面的具名句柄，
+// 表是名字的唯一来源（句柄序号与 log.cpp 的 kKnownEvents 对齐，那里有 static_assert 钉条数）。
 std::size_t knownEventCount() noexcept;
 std::string_view knownEvent(std::size_t index) noexcept;
 bool isKnownEvent(std::string_view evt) noexcept;
+
+enum class EventName : std::uint8_t {
+  kRoomCreate = 0u,
+  kRoomReclaim,
+  kSessionJoin,
+  kSessionLeave,
+  kSessionRateLimited,
+  kGraceStart,
+  kGraceReconnect,
+  kGraceTimeout,
+  kMatchStart,
+  kMatchEnd,
+  kWaveStart,
+  kWaveClear,
+  kAnticheatSpeed,
+  kStoreError,
+  kReportWriteFailed,
+  kListening,
+  kShutdownRequested,
+  kShutdownComplete,
+  kErrorUncaught,
+};
+
+// 契约名的文本（= 名字表里对应的一行）。
+std::string_view eventName(EventName name) noexcept;
+
+// 以契约句柄写一行：等价于 event(level, eventName(name), ctx, detail)。
+void event(Level level, EventName name, const EventContext& ctx,
+           std::initializer_list<DetailField> detail = {});
 
 }  // namespace ac::log

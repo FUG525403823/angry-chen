@@ -104,6 +104,25 @@ AC_TEST(log_event_name_table_has_nineteen_names) {
     AC_CHECK(ac::log::knownEvent(i).size() > 0u);
     AC_CHECK(ac::log::isKnownEvent(ac::log::knownEvent(i)));
   }
+  // 消费方（C3 接线）：句柄 → 名字表 → 日志行是同一条链，生产调用点（main.cpp / report.cpp /
+  // reportUncaught）不再手写这些字面量，所以表有了表外的读方。
+  AC_CHECK(ac::log::eventName(ac::log::EventName::kStoreError) == std::string_view("store.error"));
+  AC_CHECK(ac::log::eventName(ac::log::EventName::kErrorUncaught) == std::string_view("error.uncaught"));
+  for (std::size_t i = 0u; i < ac::log::knownEventCount(); ++i) {
+    AC_CHECK(ac::log::eventName(static_cast<ac::log::EventName>(i)) == ac::log::knownEvent(i));
+  }
+  ac::test::LogGuard guard;
+  ac::test::TempDir dir("evtnames");
+  AC_CHECK(dir.isReady());
+  const std::string path = dir.file("events.log");
+  AC_CHECK(ac::log::useFile(path));
+  ac::log::event(ac::log::Level::error, ac::log::EventName::kStoreError,
+                 ac::log::EventContext{1700000000000LL, 0u, 0u, 0},
+                 {ac::log::DetailField("dir", std::string_view("/tmp"))});
+  ac::log::close();
+  const std::string sink = ac::test::readTextFile(path);
+  AC_CHECK_EQ(ac::test::countNewlines(sink), static_cast<std::size_t>(1));
+  AC_CHECK(sink.find("\"evt\":\"store.error\"") != std::string::npos);
 }
 
 AC_TEST(log_uncaught_error_keeps_writer_alive) {

@@ -211,7 +211,7 @@ ReportWrite writeReport(std::string_view dataDir, const MatchDiagnostics& diagno
                         std::string* error) {
   // 失败只记日志（§8 风险表：清理/落盘失败不抛异常），并把原因回传给调用方。
   const auto fail = [&diagnostics, error](std::string message) {
-    ac::log::event(ac::log::Level::warn, "report.write_failed", {},
+    ac::log::event(ac::log::Level::warn, ac::log::EventName::kReportWriteFailed, {},
                    {ac::log::DetailField("matchId", std::string_view(diagnostics.matchId)),
                     ac::log::DetailField("error", std::string_view(message))});
     ReportWrite outcome;
@@ -238,7 +238,7 @@ ReportWrite writeReport(std::string_view dataDir, const MatchDiagnostics& diagno
   std::string pruneError;
   outcome.removedOldReports = pruneReports(directory, kMaxReports, &pruneError);
   if (!pruneError.empty()) {  // 写成功但清理失败：记日志，不算本次写失败
-    ac::log::event(ac::log::Level::warn, "report.write_failed", {},
+    ac::log::event(ac::log::Level::warn, ac::log::EventName::kReportWriteFailed, {},
                    {ac::log::DetailField("matchId", std::string_view(diagnostics.matchId)),
                     ac::log::DetailField("error", std::string_view(pruneError)),
                     ac::log::DetailField("removed", outcome.removedOldReports)});

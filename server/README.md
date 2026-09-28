@@ -139,12 +139,26 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ### 4.2 计划文本纠正（已回写）与待裁决项
 
 1. **`event_hit.hex` 的字节数与计划文本不一致（37 → 43）**：S03 §5.5 写 37 字节、`playerHit` 条目按 v1 的 12 字节（不含命中点）拼；但同一份计划 §5.4 与 §7 DoD 明确 `playerHit` = `type`+载荷 14 字节（含 `hitX/hitY/hitZ`），[ADR-009](../docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md) L108 冻结点也是 18 字节，C02 §5.2 同。按"§5.4 + ADR 高于 §5.5 的示例字节"实现为 **43 字节**（条目 18 字节）。这是本份唯一改动的计划示例字节，**已回写 S03 §5.5 该行**。
+
+> 收口：已回写 —— S03 §5.5 的 `event_hit.hex` 行已是 43 字节（`playerHit` 条目 18 字节、含命中点）；依据：`docs/plans-v2/server/S03-二进制协议与编解码.md:116`、ADR-009 L108 的 18 字节冻结点。
 2. **`hello.hex` 16 → 20、`resume.hex` 24 → 28（已回写 S03 §5.5）**：令牌的线上形是 **8 位小写十六进制 ASCII**（ADR-009「握手时序」、C03 §5.5 逐字相同；S04 §5.5 只写字段类型 u32，不与之冲突），计划 §5.5 的示例按 4 字节原始 u32 拼是错的。回写后 Hello 载荷 12 字节、Resume 载荷 8 字节，解码遇到大写/非十六进制字符按 `kBadValue` 拒收。
+
+> 收口：已回写 —— S03 §5.5 的 `hello.hex` 记 20 字节（`:109`）、`resume.hex` 记 28 字节（`:111`），令牌形是 8 位小写十六进制 ASCII；依据：上述两行 + `server/src/net/codec.cpp:80-100`（`writeToken`/`readToken`）。
 3. **§6 的 `git -C D:\projects\tmp\angry-chen-bak status --short` 取不到"空"**：备份仓库没有 `.git`（`git status` 报 `fatal: not a git repository`）。改用 mtime 取证：`packages/**` 全量最新改动 2026-09-23 14:23（v1 运行期数据），`packages/shared/src` 最新 2026-09-22 17:26，都早于本份工作；v1 的 `protocol.ts` 只被只读读取。
+
+> 收口：按实现修正 —— 备份仓库确实没有 `.git`（本轮复检 `Test-Path D:\projects\tmp\angry-chen-bak\.git` → `False`），mtime 取证口径成立；依据：本机实测 + 本节第 3 条。
 4. **`# expect:` 的值语法计划未定义**（已回写 §5.5 表头）：本份统一为 `0x` 前缀大写十六进制 + 小写键名（同时满足 §6 的字符门禁）。C02 的 fixture 读取器按同一规则解析即可（键名比对大小写不敏感）。
+
+> 收口：已回写 —— S03 §5.5 表头已写进 `# expect:` 的键=值语法（`0x` 前缀大写十六进制 + 小写键名）；依据：`docs/plans-v2/server/S03-二进制协议与编解码.md:104`。
 5. **待裁决：ADR-009 的分片头在场条件写成「`moreFragments=1` **或** `fragCount>1`」**（L49），但末分片通常不置 `moreFragments`，按字面实现则末分片无法携带 `fragId/fragIndex`，S04 无法重组。本实现与 S03 §5.1 的 `payloadOffset` 公式一致，只认 `moreFragments`；**按工程约定 §8 应先改 ADR**。
+
+> 收口：见 §19.5 B1 —— ADR-009 的分片头在场条件已按实现改写为「只有 `type = 9` 一种条件，末片同样带 4 字节分片头」；依据：`docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md:49-57`、§19.5 B1。
 6. **判断项（已用测试兜住，未改结构）**：事件「类型 → 字节/字段」的知识在 `decodeEventEntry` 的 switch、`writeEventEntry` 的 `if constexpr`、`eventPayloadWithTypeBytes` 与测试断言里各出现一次（§5.4 要求逐字段显式，故未做元表）；`eventTypeOf` 直接取 variant 下标当线号，因此 `codec_event_entry_bytes_all_types` 额外钉住「每个载荷类型 ↔ 线号」的对应，重排 `EventData` 会立刻变红。
+
+> 收口：按实现修正 —— 未引入元表，类型→字节/字段仍分写三处，由用例钉住「载荷类型 ↔ 线号」；依据：`server/src/net/codec.cpp:105`（`decodeEventEntry`）、`:197`（`writeEventEntry`）、`:284`（`eventPayloadWithTypeBytes`）、`server/tests/codec_test.cpp:786`（`codec_event_entry_bytes_all_types`）。
 7. 顺带修正 S01 的两个用例名：`log_oversized_evt_truncated` → `log_overlong_evt_truncated`、`test_filter_matching` → `test_filter_selection`。原因：`--filter` 是**全局子串**匹配，前者的 `sized` 污染 `--filter=size`、后者的 `matching` 污染 `--filter=match`（S03 §6 与 S10 都按固定条数校验）。**后续计划命名用例时必须避开 `codec`/`hex`/`fuzz`/`size`/`wire`/`match` 这些已占用的门禁子串。**
+
+> 收口：按实现修正 —— 两处改名已落地、旧名 0 命中：`server/tests/main_test.cpp:280`（`log_overlong_evt_truncated`）、`:350`（`test_filter_selection`）；依据：本轮 grep（`AC_TEST(log_oversized_evt_truncated`/`test_filter_matching` 无命中）。
 
 ## 5. 传输子层（S04 §5 冻结）
 
@@ -196,14 +210,33 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ### 5.3 需回写计划/ADR 的差异（S04）
 
 1. **§5.3 伪代码在 `k >= 33` 时移位越界**：`ackBits = (k >= 32 ? 0 : ackBits << k)` 只护住了左移，`1u << (k - 1)` 在 `k >= 33` 时是未定义行为。本实现在 `k >= 33` 时把位图显式清零（`k == 32` 仍与伪代码一致：`0x80000000`），`reliability_ack_bitmap_advance` 钉住。**建议回写 §5.3 伪代码**，客户端必须与之一致。
+
+> 收口：按实现修正 —— `k >= 33` 时显式清零位图（`k == 32` 仍为 `0x80000000`），用例钉住；依据：`server/src/net/reliability.cpp:19-22`、`server/tests/transport_test.cpp:131`（`reliability_ack_bitmap_advance`）。
+> 待办：S04 §5.3 的伪代码仍是未护栏形式（`docs/plans-v2/server/S04-UDP传输与可靠性子层.md:69` 只护左移），C03 必须按 `k >= 33` 清零口径对齐。
 2. **沿用 S03 记录的 ADR-009 L49 歧义**：分片头在场条件写的是「`moreFragments=1` 或 `fragCount>1`」，实现只认 `moreFragments`（`payloadOffset` 同）。
+
+> 收口：见 §19.5 B1 —— 同 §4.2-5：ADR-009 已改成「分片包一律带分片头、`moreFragments` 语义 = 本包是分片」，`type 9` 不置该位即 `kBadValue`；依据：ADR-009:49-57、`server/src/net/codec.cpp`（`type 9` 校验）。
 3. **§5.4 的重组键含 `channelType`，线上拿不到**：分片包头 `type` 恒为 9（`kFragment`），原通道身份不上线（末分片还不置 `moreFragments`，见上条），所以重组只能按 `(session, fragId)` 分组，计划里的 `channelType` 无法从分片还原。**需裁决**：要么规定 `fragId` 在会话内全局唯一（本实现如此：快照/事件共用同一命名空间），要么在分片头加通道字段（要改 ADR + 两端编解码）。C03 必须与裁决一致。
+
+> 待办：缺裁决 —— 「`fragId` 会话内全局唯一」还是「分片头加通道字段」仍无计划/ADR 侧结论；现状是 `FragmentKey` 保留 `type` 字段（`server/src/net/fragment.hpp:27-39`）而线上恒 `kFragment`（`server/src/net/fragment.cpp:25`），等效按 `(session, fragId)` 重组（README §5.2 行为要点），C03 还没有可对齐的裁决文本。
 4. **§5.5 未规定的三处**：`Hello` 带非 0 令牌时的语义（本实现记账但不使用，重连只走 `Resume`）；在册会话打满时的 reason（本实现取 6 `rateLimited`，且先按 §8 驱逐宽限期会话）；令牌的线上形是 8 位小写十六进制 ASCII（ADR-009 + C03 §5.5 已冻结，S04 §5.5 的表格只写 u32 类型，应补一句指向 ADR）。
+
+> 收口：按实现修正 —— 三处都在代码里有唯一写点/口径：Hello 带非 0 令牌只记账不用（`server/src/net/handshake.cpp:147`）、名额打满取 reason=6 `kRateLimited` 且先驱逐宽限期会话（`server/src/net/handshake.hpp:19`、`handshake.cpp:155`）、令牌线上形是 8 位小写十六进制 ASCII（`server/src/net/codec.cpp:80-100`）；依据：上述路径 + §4.2-2。
 5. **判失联时点未冻结**：§5.3 只说“累计 5 次重传仍无 ack 即判失联”，没写第 5 次之后是否再等一个 `kRtoTableMs` 尾项。本实现在 t = 3625ms 判（五连等 200/300/450/675/1000 之后再等 1000），另一种读法是 t = 2625ms 立即判。C03 同样沉默，**需裁决**。
+
+> 待办：缺裁决 —— 「第 5 次重传后是否再等一个 `kRtoTableMs` 尾项」没有计划/ADR 侧结论（`docs/plans-v2/server/S04-UDP传输与可靠性子层.md:44/74/96` 只写「第 6 次重传之前」）；服务端现状取 t = 3625ms（README §5.2、`server/tests/transport_test.cpp:208`），C03 需与该口径对齐或改实现。
 6. **宽限期会话的包校验**：§5.2 只要求 `session != 0` 且在册，本实现据此让宽限期会话通过校验（不计 `kBadSession`），把“是否复活”留给调用方（C03 §5.3 的 Zombie 语义）。若计划要求“宽限期一律丢弃”，需回写 §5.2。
+
+> 收口：按实现修正 —— 宽限期会话算在册并放行校验，「是否复活」留给调用方，用例两端都钉住；依据：README §5.2 行为要点、`server/tests/transport_test.cpp:921`（`inGrace.isGracePeriod`）、`:933`（Resume 后为 false）。
 7. **用例名冲突修正（7 个，含 3 个 S03/S02 用例）**：`hex_fragment` → `hex_split_message`、`size_single_packet_needs_fragments` → `size_single_packet_needs_slices`、`size_full_single_entity_snapshot_is_40` → `size_full_single_record_snapshot_is_40`、`match_truncated_and_trailing_rejected` → `match_truncated_and_extra_bytes_rejected`、`math_aabb_overlaps_and_contains` → `math_aabb_overlaps_and_covers`、`transport_handshake_allocates_session` → `transport_handshake_assigns_session`、`transport_loss_triggers_retransmit` → `transport_loss_causes_resend`。原因同 §4.2.7：`--filter` 是**全局子串**匹配，会污染 `--filter=fragment` / `alloc`（S05）/ `entity`（S05）/ `ai`（S09）/ `trig`（S02、S09）的固定条数门禁。**已占用门禁子串全表**（命名新用例前先对照）：`ai alloc codec combat entity fixture fragment fuzz grace grid hex http malicious match matchstate math memory pose quantize reliability replication rewind rng schedule security size step store threshold transport trig waves wire world`。
+
+> 收口：按实现修正 —— 7 处改名全部落地、旧名 0 命中：`server/tests/codec_test.cpp:938/1150/1354`、`server/tests/math_test.cpp:135`、`server/tests/transport_test.cpp:640/708`；依据：本轮 grep（旧名 `hex_fragment`/`size_single_packet_needs_fragments`/`size_full_single_entity_snapshot_is_40`/`match_truncated_and_trailing_rejected`/`math_aabb_overlaps_and_contains`/`transport_handshake_allocates_session`/`transport_loss_triggers_retransmit` 均无命中）。
 8. **遗留项（本份未动）**：S02 的 `rng_ai_stream_bits` 含 `ai`，会让 S09 §6 的 `--filter=ai` 从 `TESTS 22/22` 变 23 条——名字本身没错（它就是 ai 流），**S09 立项时要先改名或改门禁**（S09 处置：不改名，改门禁 —— 见 §10.1-8）；另 S09 §7 第 9 条写的 `--filter=fixture` 在本套测试里是 `TESTS 0/0`（疑为 `--filter=codec` 之误，codec 恰为 14/14），S09 落地前需澄清。
+
+> 收口：见 §10.1-8 与 §8.5 —— `--filter=ai` 的既有污染按「改门禁」收口（本批用例一律 `ai_` 起头）；`--filter=fixture` 的 `TESTS 0/0` 疑云已由向量交付消解（本轮实测 `--filter=fixture` = `TESTS 19/19`）；依据：§10.2-4、§8.5、本机实测 `server/build/ac_tests.exe --filter=fixture`。
 9. **`udp_socket_loopback_roundtrip` 不在 §6 的五组内**：那五组按固定条数（8/5/4/4/2）校验，套接字缝的真实回环收发单独一条用例覆盖（真 UDP、非阻塞、`poll` 超时）。POSIX 分支本机（Windows）跑不到，只在 WinSock2 分支上验证过。
+
+> 收口：按实现修正 —— 真实回环收发确有独立用例且不在五组固定条数内；依据：`server/tests/transport_test.cpp:972`（`udp_socket_loopback_roundtrip`）。POSIX 分支仍只在本机（Windows/WinSock2）验证过，属已登记的环境边界。
 
 ## 6. 模拟数据布局（S05 §5 冻结）
 
@@ -342,18 +375,44 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ### 7.5 计划文本纠正与已声明偏差（S06）
 
 1. §3 要求 `config/player.hpp` 抄 v1 `arena.ts`，但 S05 的 `sim/arena.hpp` 已是该表的唯一来源 → 本份**不复制数值**，只引用 + `static_assert` 锚点（两处真值迟早漂移，跨语言对拍时是致命的）。
+
+> 收口：按实现修正 —— `config/player.hpp` 只引用 `sim/arena.hpp` 并用 `static_assert` 锚定，不复制数值；依据：`server/src/config/player.hpp:3/9/38/82-104/108-117`。
 2. §5.1 的阶段表没列 S05 §5.3 的"每 tick 末尾 `recordPoseHistory`"；不记的话 S11 的回滚命中永远拿不到历史 → 作为第 13 步**追加在末尾**（0–12 的顺序一字不差）。
+
+> 收口：按实现修正 —— `recordPoseHistory` 已作为第 13 步追加在末尾，0–12 顺序未动；依据：`server/src/sim/step.cpp:138-139`、`server/src/sim/world.cpp:61`。
 3. §5.1 阶段 7 末尾的"对正在救援的玩家 `clampHorizontalSpeed(1.5)`"需要救援状态机，而救援态由 S08 定义（S03 §5.4 的 `kindFlags` 只有 `downed` 位，没有"正在救援"）→ 本份只落地 `clampHorizontalSpeed` 本身并有用例覆盖，调用点等 S08 接入。
+
+> 收口：见 §10.2-1 —— 调用点已由 S09 补齐（按住交互 + 2.0m 内有倒地队友 → 限速 1.5 m/s，与 v1 `sim.ts:109-115` 同序）；依据：`server/src/sim/step.cpp:62-65`、用例 `server/tests/step_test.cpp:187`（`step_clamps_reviver_speed_when_holding_interact`）。
 4. §5.5 的谷仓推离没写速度语义，但 §6 第 5 条要求 400 tick 后 `vel.z == 0` → 推离时清零该轴速度（与边界夹取同一语义）。
+
+> 收口：按实现修正 —— 谷仓推离时把该轴速度清零；依据：`server/src/sim/collision.cpp:10/30/46/49`。
 5. §5.6 的 `struct LocalStepResult { bool ok; ... }` 与工程约定 §6 的布尔前缀规则冲突 → 字段名取 `isOk`（与 S05 的 `SpawnResult::isOk` 一致）。
+
+> 收口：按实现修正 —— 字段名就是 `isOk`；依据：`server/src/sim/local_step.hpp:13`、赋值 `server/src/sim/local_step.cpp:21`。
 6. §6 第 4/6 条的"`pos.z == 4.5` / 间距 `== 0.8`"只有一部分能逐位成立：实测步行 20 tick 与 `yaw = 90°` 的 `pos.x` 恰好是 `4.5`，冲刺 20 tick 累加到 `6.3000000000000025`、分离后间距 `0.80000000000000071` → 这两条用 `1e-12` 容差断言并把实测值打成证据行（`stepSprintZ=` / `stepSeparation=`）。运算顺序按 §5.2 逐字复刻，不做"凑整"优化。
+
+> 收口：按实现修正 —— 两条 1e-12 容差断言 + 实测证据行都在用例里；依据：`server/tests/step_test.cpp:112`（`pos.z ≈ 6.3`）、`:282`（间距 `0.8`）、证据行 `:111`（`stepSprintZ=`）与 `:281`（`stepSeparation=`）。
 7. §5.1 阶段 1 的"按玩家 EntityId 升序"与阶段 2 的"跳过 `idle`"并列时，命令游标归属易误读 → 阶段 1 的游标**包含 `idle` 玩家**，阶段 2 才过滤（见 §7.1）。
+
+> 收口：按实现修正 —— 阶段 1 的游标对全部玩家（含 idle）自增，阶段 2 才跳过 idle；依据：`server/src/sim/step.cpp:44-49`（`applyCommands` 只筛 `kind`）、`:71-79`（`collectPlayerIds` 加 `entity.idle` 过滤）、注释 `:100`。
 8. **待裁决**：S10 §5 的草图写 `stepWorld(world, commands, 50)`（3 参），与 S06 §9 冻结的 4 参签名不一致 → 本份以 S06 §9 为准（`commandCount` 显式传入，`applyCommands` 才拿得到"缺命令"分支）。需要回写 S10 那行文字。
+
+> 收口：见 §19.5 B3 —— 以 S06 §9 的 4 参签名为准（`commandCount` 显式传入），S10 那行文字已回写；依据：§19.5 B3、`server/src/sim/step.cpp:88` 的 `stepWorld(World&, const Command*, uint32_t, uint32_t)`。
 9. §5.1 的 13 个空实现阶段签名一次冻结，能查到下游冻结的就逐字照抄：`updateAiIntents`（`(World&, uint32_t dtMs, const EntityId*, uint32_t, const SpatialGrid&)`）与 `applyAiIntents` 按 S09 §9，`resolveCombat` 按 S08 §9（`CombatContext*` 前置声明），`int resolveSheepAttacks(World&, const EntityId*, uint32_t)` / `int advanceProjectiles(World&, uint32_t dtMs, ...)` / `int updateKing(World&, Entity&, uint32_t dtMs)` 按 S09 §9（返回值 = 落地条数，本份恒 0）。S09 §9 只钉住 `int resolveEliteFire(...)` 与 `advanceProjectiles` 的前缀，本份就**只实现被钉住的部分**（`resolveEliteFire(World&)`、`advanceProjectiles(World&, uint32_t)`），不替下游猜参数。
+
+> 收口：按实现修正 —— 13 个阶段签名一次冻结，下游参数按各自 §9 补齐；依据：`server/src/sim/step.hpp:35-45`、`server/src/sim/step.cpp:82-86/127-133`。
 10. 阶段 11 的 `updateKing(World&, Entity&, uint32_t)` 需要一个羊王实体，而羊王由 S09 创建 → 本份冻结签名但**不设调用点**（其余四个阶段都按冻结签名调用）。
+
+> 收口：按实现修正 —— 羊王由 S09 创建后调用点已到位：`updateKings` 遍历存活羊王逐个走冻结签名；依据：`server/src/sim/step.cpp:127-133`、`server/src/ai/king_phases.cpp:86-87`。
 11. §5.1 的阶段 7/8 没限定实体种类（只有阶段 2 明写「跳过 `idle`」）→ 本份让**全部活动实体**走积分与静态碰撞（投射物/掉落物的半径也在 §5.4 表里）；这带来一个 spec 未定义的行为：飞出场地或谷仓的投射物会被夹到边界而不是飞出去，若 S08/S09 要求「出界即回收」，需要在 S08/S09 里覆盖本行为（**需裁决**）。
+
+> 收口：见 §19.5 B5 —— 投射物不参与静态碰撞（与 v1 一致、也不入网格），出界/进谷仓的回收由阶段 11 的 `advanceProjectiles` 负责；依据：§19.5 B5、`server/src/sim/step.cpp:27-33`、`server/src/ai/sheep_attack.cpp:181-185`。
 12. §3 写"（注册进 `main_test.cpp`）"，但 S01 起 `ac_tests` 用 `tests/*.cpp` 的 `CONFIGURE_DEPENDS` glob、`main()` 只在 `main_test.cpp`（§1、§4.2 第 2 条）→ 本份照旧只新增 `server/tests/step_test.cpp`，不改任何清单、也不 `#include` 进 `main_test.cpp`。
+
+> 收口：按实现修正 —— 只新增 `server/tests/step_test.cpp`，清单靠 CMake glob（`CONFIGURE_DEPENDS`），未改任何清单、也未 `#include` 进 `main_test.cpp`；依据：`server/CMakeLists.txt:63`。
 13. 计划 §4/§7 的 `- [ ]` 复选框同样**不勾选**（S01–S05 既有约定），完成情况以 §17 表格的实测行为准。
+
+> 收口：按实现修正 —— S06 的 `- [ ]` 至今未勾选，完成状态以 §17 实测为准；依据：`docs/plans-v2/server/S06-模拟内核玩家移动与碰撞.md:34-40/135-138` 仍全为 `- [ ]`。
 
 ## 8. 跨语言对拍（S07 §5 冻结）
 
@@ -460,22 +519,56 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 ### 10.1 计划文本纠正与已声明偏差（S09）
 
 1. **§5.7 的朝向写法不 wrap**：v1 的补丁把 `Math.atan2(dx, dz)` 换成 `angleUnitsFromVector` + `radiansFromUnits`（导出脚本的 `patchMath` 就是 `Math.atan2 = (y, x) => trig.radiansFromUnits(trig.angleUnitsFromVector(y, x))`，`tools/export-fixtures.mjs:268`），而 `radiansFromUnits` **不做** `wrapAngle`（只有 `dequantizeAngle` 才 wrap）。羊的 `yaw` 因此落在 `[0, 2π)`；照 §5.7 的字面（用 `dequantizeAngle`）会在 `dx < 0` 时得到负角、与 v1 的位型不同。
+
+> 收口：按实现修正 —— 方向角走 `angleUnitsFromVector → radiansFromUnits`、**不做** `wrapAngle`，与 v1 的 `patchMath` 口径一致；依据：`server/src/ai/sheep_brain.cpp:17-19`（`yawFromDelta`）、`:297`（写 `entity.yaw`）、`server/src/ai/sheep_attack.cpp:162-163`。
 2. **§5.5 的 840ms 羊王攻击冷却不存在**：v1 `kingPhases.ts:29` 导出的 `kingAttackCooldownMs` **从未被调用**（羊王撕咬走 `SHEEP_AI.attackCooldownMs = 1200`）。C++ 侧保留 `kingSpeedMultiplier`/`kingAttackCooldownMs` 作为 v1 模块面的 1:1 端口（`ai/king_phases.hpp`），但行为路径与 v1 一样**内联** `kingPhase3SpeedMultiplier`，840ms 分支不可达；用例只钉数值。
+
+> 收口：按实现修正 —— `kingAttackCooldownMs` 只作为 v1 模块面的 1:1 端口存在，行为路径内联 `kingPhase3SpeedMultiplier`；依据：`server/src/ai/king_phases.cpp:24`（行为路径）、`:27`（840ms 端口，全仓无其他调用点）、`server/src/ai/sheep_brain.cpp:70`。
 3. **导演未接 tick 循环**：§9 把 `DirectorState&` 冻结为外部状态，v1 也把它留在比赛控制器里；波次间歇与"下一波何时开"属于 S10 → 本批 `updateDirector` 只被用例调用，`stepWorld` 里没有它。连带后果：`docs/evidence/fixtures/README.md` §5 中属于 S09 的 5 份 AI 场景向量**未导出**（见下一条）。**需裁决**（已登记为 `docs/02-需求分析.md` 的 **OQ-11**）：§4 要求「接进 `step.cpp`」，§9 却把 `DirectorState` 冻结为外部状态，而 S06 §5.1 冻死的 `stepWorld(World&, const Command*, uint32_t, uint32_t)` 没有它的入口、§5.3 的 20s/5s 波间时钟也没有推进者 → 要么把 `DirectorState` 放进 `World` 并追加阶段（要动 S06/S09 的计划文本），要么由 S10 的比赛控制器在 `stepWorld` 之外持有并调用。
+
+> 收口：见 §19.5 B2 / OQ-11 —— `DirectorState` 保持在 `stepWorld` 之外、由房间持有并驱动；依据：§19.5 B2、`docs/02-需求分析.md:257`（OQ-11 已裁决为第二方案）、`server/src/room/room.cpp:87`、`server/src/waves/director.cpp:133-180`。
 4. **5 份场景向量未导出**：`docs/evidence/fixtures/README.md` §5 把 `sheep-grunt-ai-600t`/`sheep-ram-charge-300t`/`sheep-elite-bolt-300t`/`sheep-king-phases-900t`/`wave-director-1to5-1200t` 挂在 S09；本批只交付了**共享 `configHash` 覆盖**（这才是 §7 DoD 的"AI 数值与 v1 基线漂移"守卫）。要跑羊群，导出器的场景集需要新增"生成羊 + 空命令"的驱动；`wave-director-1to5-1200t` 另外依赖上一条的接线。
+
+> 收口：见 §8.5 —— 14 份向量现已全部交付（`docs/evidence/fixtures/` 实测 14 份对拍 json + `trig-table.json`），`--filter=fixture` = `TESTS 19/19`；依据：§8.5、OQ-11（§19.5 B2）、本机实测。
 5. **§7 的 grep 门禁按字面不可满足**：`Select-String` 默认**大小写不敏感**，而 `exp` 是 `constexpr` 的子串 → 该命令在 `server/src/ai`+`server/src/waves` 恒定命中 5 行（全是 `constexpr`）。等价的、可执行的门禁是 `Select-String -CaseSensitive -Pattern "unordered_map","std::sin","std::cos","atan2","asin","\bpow\b"` 与 `"\bexp\s*\("`，实测**均 0 命中**；注释里也不留 `atan2`/`asin` 字面量。
+
+> 收口：按实现修正 —— 等价的大小写敏感门禁本轮复跑 0 命中；依据：`Select-String -CaseSensitive -Pattern "unordered_map","std::sin","std::cos","atan2","asin","\bpow\b"` 与 `"\bexp\s*\("` 扫 `server/src/ai`+`server/src/waves` → 两组均 0 命中。
 6. **死羊分支不可达**：v1 `sim.ts:149` 在阶段 4 对 `state === dead` 的羊 `continue`（不进意图表），阶段 5 的"1500ms 回收"分支因此永远进不去；S08 起击杀即 `despawnEntity`，`dead` 态也到不了。C++ 逐字端口这两处（含 stage 5 的死分支），用例断言的也是"只累加 `timerMs`、不改速度、不回收"。
+
+> 收口：按实现修正 —— 死羊分支逐字端口但不可达（S08 起击杀即 despawn）；依据：`server/src/ai/sheep_brain.cpp:88`（意图表跳过 `kDead`）、`:269/286`（应用阶段跳过）、`:290`（`deadFadeMs` 回收分支，`server/src/config/sheep.hpp` 的 `deadFadeMs`）。
 7. **`--filter=fixture` 是 6/6 而不是计划写的 14/14**（与 S08 §9.1-2 同因：S07 §8.3 已把向量裁到 4 份）。
+
+> 收口：见 §8.5 —— `--filter=fixture` 现为 `TESTS 19/19`（本节记的 6/6 是 S09 当时值，S07 §8.3 先把向量裁到 4 份、§8.5 再全量交付）；依据：§8.5、本机实测 `server/build/ac_tests.exe --filter=fixture`。
 8. **`--filter=ai` 含 2 条既有污染**：`rng_ai_stream_bits`（名字里有 `ai_`）与 `fixture_tampered_hash_fails_before_ticks`（`f-ai-ls`）→ 31 = 本批 29 + 2；按 S05 §5.3-8 的遗留项**改门禁**收口：本批 29 条一律以 `ai_` 起头，`--filter=ai_` = 30 = 29 + `rng_ai_stream_bits`；两条既有用例名本身正确，故不改名。`--filter=waves` 无污染（16 = 16）。
+
+> 收口：见 §10.2-4 —— 按「改门禁」收口：本批用例一律 `ai_` 前缀，两条既有用例名保留；依据：§10.2-4、本轮实测 `--filter=ai_` = `TESTS 30/30`、`--filter=ai` = `TESTS 36/36`（S09 当时为 30/30 与 31/31，后续批次继续追加）。
 9. **实体/世界扩容**：`Entity` 232 → 960 B（+击退状态 +羊 AI 状态；§10.2-3 删掉 `ai.sheepKind` 镜像后由 968 回落）、`World` → 1 010 824 B → §6 行内尺寸已同步为 S09 值，`world_test.cpp` 的容量界改成 <1 MiB；§6.2 第 5 条的"96 字节"是 S05 的历史推导，按既有约定**不回收改写**。
+
+> 收口：按实现修正 —— §6 行内尺寸已同步为 S09 值，容量界由用例钉住；依据：`server/README.md:211`（`Entity` 960 B、`World` 1 010 824 B）、§17 的 `worldBytes=1010824 entityBytes=960` 取证行、`server/tests/world_test.cpp` 的 `< 1 MiB` 断言。
 10. **羊的默认阵营是敌对方**：v1 `world.ts` 的 `spawnEntity` 会按 kind 填 `team`（羊 = 1），S05 的 3 参便捷重载此前留 0 → 羊与玩家同队、`FRIENDLY_FIRE=false` 下**打不掉血**。本批在 `config/player.hpp` 加 `kDefaultTeamByKind` 并让 `spawnEntity` 用它（用例 `ai_spawn_teams_make_sheep_hostile` 钉住）。
+
+> 收口：按实现修正 —— `kDefaultTeamByKind` 已由 `spawnEntity` 采用；依据：`server/src/config/player.hpp:75`、`server/src/sim/world.hpp:130`、用例 `ai_spawn_teams_make_sheep_hostile`（本轮全量跑绿）。
 11. **`updateKing` 双签名**：S06 冻结的是 `int updateKing(World&, Entity&, uint32_t)`（声明在 `sim/step.hpp`），S09 §9 要求实现落在 `ai/` → 实现放 `ai/king_phases.cpp`，另有一个同名转发函数保持冻结签名可用。
+
+> 收口：按实现修正 —— 双签名都在 `server/src/ai/king_phases.cpp`：S09 实现 + `:86-87` 的冻结签名转发，声明见 `server/src/sim/step.hpp:43`。
 12. **`kSheepAttackProfile` 复用 S08 的 `WeaponDef`**（`pellets = 1`、`falloffStartM = 1e9`、`headshotMultiplier = 1`）；AI 只用它的 `damage` 字段（8/22/14/30），散布/弹匣等字段不参与羊的攻击结算（v1 同样如此）。
+
+> 收口：按实现修正 —— `kSheepAttackProfile` 复用 `WeaponDef` 并与 `kSheep[].damage` 编译期对齐，AI 只读 `damage`；依据：`server/src/config/sheep.hpp:184/191-192`、`server/src/ai/sheep_attack.cpp:31`。
 13. **`sim/` 的两处纯数据包含**：`sim/entity_table.hpp` 为承载 §9 冻结的 `Entity::knock{}` 与 `Entity::ai{}` 而包含 `combat/knockback.hpp`、`ai/sheep_state.hpp`，与 §6 开头「不引 `ai/**`」的字面冲突；两份头都不引 `sim/**`（`ai/sheep_state.hpp` 只引 `config/sheep.hpp`，`knockback.hpp` 是纯 POD），因此**无包含环**，按局部豁免处理（§6 开头已回写）。
+
+> 收口：已回写 —— §6 开头已写明两处纯数据包含、且二者自身不引 `sim/**`（无包含环）；依据：`server/README.md:210`、`server/src/sim/entity_table.hpp:7-10`。
 14. **命名按 CONTEXT / 工程约定 §6 回改**（两轴评审后）：①`questionBolt`（CONTEXT §1）—— `kBoltLifeMs`/`kBoltRadiusM`/`kBoltSpawnHeightM` → `kQuestionBolt*`、`spawnBolt` → `spawnQuestionBolt`；②布尔前缀（工程约定 §6）—— `DirectorState::finished`/`waveStartPending` → `isFinished`/`isWaveStartPending`，`DirectorTick::waveStarted`/`waveCleared`/`matchEnded` → `isWaveStart`/`isWaveClear`/`isMatchEnd`；③`kRescueSpeedClampMps` → `kReviveSpeedClampMps`（CONTEXT §1「救援 = `revive`」，S08 的旧名一并回改）。**保留**：`SHEEP_AI` 的 `eliteBoltRangeM`/`eliteBoltCooldownMs`/`boltSpeedMps` 是 §5.2 冻结的 v1 字段名（`configHashText` 的 `sheep.ai` 组逐字对齐），不改。
+
+> 收口：按实现修正 —— 三处命名回改已落地、旧名 0 命中：`questionBolt` 系（`server/src/ai/sheep_attack.cpp:71/173`、`server/src/config/sheep.hpp` 的 `kQuestionBolt*`）、布尔前缀（`server/src/waves/director.hpp:24-25`）、`kReviveSpeedClampMps`（`server/src/sim/step.cpp:65`）；依据：本轮 grep（`kBoltLifeMs`/`spawnBolt`/`kRescueSpeedClampMps`/`ai.sheepKind` 均无命中）。
 15. **删掉 `ai.sheepKind` 镜像字段**：v1 把羊形存在 `entity.ai.sheepKind`，而 S08 已把同一份状态放在 `Entity::sheepKind`（命中盒/攻击档案查询用）→ 本批让 `applySheepKind`/`sheepKindOf` 统一读写 `Entity::sheepKind`，删掉从不被读的 `ai.sheepKind`（评审的 Speculative Generality 项）；副作用是 `sizeof(Entity)` 968 → 960（§6 行内与 §12 已同步）。
+
+> 收口：按实现修正 —— `SheepAiState` 里已无 `sheepKind`，统一读写 `Entity::sheepKind`；依据：`server/src/ai/sheep_state.hpp:52-63`、`server/src/ai/sheep_brain.cpp:36/42`、`server/src/sim/entity_table.hpp`（`Entity::sheepKind`）、`server/README.md:211`（960 B）。
 16. **两趟意图表用模块级静态池**：§9 冻结的 `updateAiIntents(World&, …)` / `applyAiIntents(World&)` 之间要传 `SheepIntent[kMaxEntities]`，v1 `sim.ts` 用的也是模块级 `intentPool`/`intentIds` → C++ 同样落成 `ai/sheep_brain.cpp` 匿名命名空间里的定长静态池（约 34 KiB，无堆分配）。与 §5.1「全部可变状态都住在 `World` 里」的字面冲突：世界仍自洽（池每个 tick 全量重写、不跨 tick 读），但**同一进程内两个 `World` 不能交错步进**（与 v1 同限制）；若 S12 要求并行多世界，需把池搬进 `World`（追加字段，不动阶段顺序）。
+
+> 收口：按实现修正 —— 两趟意图表的模块级静态池在匿名命名空间里，每 tick 全量重写；依据：`server/src/ai/sheep_brain.cpp:254-256`（`g_intents`/`g_intentIds`/`g_intentCount`）。"同一进程内两个 `World` 不能交错步进"仍成立（S12 未要求并行多世界）。
 17. **`absoluteValue` 合并**：`sheep_brain.cpp` 与 `sheep_attack.cpp` 各有一份本地绝对值（评审的 Duplicated Code 项）→ 合并到 `ai/steering.hpp` 的 `inline constexpr double absoluteValue(double)`（ADR-010 §2 的位运算口径，不引浮点库）。
+
+> 收口：按实现修正 —— 两份本地绝对值已合并到唯一实现；依据：`server/src/ai/steering.hpp:11`、调用点 `server/src/ai/sheep_attack.cpp:182-183`、`server/src/ai/sheep_brain.cpp:191`。
 
 ### 10.2 两轴评审的发现与处置（S09，Standards + Spec 并行评审）
 
@@ -803,6 +896,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 7. **`--selftest-store` 把存储统计写进注册表**：`ac_corrupt_lines_total` 的语义是「加载时遇到的坏行数」，而 `persist` 不依赖 `metrics`（保持纯 I/O 模块）→ 由调用方（`--selftest-store`、将来的运行循环）把 `stats().corruptLines` 写进计数器；常驻条数走 `ProcessSnapshot.recordsRetained`，自检命令会打印这两行。
 8. **本步没有写入方的指标**（只登记，不冒充接线）：9 条计数 `ac_bytes_out_total`、`ac_bytes_in_total`、`ac_frames_out_total`、`ac_frames_in_total`、`ac_events_sent_total`、`ac_events_dropped_total`、`ac_grace_starts_total`、`ac_grace_reconnects_total`、`ac_grace_timeouts_total`（归属发送/接收循环与 S10 房间的宽限期迁移点），以及 7 个进程字段里除 `ac_server_version` 以外的 6 条（运行循环填 `ProcessSnapshot`；`--selftest-metrics` 用默认值渲染，所以自检里这些行是 0）。其中 `ac_bytes_out_total`、`ac_frames_in_total`、`ac_grace_*` 已被 `report.cpp` **读取**（报告字段有读方、暂无写方），所以报告里 `net.bytesOutTotal`、`net.messagesInTotal`、`grace.*` 目前是 0。
 9. **`listening` / `shutdownRequested` / `shutdownComplete` 三个事件名本步没有调用点**（没有监听、没有生命周期循环）：名字在 19 个的表里且被用例断言，调用点随 S14/S15 接线；进程启动目前写的是 S01 的 `serverStarted`（§5 的最小集是下限，不排斥 S01 已冻结的名字）。
+
+> 收口（C3）：第 8/9 条记的是 S13 当时的状态，现在都不成立了 —— 9 条计数里 8 条已有自增写入方，19 名里的 `listening`/`shutdownRequested`/`shutdownComplete` 也都有生产调用点；逐条依据见 §14.2 末的 C3 收口。
 10. **`level` 字段输出级别名（`"info"`）而不是数字**：§5 的 10/20/30/40 在本步作为**过滤阈值**实现（`levelValue()` 与 `AC_LOG_LEVEL`）；S01 §5.4 已冻结 `"level":"info"` 的写法，两者都满足 §6-6 的 `ts/level/evt` 断言。
 11. **`detail` 的 `string[]` 用「指针 + 个数」入参**（`DetailField::array(key, items, count)`）：§5 只说「扁平键值」，日志层因此不引入 `std::vector`（保持零分配）。
 12. **报告写盘是同步的**（对局结束时刻调用）：§8 风险表的对策提到「写盘走独立队列」——队列与批量 flush 属于运行循环批次，本步只做「结束时一次落盘 + 按 mtime 保留 200 份 + 失败只记 `report.write_failed`」。
@@ -846,9 +941,17 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 保留未改（判断项，登记为已知取舍）：`json_text::appendEscaped` 逐字符建临时 `std::string`（SSO 内无堆分配，且不在 tick 路径）；19 条事件名表在生产代码里没有消费者（生产者直接传字面量，表是测试使用的契约表，且 S01 的 `serverStarted` 本就不在 19 条内）；`ProcessSnapshot` 的 6/7 个字段暂无生产写入方（§14.1-8 已登记只登记不冒充接线，S14/S15 接线时优先收口中-1）。
 
+> 收口（C3）：上面两条判断项已落地 —— 19 名表**接线**（不再只是测试用的契约表），`ProcessSnapshot` 的 7/7 字段全部有生产写入方。原始表述保留，依据逐条如下。
+> 1. **19 名表接线**：`server/src/core/log.hpp:131` 起新增 `EventName` 句柄（序号与 `log.cpp:63` 的 `kKnownEvents` 对齐，`log.cpp:389` 的 `static_assert` 钉住条数）+ `log.cpp:392` `eventName()` + `log.cpp:396` `event(Level, EventName, …)` 重载；生产写口一律走表：`main.cpp:59`（`store.error`）、`main.cpp:122`（`listening`）、`main.cpp:133`（`shutdownRequested`）、`main.cpp:138`（`shutdownComplete`）、`report.cpp:214/241`（`report.write_failed`）、`log.cpp:371`（`error.uncaught`）。表外只剩 S01 的 `serverStarted`（不在 19 名内，走 `string_view` 重载，`main.cpp:38`）。用例 `log_event_name_table_has_nineteen_names` 改后断言「句柄 → 表 → 日志行」这条链（真文件 sink 里出现 `"evt":"store.error"`）。
+> 2. **`ProcessSnapshot` 字段接线**：写入方 `runtime.cpp:664` 的 `Runtime::publishMetrics`（每 `pollOnce` 一次，填 `protocol/tickMs/rooms/connections/players/graceActive/recordsRetained/uptimeSeconds`）+ `main.cpp:68`（`--selftest-store` 填 `recordsRetained`）；读方 `/metrics` 渲染（`metrics.cpp:154`）与 `/health` JSON（`http/server.cpp:140`）。用例 `runtime_serves_health_and_metrics_over_http` 改后断言真运行时的同一份快照在两端点同数（`rooms/connections/players/graceActive/recordsRetained` 逐项相等，`uptimeSeconds` 只断言两端都有）。
+
+> 收口（C3，本段登记的三条事实）：①「6 个进程字段在 `server/src` 内暂无自增写入方」不成立（`runtime.cpp:664` 填全 7 个）；②「19 个事件名只有 3 个有生产调用点」现为 6 个（`listening`、`shutdownRequested`、`shutdownComplete`、`store.error`、`report.write_failed`、`error.uncaught`，依据 `main.cpp:59/122/133/138`、`report.cpp:214/241`、`log.cpp:371`）；③9 条计数里 8 条已有写入方（`kBytesIn/FramesIn` `runtime.cpp:172/174`、`kBytesOut/FramesOut` `runtime.cpp:275/277`、`kGraceReconnects` `:304`、`kGraceStarts/Timeouts` `:363/367`、`kEventsDropped` `:697`），只剩 `ac_events_sent_total` 无写入方（归属 S10 的可靠事件队列，`kEventsSent` 只在名字表里）。`ac_corrupt_lines_total` 仍只由 `--selftest-store` 填（`main.cpp:68`），`ac_records_retained` 另有运行循环填（`runtime.cpp:671`）。
+
 **已裁决（B8）**：本步当时仓库里确实**没有 TCP 监听层**（`server/src` 无 socket/listen/accept，`8787` 只出现在计划文本里），S14/S15 的交付物清单也都没派归属。**S14/S15 后来补上了**：`net::TcpListener`、`http::HttpListener`、`server::Runtime` + `ac_server --serve`，并实测绑定 8787/8788（见 §15、§18）。归属**记为 S14**，计划侧回写见 §19.2。
 
 **Spec 轴移交项（登记，不冒充已接线）**：9 条计数（`ac_bytes_out/in_total`、`ac_frames_out/in_total`、`ac_events_sent/dropped_total`、`ac_grace_{starts,reconnects,timeouts}_total`）与 6 个进程字段在 `server/src` 内暂无自增写入方；19 个事件名只有 3 个有生产调用点；`ac_corrupt_lines_total`/`ac_records_retained` 目前只由 `--selftest-store` 填；读缓存随淘汰失效原本只有代码证据（本批新增 `http_cache_invalidated_by_store_eviction` 用例补齐）。
+
+> 收口（C3）：本段登记的三条事实都已不成立 —— 6 个进程字段现由 `runtime.cpp:664` 的 `Runtime::publishMetrics` 填全；19 名中现有 6 个生产调用点（`main.cpp:59/122/133/138`、`report.cpp:214/241`、`log.cpp:371`）；9 条计数中 8 条有写入方（`runtime.cpp:172/174/275/277/304/363/367/697`），只剩 `ac_events_sent_total` 无写入方（归属 S10 的可靠事件队列）；`ac_corrupt_lines_total` 仍只由 `main.cpp:68` 的 `--selftest-store` 填，`ac_records_retained` 另有 `runtime.cpp:671`。第 ① 条的落地细节（句柄重载、用例改动）见上一条收口。
 
 ## 15. 压测基准与性能守门（S14 §5 冻结）
 

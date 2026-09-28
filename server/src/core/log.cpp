@@ -368,7 +368,7 @@ unsigned gUncaughtCount = 0u;
 
 void reportUncaught(std::string_view what, const EventContext& ctx) {
   ++gUncaughtCount;
-  event(Level::error, "error.uncaught", ctx, {DetailField("what", what)});
+  event(Level::error, EventName::kErrorUncaught, ctx, {DetailField("what", what)});
 }
 
 unsigned uncaughtCount() noexcept { return gUncaughtCount; }
@@ -384,6 +384,18 @@ bool isKnownEvent(std::string_view evt) noexcept {
     if (candidate == evt) return true;
   }
   return false;
+}
+
+static_assert(static_cast<std::size_t>(EventName::kErrorUncaught) + 1u == kKnownEventCount,
+              "事件名句柄必须与 §5 的 19 个名字一一对应（新名字两处一起加）");
+
+std::string_view eventName(EventName name) noexcept {
+  return knownEvent(static_cast<std::size_t>(name));
+}
+
+void event(Level level, EventName name, const EventContext& ctx,
+           std::initializer_list<DetailField> detail) {
+  event(level, eventName(name), ctx, detail);
 }
 
 }  // namespace ac::log
