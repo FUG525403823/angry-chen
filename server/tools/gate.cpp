@@ -391,6 +391,9 @@ int main(int argc, char** argv) {
   }
 
   ac::server::RuntimeConfig config{};
+  // 门禁是工具、不是生产进程：默认不写 AC_DATA_DIR 的平台默认值（CI runner 非 root 建不了
+  // /var/lib/angry-chen）；显式设置了 AC_DATA_DIR 时仍按环境变量走（README §19.2）。
+  if (std::getenv("AC_DATA_DIR") == nullptr) config.dataDir = "ac-gate-data";
   config.udpPort = options.portBase;
   config.httpPort = static_cast<std::uint16_t>(options.portBase - 1u);
   config.seed = options.seed;
@@ -550,7 +553,11 @@ int main(int argc, char** argv) {
   // 注：scheduleHeadTailGapMs 已在上面的 G6 段按漂移序列算好（不再用 core 的极差口径）。
   // §5 G6 替代判据：只在定时器粒度比 8ms 预算更粗时才允许放宽（评审：以前无条件启用）。
   const double timerGranularityMs = measureTimerGranularityMs();
-  sample.isScheduleFallbackEnabled = timerGranularityMs > ac::core::kTickScheduleErrorP95BudgetMs;
+  // S15 策略修订（用户裁定）：G6 的**操作判据**统一为「首尾 1/3 P95 差 + |sim_drift|」这一对
+  // 与环境无关的量；严格 8ms 值仍作为参考进报告（note 的 schedP95Strict 与 metrics.scheduleErrorP95Ms）。
+  // 共用/虚拟化的机器上 8ms 的墙钟调度不可达（实测 Linux 52ms、Windows 71ms），按平台定时器粒度
+  // 决定是否启用替代判据会让同一份代码在两地结论相反（见 README §15.4 A1 的修订说明）。
+  sample.isScheduleFallbackEnabled = true;
   note += "; ticks=" + std::to_string(metrics.ticks) + " expectedTicks=" +
           std::to_string(static_cast<std::uint64_t>(durationSec * 1000.0 /
                                                     static_cast<double>(ac::version::kTickMs))) +

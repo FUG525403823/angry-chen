@@ -10,6 +10,8 @@
 #include "net/tcp_listener.hpp"
 #include "net/udp_socket.hpp"
 #include "server/runtime.hpp"
+#include <filesystem>
+
 #include "tiny_test.hpp"
 
 namespace {
@@ -21,6 +23,11 @@ ac::server::RuntimeConfig testConfig() {
   config.udpPort = 0u;
   config.httpPort = 0u;
   config.sheepTarget = 8;  // 用例里只留一点负载，形状与门禁一致
+  // CI runner 不是 root：不能落到 AC_DATA_DIR 的 /var/lib/angry-chen 默认值（README §19.2）。
+  // 用构建目录下的相对路径，并自己建目录（MatchStore 不会替调用方建）。
+  config.dataDir = "ac-runtime-test-data";
+  std::error_code code;
+  std::filesystem::create_directories(config.dataDir, code);
   return config;
 }
 

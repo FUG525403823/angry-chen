@@ -900,7 +900,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 | # | 轴 | 发现 | 处置 |
 |---|---|---|---|
-| A1 | 规格+规范 | 报告 `G6` 直接判据被无条件放行：`isScheduleFallbackEnabled = true` 硬编码 | **已修**：改为测量本机定时器粒度，只有 > 8ms 才允许替代判据（本机实测 14–15ms） |
+| A1 | 规格+规范 | 报告 `G6` 直接判据被无条件放行：`isScheduleFallbackEnabled = true` 硬编码 | **已修订（S15，用户裁定）**：G6 的**操作判据**统一为「首尾 1/3 P95 差 ≤2ms + \|sim_drift\| ≤50ms」这对与环境无关的量，严格 8ms 值降为参考值进报告（note 的 `schedP95Strict`）。理由：按定时器粒度决定是否启用替代判据，会让同一份代码在 Windows（71–74ms，走替代）与 Linux（52ms，判红）得出相反结论；这不是"放行"，而是把判据换成可跨环境复现的那一对。见 §15.3 G6 与 §19.2 |
 | A2 | 规范 | `G6` 替代判据取的是 `core::scheduleHeadTailGapMs`（= `max-min` 极差），不是计划写的「前后 1/3 P95 差」 | **已修**：gate 自己按 1s 采样的 `\|sim_drift\|` 序列算首尾 1/3 的 P95 差；`simDriftMsMax` 也改成全程最大 |
 | A3 | 规格 | `G8` 的 `uncaughtExceptions` 硬编码 0，该项永不可能 fail | **已修**：`core/log` 新增 `ac::log::uncaughtCount()`（`reportUncaught` 计数），gate 直接读 |
 | A4 | 规格 | `G8` 的 tick 跳过项没人喂：房间的 `match.counters.skipped` 从不进调度器 | **已修**：`pollOnce` 把房间跳过增量交给 `noteTickSkip` |
@@ -1231,5 +1231,18 @@ sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 
 `ci / server` 在 ubuntu 上失败过一次：`server/src/core/log.cpp` 的时间戳 `snprintf` 目标是 40 字节缓冲，GCC 的 `-Wformat-truncation` 按 `long long` 的最坏取值算成最多 52 字节 ⇒ `-Werror` 直接失败（**同样的代码在 mingw 上不报**）。修法：缓冲给到 64 字节。
 教训：**本机 mingw 通过 ≠ CI 通过**，任何触碰 `-Werror` 的改动都要在 Linux/GCC 上验一遍；现在有一台 Ubuntu 云服务器可复现（见 `docs/evidence/server-v2-acceptance.md` §10）。
+
+### 19.2 默认数据目录造成的"root 假象"（同一轮 CI 暴露）
+
+S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署契约要求的值）。这在 CI runner 上直接炸：
+
+- `ci / server`：`runtime_test` 的 5 个用例 `Runtime::start()` 失败（非 root 建不了 `/var/lib`）⇒ TESTS 463/468；
+- `ci / server-perf`：`ac_gate` 起不来（`cannot-open:/var/lib/angry-chen/matches.ndjson`）。
+
+而同一套件在云服务器上以 **root** 跑是 468/468 —— 这就是"root 假象"。修法（不牺牲部署契约）：
+
+1. 生产默认值保持冻结（§18）；**测试显式注入** `RuntimeConfig::dataDir`（构建目录下相对路径，并自己建目录）；
+2. `ac_gate` 是工具不是生产进程：未显式设置 `AC_DATA_DIR` 时用构建目录下的相对路径 `ac-gate-data`；
+3. 结论入判据：**任何依赖"默认绝对路径可写"的用例都是环境依赖**，必须在测试里注入。
 
 已知环境边界（不是仓库缺陷）：CMake 在配置阶段用管道捕获编译器输出，受限沙箱（含 workspace-write）会卡在 `Detecting CXX compiler ABI info`；需要完整文件访问才能跑通 cmake 分支与 `ctest`。g++ 直编兜底不受影响。
