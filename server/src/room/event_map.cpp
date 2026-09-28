@@ -50,8 +50,17 @@ bool mapSimEvent(const ac::sim::Event& event, uint32_t eventId, ac::net::EventEn
       ac::net::SheepKilledEvent payload{};
       payload.targetId = event.targetId;
       payload.subjectId = event.subjectId;
-      // v1 把伤害写在 kind 字节上（encodeEventPayload 用 `event.value`）；v2 由 S03 §5.4 把该字节
-      // 定为「羊的类型」，S08 因此新增 `Event::kind`（world.hpp:34）—— 线上取 kind，取的不是伤害。
+      // ---- S03 §5.4 type 2 的 `kind` 字节契约（冻结）----
+      // 取值 = S08 的**羊种类枚举**：0 grunt / 1 ram / 2 elite / 3 king（`ac::config::SheepKind`
+      // 的线上编号，见 config/sheep.hpp 的 SHEEP_ORDER 与那条 static_assert）。取值范围只有 0..3；
+      // 客户端必须按枚举解码（C10 的命中/击杀特效按种类分叉），不得当数值用。
+      // 与 v1 的差异（已裁决：不逐字继承 v1 字节行为）：v1 的 `encodeEventPayload` 在这个字节上写
+      // `event.value`（伤害值，0..65535 截断到 u8），所以 v1 线上同一字节是伤害、不是种类；v2 按
+      // S03 §5.4 的表把该字节定为种类 ⇒ 取 `Event::kind`（world.hpp:34，S08 为此新增该字段）。
+      // 理由：客户端要靠这个字节选特效/音效与击杀统计口径，伤害值已由 `playerHit.value` 承载且
+      // 击杀事件本身不需要伤害；沿用 v1 会让该字段名（kind）与语义长期错位（见 server/README.md 的收口）。
+      // 用例：`match_flow_test.cpp` 的 `room_event_sheep_killed_kind_is_sheep_kind_enum_not_damage`
+      // （grunt/ram 两种羊型 + encodeEventFrame/decodeEventFrame 往返 + 线上末字节断言）。
       payload.kind = event.kind;
       out.eventId = eventId;
       out.data = payload;

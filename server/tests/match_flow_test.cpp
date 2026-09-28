@@ -14,12 +14,14 @@
 
 #include "config/combat.hpp"
 #include "config/player.hpp"
+#include "config/sheep.hpp"
 #include "config/weapons.hpp"
 #include "config/waves.hpp"
 #include "core/quantize.hpp"
 #include "net/codec.hpp"
 #include "net/memory_transport.hpp"
 #include "replication/delta.hpp"
+#include "replication/snapshot_rate.hpp"
 #include "room/event_map.hpp"
 #include "room/match_controller.hpp"
 #include "room/phase.hpp"
@@ -142,15 +144,22 @@ void forceFinalWave(room::Room& room) {
 
 // 采集 room.eventEntries 的复制钩子：按运行时的同一条路径（`encodeDelta`）把条目编进快照帧，
 // 供用例以**客户端口径**（`decodeSnapshot` + `EventIdTracker`）反解。
+// 可靠事件通道（S03 §5.3）的两个开关按运行时口径接线：
+//   · isGated  → 按 S12 §5 的档位相位跳帧（150 档 = 每 3 tick 发 2 次）：跳过的 tick 不发帧；
+//   · isConfirming → 只有**真的编码并发出**的帧才调 room::confirmFrameEvents（false = 帧丢了/没送到）。
 struct FrameCapture {
   ac::replication::ClientBaseline baseline{};
   std::vector<std::vector<std::uint8_t>> frames{};
   std::uint16_t seq = 0u;
   std::uint8_t buffer[ac::net::kMaxSnapshotBytes] = {};
+  bool isGated = false;
+  std::uint16_t rateX10 = ac::replication::kSnapshotRateMidX10;
+  bool isConfirming = true;
 
   static void thunk(void* user, room::Room& room) { static_cast<FrameCapture*>(user)->capture(room); }
 
   void capture(room::Room& room) {
+    if (isGated && !ac::replication::shouldSendSnapshot(rateX10, room.world->tick)) return;
     ac::replication::DeltaInput input{};
     input.world = room.world.get();
     input.session = 1u;
@@ -162,6 +171,9 @@ struct FrameCapture {
         ac::replication::encodeDelta(input, baseline, buffer, sizeof(buffer));
     AC_CHECK(outcome.isOk);
     frames.emplace_back(buffer, buffer + outcome.bytes);
+    if (isConfirming) {
+      room::confirmFrameEvents(room, room.eventFrameGeneration, outcome.eventCount);
+    }
   }
 };
 
@@ -891,7 +903,8 @@ AC_TEST(room_event_entries_reach_client_frames_with_monotonic_ids) {
   AC_CHECK_EQ(replay.value.events.size(), 0u);
   AC_CHECK_EQ(replay.value.duplicateEventCount, 1u);
 
-  // 下一 tick 的第二条事件：id 接着单调涨（帧内与跨帧都是升序），不被去重。
+  // 下一 tick 的第二条事件：id 接着单调涨（帧内与跨帧都是升序）。第一帧的 id=1 还在重传窗口里
+  // （S03 §5.3 的未确认队列：每条目下发 2 次），所以这一帧里它是**重复下发**，由幂等键丢掉。
   room.world->eventCount = 0u;
   room.world->eventCursor = 0u;
   sim::pushEvent(*room.world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 1u, 2u, 0.0, 0.0, 0.0,
@@ -902,11 +915,291 @@ AC_TEST(room_event_entries_reach_client_frames_with_monotonic_ids) {
       ac::net::decodeSnapshot(capture.frames[1].data(), capture.frames[1].size(), &tracker);
   AC_CHECK(second.isOk);
   AC_CHECK_EQ(second.value.events.size(), 1u);
-  AC_CHECK_EQ(second.value.duplicateEventCount, 0u);
+  AC_CHECK_EQ(second.value.duplicateEventCount, 1u);
   AC_CHECK_EQ(second.value.events[0].eventId, 2u);
   AC_CHECK_EQ(static_cast<uint32_t>(ac::net::eventTypeOf(second.value.events[0])),
               static_cast<uint32_t>(ac::net::EventType::kSheepKilled));
-  std::printf("room events: frame1=1 hit(id=1) frame2=1 sheepKilled(id=2)\n");
+  std::printf("room events: frame1=1 hit(id=1) frame2=1 sheepKilled(id=2)+1 retransmit\n");
+}
+
+// ① 跳 tick 不丢事件：S12 §5 的档位降档（150 = 每 3 tick 发 2 次）会让某 tick 不发帧。该 tick 上产生
+// 的条目必须留在未确认队列里，在后续帧里仍被客户端收到（修前：stageFrameEvents 每 tick 都把队列搬空，
+// 这些条目随被跳过的 tick 一起丢）。
+AC_TEST(room_event_survives_downshift_skipped_tick) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  capture.isGated = true;
+  AC_CHECK_EQ(static_cast<uint32_t>(capture.rateX10),
+              static_cast<uint32_t>(ac::replication::kSnapshotRateMidX10));
+
+  // tick % 3 == 2 → 150 档的跳帧相位：本 tick 不发帧。
+  const uint32_t skippedTick = 2u;
+  room.world->tick = skippedTick;
+  AC_CHECK(!ac::replication::shouldSendSnapshot(capture.rateX10, room.world->tick));
+  sim::pushEvent(*room.world, sim::kEventPlayerHit, ac::config::kHitFlagHeadshot, 1u, 2u, 1.2, 1.0, -2.5,
+                 25.4);
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 0u);   // 这一 tick 没发帧
+  AC_CHECK_EQ(room.pendingEventCount, 1u);  // 条目没丢：还在未确认队列上
+  AC_CHECK_EQ(room.eventEntryCount, 1u);
+
+  // 下一 tick 发了帧：被跳过的那个 tick 的事件随帧送达。
+  room.world->tick = 3u;
+  AC_CHECK(ac::replication::shouldSendSnapshot(capture.rateX10, room.world->tick));
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 1u);
+  ac::net::EventIdTracker tracker{};
+  const auto recovered =
+      ac::net::decodeSnapshot(capture.frames[0].data(), capture.frames[0].size(), &tracker);
+  AC_CHECK(recovered.isOk);
+  AC_CHECK_EQ(recovered.value.events.size(), 1u);
+  AC_CHECK_EQ(recovered.value.events[0].eventId, 1u);
+  AC_CHECK_EQ(static_cast<uint32_t>(ac::net::eventTypeOf(recovered.value.events[0])),
+              static_cast<uint32_t>(ac::net::EventType::kPlayerHit));
+  // 一次发送只扣一格重传窗口：条目还没到期的部分继续排队。
+  AC_CHECK_EQ(room.pendingEventCount, 1u);
+
+  // 第二帧把窗口用满 → 出队，客户端侧永远只应用一次。
+  room.world->tick = 4u;
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 2u);
+  const auto repeat =
+      ac::net::decodeSnapshot(capture.frames[1].data(), capture.frames[1].size(), &tracker);
+  AC_CHECK(repeat.isOk);
+  AC_CHECK_EQ(repeat.value.events.size(), 0u);
+  AC_CHECK_EQ(repeat.value.duplicateEventCount, 1u);
+  AC_CHECK_EQ(room.pendingEventCount, 0u);
+  std::printf("downshift skip: tick%u dropped -> frame1 id=1 frame2 id=1(dedup) pending=%u\n",
+              static_cast<unsigned>(skippedTick), static_cast<unsigned>(room.pendingEventCount));
+}
+
+// ② 重传：帧没送到（复制侧不确认）时，未确认条目在下一次下发里重发；重传窗口按「真的发出去的帧」计。
+AC_TEST(room_event_retransmits_after_lost_frames) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  capture.isConfirming = false;  // 前两帧模拟「发出去但丢了 / 没送到」
+  sim::pushEvent(*room.world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 1u, 2u, 0.0, 0.0, 0.0,
+                 0.0, static_cast<uint8_t>(ac::config::SheepKind::kRam));
+  ac::net::EventIdTracker tracker{};
+  std::size_t applied = 0u;
+  std::size_t duplicates = 0u;
+  for (int i = 0; i < 2; ++i) {
+    harness.advance(1u);
+    AC_CHECK_EQ(capture.frames.size(), static_cast<std::size_t>(i + 1));
+    const std::vector<std::uint8_t>& bytes = capture.frames[static_cast<std::size_t>(i)];
+    // 线上口径（无 tracker）：每一帧都带着同一条未确认条目。
+    const auto wire = ac::net::decodeSnapshot(bytes.data(), bytes.size());
+    AC_CHECK(wire.isOk);
+    AC_CHECK_EQ(wire.value.events.size(), 1u);
+    AC_CHECK_EQ(wire.value.events[0].eventId, 1u);
+    // 客户端口径（长期 tracker）：同一 eventId 只应用一次。
+    const auto frame = ac::net::decodeSnapshot(bytes.data(), bytes.size(), &tracker);
+    AC_CHECK(frame.isOk);
+    applied += frame.value.events.size();
+    duplicates += frame.value.duplicateEventCount;
+    AC_CHECK_EQ(room.pendingEventCount, 1u);  // 没确认就不出队
+  }
+  AC_CHECK_EQ(applied, 1u);     // 客户端只应用一次（③ 去重口径）
+  AC_CHECK_EQ(duplicates, 1u);  // 第二次收到的是重复 eventId
+
+  // 窗口 = 2 次「真的发出去」：再发两帧（这次确认）后条目出队。
+  capture.isConfirming = true;
+  harness.advance(2u);
+  AC_CHECK_EQ(capture.frames.size(), 4u);
+  AC_CHECK_EQ(room.pendingEventCount, 0u);
+  for (std::size_t i = 2u; i < 4u; ++i) {
+    const std::vector<std::uint8_t>& bytes = capture.frames[i];
+    const auto wire = ac::net::decodeSnapshot(bytes.data(), bytes.size());
+    AC_CHECK(wire.isOk);
+    AC_CHECK_EQ(wire.value.events.size(), 1u);
+    AC_CHECK_EQ(wire.value.events[0].eventId, 1u);
+  }
+  std::printf("event retransmit: 2 lost frames re-sent id=1, applied=%zu duplicates=%zu\n", applied,
+              duplicates);
+}
+
+// ③ 去重：同一条目在窗口内重复下发，客户端按 eventId（EventIdTracker）只应用一次。
+AC_TEST(room_event_duplicates_are_dropped_by_event_id_tracker) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  capture.isConfirming = false;
+  sim::pushEvent(*room.world, sim::kEventRageActivated, 0u, 1u, 1u, 0.0, 0.0, 0.0, 8000.0);
+  sim::pushEvent(*room.world, sim::kEventPlayerDowned, 0u, 0u, 2u, 0.0, 0.0, 0.0, 0.0);
+  harness.advance(1u);
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 2u);
+  // 两帧带的是同一批条目（id 1/2），同一 tracker 下第二帧一条都不应用。
+  ac::net::EventIdTracker tracker{};
+  const auto first =
+      ac::net::decodeSnapshot(capture.frames[0].data(), capture.frames[0].size(), &tracker);
+  AC_CHECK(first.isOk);
+  AC_CHECK_EQ(first.value.events.size(), 2u);
+  AC_CHECK_EQ(first.value.duplicateEventCount, 0u);
+  const auto second =
+      ac::net::decodeSnapshot(capture.frames[1].data(), capture.frames[1].size(), &tracker);
+  AC_CHECK(second.isOk);
+  AC_CHECK_EQ(second.value.events.size(), 0u);
+  AC_CHECK_EQ(second.value.duplicateEventCount, 2u);
+  AC_CHECK_EQ(tracker.maxEventId, 2u);
+  std::printf("event dedup: frame1=2 events, frame2 duplicate=%zu applied=0\n",
+              second.value.duplicateEventCount);
+}
+
+// ④ 溢出计入：队列打满时事件真丢，但**不静默** —— 计进 Room::eventOverflowCount（运行时的
+// ac_events_dropped_total 口径 = world->stats.eventsDropped + eventOverflowCount，见 runtime.cpp 的
+// publishMetrics），同时确认「没到期的重传条目不会被新事件挤掉」。
+AC_TEST(room_event_queue_overflow_is_counted) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  capture.isConfirming = false;  // 队列只进不出
+  const std::size_t capacity = room::Room::kPendingEventCapacity;
+  sim::World& world = *room.world;
+  for (int tick = 0; tick < 3; ++tick) {
+    world.eventCount = 0u;
+    world.eventCursor = 0u;
+    for (int i = 0; i < 100; ++i) {
+      sim::pushEvent(world, sim::kEventPlayerDowned, 0u, 0u, static_cast<uint16_t>(i + 1u), 0.0, 0.0,
+                     0.0, 0.0);
+    }
+    harness.advance(1u);
+  }
+  // 3 × 100 = 300 条，队列容量 256 ⇒ 前 256 条在队列里，后 44 条真丢并计数。
+  AC_CHECK_EQ(static_cast<std::size_t>(room.pendingEventCount), capacity);
+  AC_CHECK_EQ(room.eventOverflowCount, 44u);
+  AC_CHECK_EQ(world.stats.eventsDropped, 0u);
+  const std::size_t droppedTotal =
+      static_cast<std::size_t>(world.stats.eventsDropped) + room.eventOverflowCount;
+  AC_CHECK_EQ(droppedTotal, 44u);  // = runtime.cpp 的 ac_events_dropped_total 口径，非静默
+  AC_CHECK_EQ(room.eventEntries[0].eventId, 1u);  // 队首仍是没到期的最老条目（没被挤掉）
+  std::printf("event overflow: pending=%u/%zu overflow=%u droppedTotal=%zu\n",
+              static_cast<unsigned>(room.pendingEventCount), capacity, room.eventOverflowCount,
+              droppedTotal);
+}
+
+// ⑤ 追帧上限跳过 tick（S10 §5.7-3 的 kTickCatchUpLimit）：调度层一次丢掉 15 个 tick，待发队列
+// 既不能被清空，也不能被“跳过”这件事影响确认口径。
+AC_TEST(room_event_queue_survives_tick_catchup_skip) {
+  Harness harness(2u);
+  FrameCapture capture{};
+  harness.deps.user = &capture;
+  harness.deps.replicate = &FrameCapture::thunk;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  AC_CHECK(harness.joinByCode(harness.room->code, 1u, "beta") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  room.world->eventCount = 0u;
+  room.world->eventCursor = 0u;
+  capture.isConfirming = false;  // 发出去的帧不确认 ⇒ 条目留在队列里
+  sim::pushEvent(*room.world, sim::kEventWaveClear, 4u, 0u, 0u, 0.0, 0.0, 0.0, 123.0);
+  harness.advance(1u);
+  AC_CHECK_EQ(capture.frames.size(), 1u);
+  AC_CHECK_EQ(room.pendingEventCount, 1u);
+
+  const std::uint32_t skippedBefore = room.match.counters.skipped;
+  harness.nowMs += 1000u;  // 20 个 tick 的欠账：真跑 5 个，其余 15 个按 kTickCatchUpLimit 丢掉
+  AC_CHECK(room::updateRoom(room, harness.deps, harness.nowMs));
+  AC_CHECK_EQ(room.match.counters.skipped, skippedBefore + 15u);
+  AC_CHECK_EQ(room.pendingEventCount, 1u);  // 被跳过的 tick 没有清空待发队列
+
+  capture.isConfirming = true;
+  const std::size_t before = capture.frames.size();
+  harness.advance(2u);
+  AC_CHECK_EQ(capture.frames.size(), before + 2u);
+  ac::net::EventIdTracker tracker{};
+  std::size_t applied = 0u;
+  for (std::size_t i = before; i < capture.frames.size(); ++i) {
+    const auto frame = ac::net::decodeSnapshot(capture.frames[i].data(), capture.frames[i].size(),
+                                               &tracker);
+    AC_CHECK(frame.isOk);
+    applied += frame.value.events.size();
+  }
+  AC_CHECK_EQ(applied, 1u);  // 窗口用满前每帧都带它，但客户端只应用一次
+  AC_CHECK_EQ(room.pendingEventCount, 0u);
+  std::printf("tick catch-up skip=%u -> event still delivered (applied=%zu)\n",
+              room.match.counters.skipped, applied);
+}
+
+// B2（S03 §5.4 / S08 §5.6）：sheepKilled 的 kind 字节按**语义口径**取 Event::kind（羊种类枚举），
+// 不是 v1 实际写在该字节上的伤害值。覆盖两种羊型（grunt=0 / ram=1）+ 编码往返。
+AC_TEST(room_event_sheep_killed_kind_is_sheep_kind_enum_not_damage) {
+  Harness harness;
+  AC_CHECK(harness.createAndJoin(0u, "alpha") == JoinOutcome::kOk);
+  room::Room& room = *harness.room;
+  sim::World& world = *room.world;
+  world.eventCount = 0u;
+  world.eventCursor = 0u;
+  // 伤害值（v1 写在该字节上的数）刻意与种类号不同：grunt 打掉 37 点血、ram 打掉 8 点血。
+  const uint8_t gruntKind = static_cast<uint8_t>(ac::config::SheepKind::kGrunt);
+  const uint8_t ramKind = static_cast<uint8_t>(ac::config::SheepKind::kRam);
+  AC_CHECK_EQ(static_cast<uint32_t>(gruntKind), 0u);
+  AC_CHECK_EQ(static_cast<uint32_t>(ramKind), 1u);
+  sim::pushEvent(world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 7u, 3u, 0.0, 0.0, 0.0, 37.0,
+                 gruntKind);
+  sim::pushEvent(world, sim::kEventSheepKilled, ac::config::kHitFlagKilled, 9u, 4u, 0.0, 0.0, 0.0, 8.0,
+                 ramKind);
+
+  ac::net::EventEntry entries[4] = {};
+  std::uint32_t nextEventId = 1u;
+  const std::size_t mapped = room::projectRoomEvents(world, entries, 0u, 4u, nextEventId);
+  AC_CHECK_EQ(mapped, 2u);
+  const auto* grunt = std::get_if<ac::net::SheepKilledEvent>(&entries[0].data);
+  const auto* ram = std::get_if<ac::net::SheepKilledEvent>(&entries[1].data);
+  AC_CHECK(grunt != nullptr && ram != nullptr);
+  AC_CHECK_EQ(static_cast<uint32_t>(grunt->kind), static_cast<uint32_t>(gruntKind));
+  AC_CHECK_EQ(static_cast<uint32_t>(ram->kind), static_cast<uint32_t>(ramKind));
+  AC_CHECK(grunt->kind != 37u && ram->kind != 8u);  // 线上那个字节不是伤害
+  AC_CHECK_EQ(grunt->targetId, 3u);
+  AC_CHECK_EQ(ram->targetId, 4u);
+
+  // 编码往返：客户端按枚举解码，拿到的仍是种类号（条目 = eventId u32 + type u8 + targetId u16 +
+  // subjectId u16 + kind u8，末字节就是 kind；条目总长 = 10 字节）。
+  AC_CHECK_EQ(ac::net::eventEntryBytes(static_cast<uint8_t>(ac::net::EventType::kSheepKilled)), 10u);
+  std::uint8_t frame[128] = {};
+  const PacketHeader header =
+      makeHeader(PacketType::kEvent, net::requiredFlags(PacketType::kEvent), 1u, 1u);
+  const ac::net::EncodeResult encoded = ac::net::encodeEventFrame(
+      header, net::ReliableExt{1u, 0u, 0u}, 5u, entries, mapped, frame, sizeof(frame));
+  AC_CHECK(encoded.isOk && encoded.bytes > 0u);
+  AC_CHECK_EQ(static_cast<uint32_t>(frame[encoded.bytes - 1u]),
+              static_cast<uint32_t>(ramKind));  // 线上末字节 = ram 的枚举值 1
+  const auto decoded = ac::net::decodeEventFrame(frame, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  const auto* decodedGrunt = std::get_if<ac::net::SheepKilledEvent>(&decoded.value.events[0].data);
+  const auto* decodedRam = std::get_if<ac::net::SheepKilledEvent>(&decoded.value.events[1].data);
+  AC_CHECK(decodedGrunt != nullptr && decodedRam != nullptr);
+  AC_CHECK_EQ(static_cast<uint32_t>(decodedGrunt->kind), static_cast<uint32_t>(gruntKind));
+  AC_CHECK_EQ(static_cast<uint32_t>(decodedRam->kind), static_cast<uint32_t>(ramKind));
+  // 帧内两条 entry 逐字段往返相等（含 kind）。
+  AC_CHECK(decoded.value.events[0] == entries[0]);
+  AC_CHECK(decoded.value.events[1] == entries[1]);
+  std::printf("sheepKilled.kind: grunt=%u ram=%u wire=%u (damage 37/8 not on the wire)\n",
+              static_cast<unsigned>(decodedGrunt->kind), static_cast<unsigned>(decodedRam->kind),
+              static_cast<unsigned>(frame[encoded.bytes - 1u]));
 }
 
 AC_TEST(match_shot_deltas_count_shots_fired) {

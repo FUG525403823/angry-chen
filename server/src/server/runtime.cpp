@@ -558,6 +558,9 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
       continue;
     }
     ac::replication::noteDrained(client->budget, outcome.bytes);
+    // S03 §5.3/§5.4：本代帧真的发出去了 ⇒ 确认本帧带出的条目（按重传窗口递减/出队）。被跳过的 tick
+    // （档位降档 / 背压 / 编码失败 / 发送失败）不走到这里，未确认条目留在房间队列里下一帧续投。
+    ac::room::confirmFrameEvents(room, room.eventFrameGeneration, outcome.eventCount);
     client->bytesOut += outcome.bytes;
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kBytesOut,
                             static_cast<std::uint64_t>(outcome.bytes));

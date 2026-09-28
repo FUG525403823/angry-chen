@@ -107,13 +107,17 @@ double hpRatioOf(const ac::sim::Entity& entity) noexcept {
 }
 
 // §5.7-5 + S03 §5.4：本 tick 的事件条目（sim::Event → net::EventEntry）。
-// 新事件先追加进 pending，再取前 ≤ kMaxEventsPerFrame 条作为本帧条目、其余前移续投；
-// pending 也满时事件才真丢（下一 tick 的 stepWorld 会清事件缓冲），记进 eventOverflowCount。
+// 新事件先追加进**未确认队列**，本代帧取队首 ≤ kMaxEventsPerFrame 条（**不出队**）：队列只在复制侧
+// 确认「帧真的发出去了」（confirmFrameEvents）后才按重传窗口出队。被跳过的 tick 因此不清队列。
+// 队列也满时事件才真丢（下一 tick 的 stepWorld 会清事件缓冲），记进 eventOverflowCount。
 void stageFrameEvents(Room& room) noexcept {
   ac::sim::World& world = *room.world;
   const uint16_t before = room.pendingEventCount;
   const std::size_t appended = projectRoomEvents(world, room.pendingEvents, before,
                                                  Room::kPendingEventCapacity, room.nextEventId);
+  for (std::size_t i = before; i < static_cast<std::size_t>(before) + appended; ++i) {
+    room.pendingEventPasses[i] = Room::kEventSendPasses;
+  }
   room.pendingEventCount = static_cast<uint16_t>(before + appended);
   if (world.eventCursor < world.eventCount) {
     room.eventOverflowCount += static_cast<uint32_t>(world.eventCount - world.eventCursor);
@@ -122,12 +126,8 @@ void stageFrameEvents(Room& room) noexcept {
   std::size_t frameCount = room.pendingEventCount;
   if (frameCount > ac::net::kMaxEventsPerFrame) frameCount = ac::net::kMaxEventsPerFrame;
   for (std::size_t i = 0u; i < frameCount; ++i) room.eventEntries[i] = room.pendingEvents[i];
-  for (std::size_t i = frameCount; i < room.pendingEventCount; ++i) {
-    room.pendingEvents[i - frameCount] = room.pendingEvents[i];
-  }
-  room.pendingEventCount = static_cast<uint16_t>(static_cast<std::size_t>(room.pendingEventCount) -
-                                                frameCount);
   room.eventEntryCount = static_cast<uint8_t>(frameCount);
+  room.eventFrameGeneration += 1u;  // 本代帧的世代戳（确认侧按它去重）
 }
 
 uint8_t clampToU8(double value) noexcept {
@@ -152,6 +152,34 @@ uint8_t quantizePercent(double ratio) noexcept {
 }
 
 }  // namespace
+
+// §5.3 可靠事件通道的确认侧（S03 §5.3「超出部分走 EventChannel 可靠通道补发」的房间侧落地）：
+// 复制侧把本代帧**真的发出去**之后调用一次，sentCount = 该帧带出的条目数。被跳过的 tick（档位降档、
+// 背压、编码失败、慢客户端）不调用 ⇒ 条目留在未确认队列里，下一帧继续下发（客户端按 eventId 去重）。
+// 同一代只确认一次：同 tick 多客户端各发一帧时不重复扣重传窗口。
+void confirmFrameEvents(Room& room, uint32_t frameGeneration, std::size_t sentCount) noexcept {
+  if (frameGeneration == 0u || room.eventConfirmedGeneration == frameGeneration) return;
+  const std::size_t limit =
+      sentCount < static_cast<std::size_t>(room.eventEntryCount)
+          ? sentCount
+          : static_cast<std::size_t>(room.eventEntryCount);
+  room.eventConfirmedGeneration = frameGeneration;
+  for (std::size_t i = 0u; i < limit; ++i) {
+    if (room.pendingEventPasses[i] > 0u) room.pendingEventPasses[i] -= 1u;
+  }
+  // 队首用满重传窗口的条目出队（FIFO：后面的条目与窗口计数一起前移）。
+  std::size_t delivered = 0u;
+  while (delivered < room.pendingEventCount && room.pendingEventPasses[delivered] == 0u) {
+    ++delivered;
+  }
+  if (delivered == 0u) return;
+  const std::size_t remaining = static_cast<std::size_t>(room.pendingEventCount) - delivered;
+  for (std::size_t i = 0u; i < remaining; ++i) {
+    room.pendingEvents[i] = room.pendingEvents[i + delivered];
+    room.pendingEventPasses[i] = room.pendingEventPasses[i + delivered];
+  }
+  room.pendingEventCount = static_cast<uint16_t>(remaining);
+}
 
 const char* joinOutcomeName(JoinOutcome outcome) noexcept {
   switch (outcome) {

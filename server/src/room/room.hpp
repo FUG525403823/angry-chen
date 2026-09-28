@@ -67,16 +67,25 @@ struct Room {
   int64_t accumulatorMs = 0;     // §5.7-3 的固定步长累加器
   uint32_t unicastCount = 0u;    // 累计单播次数（节拍 + 立即补发）
   uint32_t immediateCount = 0u;  // 其中由签名变化触发的立即补发次数
-  // §5.7-5 + S03 §5.4：事件条目生产（房间/广播侧）。`eventEntries[0, eventEntryCount)` 是本 tick
-  // 要随帧下发的条目（≤ kMaxEventsPerFrame，S03 §5.3 的单帧上限）；`pendingEvents` 承接上限溢出
-  // 与「本 tick 没排上」的条目，下一 tick 续投（事件不因上限静默丢失）。
+  // §5.7-5 + S03 §5.3/§5.4：事件条目生产（房间/广播侧）+ **未确认队列**（可靠下发）。
+  // `pendingEvents[0, pendingEventCount)` 是尚未确认送达的条目（FIFO、eventId 升序）；每代帧取队首
+  // ≤ kMaxEventsPerFrame 条拷进 `eventEntries` 发出，但**不出队**：只有复制侧确认「本代帧真的发出去
+  // 了」（confirmFrameEvents）才递减 `pendingEventPasses`，用满 `kEventSendPasses` 次才出队。
+  // ⇒ 被跳过的 tick（档位降档 / 背压 / 编码失败）不清空待发队列，条目在后续帧重发；客户端按 eventId
+  // 去重（§5.4 幂等键），重发对它无副作用。
   static constexpr std::size_t kPendingEventCapacity = ac::sim::kMaxEvents;
+  // 重传窗口 = 每条目随帧下发的次数。冻结设计的 EventChannel 是「重传直到 ack」，但客户端不产生事件
+  // 通道的回程 ack（C03 §5.4 登记缺口）⇒ 以「窗口内重复下发」近似，理由与口径见 server/README.md。
+  static constexpr uint8_t kEventSendPasses = 2u;
   ac::net::EventEntry pendingEvents[kPendingEventCapacity] = {};
+  uint8_t pendingEventPasses[kPendingEventCapacity] = {};  // 与 pendingEvents 同步：该条还要下发几次
   uint16_t pendingEventCount = 0u;
   ac::net::EventEntry eventEntries[ac::net::kMaxEventsPerFrame] = {};
   uint8_t eventEntryCount = 0u;
   uint32_t nextEventId = 1u;         // 幂等键水位：从 1 起单调递增、全局唯一、永不重用（S03 §5.4）
-  uint32_t eventOverflowCount = 0u;  // pending 也满时才真丢：计入 ac_events_dropped_total（G8）
+  uint32_t eventOverflowCount = 0u;  // 队列也满时才真丢：计入 ac_events_dropped_total（G8）
+  uint32_t eventFrameGeneration = 0u;      // 每次舞台化 ++：本代帧的世代戳
+  uint32_t eventConfirmedGeneration = 0u;  // 已确认过的代（同一代重复确认无效）
 };
 
 // 建房：世界 = createWorld(seed) 后清掉占位玩家（v1 createWorldForRoom，pid 从 1 起）。
@@ -113,6 +122,11 @@ void buildCommands(Room& room) noexcept;
 
 // 单 tick（v1 runTick 的 S10 部分）：命令 → stepWorld → 统计 → 清波/结束 → 复制 → MatchState。
 bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept;
+
+// §5.3 可靠事件通道的确认侧：复制侧在**本代帧真的发出**（交给 socket）之后调用，
+// sentCount = 该帧实际带出的条目数。同一代（frameGeneration）只确认一次（多客户端同 tick 发帧不会
+// 重复扣窗口）；被跳过的 tick 不调用 ⇒ 条目留在未确认队列里，下一帧续投。
+void confirmFrameEvents(Room& room, uint32_t frameGeneration, std::size_t sentCount) noexcept;
 
 // §5.8：组装到 room.matchState（热路径零分配），返回写入的成员条数。
 std::size_t buildMatchState(Room& room) noexcept;

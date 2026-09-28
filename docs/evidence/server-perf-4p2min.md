@@ -177,6 +177,8 @@ latency-200                              verdict=pass exit=0 duration=120.0s bw=
 - G1 均值与 §3 **不可直接比**：本轮按 W3 的复现命令带 `--minutes=0.5`（30 s，含 15 s 预热），§3 是 120 s 全量；判定（overall）两次都是 `pass`。
 - 档位降档（如 150/100）被跳过的 tick，其条目随该 tick 一起丢（S03 §5.3 的可靠 EventChannel 未落地）——默认档位 200 每 tick 发帧，三个场景都没踩到。
 
+> 收口（B 部分 B1）：上面这条缺口已消除，见 §9 —— 未确认条目留在 `Room::pendingEvents` 队列里、按重传窗口在后续帧续投，被跳过的 tick 不再清队列；本节的 G3/G4/G8 数字与门限都不动。依据：`server/src/room/room.cpp:109-181`、`server/src/server/runtime.cpp:563`、§9 实测。
+
 **等时长对照（都取 `--minutes=0.5`，即 30 s；前值读自 `server/build/base-*.json`，是同机同命令的历史跑次）：**
 
 | 场景 | | G1 % | G2 KB/s | G3 B | G4 B | G6 ms | G7 MB/min | G8 次 | verdict |
@@ -189,3 +191,44 @@ latency-200                              verdict=pass exit=0 duration=120.0s bw=
 | | 后 | 1.920 | 20.329 | 1015 | 1069 | 0 | 未测 | 0 | pass |
 
 结论：事件块上线后 **G3 +0 ~ +15 B、G4 +36 ~ +54 B、G2 ±0.3 KB/s**，全部判据与门限不变（G2 ≤ 40、G3 ≤ 1228、G4 ≤ 2048、G8 = 0），`verdict` 三次都是 `pass`；G1 的差异在 30 s 窗口内属跑次噪声（同一份代码 `gate-4p2min` 的历史跑次本身就横跨 0.64 ~ 3.88%）。
+
+## 9. 可靠事件通道（B1）后的复测（2026-09 批次）
+
+> 变更：事件条目改为**未确认队列 + 重传窗口**下发 —— `stageFrameEvents` 只把队首 ≤ `kMaxEventsPerFrame` 条拷进帧、不出队（`server/src/room/room.cpp:109-132`），复制侧在帧**真的发出**之后调 `confirmFrameEvents` 按 `Room::kEventSendPasses = 2` 出队（`room.cpp:157-181`、`server/src/server/runtime.cpp:563`）；被跳过的 tick（档位降档 / 背压 / 编码失败）不再丢条目，代价是窗口内重复下发 ⇒ 帧内事件字节变多。
+> 历史段落（§3、§7、§8）保留不动。前/后是**两份工作区构建**：前 = B1 改动前的 `server/build/*.exe`（`server/build.ps1 -Config Release` 的产物，2026-09-28 14:09），后 = B1 落地后同一条构建命令的产物；两轮命令完全相同：`server/build/ac_gate.exe --scenario=<场景> [--minutes=0.5] [--break=G3=0]`。收尾只在 `ac_tests` 侧改了一处打印，重编译后 `ac_gate.exe`/`ac_server.exe`/`ac_bot.exe` 的 SHA256 未变（前 16 位 `0E110AD9B5AA6611`/`8EE648E1FF139090`/`F4726AA61185565B`）⇒ 本节数字对应的产品二进制就是"后"那一份。
+
+```text
+# 前（改动前的构建；日志 build/base-*.log）
+gate-4p2min --minutes=0.5   verdict=pass exit=0 duration=30.0s cpuMean=1.44% bw=20.36KB/s snapP95=1015B snapMax=1069B schedP95=75.00ms dropped=0 skips=0
+  G1 1.441%  G2 20.365KB/s  G3 1015B  G4 1069B  G5 0  G6 0.000ms  G7 not-measured  G8 0
+gate-4p2min --minutes=0.5 --break=G3=0   verdict=fail exit=1（G3 上限压到 0 ⇒ 按预期红；G1 1.200 G2 20.391 G4 1051 G8 0）
+soak-4p5min                 verdict=pass exit=0 duration=300.0s cpuMean=1.04% bw=20.47KB/s snapP95=985B snapMax=1069B schedP95=75.00ms rss=0.037MB/min dropped=0 skips=0
+  G1 1.041%  G2 20.466KB/s  G3 985B  G4 1069B  G5 0  G6 0.000ms  G7 0.037MB/min  G8 0
+latency-200                 verdict=pass exit=0 duration=120.0s cpuMean=0.89% bw=20.21KB/s snapP95=988B snapMax=1069B schedP95=169.00ms dropped=0 skips=0
+  G1 0.887%  G2 20.209KB/s  G3 988B  G4 1069B  G5 0  G6 0.000ms  G7 not-measured  G8 0
+
+# 后（B1 落地后的同一份 ac_gate.exe；日志 build/after-*.log）
+gate-4p2min --minutes=0.5   verdict=pass exit=0 duration=30.0s cpuMean=2.26% bw=20.51KB/s snapP95=1018B snapMax=1085B schedP95=76.00ms dropped=0 skips=0
+  G1 2.264%  G2 20.507KB/s  G3 1018B  G4 1085B  G5 0  G6 0.000ms  G7 not-measured  G8 0
+gate-4p2min --minutes=0.5 --break=G3=0   verdict=fail exit=1（可失红对照仍成立；G1 1.200 G2 20.165 G3 1018B→fail G4 1085 G8 0）
+soak-4p5min                 verdict=pass exit=0 duration=300.0s cpuMean=0.72% bw=20.91KB/s snapP95=1003B snapMax=1154B schedP95=68.00ms rss=0.038MB/min dropped=0 skips=0
+  G1 0.722%  G2 20.908KB/s  G3 1003B  G4 1154B  G5 0  G6 0.000ms  G7 0.038MB/min  G8 0
+latency-200                 verdict=pass exit=0 duration=120.0s cpuMean=1.29% bw=20.68KB/s snapP95=988B snapMax=1085B schedP95=180.00ms dropped=0 skips=0
+  G1 1.288%  G2 20.683KB/s  G3 988B  G4 1085B  G5 0  G6 0.000ms  G7 not-measured  G8 0
+```
+
+**前后对照（`gate`/`break` 取 `--minutes=0.5` 的 30 s 短跑；`soak` = 300 s、`latency` = 120 s 全量）：**
+
+| 场景 | | G1 % | G2 KB/s | G3 B | G4 B | G6 ms | G7 MB/min | G8 次 | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| `gate-4p2min` | 前 | 1.441 | 20.365 | 1015 | 1069 | 0 | 未测 | 0 | pass |
+| | 后 | 2.264 | 20.507 | 1018 | 1085 | 0 | 未测 | 0 | pass |
+| `--break=G3=0` | 前 | 1.200 | 20.391 | 1015 | 1051 | 0 | 未测 | 0 | fail（按预期） |
+| | 后 | 1.200 | 20.165 | 1018 | 1085 | 0 | 未测 | 0 | fail（按预期） |
+| `soak-4p5min` | 前 | 1.041 | 20.466 | 985 | 1069 | 0 | 0.037 | 0 | pass |
+| | 后 | 0.722 | 20.908 | 1003 | 1154 | 0 | 0.038 | 0 | pass |
+| `latency-200` | 前 | 0.887 | 20.209 | 988 | 1069 | 0 | 未测 | 0 | pass |
+| | 后 | 1.288 | 20.683 | 988 | 1085 | 0 | 未测 | 0 | pass |
+
+结论：可靠下发（窗口内重复 2 次）**把事件字节抬了少量**：G3 P95 +0 ~ +18 B、G4 帧上限 +16 ~ +85 B、G2 +0.14 ~ +0.44 KB/s（最坏 `soak` 20.47 → 20.91），**全部判据与冻结门限不变**（G2 ≤ 40 KB/s、G3 ≤ 1228 B、G4 ≤ 2048 B、G8 = 0），四个场景 `verdict` 与 §8 一致（`break` 仍按预期 `fail exit=1`）；**没有为迁就改动而放宽任何限值**。G1 的差异是 30 s/300 s 窗口内的跑次噪声（同一份代码的历史跑次本身就横跨 0.6 ~ 3.9%）。`dropped=0` 说明窗口与队列容量在稳态下没打满（打满时的口径由用例 `room_event_queue_overflow_is_counted` 钉住：256 条队列 + 44 条溢出 → `ac_events_dropped_total` +44）。
+

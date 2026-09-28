@@ -183,6 +183,8 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 | `snapshot` | array（仅 `snapshot-roundtrip-240t` 非空） | `{tick, records, encodeHash, decodeHash}` | 量化记录块（无报文头）与解码投影的 FNV |
 | `hashChain` | array[string]，长度 = `ticks` | 每 tick 一个链节点（8 B / 16 位十六进制） | **取代**"每帧投影文本落盘" |
 
+- 事件载荷里的 `sheepKilled.kind` **是羊种类枚举**（0 grunt / 1 ram / 2 elite / 3 king，S03 §5.4 / S08）：客户端读取与渲染一律**按枚举解码**，别当数值用；v1 曾把伤害值写在同一字节上，v2 不逐字继承 v1 的字节行为（服务端已裁决，契约见 `server/src/room/event_map.cpp:53-63`，用例 `room_event_sheep_killed_kind_is_sheep_kind_enum_not_damage`，`server/tests/match_flow_test.cpp:1149`）。注意本节 `keyframes[].events[]` 与对拍投影文本（`evt=`）**都不含 `kind`**，所以这个字节目前没有跨语言向量覆盖（登记为待办，见 `server/README.md` §11 第 11 条的 B2 收口）。
+
 ### 7.3 比较口径：两侧都**重算**，不再读期望值
 
 - 链：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`；投影文本 = `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`，double 一律 `%.17g`，实体顺序 = `activeIds` 顺序。
