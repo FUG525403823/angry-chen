@@ -12,10 +12,25 @@ namespace Ac.UI
         public const float MaxSizePx = 24f;
 
         public float SpreadDeg { get; private set; }
+        public int ColorRgb { get; private set; }
+        public bool ColorblindSafe { get; private set; }
         public CrosshairState State { get; private set; }
         public float HurtRemainingMs { get; private set; }
 
-        public Crosshair() { SpreadDeg = MinSpreadDeg; State = CrosshairState.Normal; }
+        public Crosshair()
+        {
+            SpreadDeg = MinSpreadDeg;
+            State = CrosshairState.Normal;
+            ColorRgb = Ac.Core.SettingsDefaults.CrosshairColor;
+        }
+
+        // H5：设置里的 crosshairColor / colorblindSafe 此前只被序列化、没有任何行为读者。
+        // 色盲安全不改调色板数据，而是在既有调色板里选对比最大的一档。
+        public void SetPalette(int colorRgb, bool colorblindSafe)
+        {
+            ColorblindSafe = colorblindSafe;
+            ColorRgb = colorblindSafe ? Ac.Core.SettingsDefaults.MostContrastingCrosshairColor() : colorRgb;
+        }
 
         public void SetSpread(float spreadDeg)
         {

@@ -28,21 +28,33 @@ namespace Ac.Tests
 
         // C14 标准轴必改项 1：面板的 20/33ms 告警阈值曾经是第二份硬编码。
         // C14 §9 冻结接口：SetQualityTier / DrawCallLimit / CullDistanceMeters(int kind)。
-        // C14 标准轴必改项：ps1 里那张预算表是 FrameBudget 之外的第二份。这条用例直接读脚本，
-        // 把两份钉在一起——改了一边不改另一边就红。
+        // C14 标准轴必改项：ps1 里那张预算表是 FrameBudget 之外的第二份。预算现在只从每轮 JSON 的
+        // budget 对象读，所以这条用例改成真能抓回归的形状：脚本必须读 $sample.budget，
+        // 且不得再把预算写成字面量（旧版是子串扫描，frameP95Ms = 20 会误命中 200，价值很低）。
         private static void ChecksBenchScriptBudget()
         {
-            // 编辑器进程的工作目录是工程目录（client/），相对路径会指错地方：两个候选都试。
-            var path = System.IO.Path.Combine("client", "tools", "frame-bench.ps1");
-            if (!System.IO.File.Exists(path)) path = System.IO.Path.Combine("..", "client", "tools", "frame-bench.ps1");
-            if (!System.IO.File.Exists(path)) { SelfTest.True(false, "帧基准脚本必须存在", System.IO.Path.GetFullPath(path)); return; }
+            var path = BenchScriptPath();
+            if (path == null) { SelfTest.True(false, "帧基准脚本必须存在（仓库根 client/tools/frame-bench.ps1）", "找不到"); return; }
             var text = System.IO.File.ReadAllText(path);
-            SelfTest.True(text.Contains("frameP95Ms = " + FrameBudget.FrameP95BudgetMs.ToString("R", System.Globalization.CultureInfo.InvariantCulture)), "ps1 的 P95 预算与 FrameBudget 同源", "不一致");
-            SelfTest.True(text.Contains("frameP99Ms = " + FrameBudget.FrameP99BudgetMs.ToString("R", System.Globalization.CultureInfo.InvariantCulture)), "ps1 的 P99 预算与 FrameBudget 同源", "不一致");
-            SelfTest.True(text.Contains("drawCalls = " + FrameBudget.DrawCallBudget), "ps1 的 drawCalls 预算与 FrameBudget 同源", "不一致");
-            SelfTest.True(text.Contains("triangles = " + FrameBudget.TriangleBudget), "ps1 的 triangles 预算与 FrameBudget 同源", "不一致");
-            SelfTest.True(text.Contains("particles = " + FrameBudget.ParticleBudget), "ps1 的 particles 预算与 FrameBudget 同源", "不一致");
-            SelfTest.True(text.Contains("materials = " + FrameBudget.MaterialBudget), "ps1 的 materials 预算与 FrameBudget 同源", "不一致");
+            SelfTest.True(text.IndexOf("$sample.budget", StringComparison.Ordinal) >= 0, "ps1 从 JSON 的 budget 字段读预算", "脚本里没有 $sample.budget");
+            foreach (var literal in new[]
+            {
+                "frameP95Ms = 20", "frameP99Ms = 33", "drawCalls = 120",
+                "triangles = 180000", "particles = 256", "materials = 24",
+            })
+            {
+                SelfTest.True(text.IndexOf(literal, StringComparison.Ordinal) < 0, "ps1 不得硬编码 " + literal, "命中硬编码预算");
+            }
+        }
+
+        // 编辑器进程的工作目录是工程目录（client/），相对路径会指错地方：从工作目录向上找 .git 根再拼。
+        private static string BenchScriptPath()
+        {
+            var dir = new System.IO.DirectoryInfo(System.IO.Directory.GetCurrentDirectory());
+            while (dir != null && !System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, ".git"))) dir = dir.Parent;
+            var root = dir != null ? dir.FullName : System.IO.Directory.GetCurrentDirectory();
+            var path = System.IO.Path.Combine(root, "client", "tools", "frame-bench.ps1");
+            return System.IO.File.Exists(path) ? path : null;
         }
 
         private static void ChecksFrozenApi()

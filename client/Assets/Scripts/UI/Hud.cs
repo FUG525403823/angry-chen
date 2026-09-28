@@ -9,6 +9,7 @@ namespace Ac.UI
     {
         public Ac.Net.EventType Type;
         public int HitFlags;      // HIT_FLAG：headshot=1 / downed=2 / killed=4
+        public int TargetId;      // 事件目标（击杀事件的受害者）实体 id，来自 EventEntry.TargetId
         public int Wave;
         public int ReviveRatio255;
         public int WaveSize;
@@ -206,10 +207,18 @@ namespace Ac.UI
             }
         }
 
+        // 击杀记录的只读查询口（KillFeed 之前只有 Count/OverflowCount，测试与 UI 都没法看到内容）。
+        public bool TryGetKill(int index, out KillEntry entry)
+        {
+            return _feed.TryGet(index, out entry);
+        }
+
         private void PushKill(in HudEvent hudEvent)
         {
             var entry = default(KillEntry);
-            entry.VictimId = hudEvent.Wave;
+            // 原来这里写的是 hudEvent.Wave（字段串位：把波次当成了受害者 id）。
+            entry.VictimId = hudEvent.TargetId;
+            entry.Wave = hudEvent.Wave;
             entry.Headshot = (hudEvent.HitFlags & CombatFlags.HitFlagHeadshot) != 0;
             _feed.Push(entry);
         }

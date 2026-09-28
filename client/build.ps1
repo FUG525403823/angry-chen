@@ -1,4 +1,4 @@
-# C01 §5.3 / C15 §5：client 的唯一构建入口（发布通道）。
+﻿# C01 §5.3 / C15 §5：client 的唯一构建入口（发布通道）。
 # 用法：powershell -NoProfile -File client/build.ps1 [-Target Windows64] [-Output <目录或 .exe 路径>] [-Backend il2cpp|mono|auto]
 # 退出码：0 = 出包成功；1 = 构建失败；2 = 环境缺失（编辑器不可用）。
 # 产物：client/Build/Windows64/ac-client-<semver>+<sha7>-win64.zip + 同名 .sha256 + latest.txt
@@ -117,7 +117,26 @@ $manifest = @{
     builtUtc = $buildTime
     versionLine = 'ac-client ' + $semver + '+' + $sha7 + ' proto=' + $proto
 }
-($manifest | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $outputDir 'manifest.json') -Encoding UTF8
+$manifestPath = Join-Path $outputDir 'manifest.json'
+($manifest | ConvertTo-Json) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+# §5 自校验：重读回盘上的清单，把里面的 sha256 与归档的**实时**哈希比一遍——
+# 相信刚算出来的变量等于没校验，写盘失败/写错文件正是这里要抓的。
+$latestPath = Join-Path $outputDir 'latest.txt'
+$liveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$latestHash = ''
+if (Test-Path -LiteralPath $latestPath) {
+    $match = [regex]::Match((Get-Content -LiteralPath $latestPath -Raw -Encoding ASCII), '^\s*\S+\s+([0-9a-fA-F]{64})\s*$')
+    if ($match.Success) { $latestHash = $match.Groups[1].Value.ToLowerInvariant() }
+}
+$manifestHash = ''
+if (Test-Path -LiteralPath $manifestPath) {
+    try { $manifestHash = [string](Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).sha256 } catch { $manifestHash = '' }
+}
+if ($latestHash -ne $liveHash -or $manifestHash -ne $liveHash) {
+    Write-Output '构建失败：清单与归档 sha256 不一致'
+    exit 1
+}
 
 $log | Where-Object { $_ -match '\[build\] backend=' } | Select-Object -Last 1 | ForEach-Object { Write-Output ('  ' + $_) }
 Write-Output ('[build] archive=' + $archivePath)

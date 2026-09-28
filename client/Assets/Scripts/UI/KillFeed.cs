@@ -41,6 +41,14 @@ namespace Ac.UI
             return oldest;
         }
 
+        public bool TryGet(int index, out KillEntry entry)
+        {
+            entry = default(KillEntry);
+            if (index < 0 || index >= Capacity || _remaining[index] <= 0f) return false;
+            entry = _entries[index];
+            return true;
+        }
+
         public void Tick(float dtMs)
         {
             var live = 0;

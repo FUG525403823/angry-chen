@@ -82,7 +82,23 @@ namespace Ac.Tests
             Array.Sort(frameMs);
             var p95 = Quantile(frameMs, 0.95);
             var p99 = Quantile(frameMs, 0.99);
-            var cpuPass = p95 <= FrameBudget.FrameP95BudgetMs && p99 <= FrameBudget.FrameP99BudgetMs && allocPerFrame == 0 && gc0Delta == 0;
+            // 图形指标在无图形设备时不可测：恒 -1（本入口就是这种环境）。
+            var drawCalls = -1;
+            var triangles = -1;
+            var particles = -1;
+            var materials = -1;
+            var graphicsMeasured = drawCalls >= 0 && triangles >= 0 && particles >= 0 && materials >= 0;
+
+            // 8 段里没有样本的段：没 Mark 过就是没测（P95 恒 0），不能当成"预算内"。
+            var stageMissing = 0;
+            for (var i = 0; i < FrameProfiler.StageCount; i++) if (!(profiler.P95Ms(i) > 0f)) stageMissing++;
+
+            var overBudget = p95 > FrameBudget.FrameP95BudgetMs || p99 > FrameBudget.FrameP99BudgetMs
+                || allocPerFrame > FrameBudget.ManagedAllocBudgetBytes || gc0Delta > FrameBudget.Gc0DeltaBudget;
+            for (var i = 0; i < FrameProfiler.StageCount; i++) if (profiler.P95Ms(i) > FrameBudget.StageBudgetMs[i]) overBudget = true;
+
+            // 词表收敛成三值：PASS 只留给"图形指标齐 + 8 段齐 + 全部已测指标未超预算"。
+            var verdict = overBudget ? "FAIL" : (graphicsMeasured && stageMissing == 0) ? "PASS" : "UNVERIFIED";
 
             var sb = new StringBuilder();
             sb.Append("{\n");
@@ -98,29 +114,45 @@ namespace Ac.Tests
             Meta(sb, "sampleFrames", measureFrames.ToString(CultureInfo.InvariantCulture));
             Meta(sb, "runs", runs.ToString(CultureInfo.InvariantCulture));
             Meta(sb, "commit", Safe(delegate { return GitCommit(); }, "unknown"));
-            Meta(sb, "verdict", cpuPass ? "cpu-pass" : "fail");
-Meta(sb, "verdictNote", "headless: CPU frame path only (sync/predict/view/HUD); drawCalls/triangles/particles/materials need a graphics device, reported as -1 and judged FAIL");
+            // 本入口喂的是**合成 CPU 负载**，不是 C14 §5 计划里的真实场景：场景种类必须自报，
+            // 否则 ps1 会把合成数字当成计划场景的数字。
+            Meta(sb, "sceneKind", "synthetic-cpu");
+            Meta(sb, "verdict", verdict);
+            Meta(sb, "verdictNote", "sceneKind=synthetic-cpu: this entry point drives the runtime GameLoop with a synthetic CPU load (64 entities), not the planned scene; "
+                + "drawCalls/triangles/particles/materials need a graphics device (reported -1 here) and fx/audio/draw/overlay are never marked, so this machine cannot reach PASS");
+            // 预算表随样本一起落盘：唯一来源是 FrameBudget，ps1 只读这里的数字，不再另存一份。
+            sb.Append("  \"budget\": {\n");
+            Num(sb, 4, "frameP95Ms", FrameBudget.FrameP95BudgetMs);
+            Num(sb, 4, "frameP99Ms", FrameBudget.FrameP99BudgetMs);
+            Num(sb, 4, "managedAllocBytesPerFrame", FrameBudget.ManagedAllocBudgetBytes);
+            Num(sb, 4, "gc0Delta", FrameBudget.Gc0DeltaBudget);
+            Num(sb, 4, "drawCalls", FrameBudget.DrawCallBudget);
+            Num(sb, 4, "triangles", FrameBudget.TriangleBudget);
+            Num(sb, 4, "particles", FrameBudget.ParticleBudget);
+            Num(sb, 4, "materials", FrameBudget.MaterialBudget);
+            sb.Append("    \"stageP95Ms\": {\n");
+            for (var i = 0; i < FrameProfiler.StageCount; i++) Num(sb, 6, FrameBudget.StageNames[i], FrameBudget.StageBudgetMs[i]);
+            TrimLastComma(sb);
+            sb.Append("    }\n");
+            sb.Append("  },\n");
             Num(sb, "frameP95Ms", p95);
             Num(sb, "frameP99Ms", p99);
             Num(sb, "managedAllocBytesPerFrame", allocPerFrame);
             Num(sb, "gc0Delta", gc0Delta);
-            Num(sb, "drawCalls", -1);
-            Num(sb, "triangles", -1);
-            Num(sb, "particles", -1);
-            Num(sb, "materials", -1);
+            Num(sb, "drawCalls", drawCalls);
+            Num(sb, "triangles", triangles);
+            Num(sb, "particles", particles);
+            Num(sb, "materials", materials);
             // 只报**真的被 Mark 过**的段：fx/audio/overlay/draw 目前没有任何装配（没有渲染器与音频场景），
-            // 报 0 会让 8 段预算里的 4 段永远"通过"。缺段 ⇒ ps1 直接判 FAIL，这是刻意的。
+            // 报 0 会让 8 段预算里的 4 段永远"通过"。缺段 ⇒ 本入口自己判 UNVERIFIED，这是刻意的。
             sb.Append("  \"stageP95\": {\n");
-            Stage(sb, "input", profiler, FrameStage.Input);
-            Stage(sb, "sync", profiler, FrameStage.Sync);
-            Stage(sb, "predict", profiler, FrameStage.Predict);
-            Stage(sb, "hud", profiler, FrameStage.Hud);
-            if (sb[sb.Length - 2] == ',') sb.Remove(sb.Length - 2, 2);
+            foreach (var stage in MarkedStages) Num(sb, 4, FrameBudget.StageNames[(int)stage], profiler.P95Ms(stage));
+            TrimLastComma(sb);
             sb.Append("  },\n");
             Num(sb, "frames", loop.Frames);
             Num(sb, "snapshotsApplied", loop.SnapshotsApplied);
             Num(sb, "bootFrames", loop.Frames);
-            if (sb[sb.Length - 2] == ',') sb.Remove(sb.Length - 2, 2);
+            TrimLastComma(sb);
             sb.Append("\n}\n");
 
             if (!string.IsNullOrEmpty(outPath))
@@ -129,18 +161,20 @@ Meta(sb, "verdictNote", "headless: CPU frame path only (sync/predict/view/HUD); 
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 File.WriteAllText(outPath, sb.ToString());
             }
-            Console.Out.WriteLine("FRAMEBENCH " + (cpuPass ? "PASS" : "FAIL")
+            Console.Out.WriteLine("FRAMEBENCH " + verdict
                 + " p95=" + p95.ToString("R") + " p99=" + p99.ToString("R")
                 + " alloc=" + allocPerFrame + " gc0=" + gc0Delta
                 + " frames=" + loop.Frames + " out=" + (outPath ?? "(none)"));
             Console.Out.Flush();   // Exit 会立刻终止进程，缓冲不刷就什么都没了
-            EditorApplication.Exit(cpuPass ? 0 : 1);
+            // UNVERIFIED 也是红：拿不到数字就不许绿。
+            EditorApplication.Exit(verdict == "PASS" ? 0 : 1);
         }
 
-        private static void Stage(StringBuilder sb, string name, FrameProfiler profiler, FrameStage stage)
+        // 这个基准真的会 Mark 的段（GameLoop 的装配）；其余四段没有装配，报 0 等于凭空给它们发"通过"。
+        private static readonly FrameStage[] MarkedStages =
         {
-            Num(sb, name, profiler.P95Ms(stage));
-        }
+            FrameStage.Input, FrameStage.Sync, FrameStage.Predict, FrameStage.Hud,
+        };
 
         private static void FillFrame(ref SnapshotFrame frame, int entityCount, uint tick)
         {
@@ -216,9 +250,15 @@ Meta(sb, "verdictNote", "headless: CPU frame path only (sync/predict/view/HUD); 
         {
             sb.Append("  \"").Append(key).Append("\": \"").Append((value ?? "unknown").Replace("\\", "/").Replace("\"", "'")).Append("\",\n");
         }
-        private static void Num(StringBuilder sb, string key, double value)
+        private static void Num(StringBuilder sb, string key, double value) { Num(sb, 2, key, value); }
+        private static void Num(StringBuilder sb, int indent, string key, double value)
         {
-            sb.Append("  \"").Append(key).Append("\": ").Append(value.ToString("R", CultureInfo.InvariantCulture)).Append(",\n");
+            sb.Append(' ', indent).Append('"').Append(key).Append("\": ").Append(value.ToString("R", CultureInfo.InvariantCulture)).Append(",\n");
+        }
+        // 每条 Num 都以 ",\n" 收尾；拼最后一项时要把它收掉（空对象时不动）。
+        private static void TrimLastComma(StringBuilder sb)
+        {
+            if (sb.Length >= 2 && sb[sb.Length - 2] == ',') sb.Remove(sb.Length - 2, 2);
         }
     }
 }

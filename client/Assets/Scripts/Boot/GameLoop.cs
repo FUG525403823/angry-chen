@@ -126,6 +126,7 @@ namespace Ac.Boot
             var hudEvent = default(HudEvent);
             hudEvent.Type = entry.Type;
             hudEvent.HitFlags = entry.Flags;
+            hudEvent.TargetId = entry.TargetId;
             hudEvent.Wave = entry.Wave;
             hudEvent.WaveSize = entry.Budget;
             hudEvent.ReviveRatio255 = entry.Ratio255;

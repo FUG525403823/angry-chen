@@ -20,6 +20,8 @@ namespace Ac.Tests
             SelfTest.Add("hud.visibility", ChecksVisibility);
             SelfTest.Add("hud.wave_killfeed", ChecksWaveKillFeed);
             SelfTest.Add("hud.intermission_wiring", ChecksIntermissionWiring);
+            SelfTest.Add("hud.kill_entry_target", ChecksKillEntryTarget);
+            SelfTest.Add("hud.crosshair_palette", ChecksCrosshairPalette);
             SelfTest.Add("hud.stats_throttle", ChecksStatsThrottle);
             SelfTest.Add("hud.revive_event_vs_sample", ChecksReviveEventVsSample);
             SelfTest.Add("hud.text_and_font", ChecksTextAndFont);
@@ -111,6 +113,43 @@ namespace Ac.Tests
             fresh.IntermissionMs = 0;
             zero.Apply(fresh);
             SelfTest.Equal(0, (long)zero.Banner.IntermissionMs);
+        }
+
+        // M4：击杀事件的受害者 id 必须是事件目标，不是波次（原来把 Wave 塞进了 VictimId）。
+        private static void ChecksKillEntryTarget()
+        {
+            var hud = new Hud();
+            var killEvent = default(HudEvent);
+            killEvent.Type = EventType.SheepKilled;   // 击杀分支看的是 HitFlagKilled，类型只要合法即可
+            killEvent.TargetId = 7;
+            killEvent.Wave = 3;
+            killEvent.HitFlags = CombatFlags.HitFlagKilled;
+            hud.PushEvent(killEvent);
+
+            var entry = default(KillEntry);
+            var found = false;
+            for (var i = 0; i < KillFeed.Capacity; i++)
+            {
+                if (hud.TryGetKill(i, out entry)) { found = true; break; }
+            }
+            SelfTest.True(found, "击杀记录必须能查到", "查不到");
+            SelfTest.Equal(7, (long)entry.VictimId);
+            SelfTest.Equal(3, (long)entry.Wave);
+        }
+
+        // H5：crosshairColor / colorblindSafe 必须真的被准星读取（此前只被序列化）。
+        private static void ChecksCrosshairPalette()
+        {
+            var cross = new Crosshair();
+            SelfTest.Equal(SettingsDefaults.CrosshairColor, (long)cross.ColorRgb);
+            SelfTest.True(!cross.ColorblindSafe, "默认不是色盲安全", "默认开着");
+
+            cross.SetPalette(0x66E0FF, false);
+            SelfTest.Equal(0x66E0FF, (long)cross.ColorRgb);
+
+            cross.SetPalette(0x66E0FF, true);
+            SelfTest.Equal(SettingsDefaults.MostContrastingCrosshairColor(), (long)cross.ColorRgb);
+            SelfTest.True(cross.ColorRgb != 0x66E0FF, "色盲安全必须换一档颜色", "没换");
         }
 
         private static void ChecksElementMap()

@@ -60,6 +60,21 @@ namespace Ac.Core
 
         public static readonly int[] CrosshairColors = { 0x00FF66, 0x66E0FF, 0xFFFF66, 0xFF66CC };
 
+        // H5：色盲安全开关不能是个死设置。按 sRGB 亮度权重在既有调色板里挑最亮（深色 HUD 上最清楚）的一档，
+        // 用整数权重避免浮点不确定性。
+        public static int MostContrastingCrosshairColor()
+        {
+            var best = CrosshairColors[0];
+            var bestLuma = -1;
+            for (var i = 0; i < CrosshairColors.Length; i++)
+            {
+                var c = CrosshairColors[i];
+                var luma = 2126 * ((c >> 16) & 0xFF) + 7152 * ((c >> 8) & 0xFF) + 722 * (c & 0xFF);
+                if (luma > bestLuma) { bestLuma = luma; best = c; }
+            }
+            return best;
+        }
+
         public static SettingsSnapshot Default()
         {
             var snapshot = default(SettingsSnapshot);
