@@ -385,6 +385,14 @@ node server/tools/gen-trig-table.mjs    # 读该 JSON 生成 server/src/core/tri
 14. §4 的"用共享整数表替换 v1 的 `Math.sin/cos/atan2/asin`"实现为**进程内替换**（`patchMath`，在 import v1 之前打补丁），不往任何磁盘写补丁 → §7 的"补丁只打在可写派生副本上"以更强的形式成立（两侧磁盘都不动）。副作用是替换面覆盖 v1 的全部调用点（不止移动路径），这正是对拍要的：C++ 侧同样只走整数表。
 15. 导出脚本的基线纪律做成可判定：默认拒绝 `--root` 指向只读源；启动时逐文件比对派生副本与只读源（`packages/shared/src`，不一致直接失败，除非显式 `--allow-patched-copy`）；结束时比对只读源的 (文件数, 总字节, 最新 mtime) 指纹，被写入即报错；`--list` 缺文件由"打印 missing"改为**失败**；体积门移到写盘**之前**（门失败时不留下超限生成物）；CRC32C 与角度表常量改为 import `tools/lib/trig-table.mjs` 的唯一实现。
 
+### 8.4 本次回写：战斗类 3 份向量交付（4 → 7 份，`--filter=fixture` = 9/9）
+
+- **新交付**：`rifle-burst-hit-120t`（206 114 B）、`shotgun-spread-60t`（85 188 B）、`downed-revive-140t`（212 927 B）；清单 / SHA256 / 命令流见 `docs/evidence/fixtures/README.md` §1，`configHash = 19a978ea` 未变。
+- **驱动扩展**（`tools/export-fixtures.mjs`）：场景可带 `setup(world)` 建世界初态（生成羊群、覆盖玩家初态）；命令槽位只发给**玩家**（羊群不再占用槽位）；新增 `--only <name[,name]>` 只渲染子集（体积门按本次选中的批次判定）。C++ 侧同一张表在 `fixture_test.cpp::applyScenarioSetup`，生成原语复用 `waves::spawnSheepAt`（与 v1 `ai/director.ts` 的 `spawnEntity`+`applySheepKind`+`graze` 同形）。
+- **两处 schema 加宽（都不放松比较）**：① `entities[].hp` 由整数改 **double**——v1 的护甲吸收会写出 `96.8`，整数读取器会拒绝整份向量；比较改走 `diff.doubleField`（逐位，比原来的整数截断更严，既有 4 份的整数 hp 逐字节不变）。② `flags` 补 bit0 `downed` / bit1 `rageMode` / bit2 `reloading`：`entityFlagsOf(entity, world.timeMs)`，bit3/bit4 两侧都不产出。
+- **RNG 覆盖收口**：`rifle-burst-hit-120t` 放了一只 35m 视野外的吃草羊（每 2500ms 抽 2 次 `ai` 流）→ 实测 `draws=ai:6,spawn:0,fx:0`，§8.3-13 记的"§5.2 的计数包装 + 重放推导没有被任何向量执行"到此结束；`spawn`/`fx` 仍为 0，原因见 `docs/evidence/fixtures/README.md` §5 的 `rng-streams-600t` 行。
+- **仍未交付的 7 份卡在冻结的体积门，不是能力缺口**：C++ 侧的羊形 AI / 冲锋 / 问号弹 / 羊王三阶段 / 波次导演 / 倒地救援都已就位（`--filter=ai` 36/36、`--filter=waves` 16/16）。已交付 7 份 = 1 950 729 B，余量 146 423 B；实测记录长度 950.2 B/tick ⇒ **最小**的剩余场景（`sheep-ram-charge-300t`：300 tick × 5 实体 + 空命令）≈285 051 B 已超余量。另有两处非体积卡点：`wave-director-1to5-1200t` 需要把导演接进 tick 循环（OQ-11），`snapshot-roundtrip-240t` 需要冻结 schema 里不存在的快照字段组。逐条见 `docs/evidence/fixtures/README.md` §5（**需裁决**：§5.5 / ADR-010 §8 的体积门）。
+
 ## 9. 战斗（S08 §5 冻结）
 
 - 配置：`config/weapons.hpp`（三把枪整表 + 散布/后坐/弹道标量）、`config/combat.hpp`（命中部位、伤害与护甲吸收、怒气、救援、羊命中盒）。`configHashText` 自本批起多出七组（`weapons` / `weapon.rules` / `shot` / `damage` / `rage` / `revive` / `sheepHit`），C++ 与导出脚本逐字节一致，4 份向量已按新哈希重新导出。
@@ -940,7 +948,7 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 ## 17. 当前状态
 
 **S01–S15 已完成**：构建链、自研断言框架、结构化日志（S01）、确定性内核（S02）、二进制协议编解码（S03）、UDP 传输子层（S04：套接字缝、可靠性、分片、握手、心跳/宽限期、内存总线）、模拟数据层（S05：
-`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中的 10 个待 S08/S09/S12**）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12：每客户端基线镜像与 40 tick 强制全量、差分编码与移除列表、64 KiB 队列预算与 60 帧慢客户端断开、200/150/100 档位状态机与 3000 ms 升档、tick 绝对时刻自校正与 8 ms 工作量预算（让出 ≠ 丢 tick）、6 个量值指标与 4 个追加计数、报告门禁，见 §13）、持久化与可观测出口（S13：追加式战绩存储（NDJSON + `AC_WITH_SQLITE=0` 的 sqlite 缝）与 10 万行上界、`{ts,level,evt,room,tick,pid,detail}` 事件行与 19 个事件名、46 行 `/metrics` 名字表（27 计数 + 12 量值 + 7 进程字段）、8 组单局诊断报告与 `reports/` 保留 200 份、四个 HTTP 端点的纯处理层与 30 次/分钟读限流 + 60 s 读缓存，见 §14）就位。S14–S15（压测基准与性能守门、发布运维与验收）已完成，见 §15 与 §18。
+`World` 字段表、实体表、姿态环、空间网格、80m×80m 场地常量，见 §6）、模拟步进内核（S06：命令应用、积分、静态碰撞、实体分离、`localStep` 预测子集，见 §7）与跨语言对拍（S07：v1 向量导出、C++ 逐位复现、`DIFF` 报告与自检，见 §8；**14 场景中 7 份已交付、7 份待裁决**——见 §8.4）、羊群 AI 与波次导演（S09：四羊形行为与聚集、仇恨选择、冲锋/撕咬/问号弹、羊王三阶段、波次预算与出生点，见 §10）、房间与会话与对局流程（S10：房间注册表与 31 字符房间码、5 态阶段机与四个时长、30s 宽限期与**只按令牌**重连、事件驱动的每人统计与结算记录、§5.8 的 MatchState 1000ms 节拍与立即补发，见 §11）、权威校验与硬纠正（S11：命令字段夹取与 opcode 白名单、两套 1s 滑动窗口与 join 节流、派生预算可解释性判定与硬纠正、`min(rttMs/2, 200)` 回退取样、恶意输入矩阵 36 条与 9 个计数接线，见 §12）就位；复制调度与背压（S12：每客户端基线镜像与 40 tick 强制全量、差分编码与移除列表、64 KiB 队列预算与 60 帧慢客户端断开、200/150/100 档位状态机与 3000 ms 升档、tick 绝对时刻自校正与 8 ms 工作量预算（让出 ≠ 丢 tick）、6 个量值指标与 4 个追加计数、报告门禁，见 §13）、持久化与可观测出口（S13：追加式战绩存储（NDJSON + `AC_WITH_SQLITE=0` 的 sqlite 缝）与 10 万行上界、`{ts,level,evt,room,tick,pid,detail}` 事件行与 19 个事件名、46 行 `/metrics` 名字表（27 计数 + 12 量值 + 7 进程字段）、8 组单局诊断报告与 `reports/` 保留 200 份、四个 HTTP 端点的纯处理层与 30 次/分钟读限流 + 60 s 读缓存，见 §14）就位。S14–S15（压测基准与性能守门、发布运维与验收）已完成，见 §15 与 §18。
 
 本机实测（2026-09-24，Windows 11 + Windows PowerShell 5.1）：
 
@@ -1097,6 +1105,12 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | 运维段（S15 §3 任务 5/6） | `server/README.md` §18：目录布局、端口与端点、环境变量、日志轮转（64MB/7 份）、五条排障命令、退役判定清单 6 条、Linux 部署步骤 |
 | 验收与验证（S15 §6/§7） | §6 验证 1–6 全过（`--version` 逐字、`/health` 200、`/metrics` 200、`/nope` 404、禁用字符串 0、端口三处一致、`check-docs`/`check-assets` 退出码 0）；`docs/evidence/server-v2-acceptance.md` 落盘 |
 | 计划偏差清单（S15） | §18.8 的八条（`AC_DATA_DIR` 平台默认值、版本注入方式、安装名与目标名、单元里 env 与 CLI 双写、反代监听端口未冻结、本机无法跑 systemd/反代语法校验、退役清单 ①③⑤⑥ 未验证、`--serve` 顺序） |
+| `node tools/export-fixtures.mjs`（本次：战斗类 3 份入库） | 7 份 = **1 950 729 B**（体积门 2 097 152 B，余 **146 423 B**）；`--check` = `check ok：7/7 与盘上逐字节一致`；`configHash = 19a978ea` 未变；`--out` 目录 ≈2.674 MB / 9 文件（超目录口径门限约 576 KB，见 §8.3-9 的**需裁决**） |
+| `server/build/ac_tests.exe --filter=fixture`（本次） | 末行 `TESTS 9/9`：7 份向量逐 tick 逐字段逐位一致（1100 + 320 tick）+ 2 条自检；新增 `fixture_rifle_burst_hit_120t` / `fixture_shotgun_spread_60t` / `fixture_downed_revive_140t` |
+| 全量回归（本次） | `server/build/ac_tests.exe` 末行 `TESTS 471/471`（S14 的 468 + 本批 3），退出码 0 |
+| `--filter` 计数（本次） | 既有 32 组逐组同数，只有 `fixture` 6/6 → **9/9**（新用例名不含其它组的子串；已复测 ai 36/36、combat 45/45、step 27/27、waves 16/16、entity 9/9、world 6/6、rng 6/6、size 5/5、match 53/53） |
+| schema 加宽（本次） | `entities[].hp` 整数 → double（v1 护甲吸收写出 96.8；读取按 double、比较仍 `bit_cast` 逐位）；`flags` 补 bit0 `downed` / bit1 `rageMode` / bit2 `reloading`（`entityFlagsOf(entity, world.timeMs)`） |
+| 计划偏差清单（本次） | §8.4 的四条：① 场景初态（生成羊 / 覆盖玩家 hp）是 schema 之外"两侧同表"的约定；② `hp` 为 double；③ 事件仍只比条数（本批新增事件仍未比载荷）；④ 其余 7 份被 §5.5 体积门挡住（**需裁决**），另有 `snapshot-roundtrip-240t` 的 schema 缺口与 `wave-director-1to5-1200t` 的导演未接 tick（OQ-11） |
 ## 18. 发布、运维与验收（S15 §5 冻结）
 
 当前发布版号 **0.1.0**（`--version` 行：`ac_server 0.1.0 protocol=1 tick=50ms`），协议版本 **1**（独立于语义化版本，不随发布变动）。版号的唯一来源是构建期注入的 `AC_SERVER_VERSION`（`server/CMakeLists.txt`，同时供 `/metrics` 的 `ac_server_version` 标签）。

@@ -30,7 +30,9 @@ struct FixtureEntity {
   double posZ = 0.0;
   double yaw = 0.0;
   double pitch = 0.0;
-  int32_t hp = 0;
+  // hp 是 double：v1 的护甲吸收把玩家 hp 打成小数（例：步枪命中后 96.8），整数读取器会拒绝整份向量。
+  // 比较仍是逐位（diff.doubleField），比原来的整数截断更严 —— 既有 4 份的 hp 恒为整数，逐字节结果不变。
+  double hp = 0.0;
   uint8_t flags = 0u;
 };
 
@@ -84,8 +86,9 @@ inline constexpr uint8_t kFlagFading = 16u;   // 同上
 inline constexpr uint8_t kFlagIdle = 32u;
 
 // bit0 downed / bit1 rageMode / bit2 reloading / bit3 charging / bit4 fading / bit5 idle。
-// 本份（S07 移动类向量）只有 bit5 有来源（entity.idle）；其余位随 S08/S09/S12 落地后补齐映射。
-uint8_t entityFlagsOf(const ac::sim::Entity& entity) noexcept;
+// 与导出侧（tools/export-fixtures.mjs 的 flagsOf）同口径：bit0/1/2/5 有来源，bit3/4 只出现在 v1 的快照
+// 位表（net.ts），两侧都不产出（恒 0）。nowMs 取该 tick 结束后的 world.timeMs（v1 的 isRageActive 用它）。
+uint8_t entityFlagsOf(const ac::sim::Entity& entity, double nowMs) noexcept;
 const char* kindName(ac::sim::EntityKind kind) noexcept;
 
 // §5.4 比较：只记录**首个**差异，报告格式冻结。

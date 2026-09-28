@@ -276,9 +276,8 @@ bool readEntity(Reader& reader, FixtureEntity& out) {
   if (!reader.doubleValue(out.pitch)) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("hp")) return false;
-  int64_t hp = 0;
-  if (!reader.signedValue(hp)) return false;
-  out.hp = static_cast<int32_t>(hp);
+  // hp 按 double 读（v1 的护甲吸收会写出 96.8 这类值，见 fixture_io.hpp）。
+  if (!reader.doubleValue(out.hp)) return false;
   if (!reader.literal(',')) return false;
   if (!reader.key("flags")) return false;
   if (!readUint8(reader, out.flags, "entities[].flags")) return false;
@@ -765,8 +764,12 @@ std::string doubleHex(double value) {
   return std::string(buffer, written > 0 ? static_cast<std::size_t>(written) : 0u);
 }
 
-uint8_t entityFlagsOf(const ac::sim::Entity& entity) noexcept {
+uint8_t entityFlagsOf(const ac::sim::Entity& entity, double nowMs) noexcept {
+  // 与 v1 combat/resolve.ts + sim.ts 的 flagsOf 逐位同表（bit3 charging / bit4 fading 两侧都不产出）。
   uint8_t flags = 0u;
+  if (entity.downed.downed) flags |= kFlagDowned;
+  if (ac::combat::isRageActive(entity.rage, nowMs)) flags |= kFlagRageMode;
+  if (ac::combat::isReloading(entity.weapon)) flags |= kFlagReloading;
   if (entity.idle) flags |= kFlagIdle;
   return flags;
 }

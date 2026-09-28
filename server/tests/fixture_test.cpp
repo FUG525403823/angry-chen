@@ -8,10 +8,12 @@
 #include <vector>
 
 #include "config/player.hpp"
+#include "config/sheep.hpp"
 #include "sim/arena.hpp"
 #include "sim/step.hpp"
 #include "sim/world.hpp"
 #include "tiny_test.hpp"
+#include "waves/director.hpp"
 
 namespace {
 
@@ -20,10 +22,38 @@ using ac::sim::Entity;
 using ac::sim::EntityKind;
 using ac::sim::World;
 
+// docs/evidence/fixtures/README.md §2 的世界初态约定（schema 之外，与 tools/export-fixtures.mjs 的
+// scenario.setup 逐字同表）：羊群/战斗类场景在 createWorld 之后、第一个 tick 之前生成羊群，
+// 并按需覆盖玩家初态。生成原语复用波次导演的 waves::spawnSheepAt（v1 的 spawnEntity+applySheepKind
+// + state=graze 同形），不另写一套。
+void applyScenarioSetup(const std::string& name, World& world) {
+  if (name == "rifle-burst-hit-120t") {
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kElite, -4.5, -15.0);
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kGrunt, -9.0, -2.0);
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kGrunt, 35.0, -35.0);
+    return;
+  }
+  if (name == "shotgun-spread-60t") {
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kGrunt, -4.5, -2.0);
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kGrunt, -7.0, -3.0);
+    return;
+  }
+  if (name == "downed-revive-140t") {
+    // 1 号玩家初态 hp=8 / armor=0（咩咩兵的第一口即造成倒地），随后在 1.2m 处生成咩咩兵。
+    Entity* victim = ac::sim::entityById(world, 1u);
+    if (victim != nullptr) {
+      victim->hp = 8.0;
+      victim->armor = 0.0;
+    }
+    ac::waves::spawnSheepAt(world, ac::config::SheepKind::kGrunt, -4.5, 5.8);
+    return;
+  }
+}
+
 // v1 createWorld 的语义：世界建好后立刻在 4 个出生点各生成一名玩家（id 1..4 升序）。
-// 这是 fixture 里没有记录、但两侧必须一致的世界初态（见 docs/evidence/fixtures/README.md）。
-std::unique_ptr<World> createFixtureWorld(uint32_t seed) {
-  std::unique_ptr<World> world = ac::sim::createWorld(seed);
+// 这是 fixture 里没有记录、但两侧必须一致的世界初态（见 docs/evidence/fixtures/README.md §2）。
+std::unique_ptr<World> createFixtureWorld(const ac::test::Fixture& fixture) {
+  std::unique_ptr<World> world = ac::sim::createWorld(fixture.seed);
   const ac::config::BaseStats& stats = ac::config::kKindBaseStats[static_cast<std::size_t>(EntityKind::kPlayer)];
   for (const ac::Vec3& spawn : ac::sim::arena::kPlayerSpawns) {
     ac::sim::SpawnParams params{};
@@ -35,6 +65,7 @@ std::unique_ptr<World> createFixtureWorld(uint32_t seed) {
     params.armor = stats.armor;
     ac::sim::spawnEntity(*world, params);
   }
+  applyScenarioSetup(fixture.name, *world);
   return world;
 }
 
@@ -54,7 +85,7 @@ uint32_t replayFixture(const ac::test::Fixture& fixture, ac::test::DiffSink& dif
   diff.stringField(0u, "configHash", fixture.configHash, ac::test::hashHex(ac::test::configHash()));
   if (diff.has) return 0u;
 
-  std::unique_ptr<World> world = createFixtureWorld(fixture.seed);
+  std::unique_ptr<World> world = createFixtureWorld(fixture);
   uint32_t compared = 0u;
   for (std::size_t tickIndex = 0u; tickIndex < fixture.ticks.size(); ++tickIndex) {
     const ac::test::FixtureTick& tick = fixture.ticks[tickIndex];
@@ -108,9 +139,9 @@ uint32_t replayFixture(const ac::test::Fixture& fixture, ac::test::DiffSink& dif
         diff.doubleField(tickNumber, base + ".pos.z", expected.posZ, entity->pos.z);
         diff.doubleField(tickNumber, base + ".yaw", expected.yaw, entity->yaw);
         diff.doubleField(tickNumber, base + ".pitch", expected.pitch, entity->pitch);
-        diff.intField(tickNumber, base + ".hp", static_cast<int64_t>(expected.hp), static_cast<int64_t>(entity->hp));
+        diff.doubleField(tickNumber, base + ".hp", expected.hp, entity->hp);
         diff.intField(tickNumber, base + ".flags", static_cast<int64_t>(expected.flags),
-                      static_cast<int64_t>(ac::test::entityFlagsOf(*entity)));
+                      static_cast<int64_t>(ac::test::entityFlagsOf(*entity, static_cast<double>(world->timeMs))));
       }
       ++entityIndex;
     }
@@ -151,6 +182,9 @@ AC_TEST(fixture_still_60t) { runFixture("still-60t"); }
 AC_TEST(fixture_line_move_240t) { runFixture("straight-line-240t"); }
 AC_TEST(fixture_barn_collision_400t) { runFixture("barn-collision-400t"); }
 AC_TEST(fixture_fence_bounds_400t) { runFixture("fence-bounds-400t"); }
+AC_TEST(fixture_rifle_burst_hit_120t) { runFixture("rifle-burst-hit-120t"); }
+AC_TEST(fixture_shotgun_spread_60t) { runFixture("shotgun-spread-60t"); }
+AC_TEST(fixture_downed_revive_140t) { runFixture("downed-revive-140t"); }
 
 // §6 的自检：手工改一位数字必须让比较在**那一个 tick**、那一个字段上以 DIFF 失败。
 AC_TEST(fixture_tampered_projection_reports_diff) {

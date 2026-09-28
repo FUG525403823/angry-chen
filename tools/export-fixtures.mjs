@@ -6,6 +6,7 @@
 //   node tools/export-fixtures.mjs                                 写盘（默认派生副本 + docs/evidence/fixtures）
 //   node tools/export-fixtures.mjs --check                         只比较，不写盘（幂等校验）
 //   node tools/export-fixtures.mjs --list                          清单：name / 字节数 / SHA256
+//   node tools/export-fixtures.mjs --only <name[,name]>             只渲染选中的子集（体积门按本次选中的批次判定）
 //   node tools/export-fixtures.mjs --root <副本> --out <目录>
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -43,11 +44,12 @@ const SIZE_GATE_BYTES = 2 * 1024 * 1024;
 const TICK_MS = 50;
 
 function parseArgs(argv) {
-  const opts = { root: DEFAULT_ROOT, out: DEFAULT_OUT, check: false, list: false, help: false };
+  const opts = { root: DEFAULT_ROOT, out: DEFAULT_OUT, check: false, list: false, help: false, only: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--root') opts.root = argv[i += 1];
     else if (arg === '--out') opts.out = argv[i += 1];
+    else if (arg === '--only') opts.only = (argv[i += 1] ?? '').split(',').filter((name) => name !== '');
     else if (arg === '--check') opts.check = true;
     else if (arg === '--list') opts.list = true;
     else if (arg === '--allow-patched-copy') opts.allowPatchedCopy = true;
@@ -426,7 +428,23 @@ function makeRngProbe(seed) {
   return { taps, wrap, stateOf: (stream) => derivedState(stream) };
 }
 
-// ---------------- 场景（S07 §5.3 的移动类 4 份；战斗/AI/波次见 docs/evidence/fixtures/README.md） ----------------
+// ---------------- 场景（S07 §5.3；未交付的场景见 docs/evidence/fixtures/README.md §5） ----------------
+// §5.1 的命令按钮位表（v1 config/input.ts 的 BUTTON 逐值一致）。
+const BUTTON = { fire: 1, sprint: 2, jump: 4, reload: 8, interact: 16, rage: 32, switchWeapon: 64 };
+
+// 羊群/战斗类场景的驱动方式 = 「schema 之外的世界初态」+「每 tick 的脚本化命令」（README §2 的表）：
+// setup(world, v1) 在 createWorld 之后、第一个 tick 之前跑一次。两侧（本脚本与
+// server/tests/fixture_test.cpp 的 createFixtureWorld）必须逐字同表，否则第一个 tick 就失败。
+// 生成原语与 v1 ai/director.ts 的生成路径同形：spawnEntity('sheep') + applySheepKind + state=graze。
+function spawnSheep(world, v1, kind, x, z) {
+  const spawned = v1.spawnEntity(world, 'sheep', x, 0, z);
+  if (!spawned.ok) throw new Error('spawnEntity(sheep) 失败：' + spawned.reason);
+  const entity = v1.getEntity(world, spawned.id);
+  v1.applySheepKind(entity, kind);
+  entity.state = v1.SHEEP_STATE.graze;
+  return spawned.id;
+}
+
 const SCENARIOS = [
   {
     name: 'still-60t',
@@ -463,6 +481,82 @@ const SCENARIOS = [
       return ids.map((id, index) => ({ id, moveX: 1, moveY: 0, yaw: index < 2 ? 0 : -PI / 2, pitch: 0, buttons: 0 }));
     },
   },
+  {
+    // §5.3 连射命中：1 号玩家第 1 tick 切到 2 号槽（switchWeapon + switchTo=1 → 步枪），
+    // tick 2–60 按住开火（rpm 600 → 每 2 tick 一发，正好打空 30 发弹匣）、tick 61–100 换弹（2000ms）、
+    // tick 101–120 再开火；目标是一只保持 15–25m 距离的问界羊（会横向移动、会射问号弹）与一只冲上来的咩咩兵。
+    // 俯角 -0.03 rad：v1 的射击起点是眼高 1.6m，而羊的命中盒顶只有 1.15–1.29m，平射打不到。
+    name: 'rifle-burst-hit-120t',
+    seed: 23,
+    ticks: 120,
+    setup(world, v1) {
+      spawnSheep(world, v1, 'elite', -4.5, -15);
+      spawnSheep(world, v1, 'grunt', -9, -2);
+      // 远处（>35m 视野）一只始终吃草的咩咩兵：让 §5.2 的「抽取计数 + 重放推导」真正被执行
+      // （吃草每 GRAZE_REPICK_MS=2500ms 抽 2 次 ai 流），否则 rngState 三流比较是空转。
+      spawnSheep(world, v1, 'grunt', 35, -35);
+    },
+    commandsFor(tick, ids) {
+      return ids.map((id) => {
+        if (id === 1) {
+          if (tick === 1) {
+            return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.03, buttons: BUTTON.switchWeapon, switchTo: 1 };
+          }
+          const firing = tick <= 60 || tick > 100;
+          return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.03, buttons: firing ? BUTTON.fire : BUTTON.reload };
+        }
+        if (id === 2) return { id, moveX: 1, moveY: 0, yaw: 0, pitch: 0, buttons: 0 };
+        if (id === 4) return { id, moveX: 1, moveY: 0, yaw: -PI / 2, pitch: 0, buttons: 0 };
+        return { id, moveX: 0, moveY: 0, yaw: PI, pitch: 0, buttons: 0 };
+      });
+    },
+  },
+  {
+    // §5.3 霰弹散布：第 1 tick 切到 3 号槽（switchWeapon + switchTo=2），之后每 tick 按开火；
+    // rpm 70 → 60 tick 内只有 3 次击发，每次 8 弹丸，各自带 seq/pellet 派生的抖动（±4°）。
+    name: 'shotgun-spread-60t',
+    seed: 29,
+    ticks: 60,
+    setup(world, v1) {
+      spawnSheep(world, v1, 'grunt', -4.5, -2);
+      spawnSheep(world, v1, 'grunt', -7, -3);
+    },
+    commandsFor(tick, ids) {
+      return ids.map((id) => {
+        if (id === 1) {
+          if (tick === 1) {
+            return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.05, buttons: BUTTON.switchWeapon, switchTo: 2 };
+          }
+          return { id, moveX: 0, moveY: 0, yaw: PI, pitch: -0.05, buttons: BUTTON.fire };
+        }
+        if (id === 2) return { id, moveX: 1, moveY: 0, yaw: -PI / 2, pitch: 0, buttons: BUTTON.sprint };
+        return { id, moveX: 0, moveY: 0, yaw: PI, pitch: 0, buttons: 0 };
+      });
+    },
+  },
+  {
+    // §5.3 倒地救援：1 号玩家初态 hp=8 / armor=0（README §2 的初态约定）→ 咩咩兵第一口即倒地；
+    // 2 号玩家走近后按住 interact 推进救援，中途松手一次（中断 → 5s 后进度清零），再次按住直到完成。
+    name: 'downed-revive-140t',
+    seed: 31,
+    ticks: 140,
+    setup(world, v1) {
+      const victim = v1.getEntity(world, 1);
+      victim.hp = 8;
+      victim.armor = 0;
+      spawnSheep(world, v1, 'grunt', -4.5, 5.8);
+    },
+    commandsFor(tick, ids) {
+      return ids.map((id) => {
+        if (id === 2) {
+          if (tick <= 8) return { id, moveX: 1, moveY: 0, yaw: -PI / 2, pitch: 0, buttons: 0 };
+          const holding = tick <= 28 || tick > 33;
+          return { id, moveX: 0, moveY: 0, yaw: -PI / 2, pitch: 0, buttons: holding ? BUTTON.interact : 0 };
+        }
+        return { id, moveX: 0, moveY: 0, yaw: PI, pitch: 0, buttons: 0 };
+      });
+    },
+  },
 ];
 
 function toV1Command(entry, tick, v1) {
@@ -474,7 +568,7 @@ function toV1Command(entry, tick, v1) {
   command.yaw = entry.yaw;
   command.pitch = entry.pitch;
   command.buttons = entry.buttons;
-  command.switchTo = 0;
+  command.switchTo = entry.switchTo ?? 0;
   return command;
 }
 
@@ -550,12 +644,17 @@ function flagsOf(entity, nowMs, v1) {
 
 function runScenario(scenario, v1, configHash) {
   const world = v1.createWorld(scenario.seed, v1.CONFIG);
+  if (scenario.setup !== undefined) scenario.setup(world, v1);
   const probe = makeRngProbe(scenario.seed);
   probe.wrap(world, 'ai');
   probe.wrap(world, 'spawn');
   probe.wrap(world, 'fx');
 
-  const ids = world.activeIds.slice();
+  // 命令槽位只覆盖玩家（v1 applyCommands 按升序玩家位置取槽），羊群/投射物不参与命令分发。
+  const ids = world.activeIds.filter((id) => {
+    const entity = v1.getEntity(world, id);
+    return entity !== undefined && entity.kind === 'player';
+  });
   const ticks = [];
   const flagSeen = new Set();
   let eventCount = 0;
@@ -570,7 +669,7 @@ function runScenario(scenario, v1, configHash) {
       const seq = tick % 65536;
       slots[index] = toV1Command(entry, tick, v1);
       commands.push({ id: entry.id, seq, clientTick: tick, moveX: entry.moveX, moveY: entry.moveY,
-        yaw: entry.yaw, pitch: entry.pitch, buttons: entry.buttons, switchTo: 0 });
+        yaw: entry.yaw, pitch: entry.pitch, buttons: entry.buttons, switchTo: entry.switchTo ?? 0 });
     }
     v1.stepWorld(world, slots, TICK_MS, null);
 
@@ -600,7 +699,7 @@ function runScenario(scenario, v1, configHash) {
 
 // ---------------- 主流程 ----------------
 function usage() {
-  console.log('用法：node tools/export-fixtures.mjs [--root <v1 派生副本>] [--out <目录>] [--check] [--list] [--allow-patched-copy]');
+  console.log('用法：node tools/export-fixtures.mjs [--root <v1 派生副本>] [--out <目录>] [--only <name[,name]>] [--check] [--list] [--allow-patched-copy]');
 }
 
 // 「只读源没被写」与「派生副本 == 只读源」都是可判定的：前者比 (文件数, 总字节, 最新 mtime) 指纹，
@@ -726,7 +825,9 @@ s09 = {
   waves: wavesConfig,
 };
   const api = { createWorld: v1.createWorld, createCommand: v1.createCommand, stepWorld: v1.stepWorld,
-    getEntity: v1.getEntity, CONFIG: v1.CONFIG, isRageActive: rageModule.isRageActive, isReloading: weaponModule.isReloading };
+    getEntity: v1.getEntity, CONFIG: v1.CONFIG, isRageActive: rageModule.isRageActive, isReloading: weaponModule.isReloading,
+    // 场景 setup 的生成原语（与 v1 ai/director.ts 的生成路径同形；C++ 侧对应 waves::spawnSheepAt）。
+    spawnEntity: v1.spawnEntity, applySheepKind: sheepBrainModule.applySheepKind, SHEEP_STATE: sheepConfig.SHEEP_STATE };
 
   const hashInfo = configHashText(configModule.CONFIG);
   console.log('[export] root = ' + root);
@@ -734,8 +835,16 @@ s09 = {
   console.log('[export] configHash 覆盖组：');
   for (const line of hashInfo.text.split('\n')) console.log('  ' + line);
 
+  // --only 只跑选中的子集（体积门按**本次渲染的批次**判定，便于逐份核对生成物）。
+  const selected = opts.only === null
+    ? SCENARIOS
+    : SCENARIOS.filter((scenario) => opts.only.indexOf(scenario.name) >= 0);
+  if (opts.only !== null && selected.length !== opts.only.length) {
+    throw new Error('--only 含未登记的场景名');
+  }
+
   if (opts.list) {
-    for (const scenario of SCENARIOS) {
+    for (const scenario of selected) {
       const file = path.join(outDir, scenario.name + '.json');
       if (!existsSync(file)) throw new Error('--list：缺文件 ' + file);
       const bytes = readFileSync(file);
@@ -746,7 +855,7 @@ s09 = {
 
   const rendered = [];
   let totalBytes = 0;
-  for (const scenario of SCENARIOS) {
+  for (const scenario of selected) {
     const result = runScenario(scenario, api, hashInfo.hash);
     const text = serializeFixture(result.fixture);
     const evidence = result.evidence;
@@ -759,7 +868,7 @@ s09 = {
   }
   // 体积门先于写盘：门失败时不该在盘上留下超限的生成物。
   if (totalBytes >= SIZE_GATE_BYTES) {
-    throw new Error('体积门超限（本批 ' + SCENARIOS.length + ' 份）：' + totalBytes + ' >= ' + SIZE_GATE_BYTES);
+    throw new Error('体积门超限（本批 ' + selected.length + ' 份）：' + totalBytes + ' >= ' + SIZE_GATE_BYTES);
   }
   let written = 0;
   let identical = 0;
@@ -785,11 +894,11 @@ s09 = {
     }
   }
   if (opts.check) {
-    console.log('[export] check ok：' + identical + '/' + SCENARIOS.length + ' 与盘上逐字节一致');
+    console.log('[export] check ok：' + identical + '/' + selected.length + ' 与盘上逐字节一致');
   } else {
     console.log('[export] 写出 ' + written + ' 份');
   }
-  console.log('[export] 本批 ' + SCENARIOS.length + ' 份 = ' + totalBytes + ' B（体积门 ' + SIZE_GATE_BYTES + ' B）');
+  console.log('[export] 本批 ' + selected.length + ' 份 = ' + totalBytes + ' B（体积门 ' + SIZE_GATE_BYTES + ' B）');
   // §6 的取证命令是 Get-ChildItem <dir> -Recurse -File | Measure-Object Length -Sum：它会把 S02 的
   // trig-table.json 和本目录的 README.md 也算进门限 -> 在这一行复现同一个数字（见 README §8.3 第 9 条）。
   let dirBytes = 0;
