@@ -56,6 +56,9 @@ struct FixtureEvent {
   double y = 0.0;
   double z = 0.0;
   double value = 0.0;
+  // 带种类的模拟事件（`sheepKilled`）的羊种类枚举（S03 §5.4 / S08）；其余类型恒 0。
+  // JSON 里该键是**可选**的（只有带种类的类型才输出），投影文本同理（`evt=...value[,kind]`）。
+  uint8_t kind = 0u;
 };
 
 struct FixtureRng {
@@ -131,7 +134,15 @@ uint64_t fnv1a64Text(const std::string& text, uint64_t seed) noexcept;
 std::string hash64Hex(uint64_t value);
 bool selfTestFnv();
 
-// 当帧全量投影文本（两侧逐字节同口径）：tick / dtMs / 逐条 cmd / 逐实体 ent / 逐事件 evt / rng。
+// 带种类的模拟事件：目前只有 `sheepKilled`（S03 §5.4 的 `kind` 字节 = S08 的羊种类枚举）。投影文本与
+// JSON 都**只对它**输出 `kind` 字段（其余类型不追加，保持既有行格式）；口径与 `tools/export-fixtures.mjs`
+// 的 `KIND_CARRYING_EVENT_TYPES` 逐字同源。
+inline bool eventCarriesKind(const std::string& type) {
+  return type == "sheepKilled";
+}
+
+// 当帧全量投影文本（两侧逐字节同口径）：tick / dtMs / 逐条 cmd / 逐实体 ent / 逐事件 evt（带种类的类型
+// 追加 `,kind`）/ rng。
 std::string projectionText(uint32_t tick, const std::vector<FixtureCommand>& commands,
                            const std::vector<FixtureEntity>& entities,
                            const std::vector<FixtureEvent>& events, const FixtureRng& rng);

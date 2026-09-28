@@ -28,7 +28,7 @@
 
 旧门限「14 份 < 2 MB」**作废**，理由见 §5：旧口径要把每 tick 全量投影文本落盘（实测 ~950 B/tick），14 份必然 > 6 MB；新口径只落哈希链（~8 B/tick）与 3–5 个关键帧，14 份缩到 272 KB，而比较仍是逐 tick、逐字段、逐位。
 
-`--filter=fixture` 共 19 个用例：上表 14 个 + `fixture_fnv_self_test`（FNV-1a 自检）+ 4 个"篡改必须被抓到"的负向用例（`fixture_tampered_projection_reports_diff` / `fixture_tampered_digest_tick_diff` / `fixture_tampered_script_tick_diff` / `fixture_tampered_hash_fails_before_ticks`）。
+`--filter=fixture` 共 20 个用例：上表 14 个 + `fixture_fnv_self_test`（FNV-1a 自检）+ 4 个"篡改必须被抓到"的负向用例（`fixture_tampered_projection_reports_diff` / `fixture_tampered_digest_tick_diff` / `fixture_tampered_script_tick_diff` / `fixture_tampered_hash_fails_before_ticks`）+ `fixture_event_kind_optional_key`（B2 收尾：可选键 `events[].kind` 的读法与投影追加，见 §7.2 收口）。
 
 ## 2. 向量口径（schema `version = 2`）
 
@@ -45,7 +45,7 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 ```
 
 - **全量投影（每 tick 的字节口径）**：字段级文本，字段与顺序沿用 v1 冻结 schema（§5.1），double 一律 `%.17g`：
-  `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`。实体顺序 = `activeIds` 顺序。
+  `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value[,kind]` / 尾行 `rng=ai,spawn,fx`（`,kind` 只对**带种类的模拟事件**追加：目前只有 `sheepKilled`，值 = 羊种类枚举，见 §7.2 收口）。实体顺序 = `activeIds` 顺序。
 - **逐帧哈希链**：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`。两侧都按 `%.17g` 重算同一段文本再串链，链上只落 8 字节/tick。
 - **关键帧**：少量 tick 的**全量投影**（实体 + 事件 + 三流 RNG 状态）。命中不一致时先比关键帧，能直接给出**字段名**（例：`entities[2].pos.x`、`snapshot.encodeHash`），比链哈希更好定位；链负责覆盖**每一个** tick。
 - **快照组**（仅 `snapshot-roundtrip-240t`）：`encodeHash` = 对 v1 量化后的 15 字节实体记录块直接算 FNV（无报文头）；`decodeHash` = 对解码后的字段投影文本算 FNV。两侧分别走真实量化器/真实解码器。
@@ -179,15 +179,17 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 | `setup` | object | 初态（§3 的表） | 初态在文件里，不再靠"`createWorld` 隐含生成 4 名玩家" |
 | `director` | object | `{startWave}` | 导演在 `stepWorld` **之外**，两侧都要外部驱动（§3 末尾） |
 | `script` | array | 按 tick 的 **RLE**（`from`/`to` 闭区间）+ `commands[]` | 旧的 `ticks[t].commands[]` 不复存在；v2 条目**没有 `seq`/`clientTick`**，本地复现需自行补（例：`seq = clientTick = t`） |
-| `keyframes` | array（本批 3–5 个） | `{tick, entities[{id,kind,pos[3],yaw,pitch,hp,flags}], events[{tick,type,flags,subjectId,targetId,x,y,z,value}], rngState{ai,spawn,fx}}` | `entities` 形状与旧 `expected.entities` **相同**（`pos[]`/`yaw`/`pitch`），旧 `FindEntity` 逻辑可直接复用，只需改"从哪里取"；`events[].type` 是**字符串**名（`playerHit`/`sheepKilled`/…） |
+| `keyframes` | array（本批 3–5 个） | `{tick, entities[{id,kind,pos[3],yaw,pitch,hp,flags}], events[{tick,type,flags,subjectId,targetId,x,y,z,value[,kind]}], rngState{ai,spawn,fx}}` | `entities` 形状与旧 `expected.entities` **相同**（`pos[]`/`yaw`/`pitch`），旧 `FindEntity` 逻辑可直接复用，只需改"从哪里取"；`events[].type` 是**字符串**名（`playerHit`/`sheepKilled`/…）；`events[].kind` 只在带种类的类型上出现（目前只有 `sheepKilled`，见下条收口） |
 | `snapshot` | array（仅 `snapshot-roundtrip-240t` 非空） | `{tick, records, encodeHash, decodeHash}` | 量化记录块（无报文头）与解码投影的 FNV |
 | `hashChain` | array[string]，长度 = `ticks` | 每 tick 一个链节点（8 B / 16 位十六进制） | **取代**"每帧投影文本落盘" |
 
-- 事件载荷里的 `sheepKilled.kind` **是羊种类枚举**（0 grunt / 1 ram / 2 elite / 3 king，S03 §5.4 / S08）：客户端读取与渲染一律**按枚举解码**，别当数值用；v1 曾把伤害值写在同一字节上，v2 不逐字继承 v1 的字节行为（服务端已裁决，契约见 `server/src/room/event_map.cpp:53-63`，用例 `room_event_sheep_killed_kind_is_sheep_kind_enum_not_damage`，`server/tests/match_flow_test.cpp:1149`）。注意本节 `keyframes[].events[]` 与对拍投影文本（`evt=`）**都不含 `kind`**，所以这个字节目前没有跨语言向量覆盖（登记为待办，见 `server/README.md` §11 第 11 条的 B2 收口）。
+- 事件载荷里的 `sheepKilled.kind` **是羊种类枚举**（0 grunt / 1 ram / 2 elite / 3 king，S03 §5.4 / S08）：客户端读取与渲染一律**按枚举解码**，别当数值用；v1 曾把伤害值写在同一字节上，v2 不逐字继承 v1 的字节行为（服务端已裁决，契约见 `server/src/room/event_map.cpp:53-63`，用例 `room_event_sheep_killed_kind_is_sheep_kind_enum_not_damage`，`server/tests/match_flow_test.cpp:1149`）。
+
+> 收口（B 部分 B2 收尾：原先「该字节没有跨语言向量覆盖」的待办**已消除**）：`kind` 已纳入对拍口径 —— ① **投影文本**（每 tick 的字节口径）对带种类的类型在该行末尾追加 `,kind`：导出侧在事件入队**那一刻**用 `target.ai.sheepKind` 补出（v1 的 `sim/events.ts` 不写 `kind`；`tools/export-fixtures.mjs` 的 `KIND_CARRYING_EVENT_TYPES` + `captureEventKinds`，只在进程内挂 `world.events.push`、不改只读源），C++ 侧同式（`server/tests/fixture_io.hpp::eventCarriesKind` + `fixture_io.cpp::projectionText`，值取 `Event::kind`）⇒ 该字节**每 tick 随 `hashChain` 双侧重算**；② `keyframes[].events[]` 也只在带种类的类型上输出 `kind`（C++ `readEvent` 按**可选键**读、`compareKeyframe` 逐字段比）。实测：重导 14 份后有 5 份的 `hashChain` 变了（击杀种类：`rifle-burst-hit-120t` = 2 elite、`rng-streams-600t` = 3 king、`shotgun-spread-60t` / `snapshot-roundtrip-240t` / `wave-director-1to5-1200t` = 0 grunt），`node tools/export-fixtures.mjs --check` → `check ok：14/14 与盘上逐字节一致`，合计/单份最大仍是 **272 291 B / 56 505 B**（只换了链值、没加字节）；两侧逐字段对表实测一致（JS `evt=412,sheepKilled,5,1,5,-3.9873353560822253,0,7.8034467994416268,40,3` == C++ `AC_FIXTURE_PTEXT=1 AC_FIXTURE_DUMP=412` 的同一行）。**边界（如实登记，非待办）**：本批 14 份的关键帧 tick 恰好都没落在击杀 tick 上 ⇒ `keyframes[].events[].kind` 目前「结构就位、无数据实例」；该字节的钉靠**每 tick 的 hashChain**（已含 2/3 两种非 0 种类）+ 服务端 wire 用例。该**可选键**本身的读法（带 `kind` 读得出、不带取默认 0、投影只对带种类的类型追加 `,kind`）由新用例 `fixture_event_kind_optional_key`（`server/tests/fixture_test.cpp`）用一份最小 v2 向量钉住（`--filter=fixture` 19 → 20）；若要在关键帧里也造实例，需把某个场景的关键帧 tick 挪到击杀 tick 上（会改关键帧集合与合计体积），本批按「不动向量场景」处理。依据：`tools/export-fixtures.mjs` 的 `captureEventKinds`、`server/tests/fixture_io.cpp`（`projectionText`/`readEvent`）、`server/tests/fixture_test.cpp`（`projectEvents`/`compareKeyframe`/`fixture_event_kind_optional_key`）。
 
 ### 7.3 比较口径：两侧都**重算**，不再读期望值
 
-- 链：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`；投影文本 = `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`，double 一律 `%.17g`，实体顺序 = `activeIds` 顺序。
+- 链：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`；投影文本 = `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value[,kind]` / 尾行 `rng=ai,spawn,fx`，double 一律 `%.17g`，实体顺序 = `activeIds` 顺序。
 - 所以"读 `ticks[t].expected` 逐位比"的老路要换成**自己算出同一份投影文本再串链**。要覆盖**每一个** tick，就得写**全量投影**（所有实体 + 事件 + 三流 RNG 状态），只算本机实体是接不上链的。
 - 现阶段**最小可用迁移**（不要求一次写完全量投影）：① 形状校验改为 `version == 2` 且 `hashChain.length == ticks`；② 用 `script`（RLE 展开 + 自补 `seq`/`clientTick`）从 `setup` 驱动本地 sim；③ 在 `keyframes[].tick` 那 3–5 个点上对 `entities[]`/`events[]` 逐字段、逐位比（字段名与 v1 投影同名）；④ `hashChain`/`snapshot` 先只校验"长度与十六进制形状"，全量投影就绪后再接链。
 - `configHash` 仍必须一字不差（当前 `19a978ea`）：它是 §5.6 常量表摘要，两侧同源。

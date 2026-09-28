@@ -18,6 +18,7 @@
 #include "sim/step.hpp"
 #include "sim/world.hpp"
 #include "tiny_test.hpp"
+#include "tmp_workdir.hpp"
 #include "waves/director.hpp"
 
 namespace {
@@ -161,6 +162,7 @@ void projectEvents(const World& world, std::vector<ac::test::FixtureEvent>& out)
     row.y = source.y;
     row.z = source.z;
     row.value = source.value;
+    row.kind = ac::test::eventCarriesKind(row.type) ? source.kind : 0u;
     out.push_back(std::move(row));
   }
 }
@@ -204,6 +206,8 @@ void compareKeyframe(uint32_t tick, const ac::test::FixtureKeyframe& frame,
     diff.doubleField(tick, base + ".y", expected.y, actual.y);
     diff.doubleField(tick, base + ".z", expected.z, actual.z);
     diff.doubleField(tick, base + ".value", expected.value, actual.value);
+    // `kind`（S03 §5.4 的羊种类枚举 / S08）：JSON 与投影文本里只有带种类的类型才有该字段，其余两侧同为 0。
+    diff.intField(tick, base + ".kind", static_cast<int64_t>(expected.kind), static_cast<int64_t>(actual.kind));
     if (diff.has) return;
   }
   diff.intField(tick, "rngState.ai", static_cast<int64_t>(frame.rng.ai), static_cast<int64_t>(rng.ai));
@@ -525,4 +529,96 @@ AC_TEST(fixture_tampered_hash_fails_before_ticks) {
   if (!loadOrFail("still-60t", fixture)) return;
   fixture.configHash = "00000000";
   expectDiff("tampered-config-hash", fixture, 0u, "configHash", 0u);
+}
+
+// 可选键自检（B 部分 B2 收尾）：`events[].kind` 只对**带种类的类型**出现（S03 §5.4 / S08）。现网 14 份向量的
+// 关键帧 tick 都没落在击杀 tick 上（`docs/evidence/fixtures/README.md` §7.2 的 B2 收尾有登记），所以这里用一份
+// 最小的 v2 向量把两条分支都钉住：带 `kind` 的读得出来、不带的取默认 0，且投影文本只对带种类的类型追加 `,kind`。
+AC_TEST(fixture_event_kind_optional_key) {
+  // 键序按 README §7.2（整数不带小数点）；1 tick 的最小合法向量：脚本无缝覆盖 1..1、hashChain 长度 = ticks。
+  static const char kJson[] = R"json({
+  "name": "kind-optional",
+  "version": 2,
+  "seed": 7,
+  "dtMs": 50,
+  "configHash": "19a978ea",
+  "ticks": 1,
+  "setup": {
+    "players": [
+    ],
+    "sheep": [
+    ]
+  },
+  "director": { "startWave": 0 },
+  "script": [
+    {
+      "from": 1,
+      "to": 1,
+      "commands": [
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "tick": 1,
+      "entities": [
+      ],
+      "events": [
+        { "tick": 1, "type": "sheepKilled", "flags": 0, "subjectId": 1, "targetId": 5, "x": 1, "y": 2, "z": 3, "value": 4, "kind": 3 },
+        { "tick": 1, "type": "playerHit", "flags": 0, "subjectId": 1, "targetId": 5, "x": 1, "y": 2, "z": 3, "value": 4 }
+      ],
+      "rngState": { "ai": 1, "spawn": 2, "fx": 3 }
+    }
+  ],
+  "snapshot": [
+  ],
+  "hashChain": [
+    "0000000000000000"
+  ]
+}
+)json";
+  ac::test::TempDir dir("fixture_kind");
+  if (!dir.isReady()) {
+    AC_FAIL("temp dir not ready");
+    return;
+  }
+  // 路径统一用正斜杠：`loadFixtureFile` 的 `baseName` 只按 '/' 取末段（Windows 反斜杠会让 name 校验假失败）。
+  const std::string path = dir.path().generic_string() + "/kind-optional.json";
+  {
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) {
+      AC_FAIL("temp fixture open failed");
+      return;
+    }
+    const std::size_t length = sizeof(kJson) - 1u;
+    const bool isOk = std::fwrite(kJson, 1u, length, file) == length;
+    std::fclose(file);
+    if (!isOk) {
+      AC_FAIL("temp fixture write failed");
+      return;
+    }
+  }
+  ac::test::Fixture fixture;
+  std::string error;
+  if (!ac::test::loadFixtureFile(path, fixture, error)) {
+    AC_FAIL(error.c_str());
+    return;
+  }
+  AC_CHECK_EQ(fixture.keyframes.size(), 1u);
+  if (fixture.keyframes.size() != 1u) return;
+  const ac::test::FixtureKeyframe& frame = fixture.keyframes[0];
+  AC_CHECK_EQ(frame.events.size(), 2u);
+  if (frame.events.size() != 2u) return;
+  // ① 带种类的类型：`kind` 是可选的**末位**键，出现就必须读出来（3 = king）。
+  AC_CHECK(frame.events[0].type == std::string("sheepKilled"));
+  AC_CHECK_EQ(static_cast<int>(frame.events[0].kind), 3);
+  AC_CHECK(ac::test::eventCarriesKind(frame.events[0].type));
+  // ② 其余类型：不写 `kind`，取默认 0，且投影不追加该字段。
+  AC_CHECK(frame.events[1].type == std::string("playerHit"));
+  AC_CHECK_EQ(static_cast<int>(frame.events[1].kind), 0);
+  AC_CHECK(!ac::test::eventCarriesKind(frame.events[1].type));
+  const std::string text =
+      ac::test::projectionText(1u, std::vector<ac::test::FixtureCommand>{}, frame.entities, frame.events, frame.rng);
+  AC_CHECK(text.find("evt=1,sheepKilled,0,1,5,1,2,3,4,3\n") != std::string::npos);
+  AC_CHECK(text.find("evt=1,playerHit,0,1,5,1,2,3,4\n") != std::string::npos);
 }

@@ -818,6 +818,29 @@ function assertFnvSelfTest() {
   if (fnv1a64Text('foobar', FNV_OFFSET_BASIS) !== 0x85944171f73967e8n) throw new Error('fnv self-test: foobar');
 }
 
+// 带种类的模拟事件（v2 语义）：S03 §5.4 的 `sheepKilled` 载荷第 6 字节 = **羊种类枚举**（S08）。v1 的
+// `SimEvent` 只有 9 个字段（`sim/events.ts` 的 pushEvent 不写 kind），所以导出侧在事件入队**那一刻**用
+// `target.ai.sheepKind` 补出该字节 —— 与 C++ `pushEvent(..., target.sheepKind)` 同源同式（v1 源只读，
+// 只在进程内挂 `world.events.push`，不落盘、不改副本）。非带种类的类型恒 0（与 C++ `Event::kind = 0` 一致）。
+const KIND_CARRYING_EVENT_TYPES = new Set(['sheepKilled']);
+
+function captureEventKinds(world, v1) {
+  const events = world.events;
+  const originalPush = events.push;
+  events.push = function pushWithKind(...pushed) {
+    for (const event of pushed) {
+      if (event === null || typeof event !== 'object') continue;
+      if (!KIND_CARRYING_EVENT_TYPES.has(event.type)) {
+        event.kind = 0;
+        continue;
+      }
+      const target = v1.getEntity(world, event.targetId);
+      event.kind = target === undefined || target.ai === undefined ? 0 : target.ai.sheepKind;
+    }
+    return originalPush.apply(this, pushed);
+  };
+}
+
 function projectionText(tickNumber, commands, entities, events, rng) {
   const lines = [];
   lines.push('tick=' + tickNumber);
@@ -833,7 +856,8 @@ function projectionText(tickNumber, commands, entities, events, rng) {
   }
   for (const event of events) {
     lines.push('evt=' + event.tick + ',' + event.type + ',' + event.flags + ',' + event.subjectId + ',' +
-      event.targetId + ',' + g17(event.x) + ',' + g17(event.y) + ',' + g17(event.z) + ',' + g17(event.value));
+      event.targetId + ',' + g17(event.x) + ',' + g17(event.y) + ',' + g17(event.z) + ',' + g17(event.value) +
+      (KIND_CARRYING_EVENT_TYPES.has(event.type) ? ',' + event.kind : ''));
   }
   lines.push('rng=' + rng.ai + ',' + rng.spawn + ',' + rng.fx);
   return lines.join('\n') + '\n';
@@ -868,7 +892,8 @@ function entityLine(entity) {
 function eventLine(event) {
   return '{ "tick": ' + event.tick + ', "type": ' + jsonString(event.type) + ', "flags": ' + event.flags +
     ', "subjectId": ' + event.subjectId + ', "targetId": ' + event.targetId + ', "x": ' + g17(event.x) +
-    ', "y": ' + g17(event.y) + ', "z": ' + g17(event.z) + ', "value": ' + g17(event.value) + ' }';
+    ', "y": ' + g17(event.y) + ', "z": ' + g17(event.z) + ', "value": ' + g17(event.value) +
+    (KIND_CARRYING_EVENT_TYPES.has(event.type) ? ', "kind": ' + event.kind : '') + ' }';
 }
 
 // 命令脚本只记「实际发出的玩家命令」：id / 轴 / 角 / 按钮 / 切枪槽；seq 与 clientTick 由 tick 派生
@@ -969,6 +994,7 @@ function runScenario(scenario, v1, configHash) {
   probe.wrap(world, 'ai');
   probe.wrap(world, 'spawn');
   probe.wrap(world, 'fx');
+  captureEventKinds(world, v1);
 
   // 外部每 tick 驱动导演（README §2；S09/S10 已裁决的 B2）：DirectorState 在 stepWorld 之外，
   // stepWorld 之后调用 updateDirector，playerCount = 4、rng = world.rng.spawn、playerIds = 非 idle 玩家升序。
@@ -1024,7 +1050,8 @@ function runScenario(scenario, v1, configHash) {
         yaw: entity.yaw, pitch: entity.pitch, hp: entity.hp, flags });
     }
     const events = world.events.map((event) => ({ tick: event.tick, type: event.type, flags: event.flags,
-      subjectId: event.subjectId, targetId: event.targetId, x: event.x, y: event.y, z: event.z, value: event.value }));
+      subjectId: event.subjectId, targetId: event.targetId, x: event.x, y: event.y, z: event.z, value: event.value,
+      kind: event.kind ?? 0 }));
     eventCount += events.length;
     for (const event of events) types[event.type] = (types[event.type] ?? 0) + 1;
     const rng = { ai: probe.stateOf('ai'), spawn: probe.stateOf('spawn'), fx: probe.stateOf('fx') };

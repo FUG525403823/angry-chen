@@ -307,6 +307,14 @@ bool readEvent(Reader& reader, FixtureEvent& out) {
   if (!reader.key("value")) return false;
   // value 按 double 读：v1 的事件值有小数（护甲吸收后的伤害），整数读取器会造成假差异。
   if (!reader.doubleValue(out.value)) return false;
+  // 可选键：带种类的模拟事件（`sheepKilled`）才有 `kind`（S03 §5.4 的羊种类枚举，S08）。它只能出现在
+  // 事件对象末位，所以「后面还有逗号」≡「就是 kind」；其余键仍按「固定 schema」直接失败。
+  reader.skipWhitespace();
+  if (reader.cursor < reader.end && *reader.cursor == ',') {
+    ++reader.cursor;
+    if (!reader.key("kind")) return false;
+    if (!readUint8(reader, out.kind, "events[].kind")) return false;
+  }
   return reader.literal('}');
 }
 
@@ -757,7 +765,8 @@ std::string projectionText(uint32_t tick, const std::vector<FixtureCommand>& com
   for (const FixtureEvent& event : events) {
     text += "evt=" + std::to_string(event.tick) + "," + event.type + "," + std::to_string(event.flags) + "," +
             std::to_string(event.subjectId) + "," + std::to_string(event.targetId) + "," + g17(event.x) + "," +
-            g17(event.y) + "," + g17(event.z) + "," + g17(event.value) + "\n";
+            g17(event.y) + "," + g17(event.z) + "," + g17(event.value) +
+            (eventCarriesKind(event.type) ? "," + std::to_string(event.kind) : "") + "\n";
   }
   text += "rng=" + std::to_string(rng.ai) + "," + std::to_string(rng.spawn) + "," + std::to_string(rng.fx) + "\n";
   return text;

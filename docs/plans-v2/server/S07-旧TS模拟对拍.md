@@ -82,10 +82,12 @@
 | `keyframes[]` | 对象数组 | 少量 tick 的**全量投影**：`entities`（`id`/`kind`/`pos`[3]/`yaw`/`pitch`/`hp`/`flags`）、`events`（`tick`/`type`/`flags`/`subjectId`/`targetId`/`x`/`y`/`z`/`value`）、`rngState`（三流内部状态 `a`，口径见 §5.2）；用于把不一致定位到**字段名** |
 | `snapshot[]` | 对象数组 | 仅快照场景非空：`tick`、`records`（记录条数）、`encodeHash` = 对量化后的 15 字节记录块（无报文头、无计数字节）直接算 FNV-1a-64、`decodeHash` = 对解码后的字段投影文本算 FNV-1a-64 |
 | `hashChain[]` | 16 位十六进制 × `ticks` | 每 tick 一个节点：`h_i = fnv1a64(投影文本_i, h_{i-1})`，`h_0 = 0xcbf29ce484222325`，质数 `0x100000001b3`；**每个 tick 都必须有节点**（禁止抽样跳过），盘上 8 B/tick |
-| 全量投影（每 tick 的字节口径） | 文本 | `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value` / 尾行 `rng=ai,spawn,fx`；实体顺序 = `activeIds` 顺序；double 一律 `%.17g` |
+| 全量投影（每 tick 的字节口径） | 文本 | `tick=` / `dtMs=` / 逐实体 `ent=id,kind,x,y,z,yaw,pitch,hp,flags` / 逐事件 `evt=tick,type,flags,subjectId,targetId,x,y,z,value[,kind]` / 尾行 `rng=ai,spawn,fx`；实体顺序 = `activeIds` 顺序；double 一律 `%.17g`（`,kind` 只对带种类的类型追加，见本节末收口） |
 | `yaw` / `pitch` | double 弧度 | 写盘用 `%.17g` 可无损往返；与线上 u16 角度单位经 `quantizeAngle` / `radiansFromUnits` 精确互换（S02 §5.3、§5.4）；逐位比较的是弧度 double |
 | `flags` | 位域 | `entities[]` 与 `events[]` 共用同一张表：bit0 `downed`=1 / bit1 `rageMode`=2 / bit2 `reloading`=4 / bit3 `charging`=8 / bit4 `fading`=16 / bit5 `idle`=32（与 S03 §5.3 实体记录 `kindFlags` 的 flags 位完全一致），其余位保留为 0 |
 | 键序与格式 | — | 键序固定如本节的 JSON 示例；整数不带小数点，浮点统一 `%.17g` |
+
+> 收口（B 部分 B2 收尾）：上表「全量投影」的逐事件字段在**带种类的模拟事件**上追加 `,kind`（目前只有 `sheepKilled`，值 = S03 §5.4 的羊种类枚举 / S08），`keyframes[].events[]` 同条件追加 `"kind"`；v1 的 `SimEvent` 不写该字段，导出侧在事件入队那一刻用 `target.ai.sheepKind` 补出（`tools/export-fixtures.mjs` 的 `captureEventKinds`），C++ 侧同式（`server/tests/fixture_io.hpp::eventCarriesKind`、`fixture_test.cpp::projectEvents`）⇒ 该字节每 tick 随 `hashChain` 双侧重算。重导 14 份后 5 份链值变化、合计仍是 272 291 B，`--check` 14/14；细节与实测见 `docs/evidence/fixtures/README.md` §7.2 的 B2 收口。冻结的字段次序与类型不变（只在行尾**追加**可选字段）。
 
 ### 5.2 RNG 状态口径
 
