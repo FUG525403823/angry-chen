@@ -197,12 +197,10 @@ class Runtime {
   std::uint32_t skippedSeen_ = 0u;
   // tick 记账基准：房间的 tick 计数每局从 0 起（tryStartMatch 清 MatchCounters），这里只按增量记账。
   std::uint32_t countedTicks_ = 0u;
-  // 漂移的墙钟基准。**当前恒 0**：唯一的赋值点曾与上面那段死分支同在（`tryStartMatch` 返回时相位
-  // 是 kLoading，判 kPlaying 永不成立），所以 `simDriftMs()` 一直走 `tickBaseMs_ == 0` 的短路返回 0，
-  // 报告里的 `ticks.simDriftMsMax` 与 `/metrics ac_sim_drift_ms` 因此恒 0。接线会同时改变 G6 替代
-  // 判据的输入（|drift| ≤ 50 ms）与门禁读数，按 §14.1-27 登记为待裁决项，本批不动。
-  std::uint64_t tickBaseMs_ = 0u;
-  std::uint64_t lastPollMs_ = 0u;  // 最近一次 pollOnce 的墙上毫秒（漂移计算用）
+  // 本局 |simDrift| 的最大值（毫秒）：pollOnce 在 loading→playing 那一拍复位，此后只增不减；
+  // 报告 ticks.simDriftMsMax 取它，而不是落盘瞬间的瞬时值。
+  double simDriftAbsMaxMs_ = 0.0;
+  std::uint64_t lastPollMs_ = 0u;  // 最近一次 pollOnce 的墙上毫秒（漂移计算的「现在」）
   std::uint8_t sendBuffer_[ac::net::kMaxSnapshotBytes] = {};
   std::uint8_t recvBuffer_[ac::net::kMaxPacketBytes] = {};
   // Fragment（type 9）的接收侧重组：键 = (session, kFragment, fragId)，60 tick 超时回收。

@@ -66,7 +66,8 @@ inline uint32_t accountedTicks(const TickScheduler& scheduler) noexcept {
 void startScheduler(TickScheduler& scheduler, uint64_t nowMs, uint32_t simStartMs = 0u) noexcept;
 // 开球打基准（S13 §5）：firstTickGridMs = 本局首个 tick 的**理想时刻**，ticksAlreadyCounted = 该 tick
 // 是否已记账（1 = 已记，epoch 把它算作第 0 个）。顺带清空三个采样环 —— loading 阶段与上一局的样本
-// 都不该进本局报告。tickIndex/tickSkips/budgetExceeded 不动（仍是进程级账本）。
+// 都不该进本局报告；并把 simClock 重锚到同一时刻（漂移与调度误差因此同起点）。tickIndex/tickSkips/
+// budgetExceeded 不动（仍是进程级账本）。
 void beginTickEpoch(TickScheduler& scheduler, uint64_t firstTickGridMs,
                     uint32_t ticksAlreadyCounted = 1u) noexcept;
 // 本局（epoch）以来的已执行 tick 数与丢 tick 数；未打基准时退化成进程级累计值。

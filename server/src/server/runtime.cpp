@@ -413,6 +413,7 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
     // 计「房间真正执行的 tick」而不是 world->tick 增量：loading/intermission 也按 50ms 走 tick，
     // 世界却只在 playing 步进；按 world->tick 记会把开局这段算成上千毫秒的假调度误差（实测 1.5s）。
     const ac::room::MatchPhase phaseBeforeUpdate = room_->phase;
+    bool isEpochJustStarted = false;
     const auto workStart = std::chrono::steady_clock::now();
     (void)ac::room::updateRoom(*room_, deps_, nowMs);
     // S04 §5.4：分片组 60 tick 未收齐即整组丢弃（与 Reassembler::add 用同一个 tick 时钟）。
@@ -443,6 +444,16 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
       const auto residual =
           static_cast<std::uint64_t>(room_->accumulatorMs > 0 ? room_->accumulatorMs : 0);
       ac::core::beginTickEpoch(scheduler_, nowMs > residual ? nowMs - residual : nowMs, 1u);
+      isEpochJustStarted = true;
+    }
+    // §5 的漂移：本拍读数进 ac_sim_drift_ms 量值表，|漂移| 的本局最大值进报告（ticks.simDriftMsMax）。
+    // 开球那一拍复位（本局自己的最大值），此后只增不减 —— 这样它不随进程存活时间、也不随上一局累计。
+    const double driftMs = simDriftMs();
+    ac::metrics::setGaugeIf(&gauges_, ac::metrics::GaugeId::kSimDriftMs, driftMs);
+    if (scheduler_.epoch.isActive) {
+      const double absDriftMs = std::fabs(driftMs);
+      simDriftAbsMaxMs_ = isEpochJustStarted ? absDriftMs
+                                             : (absDriftMs > simDriftAbsMaxMs_ ? absDriftMs : simDriftAbsMaxMs_);
     }
   }
 
@@ -483,7 +494,8 @@ void Runtime::flushMatchOutcome() {
   ac::report::MatchRunSummary summary{};
   summary.matchId = record.matchId;
   summary.durationMs = record.durationMs;
-  summary.simDriftMsMax = static_cast<std::int64_t>(simDriftMs());
+  // 本局 |漂移| 的最大值（毫秒，取整）：开球那一拍起累计，见 pollOnce；不是落盘瞬间的瞬时值。
+  summary.simDriftMsMax = static_cast<std::int64_t>(std::lround(simDriftAbsMaxMs_));
   for (uint8_t i = 0u; i < room_->match.recordCount && i < ac::room::kMaxPlayersPerRoom; ++i) {
     const ac::room::PlayerStats& stats = room_->match.records[i].stats;
     summary.shotsFiredTotal += stats.shotsFired;
@@ -743,15 +755,17 @@ RuntimeMetrics Runtime::metrics() const {
   return out;
 }
 
-// §5 的 ac_sim_drift_ms：模拟已走时长 - 墙上已走时长（正 = 模拟超前）。
+// §5 的 ac_sim_drift_ms：模拟已走时长 − 墙上已走时长（负 = 模拟落后）。本局口径，只在一局之内有值
+// （epoch 未打基准 = 没开球，报 0 而不是拿上个进程/上一局的账充数）。
+// 取法与 S12 §5 等价但更稳：同一条 50ms 网格上，墙钟已走 = 已执行 tick 数 × 50 + 房间累加器残差，
+// 所以「模拟 − 墙钟」就是残差取负 —— 残差按房间自己的网格算（每 tick 扣 50、每拍加实际时长），
+// 对这个网格的任何重锚（开球对齐、换局、无人连接时的暂停）都自动跟随。
+// 反面教材（接线首版实测）：用「epoch 已执行 tick 数 × 50 − 从 epoch 原点起的墙钟」——只要房间的
+// 网格在中途重锚（同房间第二局的 kLoading、掉线暂停），这个差就把重锚前的那段时间算成漂移，
+// 短对局里量到 80ms、掉线段里量到数千毫秒，正好把 G6 的 |漂移| ≤ 50ms 判据顶红。
 double Runtime::simDriftMs() const noexcept {
-  if (tickBaseMs_ == 0u || lastPollMs_ < tickBaseMs_) {
-    return 0.0;
-  }
-  const std::int64_t simMs =
-      static_cast<std::int64_t>(scheduler_.tickIndex) * static_cast<std::int64_t>(ac::version::kTickMs);
-  const std::int64_t wallMs = static_cast<std::int64_t>(lastPollMs_ - tickBaseMs_);
-  return static_cast<double>(simMs - wallMs);
+  if (!scheduler_.epoch.isActive || room_ == nullptr) return 0.0;
+  return -static_cast<double>(room_->accumulatorMs);
 }
 
 void Runtime::publishMetrics(std::uint64_t nowMs) {

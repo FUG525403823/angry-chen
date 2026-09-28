@@ -83,6 +83,9 @@ void beginTickEpoch(TickScheduler& scheduler, uint64_t firstTickGridMs,
                         : 0u;
   epoch.tickSkips = scheduler.tickSkips;
   scheduler.epoch = epoch;
+  // 漂移与调度误差同起点：本局的首 tick 网格时刻既是调度原点，也是漂移的墙钟原点（simStartMs = 0，
+  // 与本局世界/网格的 0 起算一致）。`noteSimClock()` 用它算 §5 的 sim_drift。
+  scheduler.simClock = SimClock{0u, firstTickGridMs};
   // 三个环从本局起算：只清计数即可（写点总是先落槽位再增计数，count 之外的槽位不会被读）。
   scheduler.jitterCount = 0u;
   scheduler.jitterNext = 0u;

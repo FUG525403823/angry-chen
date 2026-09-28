@@ -468,6 +468,11 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
     if (at == std::string::npos) return -1.0;
     return std::strtod(text.c_str() + at + std::strlen(needle), nullptr);
   };
+  // §5 的 ac_sim_drift_ms 是同一量的瞬时值（未开球 0）：采样本局 playing 段的量值表读数。
+  // 取值行行首（`\n` 前缀）而不是裸名字 —— 裸名字会先命中 `# HELP` 那一行，读到说明文字。
+  const auto gaugeValue = [&](const char* name) -> double {
+    return numberAfter(httpGet(runtime, "/metrics", now), name);
+  };
   // 上一局的 MatchState/快照还在 socket 缓冲里：不清空的话握手会把旧包当成 HelloAck 而判失败。
   const auto drainClient = [&]() -> int {
     std::uint8_t scratch[1024] = {};
@@ -494,10 +499,19 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
       keepAlive(i);
     }
     AC_CHECK(runtime.metrics().players >= 1u);
+    double gaugeDriftAbsMax = 0.0;
     for (int i = 0; i < playPolls[round]; ++i) {
       runtime.pollOnce(now += (i % 2 == 0 ? 25u : 30u));
       keepAlive(i);
+      if (i % 8 == 0) {
+        const double gauge = gaugeValue("\nac_sim_drift_ms ");
+        AC_CHECK(gauge <= 0.0);  // 网格落后量为负（正 = 模拟超前，只有让出预算时才会出现）
+        if (-gauge > gaugeDriftAbsMax) gaugeDriftAbsMax = -gauge;
+      }
     }
+    // ④' /metrics 的同名字段与报告同源：不是恒 0，且不越 50ms 上限（S14 G6 的替代判据输入）。
+    AC_CHECK(gaugeDriftAbsMax >= 1.0);
+    AC_CHECK(gaugeDriftAbsMax <= 50.0);
     // 掉线 → 房间清空 → endMatch。40/50ms 步进：每拍至多执行 1 个 tick（迟到量 ≤ 一步），
     // 不会触发追帧上限（不产生跳过），也不会把一堆 tick 挤进同一拍。
     for (int i = 0; i < 1000 && runtime.clientCount() > 0u; ++i) {
@@ -530,10 +544,11 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
     const double scheduleP95 = numberAfter(report, "\"scheduleErrorMsP95\":");
     const double workP95 = numberAfter(report, "\"workMsP95\":");
     const double workP99 = numberAfter(report, "\"workMsP99\":");
+    const double driftMax = numberAfter(report, "\"simDriftMsMax\":");
     std::printf("round=%d matchId=%s duration=%.0fms ticks=%0.f jitterP50=%.3f jitterP95=%.3f "
-                "schedP95=%.3f workP95=%.3f workP99=%.3f\n",
+                "schedP95=%.3f workP95=%.3f workP99=%.3f simDriftMsMax=%.1f\n",
                 round, record->matchId.c_str(), durationMs, ticksTotal, jitterP50, jitterP95,
-                scheduleP95, workP95, workP99);
+                scheduleP95, workP95, workP99, driftMax);
     AC_CHECK(durationMs > 1000.0);
     AC_CHECK(jitterP50 >= 0.0 && jitterP50 <= jitterP95);
     // ① 抖动/调度误差是「本局每 tick 相对 50ms 网格的迟到量」：不超过一步轮询的量级，
@@ -548,6 +563,14 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
     // ③ 工作量有真实测量点（房间更新 <1ms 时旧行为四舍五入成 0）。
     AC_CHECK(workP95 > 0.0);
     AC_CHECK_EQ(workP95 <= workP99, true);
+    // ④ 漂移：本局 |漂移| 最大值是真值（非恒 0、非 NaN/缺字段），且不越冻结的 50ms 上限
+    //   （S14 G6 替代判据的 |漂移| ≤ 50ms）。两局各自独立 —— 若从进程首个 tick 起累计，
+    //   第二局必然超过上限（这也是旧代码恒 0 与「接线后可能变红」的同一处输入）。
+    AC_CHECK(driftMax >= 1.0);
+    AC_CHECK(driftMax <= 50.0);
+    // 本用例的步进（25/30、40/50）下 |漂移| = 房间累加器残差 ≤ 45ms：模拟时长若多算一个 tick，
+    // 这一项会正好顶到 50（接线首版就这么错，靠这条断言抓出来）。
+    AC_CHECK(driftMax <= 49.0);
   }
   runtime.stop();
 }
