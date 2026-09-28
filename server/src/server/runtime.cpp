@@ -10,6 +10,7 @@
 #include "core/scheduler.hpp"
 #include "core/version.hpp"
 #include "net/codec.hpp"
+#include "report.hpp"
 #include "replication/delta.hpp"
 #include "waves/director.hpp"
 
@@ -109,6 +110,8 @@ bool Runtime::start(const RuntimeConfig& config, std::string* error) {
 void Runtime::stop() {
   if (!isRunning_ && room_ == nullptr) return;
   isRunning_ = false;
+  // 进程收尾：对局已结束但没轮到下一拍 ensureMatchRunning（例如 --minutes 恰好到时）时补一次落盘。
+  flushMatchOutcome();
   http_.stop();
   udp_.close();
   if (room_ != nullptr) {
@@ -446,8 +449,47 @@ void Runtime::purgeReleasedClients() {
   }
 }
 
+void Runtime::flushMatchOutcome() {
+  if (room_ == nullptr || !room_->match.hasResult) return;
+  // 复用既有序列化：房间结算记录 → 战绩记录（字段名与 §5 的 schema 一一对应）。
+  const ac::persist::MatchResultRecord record = ac::persist::toStoredRecord(room_->match.lastResult);
+  if (record.matchId.empty() || record.matchId == lastStoredMatchId_) return;
+  const bool isStored = store_ != nullptr && store_->append(record);
+  if (!isStored) {
+    // 失败不吞：走既有的 store.error 名，并把路径与当前常驻条数一并记下；此后 /metrics 的
+    // ac_records_retained 不增长就是可观测信号（不新增计数名，§5 的名字表是冻结契约）。
+    ac::log::event(ac::log::Level::error, ac::log::EventName::kStoreError, {},
+                   {ac::log::DetailField("matchId", std::string_view(record.matchId)),
+                    ac::log::DetailField("path", store_ == nullptr ? std::string_view{}
+                                                                   : store_->path()),
+                    ac::log::DetailField("retained",
+                                         static_cast<std::uint64_t>(store_ == nullptr
+                                                                        ? 0u
+                                                                        : store_->recordCount()))});
+  }
+  lastStoredMatchId_ = record.matchId;  // 无论成败都只尝试一次（重置会清掉 hasResult）
+  // 单局诊断报告：与战绩各自独立落盘，报告侧失败由 writeReport 记 report.write_failed。
+  ac::report::MatchRunSummary summary{};
+  summary.matchId = record.matchId;
+  summary.durationMs = record.durationMs;
+  summary.simDriftMsMax = static_cast<std::int64_t>(simDriftMs());
+  for (uint8_t i = 0u; i < room_->match.recordCount && i < ac::room::kMaxPlayersPerRoom; ++i) {
+    const ac::room::PlayerStats& stats = room_->match.records[i].stats;
+    summary.shotsFiredTotal += stats.shotsFired;
+    summary.hitsTotal += stats.hits;
+  }
+  summary.peakEntities = room_->match.counters.peakEntities;
+  summary.peakPlayers = room_->match.counters.peakPlayers;
+  std::string reportError;
+  const ac::report::MatchDiagnostics diagnostics =
+      ac::report::buildMatchDiagnostics(summary, counters_, gauges_, scheduler_);
+  (void)ac::report::writeReport(dataDir_, diagnostics, &reportError);
+}
+
 void Runtime::ensureMatchRunning(std::uint64_t nowMs) {
   if (room_ == nullptr) return;
+  // 「已结束、还没重置」是结算记录唯一可读的时刻：先落盘（战绩 + 报告），再走重置。
+  flushMatchOutcome();
   if (room_->phase == ac::room::MatchPhase::kPlaying) return;
   if (room_->phase == ac::room::MatchPhase::kEnded) {
     (void)ac::room::applyMatchTransition(*room_, ac::room::MatchPhase::kLobby);

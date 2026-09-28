@@ -177,3 +177,35 @@ AC_TEST(log_file_env_redirects_writer) {
   ac::test::clearEnvVar("AC_LOG_FILE");
   AC_CHECK(!ac::log::applyLogFileFromEnv());
 }
+
+// F2（清单 D：`AC_LOG_FILE` 指到服务用户不可写的路径时，日志静默退回 stderr ⇒ server.log 恒 0 字节）。
+AC_TEST(log_file_env_failure_is_logged_and_keeps_writer_alive) {
+  ac::test::LogGuard guard;
+  ac::test::TempDir dir("logfail");
+  AC_CHECK(dir.isReady());
+  // 先把 sink 指到一个可写文件：这样「打不开」的 error 行落在哪里可断言（生产里就是 stderr →
+  // server.err.log；排障时看的就是它）。
+  const std::string sinkPath = dir.file("current.log");
+  AC_CHECK(ac::log::useFile(sinkPath));
+  // 目标是一个**目录**：`fopen(ab)` 在各平台都失败（EACCES / EISDIR），等价于现场的 EACCES。
+  const std::string badPath = dir.file("not-a-file");
+  std::error_code code;
+  std::filesystem::create_directories(badPath, code);
+  AC_CHECK(!code);
+  AC_CHECK_EQ(ac::test::setEnvVar("AC_LOG_FILE", badPath), true);
+  AC_CHECK(!ac::log::applyLogFileFromEnv());  // 打不开：返回 false，不切 sink
+  ac::test::clearEnvVar("AC_LOG_FILE");
+  ac::log::event(ac::log::Level::error, "afterLogFileFailure", {});  // 进程没崩、日志口还在
+  ac::log::close();
+  const std::string text = ac::test::readTextFile(sinkPath);
+  // ① EACCES 不再静默：路径 + errno 文本都进了日志
+  AC_CHECK(text.find("\"evt\":\"logFileOpenFailed\"") != std::string::npos);
+  AC_CHECK(text.find("\"level\":\"error\"") != std::string::npos);
+  AC_CHECK(text.find("not-a-file") != std::string::npos);
+  AC_CHECK(text.find("\"errno\":") != std::string::npos);
+  AC_CHECK(text.find("\"error\":\"") != std::string::npos);
+  // ② 退回的是**当前 sink**（不是关掉日志口），后续行仍能落盘
+  AC_CHECK(text.find("\"evt\":\"afterLogFileFailure\"") != std::string::npos);
+  std::printf("logFileOpenFailed line: %s\n",
+              text.substr(text.find("\"evt\":\"logFileOpenFailed\"") - 1u, 220u).c_str());
+}

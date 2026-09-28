@@ -105,6 +105,8 @@ class Runtime {
   std::size_t roomCount() const noexcept;
   std::size_t clientCount() const noexcept;
   const std::string& dataDir() const noexcept { return dataDir_; }
+  // 战绩存储的只读入口（/api/* 读端点用它；用例用它断言「结束即入库」）。
+  const ac::persist::MatchStore* store() const noexcept { return store_.get(); }
 
  private:
   struct Client {
@@ -151,6 +153,8 @@ class Runtime {
   double simDriftMs() const noexcept;
   void updateRates(std::uint64_t nowMs) noexcept;
   void httpFill(ac::http::HttpDeps& out);
+  // 对局结束的落盘出口：结算记录 append 进 MatchStore + 写 reports/<matchId>.json（S13 §5）。
+  void flushMatchOutcome();
 
   static void replicateThunk(void* user, ac::room::Room& room);
   static void matchStateThunk(void* user, const ac::room::Room& room, ac::room::Session& session,
@@ -179,6 +183,8 @@ class Runtime {
   ac::metrics::GaugeRegistry gauges_{};
   ac::metrics::ProcessSnapshot process_{};
   std::unique_ptr<ac::persist::MatchStore> store_{};
+  // 最近一次已落盘的战绩 matchId：同一局只入库一次（结束 → 重置之间会被反复观察）。
+  std::string lastStoredMatchId_{};
   ac::http::HttpState httpState_{};
   ac::http::HttpListener http_{};
   std::string metricsBody_{};

@@ -2,6 +2,8 @@
 // 本文件同时充当「运行时接线正确」的证据：握手、命令、复制、HTTP 面与停机。
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <span>
 #include <string>
 #include <vector>
@@ -13,7 +15,9 @@
 #include "server/runtime.hpp"
 #include <filesystem>
 
+#include "test_io.hpp"
 #include "tiny_test.hpp"
+#include "tmp_workdir.hpp"
 
 namespace {
 
@@ -332,4 +336,96 @@ AC_TEST(runtime_stop_is_idempotent_and_releases_ports) {
   // 端口已释放：同一端口能再次绑定（HTTP 监听层随之关闭）。
   ac::net::UdpSocket probe{};
   AC_CHECK(probe.bind(0u));
+}
+
+// F1（清单 D 的「真打一局后 matches.ndjson 仍 0 字节、reports/ 为空」）：对局结束必须真的入库 + 出报告。
+AC_TEST(runtime_persists_match_record_and_report_on_match_end) {
+  ac::test::TempDir dir("runtime-persist");
+  AC_CHECK(dir.isReady());
+  const std::string dataDir = dir.file("data");
+  std::error_code code;
+  std::filesystem::create_directories(dataDir, code);  // MatchStore 不替调用方建目录
+
+  ac::server::RuntimeConfig config = testConfig();
+  config.dataDir = dataDir;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket client{};
+  AC_CHECK(client.bind(0u));
+  AC_CHECK(handshake(runtime, client, 0x55667788u, 10000u) != 0u);
+
+  // 打到 playing（loading 冻结 1500ms，按 25ms 步进给 2.5s 余量）。
+  std::uint64_t now = 10000u;
+  for (int i = 0; i < 100; ++i) runtime.pollOnce(now += 25u);
+  AC_CHECK(runtime.metrics().players >= 1u);
+
+  // 客户端掉线（3s 无包判离线 + 30s 宽限）→ 房间清空 → updateRoom 判结束（winnerTeam = 羊群）。
+  // 合成时钟一次跳 2s，最多 25 拍（50s）足以越过 33s 的离线上限与宽限期之和。
+  for (int i = 0; i < 25 && runtime.clientCount() > 0u; ++i) runtime.pollOnce(now += 2000u);
+  AC_CHECK_EQ(runtime.clientCount(), static_cast<std::size_t>(0));
+  runtime.pollOnce(now += 25u);  // 上一拍已 endMatch：这一拍 ensureMatchRunning 落盘
+
+  // ① store 里出现该 record
+  const ac::persist::MatchStore* store = runtime.store();
+  AC_CHECK(store != nullptr);
+  if (store == nullptr) {
+    runtime.stop();
+    return;
+  }
+  AC_CHECK_EQ(store->recordCount(), static_cast<std::size_t>(1));
+  const std::vector<ac::persist::MatchResultRecord> stored = store->listRecent(1u);
+  AC_CHECK_EQ(stored.size(), static_cast<std::size_t>(1));
+  if (stored.empty()) {
+    runtime.stop();
+    return;
+  }
+  const std::string matchId = stored[0].matchId;
+  AC_CHECK(ac::persist::isSafeMatchId(matchId));
+  AC_CHECK_EQ(stored[0].winnerTeam, static_cast<std::uint8_t>(1));
+  AC_CHECK_EQ(stored[0].players.size(), static_cast<std::size_t>(1));
+  AC_CHECK(!stored[0].players[0].name.empty());
+
+  // ② reports/<matchId>.json 落盘且 8 组字段齐全
+  const std::string reportPath = dataDir + "/reports/" + matchId + ".json";
+  const std::string report = ac::test::readTextFile(reportPath);
+  AC_CHECK(!report.empty());
+  AC_CHECK(report.find("\"matchId\":\"" + matchId + "\"") != std::string::npos);
+  AC_CHECK(report.find(",\"durationMs\":") != std::string::npos);
+  for (const char* group : {"\"ticks\":{\"total\":", "\"net\":{\"snapshotBytesAvg\":",
+                            "\"fair\":{\"hardCorrectTotal\":", "\"grace\":{\"starts\":",
+                            "\"peak\":{\"entities\":"}) {
+    AC_CHECK(report.find(group) != std::string::npos);
+  }
+  const auto numberAfter = [](const std::string& text, const char* needle) -> double {
+    const std::size_t at = text.find(needle);
+    if (at == std::string::npos) return -1.0;
+    return std::strtod(text.c_str() + at + std::strlen(needle), nullptr);
+  };
+  AC_CHECK(numberAfter(report, "\"peak\":{\"entities\":") >= 1.0);
+  AC_CHECK(numberAfter(report, "\"peak\":{\"entities\":") >=
+           numberAfter(report, "\"peak\":{\"players\":"));
+
+  // ③ HTTP 层能查到该条（同一进程的 store 出 /api/matches/recent），且 /metrics 的常驻条数跟上
+  const std::string recent = httpGet(runtime, "/api/matches/recent?limit=5", now += 100u);
+  AC_CHECK(recent.rfind("HTTP/1.1 200 OK", 0u) == 0u);
+  AC_CHECK(recent.find("\"" + matchId + "\"") != std::string::npos);
+  const std::string metrics = httpGet(runtime, "/metrics", now += 100u);
+  AC_CHECK(metrics.find("ac_records_retained 1") != std::string::npos);
+  std::printf("matchId=%s records=%zu reportPath=%s\n", matchId.c_str(), store->recordCount(),
+              reportPath.c_str());
+  runtime.stop();
+
+  // ④ 重启（重建 Runtime + store）后仍能查到：NDJSON 是持久化的
+  ac::server::Runtime restarted;
+  std::string restartError;
+  AC_CHECK(restarted.start(config, &restartError));
+  AC_CHECK(restarted.store() != nullptr);
+  if (restarted.store() != nullptr) {
+    AC_CHECK(restarted.store()->recordCount() >= static_cast<std::size_t>(1));
+  }
+  const std::string afterRestart = httpGet(restarted, "/api/matches/recent?limit=5", now += 100u);
+  AC_CHECK(afterRestart.rfind("HTTP/1.1 200 OK", 0u) == 0u);
+  AC_CHECK(afterRestart.find("\"" + matchId + "\"") != std::string::npos);
+  restarted.stop();
 }

@@ -69,7 +69,8 @@ Level minLevel() noexcept;
 void setMinLevel(Level level) noexcept;
 bool setMinLevelFromEnv(const char* value) noexcept;  // 未识别返回 false 且不改动当前阈值
 void applyLogLevelFromEnv();                          // 读 AC_LOG_LEVEL（空/未设则保持默认 info）
-bool applyLogFileFromEnv();  // 读 AC_LOG_FILE 并切到文件 sink（空/未设或打不开则保持当前 sink）
+bool applyLogFileFromEnv();  // 读 AC_LOG_FILE 并切到文件 sink（空/未设或打不开则保持当前 sink；
+                             // 打不开时落一条 error 级 logFileOpenFailed，带 path 与 errno 文本）
 
 struct EventContext {
   std::int64_t ts = 0;   // 0 = 取系统 UTC 时钟

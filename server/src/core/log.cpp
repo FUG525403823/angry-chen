@@ -3,6 +3,7 @@
 #include "core/clock.hpp"
 #include "core/json_text.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -284,13 +285,29 @@ void applyLogLevelFromEnv() {
 bool applyLogFileFromEnv() {
   const char* value = std::getenv("AC_LOG_FILE");
   if (value == nullptr || value[0] == '\0') return false;
-  // 运维给的是「日志落到哪里」；目录不存在时按需创建，打不开就保持当前 sink（不静默丢日志）。
+  // 运维给的是「日志落到哪里」；目录不存在时按需创建。
   const std::filesystem::path target(value);
   if (target.has_parent_path()) {
     std::error_code ignored;
     std::filesystem::create_directories(target.parent_path(), ignored);
   }
-  return useFile(value);
+  // 打不开必须留证据：静默退回当前 sink 会让「server.log 恒 0 字节、所有 JSON 行都进了
+  // server.err.log」这类部署事故无从定位（典型原因是文件/目录属主不是服务用户 → EACCES）。
+  // 注意顺序：先 close 再 fopen 会把日志口也一起丢掉，所以这里自己开、成功后才换 sink。
+  errno = 0;
+  std::FILE* file = std::fopen(value, "ab");
+  if (file == nullptr) {
+    const int code = errno;  // 先取 errno 再写日志：写日志本身也会动它
+    const char* const text = std::strerror(code);
+    event(Level::error, "logFileOpenFailed", {},
+          {DetailField("path", value), DetailField("errno", static_cast<std::int64_t>(code)),
+           DetailField("error", text == nullptr ? std::string_view{} : std::string_view(text))});
+    return false;
+  }
+  close();
+  gSink = file;
+  gIsSinkOwned = true;
+  return true;
 }
 
 DetailField DetailField::null(std::string_view key) {

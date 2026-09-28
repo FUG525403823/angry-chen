@@ -448,6 +448,10 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
   room.match.counters.ticks += 1u;
   const uint8_t connected = connectedSessionCount(room);
   if (connected > room.match.counters.peakPlayers) room.match.counters.peakPlayers = connected;
+  // 实体峰值（S13 §5 报告的 peak.entities 来源）：本 tick 世界里的活动实体数（玩家/羊/投射物/拾取物）。
+  if (room.world->activeCount > room.match.counters.peakEntities) {
+    room.match.counters.peakEntities = room.world->activeCount;
+  }
   // §5.7-2：阶段推进（loading / intermission 计时 + 全员准备跳过）。
   updateMatch(room, nowMs, ac::config::kStepDtMs);
   applyWeaponSelections(room);

@@ -1072,6 +1072,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 > 收口：按实现修正 —— 写盘确实是一次同步调用（无队列、无批量 flush）；但生产路径至今没有调用点（全仓 `writeReport(` 只有定义与 `report_test` 的用例），落盘仍待运行循环接线；依据：`server/src/report.cpp:210`、`server/tests/report_test.cpp:100/113/126/149`。
 
+> 收口（F1 接线，触发证据 = 云端验收清单 D：`ac_bot --players 4 --minutes 0.35`（4 会话 449 包）跑完后 `/var/lib/angry-chen/matches.ndjson` 仍 **0 字节**、`reports/` 为空、`grep 'store_->append' server/src` **0 命中**）：上一条的「落盘仍待运行循环接线」不再成立 —— 对局结束路径新增 `Runtime::flushMatchOutcome()`（`server/src/server/runtime.cpp:452-461`），复用既有序列化：`persist::toStoredRecord()` → `MatchStore::append` → `report::buildMatchDiagnostics` + `writeReport(<dataDir>/reports/<matchId>.json)`。**调用点**取「结束 → 重置」之间唯一可读的时刻：`ensureMatchRunning` 顶部（`runtime.cpp:492`，在 `kEnded` 被重置之前）+ `stop()` 收尾补一次（`runtime.cpp:114`，覆盖「对局刚结束就到 `--minutes`」）；同一局只入库一次（`lastStoredMatchId_`，`runtime.hpp:187`）。**失败可观测**：`append` 失败走既有 `store.error`（字段 `matchId`/`path`/`retained`），此后 `/metrics` 的 `ac_records_retained` 不增长即信号；报告侧失败仍由 `writeReport` 记 `report.write_failed`；两者都不新增计数名（§5 名字表是冻结契约）。**顺带补上的写方**：报告的 `peak.entities` 此前无来源（`MatchCounters::peakEntities` 无写入方），现由 `room.cpp:452-454` 每 tick 记本 tick 活动实体数。**用例**：`runtime_persists_match_record_and_report_on_match_end`（`server/tests/runtime_test.cpp:342-431`）断言① `store()->recordCount()==1` 且 `winnerTeam`/`players` 正确、② `reports/<matchId>.json` 8 组字段齐全且 `peak.entities ≥ peak.players`、③ `/api/matches/recent?limit=5` = 200 且含该 `matchId`、`/metrics` 含 `ac_records_retained 1`、④ 重建 Runtime + store（重启）后仍可查到。**本机 e2e（同一条生产路径）**：`server/build/ac_server.exe --serve --minutes=1.5 --udp-port=8798 --http-port=8799 --data-dir=build/f1-e2e` + `server/build/ac_bot.exe --players 4 --minutes 0.2 --port 8798` → 对局自然结束（4 人全倒地，`winnerTeam=1`）后 `matches.ndjson` **1269 B / 2 行**、`reports/` **2 份**、`/api/matches/recent` 返回这两条；实测 `TESTS 503/503`。依据：`server/src/server/runtime.cpp:114/452-461/492`、`server/src/server/runtime.hpp:109/157/187`、`server/src/room/room.cpp:450-454`、`server/tests/runtime_test.cpp:342-431`、本机 e2e 原始输出（见本条）。**待办**：`≥30 分钟`长局的云上复跑仍待（路径相同，只把 `--minutes` 换成 30）。
+
 13. **HTTP 的 500 有两个可复现触发条件**：`/metrics` 的 `metrics-unavailable`（渲染产物为空）与读接口的 `response-too-large`（body > 64 KiB）。§5 只规定「200/429/500」与响应形状，没有规定 500 的触发条件。
 
 > 收口：按实现修正 —— 两个 500 触发条件都在：`server.cpp:134` 的 `metrics-unavailable` 与 `:180` 的 `response-too-large`（body > `kMaxBodyBytes`）；依据：`server/src/http/server.cpp:134/180`、`server/src/http/server.hpp:27`。
@@ -1565,6 +1567,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 `/etc/angry-chen/server.env` 示例：`AC_UDP_PORT=8788` / `AC_HTTP_PORT=8787` / `AC_DATA_DIR=/var/lib/angry-chen` / `AC_LOG_LEVEL=info`。
 
+> 收口（F2）：示例里**必须再补一行 `AC_LOG_FILE=/var/log/angry-chen/server.log`** —— 不设它，日志走默认 sink = stderr，§18.1 承诺的 `server.log` 就恒 0 字节（所有 JSON 行都进 `server.err.log`）；而且该文件与其目录必须属服务用户，否则 `fopen(ab)` EACCES 打不开（旧实现静默退回，本批起会落 `logFileOpenFailed`）。安装步骤见 §18.7 前置条件 ①。依据：`server/README.md` §18.8-13、`server/src/core/log.cpp:285-307`、`deploy/angry-chen-server.service:20-26`。
+
 ### 18.4 日志轮转
 
 每日一次，或单文件 ≥ **64 MB** 立即轮转；保留 **7** 份、压缩存储。战绩与报告**不轮转、不截断**（报告按份数保留 200 份，战绩靠内存侧常驻上限 10000 条约束）。
@@ -1616,6 +1620,43 @@ sudo systemctl daemon-reload && sudo systemctl enable --now angry-chen-server
 sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 ```
 
+上面这段是最初版本。云端验收（清单 D）实测踩到三个**前置条件**，缺任意一条都会出现「装好了但服务起不来 / 端点全 404 / 日志恒 0 字节」，因此补齐如下（每条都给「为什么」）：
+
+**① 日志出口：`AC_LOG_FILE` + 日志属主（F2）**
+
+```bash
+echo 'AC_LOG_FILE=/var/log/angry-chen/server.log' | sudo tee -a /etc/angry-chen/server.env
+sudo install -d -o angrychen -g angrychen /var/log/angry-chen
+sudo touch /var/log/angry-chen/server.log && sudo chown angrychen:angrychen /var/log/angry-chen/server.log
+sudo chown -R angrychen:angrychen /var/lib/angry-chen /var/log/angry-chen   # 复用历史目录/文件时必需
+sudo systemctl restart angry-chen-server
+```
+
+为什么：日志的默认 sink 是 **stderr**（`server/src/core/log.cpp:192-196`），只有设了 `AC_LOG_FILE` 才切到文件 sink —— 不设就永远没有 §18.1 承诺的那个 `server.log`，所有 JSON 行都进 `server.err.log`。**属主是第二个必要条件**：文件打不开时（EACCES，典型是历史上 root 跑过留下的 `root:root` 0 字节文件）旧实现**静默**退回 stderr，这正是现场「`/var/log/angry-chen/server.log` 恒 0 字节」的成因；本批起打不开会先落一条 `logFileOpenFailed`（含 `path` 与 errno 文本）再退回，但正解仍是属主正确。
+验收命令：`sudo tail -n 5 /var/log/angry-chen/server.log` 应看到 `listening`（启动后）与 `shutdownRequested`/`shutdownComplete`（`sudo systemctl restart angry-chen-server` 后）。
+
+**② 数据目录属主（F3）**
+
+```bash
+sudo chown -R angrychen:angrychen /var/lib/angry-chen
+sudo systemctl restart angry-chen-server
+sudo systemctl is-active angry-chen-server        # 期望 active（不是 activating/failed）
+```
+
+为什么：若 `/var/lib/angry-chen/matches.ndjson` 是历史上 root 跑出来的 **0 字节 `root:root`** 文件，服务用户无法 `fopen(ab)` 追加 → 首次启动直接 `code=exited, status=1/FAILURE`，`server.err.log` 里是 `serve failed: cannot-open:/var/lib/angry-chen/matches.ndjson`（`persist/match_store.cpp` 的 `open()` 失败路径）。这也解释了「文件存在但 0 字节」的现象：既有 root 遗留文件、也有写不进去的权限问题，两个坑要一起排。
+
+**③ 反代片段：先移除发行版默认 vhost，再落到 `conf.d/`（F3）**
+
+```bash
+sudo rm -f /etc/nginx/sites-enabled/default                    # Ubuntu 自带：listen 80 default_server; server_name _;
+sudo cp deploy/nginx.conf /etc/nginx/conf.d/angry-chen.conf    # 片段是裸 server{}，必须落在 http 块内
+sudo nginx -t && sudo systemctl reload nginx
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1/health   # 期望 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1/nope     # 期望 404
+```
+
+为什么：Ubuntu 自带的 `/etc/nginx/sites-enabled/default` 里有 `listen 80 default_server;` + `server_name _;`，它才是 :80 的默认服务器 → 片段装好后现场实测 `/health` **全 404**（请求被默认 vhost 接走）；`rm` 掉它（或把片段 `server_name` 改成真实域名）之后再 `nginx -t` 才生效。实测对照：移除前 `/health` = **404** → 移除后 `/health` = **200**、`/nope` = **404**（与 §18.2 的端点表一致）。另一个坑：仓库片段是**裸 `server{}`**（没有外层 `events{}`/`http{}`），所以只能放进被主配置 `include` 的目录（Ubuntu 的 `conf.d/*.conf`，其次是 `sites-available` + `sites-enabled` 软链），**不要**用 `nginx -c deploy/nginx.conf` 或拿它覆盖 `/etc/nginx/nginx.conf`（`nginx -t` 会报 `no "events" section`）。
+
 ### 18.8 计划文本纠正与已声明偏差（S15）
 
 1. **`AC_DATA_DIR` 的默认值按平台分叉**：§5 冻结 `/var/lib/angry-chen`，但 Windows（本机开发与 CI）上会在 D: 盘造一棵 `/var/lib` 树，所以 `#if defined(_WIN32)` 回落 `data`（本条即登记；§14.1 第 14 条原写「代码里不硬编码」已按本条更正）；部署单元里显式注入 `/var/lib/angry-chen`，Linux 行为与 §5 完全一致。
@@ -1661,6 +1702,14 @@ sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
 12. **`--serve` 仍需排在其它选项之前**（S14 已登记、S15 未收敛）：§9 的命令就是 `--serve` 打头，单元里也这么写；把选项解析做成顺序无关与 SIGTERM 收尾在 §15.4 D3 里挂着。
 
 > 收口：已修（C2，`688ca13`）—— 选项解析改成先扫 argv 找 `--serve` 再分派（顺序无关），并新增 `server/shutdown.{hpp,cpp}` 的 SIGINT/SIGTERM 优雅退出；依据：提交 `688ca13`、`server/src/main.cpp:150-153`、`server/src/server/serve_cli.cpp:88`、`server/tests/serve_cli_test.cpp:130`。
+
+13. **日志落盘位置不符（F2，清单 D 实测）**：§18.1/§18.3 承诺 `/var/log/angry-chen/server.log` 装结构化 JSON 行，但按仓库原样部署时它**恒 0 字节**，所有 JSON 行都进了 `server.err.log` —— 默认 sink 是 stderr（`server/src/core/log.cpp:192-196`），只有设了 `AC_LOG_FILE` 才 `useFile()`；而**设了也还可能打不开**（文件属主不是服务用户 → EACCES），旧实现在这种情况下**静默**退回 stderr，现场因此看不出任何线索。
+
+> 收口（F2）：两侧都已修 —— ① 代码侧 `applyLogFileFromEnv()` 打不开时先落一条 error 级 `logFileOpenFailed`（`detail` 含 `path` 与 `errno` 文本，例如 `{"path":"...blocked","errno":13,"error":"Permission denied"}`）再退回当前 sink，进程不崩（用例 `log_file_env_failure_is_logged_and_keeps_writer_alive`，`server/tests/log_test.cpp:181-215`；原「打不开则保持当前 sink」的静默语义同时收紧为「保持 sink 且留证据」）。② 部署侧选 **(B) 显式 `AC_LOG_FILE` + 日志属主**，不选 (A) 把 `StandardError` 也指向 `server.log`：stderr 上除了 JSON 行还有非结构化输出（`serve failed: cannot-open:...`、崩溃回溯），混进去会破坏 §18.1「`server.log` = 结构化 JSON 行」的口径，而 `server.err.log` 正好是这类输出的落点。事件名用**表外**的 `logFileOpenFailed`（**已裁决**：§5 的 19 名是冻结**最小集**、不是闭集，S01 的 `event(string_view)` 允许表外诊断事件，先例就是 `main.cpp` 的 `serverStarted`（同样不在 19 名内、`knownEventCount()==19` 的断言从未包含它）；让诊断事件复用一个语义不符的冻结名（如 `store.error`）反而污染既有口径，故不扩表、不复用）。落地位置见 §18.7 前置条件 ①（`AC_LOG_FILE=/var/log/angry-chen/server.log` + `chown -R angrychen:angrychen /var/log/angry-chen`）。**验收命令**：`AC_LOG_FILE=<可写路径> server/build/ac_server.exe --serve --minutes=0.05 ...` 后 `tail -n 5 <该路径>` 应看到 `listening`/`shutdownRequested`/`shutdownComplete`（生产上就是 `sudo tail -n 5 /var/log/angry-chen/server.log`）；把 `AC_LOG_FILE` 指到不可写目标（例如一个目录）时，stderr 首行应是 `logFileOpenFailed`，且进程照常跑完 `listening`→`shutdownComplete`。本机实测：可写路径 → `server.log` 430 B / 3 行（stdout/stderr 均 0 B）；不可写路径 → stderr 首行 `logFileOpenFailed`（`errno:13`/`Permission denied`）+ 后续三行正常，退出码 0。依据：`server/src/core/log.cpp:285-307`、`server/src/core/log.hpp:72-73`、`server/tests/log_test.cpp:181-215`、本机 e2e 原始输出（见 F2 收口条目）。
+
+14. **部署前置条件缺口（F3，清单 D 实测）**：§18.7 的步骤在云端实测缺三条前置条件 —— ① Ubuntu 自带的 `/etc/nginx/sites-enabled/default`（`listen 80 default_server; server_name _;`）会抢 :80，片段装好后 `/health` **全 404**（移除后 200/404 正确）；② 历史上 root 跑过留下的 0 字节 `root:root` `matches.ndjson` 会让服务用户 append 失败 → 首次启动 `code=exited, status=1/FAILURE`（`serve failed: cannot-open:/var/lib/angry-chen/matches.ndjson`）；③ 仓库片段是裸 `server{}`，只能放进被主配置 include 的目录。
+
+> 收口（F3）：三条已作为可执行步骤 + 「为什么」写进 §18.7（编号 ①②③，含 `rm -f /etc/nginx/sites-enabled/default`、`chown -R angrychen:angrychen /var/lib/angry-chen /var/log/angry-chen`、`cp deploy/nginx.conf /etc/nginx/conf.d/angry-chen.conf` 与 `nginx -t`/`curl` 验收命令）。依据：清单 D 云端实测（移除前 `/health` 404 → 移除后 200、`/nope` 404；已消费 `--data-dir` 复用时 `code=exited, status=1/FAILURE`）、`server/README.md` §18.7、`deploy/nginx.conf:5-18`、`server/src/persist/match_store.cpp:517-522`。**未验证**：本机（Windows）无法执行 `systemd-analyze verify`/`nginx -t`，这三条仍是静态回写 + 云端实测证据。
 
 
 ### 18.9 两轴评审（S15，固定点 `cdf1353`）

@@ -18,6 +18,11 @@ KillSignal=SIGTERM
 TimeoutStopSec=10
 
 # 日志落盘（§5）：二选一 —— 要改走 journald 就删掉下面两行，别同时启用。
+# JSON 行要进 server.log 还差两步（安装步骤见 server/README.md §18.7 前置条件 ①）：
+#   1) server.env 里设 AC_LOG_FILE=/var/log/angry-chen/server.log（不设则默认 sink = stderr，
+#      server.log 会恒 0 字节、所有 JSON 行都进 server.err.log）；
+#   2) /var/log/angry-chen 与其中的 *.log 必须属服务用户（angrychen），否则 fopen(ab) EACCES 打不开。
+# 下面两行只兜「非 JSON 的 stdout/stderr」（例如 serve failed: cannot-open:...），不承担 JSON 行。
 StandardOutput=append:/var/log/angry-chen/server.log
 StandardError=append:/var/log/angry-chen/server.err.log
 
