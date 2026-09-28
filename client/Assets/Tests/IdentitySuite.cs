@@ -169,9 +169,9 @@ namespace Ac.Tests
             var quiet = new NameInput();
             quiet.Feed("a");
             for (var i = 0; i < 100; i++) quiet.Feed("");
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = AllocMeter.Begin();
             for (var i = 0; i < 1000; i++) quiet.Feed("");
-            SelfTest.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            AllocMeter.AssertZero(before);
         }
 
         // ---- 昵称清洗/校验与 wire 上限一致 ----
@@ -469,23 +469,29 @@ namespace Ac.Tests
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
 
                 uint tick = 1;
+                // 用例自己的合成载荷数组在**测量窗口之外**建一次：它们也分配托管内存，
+                // 留在窗口里这条闸量到的就是测试脚手架，而不是"帧路径有没有分配"。
+                var ids = new ushort[] { 3, 7, 8 };
+                var xs = new double[] { 4.0, -9.0, 6.0 };
+                var zs = new double[] { -2.0, 0.0, 1.0 };
+                var hp = new byte[] { 128, 255, 255 };
                 for (; tick <= 30; tick++)
                 {
-                    FeedSnapshot(rig, tick, new ushort[] { 3, 7, 8 }, new double[] { 4.0, -9.0, 6.0 }, new double[] { -2.0, 0.0, 1.0 }, new byte[] { 128, 255, 255 });
+                    FeedSnapshot(rig, tick, ids, xs, zs, hp);
                     rig.Loop.Frame(1000.0 / 60.0);
                 }
 
                 var resolves = rig.Loop.Identity.ResolveCount;
                 var changes = rig.Loop.IdentityChanges;
-                var before = GC.GetAllocatedBytesForCurrentThread();
+                var before = AllocMeter.Begin();
                 for (; tick <= 90; tick++)
                 {
-                    FeedSnapshot(rig, tick, new ushort[] { 3, 7, 8 }, new double[] { 4.0, -9.0, 6.0 }, new double[] { -2.0, 0.0, 1.0 }, new byte[] { 128, 255, 255 });
+                    FeedSnapshot(rig, tick, ids, xs, zs, hp);
                     rig.Loop.Frame(1000.0 / 60.0);
                 }
                 SelfTest.Equal(resolves, (long)rig.Loop.Identity.ResolveCount);   // 没有包 ⇒ 一次都不重解析
                 SelfTest.Equal(changes, (long)rig.Loop.IdentityChanges);
-                SelfTest.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+                AllocMeter.AssertZero(before);
             }
             finally { rig.Dispose(); }
         }

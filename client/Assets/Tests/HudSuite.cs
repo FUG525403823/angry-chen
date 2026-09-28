@@ -466,7 +466,7 @@ namespace Ac.Tests
             evt.Wave = 4;
             var entry = default(KillEntry);
             entry.VictimId = 7;
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = AllocMeter.Begin();
             for (var frame = 0; frame < 3; frame++)
             {
                 sample.Mag = 30 - frame;
@@ -482,8 +482,7 @@ namespace Ac.Tests
                 hud.Ammo.Set(sample.Mag, sample.Reserve, sample.ReloadLeft10Ms, sample.MagSize, sample.Reloading);
                 hud.Downed.Update(sample.Downed, sample.Phase);
             }
-            var after = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, after - before);
+            AllocMeter.AssertZero(before);
             SelfTest.Equal(3, hud.Throttle.EventWrites);
             SelfTest.True(hud.Feed.Count > 0, "击杀记录有内容", hud.Feed.Count.ToString());
         }

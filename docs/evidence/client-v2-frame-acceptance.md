@@ -45,4 +45,4 @@
 
 ## 4. 仍未装配（C15/后续）
 
-音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**仍未做**：HUD 字符串渲染与场景 UI（全仓 `OnGUI|Canvas|DrawTexture|Blit` 命中 0 ⇒ 上屏只有竞技场网格与羊的实例化绘制）、`AmmoLedger`/武器 HUD 数值、生产路径上的本地玩家身份（`GameLoop.LocalPlayerId` 无人赋值）。`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。详见 `client-v2-remaining-work.md`。
+音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**已做**：HUD/准星/大厅/结算/波间/调试面板的渲染器（`Ac.UI/OverlayModel.cs` 布局模型 + `Ac.Boot/OverlayRenderer.cs` IMGUI 适配层，无显示设备时不画）；本地玩家身份（昵称输入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定）。**仍未做**：`AmmoLedger`/武器 HUD 数值的权威来源（需 C06 开火路径或 S10 单播 mag）、武器视图网格（C09 无生成器）、局内聊天 UI。`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。详见 `client-v2-remaining-work.md`。

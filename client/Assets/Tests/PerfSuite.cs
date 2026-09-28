@@ -184,8 +184,25 @@ namespace Ac.Tests
         private static void ChecksZeroAlloc()
         {
             var profiler = new FrameProfiler();
-            for (var i = 0; i < FrameProfiler.WindowFrames * 2; i++) { profiler.Begin(); profiler.Mark(FrameStage.Input); profiler.End(); }
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            // 预热必须覆盖测量窗口里**真正会跑到的每一条路径**：只预热 Input 时，测量窗口会量到
+            // 其余 7 段首次调用的一次性分配（探针实测 ~1 KB）。预热不进测量窗口。
+            for (var i = 0; i < FrameProfiler.WindowFrames * 2; i++)
+            {
+                profiler.Begin();
+                profiler.Mark(FrameStage.Input);
+                profiler.Mark(FrameStage.Sync);
+                profiler.Mark(FrameStage.Predict);
+                profiler.Mark(FrameStage.Fx);
+                profiler.Mark(FrameStage.Audio);
+                profiler.Mark(FrameStage.Draw);
+                profiler.Mark(FrameStage.Overlay);
+                profiler.Mark(FrameStage.Hud);
+                profiler.End();
+            }
+            var warmSum = 0f;
+            for (var i = 0; i < 8; i++) warmSum += profiler.P95Ms(i) + profiler.P99Ms(i) + profiler.FrameP95Ms();
+            SelfTest.True(warmSum >= 0f, "预热查询有结果", warmSum.ToString("R"));
+            var before = AllocMeter.Begin();
             for (var i = 0; i < 2000; i++)
             {
                 profiler.Begin();
@@ -199,15 +216,15 @@ namespace Ac.Tests
                 profiler.Mark(FrameStage.Hud);
                 profiler.End();
             }
-            var after = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, after - before);
+            AllocMeter.AssertZero(before);
             SelfTest.True(profiler.Steady(), "零分配跑完仍是稳态", "不是稳态");
-            // 分位查询用预分配 scratch，也不分配
-            var beforeQuery = GC.GetAllocatedBytesForCurrentThread();
+            // 分位查询用预分配 scratch，也不分配。进窗口前已经跑过 4001 次 End，8 段 + 帧级共 9 个有序
+            // 副本全部过期 ⇒ 这一轮必然真的重排 9 次，正好压住"排序本身分不分配"：本机的 Array.Sort
+            // 每次调用分配 128 B（9 次 = 1152 B），所以 FrameProfiler 用自己的无分配排序。
+            var beforeQuery = AllocMeter.Begin();
             var sum = 0f;
             for (var i = 0; i < 200; i++) sum += profiler.P95Ms(i % 8) + profiler.P99Ms(i % 8) + profiler.FrameP95Ms();
-            var afterQuery = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, afterQuery - beforeQuery);
+            AllocMeter.AssertZero(beforeQuery);
             SelfTest.True(sum >= 0f, "分位查询有结果", sum.ToString("R"));
         }
 
@@ -325,14 +342,13 @@ namespace Ac.Tests
                 for (var i = 0; i < 64; i++) slots[i] = pool.Rent(-1 - i);
                 for (var i = 0; i < 64; i++) pool.Return(slots[i]);
             }
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = AllocMeter.Begin();
             for (var round = 0; round < 500; round++)
             {
                 for (var i = 0; i < 64; i++) slots[i] = pool.Rent(round * 100 + i);
                 for (var i = 0; i < 64; i++) pool.Return(slots[i]);
             }
-            var after = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, after - before);
+            AllocMeter.AssertZero(before);
             SelfTest.Equal(0, (long)pool.Live);
             SelfTest.Equal((long)pool.RentCount, (long)pool.ReturnCount);        // 借还配平
             SelfTest.True(pool.RentCount >= 32000, "测量区间确实跑了 500 轮", pool.RentCount.ToString());

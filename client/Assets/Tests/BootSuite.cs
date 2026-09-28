@@ -165,15 +165,16 @@ namespace Ac.Tests
                 Feed(loop, ref frame, 64, tick, tick % 40 == 0);
                 loop.Frame(1000.0 / 60.0);
             }
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            // 读数来自 AllocMeter（引擎的 GC Allocated In Frame 计数器，逐字节精确）。
+            // 注意：GC.GetAllocatedBytesForCurrentThread() 在本机恒为 0，看不见任何分配——别再用它。
+            var before = AllocMeter.Begin();
             for (uint tick = 61; tick <= 180; tick++)
             {
                 Feed(loop, ref frame, 64, tick, tick % 40 == 0);
                 loop.Frame(1000.0 / 60.0);
             }
-            var delta = GC.GetAllocatedBytesForCurrentThread() - before;
             // C14 §5：稳态每帧 0 B 分配。这条闸挂了就说明帧回路里有隐藏分配。
-            SelfTest.Equal(0, delta);
+            AllocMeter.AssertZero(before);
         }
     }
 }

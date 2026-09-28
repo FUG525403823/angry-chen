@@ -330,7 +330,7 @@ namespace Ac.Tests
             var to = new Vector3(0f, 1.4f, 25f);
             var segmentsBefore = effects.Tracers.Segments;
             var particlesBefore = effects.ParticlePool.Buffer;
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = AllocMeter.Begin();
             for (var frame = 0; frame < 3; frame++)
             {
                 effects.SpawnTracer(muzzle, to);
@@ -339,8 +339,7 @@ namespace Ac.Tests
                 effects.SpawnEliteBolt(Vector3.zero, Vector3.forward);
                 effects.Tick(16f);
             }
-            var after = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, after - before);
+            AllocMeter.AssertZero(before);
             SelfTest.True(ReferenceEquals(segmentsBefore, effects.Tracers.Segments), "曳光数组整局不换", "换了");
             SelfTest.True(ReferenceEquals(particlesBefore, effects.ParticlePool.Buffer), "粒子数组整局不换", "换了");
             SelfTest.Equal(3, effects.Tracers.LiveCount);

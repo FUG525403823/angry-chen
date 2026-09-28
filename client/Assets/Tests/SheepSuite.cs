@@ -155,15 +155,18 @@ namespace Ac.Tests
             // 测量窗口里不能有任何分配：缓冲先建好
             var indexes = new int[3][];
             for (var frame = 0; frame < 3; frame++) indexes[frame] = new int[views.Length];
+            // 预热一整轮同样的调用：第一次调用会 JIT 编译 pool.Reset/visuals.Write，那次编译自身要分配
+            // 托管内存（探针实测首轮 200 B，之后每轮 0 B）。稳态的定义不含首次编译。
+            pool.Reset();
+            for (var i = 0; i < views.Length; i++) visuals.Write(views[i], 0.0);
             var instancesBefore = pool.Instances;
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = AllocMeter.Begin();
             for (var frame = 0; frame < 3; frame++)
             {
                 pool.Reset();
                 for (var i = 0; i < views.Length; i++) indexes[frame][i] = visuals.Write(views[i], frame * 50.0);
             }
-            var after = GC.GetAllocatedBytesForCurrentThread();
-            SelfTest.Equal(0, after - before);
+            AllocMeter.AssertZero(before);
             SelfTest.True(ReferenceEquals(instancesBefore, pool.Instances), "三帧之后实例数组还是同一个", "换了");
             for (var i = 0; i < views.Length; i++)
             {

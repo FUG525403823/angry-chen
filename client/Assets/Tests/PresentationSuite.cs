@@ -394,12 +394,12 @@ namespace Ac.Tests
                 SelfTest.True(layer.VersionLine != null && layer.VersionLine.Length > 0, "版本行必须有内容", "是空的");
                 SelfTest.True(layer.VersionLine.IndexOf(VersionInfo.ProductName, StringComparison.Ordinal) == 0, "版本行以产品名开头", layer.VersionLine);
                 SelfTest.True(ReferenceEquals(layer.VersionLine, layer.VersionLine), "面板版本行必须来自构造期缓存（每帧现拼会给帧路径塞一次分配）", "每次取都是新对象");
-                var before = GC.GetAllocatedBytesForCurrentThread();
+                var before = AllocMeter.Begin();
                 for (var i = 0; i < 100; i++)
                 {
                     if (layer.VersionLine == null) SelfTest.Fail("版本行不能为 null");
                 }
-                SelfTest.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+                AllocMeter.AssertZero(before);
             }
             finally { rig.Dispose(); }
         }
@@ -431,10 +431,10 @@ namespace Ac.Tests
 
                 // 面板可见、但还没到 250ms 的刷新点：样本不造、统计不算、帧内也不分配
                 var tickNumber = 77u;
-                var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                var allocatedBefore = AllocMeter.Begin();
                 for (var i = 0; i < 10; i++) StepDt(rig, 8, tickNumber++, 5.0);
                 SelfTest.Equal(sortedWhileOpen, (long)profiler.SortsComputed);
-                SelfTest.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+                AllocMeter.AssertZero(allocatedBefore);
 
                 rig.Layer.ToggleDebugPanel();                        // 关回去：统计立刻停止累加
                 var sortedAfterClose = profiler.SortsComputed;
@@ -455,10 +455,9 @@ namespace Ac.Tests
                 for (uint tick = 1; tick <= 90; tick++) Step(rig, 64, tick, -3, 0.1, 10);   // 预热：JIT/首次分配不进测量窗口
                 SelfTest.True(!rig.Layer.DebugPanel.Visible, "零分配测量必须在面板关着的状态下进行", "面板开着");
 
-                var before = GC.GetAllocatedBytesForCurrentThread();
+                var before = AllocMeter.Begin();
                 for (uint tick = 91; tick <= 250; tick++) Step(rig, 64, tick, -3, 0.1, 10);
-                var delta = GC.GetAllocatedBytesForCurrentThread() - before;
-                SelfTest.Equal(0, delta);
+                AllocMeter.AssertZero(before);
                 SelfTest.Equal(0, (long)rig.Loop.Profiler.SortsComputed);   // 顺带钉住"没人问就不排序"
             }
             finally { rig.Dispose(); }

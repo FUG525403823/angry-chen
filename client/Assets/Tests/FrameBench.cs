@@ -64,7 +64,9 @@ namespace Ac.Tests
             // 帧级分位用自己收的样本算（剖析器只有 240 帧窗口，装不下 600 帧的采样窗口）。
             var frameMs = new double[Math.Min(sample, loop.Frames)];
             var profiler = loop.Profiler;
-            var allocBefore = GC.GetAllocatedBytesForCurrentThread();
+            // 分配读数走 AllocMeter（引擎的 GC Allocated In Frame 计数器，逐字节精确）：
+            // GC.GetAllocatedBytesForCurrentThread() 在本机恒为 0，报出来的 "0 B/帧" 是假绿。
+            var allocBefore = AllocMeter.Begin();
             var gc0Before = GC.CollectionCount(0);
             var measureFrames = frameMs.Length;
             for (var i = 0; i < measureFrames; i++)
@@ -76,7 +78,11 @@ namespace Ac.Tests
                 loop.Frame(1000.0 / 60.0);
                 frameMs[i] = NowMs() - t0;
             }
-            var allocPerFrame = (GC.GetAllocatedBytesForCurrentThread() - allocBefore) / (measureFrames == 0 ? 1 : measureFrames);
+            string allocUnavailable;
+            var allocBytes = AllocMeter.BytesSince(allocBefore, out allocUnavailable);
+            // 测不到就是 -1（与图形指标同一套 fail-closed 语义），绝不当成"预算内"。
+            var allocMeasured = allocBytes >= 0;
+            var allocPerFrame = allocMeasured ? allocBytes / (double)(measureFrames == 0 ? 1 : measureFrames) : -1.0;
             var gc0Delta = GC.CollectionCount(0) - gc0Before;
 
             Array.Sort(frameMs);
@@ -94,11 +100,11 @@ namespace Ac.Tests
             for (var i = 0; i < FrameProfiler.StageCount; i++) if (!(profiler.P95Ms(i) > 0f)) stageMissing++;
 
             var overBudget = p95 > FrameBudget.FrameP95BudgetMs || p99 > FrameBudget.FrameP99BudgetMs
-                || allocPerFrame > FrameBudget.ManagedAllocBudgetBytes || gc0Delta > FrameBudget.Gc0DeltaBudget;
+                || (allocMeasured && allocPerFrame > FrameBudget.ManagedAllocBudgetBytes) || gc0Delta > FrameBudget.Gc0DeltaBudget;
             for (var i = 0; i < FrameProfiler.StageCount; i++) if (profiler.P95Ms(i) > FrameBudget.StageBudgetMs[i]) overBudget = true;
 
-            // 词表收敛成三值：PASS 只留给"图形指标齐 + 8 段齐 + 全部已测指标未超预算"。
-            var verdict = overBudget ? "FAIL" : (graphicsMeasured && stageMissing == 0) ? "PASS" : "UNVERIFIED";
+            // 词表收敛成三值：PASS 只留给"图形指标齐 + 8 段齐 + 分配可测 + 全部已测指标未超预算"。
+            var verdict = overBudget ? "FAIL" : (graphicsMeasured && stageMissing == 0 && allocMeasured) ? "PASS" : "UNVERIFIED";
 
             var sb = new StringBuilder();
             sb.Append("{\n");
@@ -117,9 +123,13 @@ namespace Ac.Tests
             // 本入口喂的是**合成 CPU 负载**，不是 C14 §5 计划里的真实场景：场景种类必须自报，
             // 否则 ps1 会把合成数字当成计划场景的数字。
             Meta(sb, "sceneKind", "synthetic-cpu");
+            // 分配数字的来源必须自报：谁读这张表都要知道它是哪个计数器量的。
+            Meta(sb, "allocMetric", allocMeasured ? AllocMeter.MarkerCategory + "/" + AllocMeter.MarkerName
+                : "UNMEASURED (" + allocUnavailable + ")");
             Meta(sb, "verdict", verdict);
             Meta(sb, "verdictNote", "sceneKind=synthetic-cpu: this entry point drives the runtime GameLoop with a synthetic CPU load (64 entities), not the planned scene; "
-                + "drawCalls/triangles/particles/materials need a graphics device (reported -1 here) and fx/audio/draw/overlay are never marked, so this machine cannot reach PASS");
+                + "drawCalls/triangles/particles/materials need a graphics device (reported -1 here) and fx/audio/draw/overlay are never marked, so this machine cannot reach PASS; "
+                + "managedAllocBytesPerFrame/gc0Delta come from the Ac.Tests.AllocMeter counter (GC.GetAllocatedBytesForCurrentThread is dead on this machine)");
             // 预算表随样本一起落盘：唯一来源是 FrameBudget，ps1 只读这里的数字，不再另存一份。
             sb.Append("  \"budget\": {\n");
             Num(sb, 4, "frameP95Ms", FrameBudget.FrameP95BudgetMs);
@@ -163,7 +173,7 @@ namespace Ac.Tests
             }
             Console.Out.WriteLine("FRAMEBENCH " + verdict
                 + " p95=" + p95.ToString("R") + " p99=" + p99.ToString("R")
-                + " alloc=" + allocPerFrame + " gc0=" + gc0Delta
+                + " alloc=" + (allocMeasured ? allocPerFrame.ToString("R") : "UNMEASURED") + " gc0=" + gc0Delta
                 + " frames=" + loop.Frames + " out=" + (outPath ?? "(none)"));
             Console.Out.Flush();   // Exit 会立刻终止进程，缓冲不刷就什么都没了
             // UNVERIFIED 也是红：拿不到数字就不许绿。

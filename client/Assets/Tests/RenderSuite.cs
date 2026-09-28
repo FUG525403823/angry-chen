@@ -601,9 +601,9 @@ namespace Ac.Tests
         // 布局模型在真实装配上逐帧产出（含字符串缓存），稳态必须 0 B/帧：抽掉任一条缓存
         //（每帧重拼血量/弹药/怒气/倒计时）这条闸就红。
         //
-        // 实测（本机 -nographics + Mono）：GC.GetAllocatedBytesForCurrentThread() 在这里**看不见分配**——
-        // 1000 次字符串拼接的探针读数仍然是 0 B，所以"读数是 0"这一条在本机没有判别力。真正有判别力的
-        // 是下面两条：绘制缓冲是同一块、上一帧的字符串对象这一帧还在用（重拼会换一个新对象）。
+        // 分配读数走 AllocMeter（引擎的 GC Allocated In Frame 计数器，逐字节精确）：本机的
+        // GC.GetAllocatedBytesForCurrentThread() 恒为 0，用它等于这条闸根本不存在。
+        // 下面两条引用恒等判据仍然保留：它们定位的是"哪一条缓存被抽掉"，比一个字节数更能说明问题。
         private static void ChecksSteadyStateZeroAlloc()
         {
             var rig = new Rig();
@@ -632,14 +632,13 @@ namespace Ac.Tests
                     warmKinds[i] = model.Items[i].Kind;
                 }
 
-                var before = GC.GetAllocatedBytesForCurrentThread();
+                var before = AllocMeter.Begin();
                 for (var i = 0; i < 160; i++)
                 {
                     rig.Loop.Frame(1000.0 / 60.0);
                     rig.Layer.BuildOverlay(ViewW, ViewH);
                 }
-                var delta = GC.GetAllocatedBytesForCurrentThread() - before;
-                SelfTest.Equal(0, delta);
+                AllocMeter.AssertZero(before);
 
                 // 判据 1：绘制缓冲必须预分配并复用（每帧 new 一组绘制项会在这里露出来）
                 SelfTest.True(ReferenceEquals(warmBuffer, model.Items), "绘制缓冲必须预分配并复用", "换了一块");

@@ -6,7 +6,7 @@
 ## 0. 现状
 
 **能跑的**：帧回路（输入 → 预测/和解 → 快照镜像 → 视图同步 → HUD → 特效 → 覆盖层 → 绘制）、音频 mixer、**运行期呈现层装配**（相机/灯光/竞技场/羊群/特效/屏幕流/调试面板）、版本行与日志落盘、一条命令出发布包、资源引用守卫。
-**还不能的**：**HUD/准星/屏幕流的渲染器**还没写（全仓库 `OnGUI|Canvas|DrawTexture|Blit` 命中 0），所以上屏的只有竞技场的 `MeshRenderer` 与羊的 `DrawMesh*`；以及真实出包时**本地玩家身份没有来源**（`GameLoop.LocalPlayerId` 在生产路径上没人设）。
+**已上屏**：HUD/准星/大厅/结算/波间/调试面板由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定。**还不能的**：真连时身份落不下来（客户端没有上报昵称的报文，服务端把所有人叫 `player`，见 A8）；`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）。
 
 | 事实 | 结果 |
 |---|---|
@@ -14,7 +14,7 @@
 | B1 后真正被构造的类 | `Camera`+`FpsCamera`、`LightingRig`、`ArenaMesh`（7 部件/6 材质/5 碰撞盒）、`Materials`、`SheepInstancePool`+`SheepVisuals`（经 `Culling`/`Batching`）、`Effects`、`ViewModel`、`Lobby`/`Results`/`Intermission`（按 `MatchStatePayload.Phase` 驱动）、`DebugPanel`（F3，走键位表）、准星调色板 |
 | 帧分段 | `input/sync/predict/hud/fx/overlay/draw` 有生产打点；`audio` 仅在音频设备可用时接线。**打点规则**：只在该段真的做功时 `Mark` |
 | 资产 guid | 136 个 `.meta` **全部 32 位十六进制**，0 例外、0 重复 |
-| 自测 | `cases=145`，**非 fixture 失败 = 0**；另有 2 条失败来自并行会话未提交的 fixture 重写（见 §C.5） |
+| 自测 | `cases=164`，**非 fixture 失败 = 0**；另有 2 条失败来自并行会话已提交的 fixture 重写（见 A7） |
 | 发布包 | `BUILD OK ac-client-0.1.0+2bb9d18-win64.zip`（`backend=Mono`） |
 | CPU 帧预算 | P95 0.0069 ms、P99 0.0088 ms、0 B/帧、GC0=0 |
 
@@ -99,8 +99,8 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 **变异测试（判别力证据）**：分别破坏 6 处（去掉 overlay 的 `Flow.Apply`、可见时每帧采样、cap=culled、不摘三缝、Results 不去重、版本行不缓存），每次都打红对应用例，之后全部回滚。
 
 **B1 已知缺口（如实登记，未自签规格）**
-1. HUD/准星/屏幕流**没有渲染器**（全仓 `OnGUI|Canvas|DrawTexture|Blit` 命中 0）⇒ 上屏只有竞技场网格与羊的实例化绘制。
-2. `GameLoop.LocalPlayerId` 在生产路径无人赋值（见 A5）。
+1. ~~HUD/准星/屏幕流没有渲染器~~ **已做**（`OverlayModel` + `OverlayRenderer`，无显示设备时不画；本机 Null Device 下 `OnGUI` 一帧都没被调用，只证明了装配与绘制项内容/数量）。
+2. ~~`GameLoop.LocalPlayerId` 无人赋值~~ **已做**（见 A5），但真连仍受 A8 阻塞。
 3. `FrameBench` 仍自建裸 `GameLoop`（不挂呈现层）⇒ 帧基准 JSON 里 `stageP95` 仍只有 4 段、`verdict` 仍 `UNVERIFIED`——这是**诚实**的（不造假数据），但 B1 承诺的"`fx/overlay/draw` 真数字"要等 A1 的 GPU 机器 + 基准挂上呈现层。
 4. `Sample()` 在面板可见路径上仍有 4 次/秒的版本行字符串（被缓存的调用方绕开，无用例能红）——目前不在零分配门禁覆盖内。
 
@@ -120,6 +120,7 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 |---|---|---|
 | **资产 guid 的格式与悬空引用** | 本引擎给**新资产默认生成 56 字符 base64 guid**（B1 的 3 个新 .meta、B6 的新 .meta 都如此），而仓库原先 133 个 .meta 也是这种格式。当时 `GraphicsSettings` 指向的 URP guid `09b520d1…` **在任何 .meta 里都不存在**，直接原因就是这条悬空引用；把它指向 base64 guid 时观察到 Unity 回写 `{fileID: 0}`，但那条路径上还有 `RenderPipelineSetup.Ensure()` 会重置管线，**所以"Unity 清零非 32hex 引用"并未被证明**。 | 现状：全部 .meta 统一为 32 hex（133 + 4 个新资产），引用全部解析、守卫 `assets.guid_references_resolve` 通过。**新资产仍会生成 56 字符 guid，提交前用同一脚本归一**（见下方命令），别手写 guid |
 | **无 BOM 的 UTF-8 `.ps1` 含中文** | Windows PowerShell 5.1 按 ANSI 解码，中文字节解出引号 ⇒ 解析失败 | `build.ps1`/`frame-bench.ps1`/`selftest.ps1` 均带 BOM |
+| **分配计数器陷阱** | 本机（Tuanjie 2022.3.62t16/Mono）`GC.GetAllocatedBytesForCurrentThread()` **恒 0**：1000 次字符串拼接探针读到 0 ⇒ 仓库里全部"零分配"门禁与 `FrameBench.managedAllocBytesPerFrame` 一度**没有判别力**，C14 表里那行 `0 B/帧` 当时并未被证明。改用 `ProfilerRecorder(Memory, "GC Allocated In Frame")`（逐字节精确：`byte[1024]`→1056、160×`byte[64]`→15360、1000 次拼接→105560）后才知道真值 | 收敛成一份 `client/Assets/Tests/AllocMeter.cs`，13 个测量窗口 + `FrameBench` 全走它；测不到就写 `-1`/`UNVERIFIED`，绝不当"预算内"。修好度量当场抓出**真缺陷**：`FrameProfiler` 的 `Array.Sort` 每次分配 128 B ⇒ 面板每刷新 1152 B/帧，已换成无分配原地排序（分位口径与预算数值未动） |
 | **假绿打点** | 没接线也 `Mark` ⇒ 值恒 0 ⇒ 该段预算永远通过 | 打点只在真做功时；`fx/draw/overlay` 三条都有"未接线 ⇒ 不打点"的用例守着 |
 | 编辑器副作用 | 打开工程会改 `ProjectSettings.asset`（bundle id、像素密度） | 每次回退、不入库 |
 | 并发写入 | 与服务端链共用仓库 | 逐条检查退出码；提交只带自己路径；**fixture 冻结向量被单方面改写会让客户端自测变红（见 A7）** |

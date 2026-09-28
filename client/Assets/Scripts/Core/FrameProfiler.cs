@@ -170,7 +170,7 @@ namespace Ac.Core
             if (_stageSortedAt[stageIndex] == TotalFrames) return sorted;
             var offset = stageIndex * WindowFrames;
             for (var i = 0; i < count; i++) sorted[i] = _samples[offset + i];
-            Array.Sort(sorted, 0, count);
+            SortAscending(sorted, count);
             _stageSortedAt[stageIndex] = TotalFrames;
             SortsComputed += 1;
             return sorted;
@@ -190,10 +190,70 @@ namespace Ac.Core
         {
             if (_frameSortedAt == TotalFrames) return _frameSorted;
             for (var i = 0; i < count; i++) _frameSorted[i] = _frameMs[i];
-            Array.Sort(_frameSorted, 0, count);
+            SortAscending(_frameSorted, count);
             _frameSortedAt = TotalFrames;
             SortsComputed += 1;
             return _frameSorted;
+        }
+
+        // 有序副本用**自写的原地排序**，不用 Array.Sort：本机（Tuanjie 2022.3.62t16 / Mono）实测
+        // Array.Sort(float[], int, int) 每次调用都分配 128 B（连排同一个数组也一样，8 次 = 1024 B）。
+        // 面板开着时一次统计要把 8 段 + 帧级共 9 个副本重排 ⇒ 每次刷新 1152 B 的帧内分配，直接违反
+        // C14 §5 的 0 B/帧——这条以前看不见：GC.GetAllocatedBytesForCurrentThread() 在本机恒为 0，
+        // 而帧内分配计数器（GC Allocated In Frame）一看就露。比较语义与 float.CompareTo 对齐（NaN
+        // 排最前），所以排出来的值序列与 Array.Sort 相同；分位口径（排序后取 ceil(q*n)-1）一个字没动。
+        private static void SortAscending(float[] values, int count)
+        {
+            if (count > 1) SortRange(values, 0, count - 1);
+        }
+
+        // 小区间走插入排序，其余走 Hoare 分区；先递归小的一侧、大的一侧用循环续跑，
+        // 递归深度被压在 log2(n) 以内。全在预分配数组上原地做，不分配。
+        private static void SortRange(float[] a, int lo, int hi)
+        {
+            while (lo < hi)
+            {
+                if (hi - lo < 12) { InsertionSort(a, lo, hi); return; }
+                var pivot = a[lo + (hi - lo) / 2];
+                var i = lo;
+                var j = hi;
+                while (i <= j)
+                {
+                    while (Less(a[i], pivot)) i++;
+                    while (Less(pivot, a[j])) j--;
+                    if (i <= j) { var swap = a[i]; a[i] = a[j]; a[j] = swap; i++; j--; }
+                }
+                if (j - lo < hi - i)
+                {
+                    if (lo < j) SortRange(a, lo, j);
+                    lo = i;
+                }
+                else
+                {
+                    if (i < hi) SortRange(a, i, hi);
+                    hi = j;
+                }
+            }
+        }
+
+        private static void InsertionSort(float[] a, int lo, int hi)
+        {
+            for (var i = lo + 1; i <= hi; i++)
+            {
+                var value = a[i];
+                var j = i - 1;
+                while (j >= lo && Less(value, a[j])) { a[j + 1] = a[j]; j--; }
+                a[j + 1] = value;
+            }
+        }
+
+        // 与 float.CompareTo 同序：NaN 比任何数都小，±0 相等。
+        private static bool Less(float x, float y)
+        {
+            if (x < y) return true;
+            if (x > y) return false;
+            if (x == y) return false;
+            return float.IsNaN(x) && !float.IsNaN(y);
         }
 
         public bool StageOverBudget(int stageIndex)
