@@ -181,7 +181,9 @@ namespace Ac.Tests
             // 两侧上限必须是同一个数：服务端 §5.8 的 MatchState 名字 1..12 字节。
             SelfTest.Equal((long)MatchStateCodec.MinNameBytes, (long)Lobby.NameMinBytes);
             SelfTest.Equal((long)MatchStateCodec.MaxNameBytes, (long)Lobby.NameMaxBytes);
-            SelfTest.Equal((long)MatchStateCodec.FixedRecordBytes, 13L);
+            // 定长部分 = 16（pid 2 + nameLen 1 + 其后 13 字节），与 server codec.hpp 同名常量一致；
+            // "确实等于布局"的检查放在 CodecSuite（那里有按 wire 顺序造记录的 builder）。
+            SelfTest.Equal((long)MatchStateCodec.FixedRecordBytes, 16L);
 
             SelfTest.True(!Lobby.IsValidName(""), "空昵称非法", "判成合法");
             SelfTest.True(!Lobby.IsValidName(null), "null 昵称非法", "判成合法");

@@ -30,6 +30,9 @@ namespace Ac.Boot
         public static int ServerPort { get; private set; }
         // 调试面板热键：从 SettingsDefaults.KeyBindings[ActionDebugPanel] 的表里解析，不在代码里写 F3。
         public static KeyCode DebugPanelKey { get; private set; }
+        // 大厅准备键（ADR-013）：同样从键位表（[ActionReady]，默认表那条是 Return）解析，
+        // 采样器里不写死键 —— 设置面板改了它就跟着改。
+        public static KeyCode ReadyKey { get; private set; }
 
         private static bool _settingsSubscribed;
 
@@ -48,10 +51,17 @@ namespace Ac.Boot
             }
             var settings = Settings.Get();
             DebugPanelKey = DebugPanelKeyFor(settings.KeyBindings);
+            ReadyKey = ReadyKeyFor(settings.KeyBindings);
             if (Loop == null) Loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
             // 传输/会话（C03）：接上之后 Transport.Poll 才会真的收包，type=10 的相位与 type=5 的快照
             // 才有入口进 GameLoop（否则屏幕流恒为 lobby、draw 恒不打点——"装配了但没驱动"）。
             AttachTransport(Loop);
+            // 输入（C05 §5.1/§5.6）：采样器此前没有任何生产调用者（连 `new` 都没有）⇒ 上行、预测、准备位、
+            // 指针锁定四条路径全断。这里把它接进帧回路；离线（单机/帧基准）也照接 —— 采样器自己按焦点说话。
+            if (Loop.Sampler == null) Loop.Sampler = new InputSampler();
+            // 键位与灵敏度都来自设置快照：面板里改了要真的生效（C13 的三项设置此前只有存盘没有下游）。
+            Loop.Sampler.ConfirmKey = ReadyKey;
+            Loop.Sampler.SetSensitivity(settings.Sensitivity);
             // 呈现层：造出 Unity 对象，再把三条呈现缝与帧回路接起来（没接上的段就不打点）
             if (Presentation == null) Presentation = PresentationLayer.Create(settings);
             Presentation.Attach(Loop);
@@ -81,11 +91,22 @@ namespace Ac.Boot
 
         private static void OnSettingsChanged(SettingsKey key)
         {
-            if (key != SettingsKey.KeyBindings) return;
-            DebugPanelKey = DebugPanelKeyFor(Settings.Get().KeyBindings);
+            // 键位表改了要重新解析两个热键；灵敏度改了要立刻进采样器 ——
+            // 否则"设置面板里改了没反应"，存盘的值与实际行为两张皮。
+            if (key == SettingsKey.KeyBindings)
+            {
+                var keyBindings = Settings.Get().KeyBindings;
+                DebugPanelKey = DebugPanelKeyFor(keyBindings);
+                ReadyKey = ReadyKeyFor(keyBindings);
+                if (Loop != null && Loop.Sampler != null) Loop.Sampler.ConfirmKey = ReadyKey;
+            }
+            else if (key == SettingsKey.Sensitivity)
+            {
+                if (Loop != null && Loop.Sampler != null) Loop.Sampler.SetSensitivity(Settings.Get().Sensitivity);
+            }
         }
 
-        // 键位表 → KeyCode。表里只有这 14 个名字（C05 §5.2）；没见过的名字一律 KeyCode.None，
+        // 键位表 → KeyCode。表里只有这 15 个名字（C13 §5）；没见过的名字一律 KeyCode.None，
         // 由调用方退回默认表里的那一档，而不是在这里写死一个键。
         public static KeyCode KeyOf(string name)
         {
@@ -109,16 +130,24 @@ namespace Ac.Boot
             }
         }
 
-        // 调试面板热键 = 键位表里第 ActionDebugPanel 条。表项缺失/无法识别时退回**默认表的同一条**
-        //（不是退回字面量 "F3"）：改默认表就改热键，代码里没有第二份。
+        // 键位表第 action 条 → KeyCode。表项缺失/无法识别时退回**默认表的同一条**（不是退回字面量）：
+        // 改默认表就改热键，代码里没有第二份。
+        public static KeyCode KeyBindingFor(string[] keyBindings, int action)
+        {
+            if (action < 0 || action >= SettingsDefaults.KeyBindings.Length) action = SettingsDefaults.ActionReady;
+            var name = keyBindings != null && action < keyBindings.Length ? keyBindings[action] : null;
+            var code = KeyOf(name);
+            return code != KeyCode.None ? code : KeyOf(SettingsDefaults.KeyBindings[action]);
+        }
+
         public static KeyCode DebugPanelKeyFor(string[] keyBindings)
         {
-            var name = keyBindings != null && keyBindings.Length > SettingsDefaults.ActionDebugPanel
-                ? keyBindings[SettingsDefaults.ActionDebugPanel]
-                : null;
-            var code = KeyOf(name);
-            if (code != KeyCode.None) return code;
-            return KeyOf(SettingsDefaults.KeyBindings[SettingsDefaults.ActionDebugPanel]);
+            return KeyBindingFor(keyBindings, SettingsDefaults.ActionDebugPanel);
+        }
+
+        public static KeyCode ReadyKeyFor(string[] keyBindings)
+        {
+            return KeyBindingFor(keyBindings, SettingsDefaults.ActionReady);
         }
 
         // "host:port"。缺 host / 缺 port / 端口非法一律判失败（宁可离线，也不要连到一个没写的地址）。
@@ -243,6 +272,25 @@ namespace Ac.Boot
                 // 大厅昵称（C12 §4）：唯一的输入源是 Input.inputString。只在大厅相位读它 ——
                 // 对局里的按键属于 InputSampler，且这样非大厅相位连这个属性都不碰。
                 if (presentation.Flow.LobbyVisible) presentation.Flow.CaptureName(Input.inputString);
+            }
+            // C05 §5.6：点画面锁定指针（锁定期间才计鼠标增量），Escape 解锁；焦点变化只在**跳变**那一帧
+            // 清理意图（每帧都调会在未聚焦时反复塞零意图命令，把 30Hz 上行塞满噪声）。
+            var sampler = loop.Sampler;
+            if (sampler != null)
+            {
+                if (Input.GetKeyDown(KeyCode.Escape))
+                {
+                    sampler.SetPointerLocked(false);
+                    Cursor.lockState = CursorLockMode.None;
+                    Cursor.visible = true;
+                }
+                else if (Input.GetMouseButtonDown(0) && !sampler.PointerLocked)
+                {
+                    sampler.SetPointerLocked(true);
+                    Cursor.lockState = CursorLockMode.Locked;
+                    Cursor.visible = false;
+                }
+                if (Application.isFocused != sampler.Focused) sampler.OnFocusChanged(Application.isFocused);
             }
             loop.Frame(Time.unscaledDeltaTime * 1000.0);
         }

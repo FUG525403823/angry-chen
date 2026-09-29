@@ -21,7 +21,9 @@ struct Case {
   CaseFn fn;
 };
 
-constexpr std::size_t kMaxCases = 512;
+// 框架容量上限：超限**静默丢用例**（只在 stderr 打一行），所以每加一批用例都要留出余量。
+// 256 → 512（S10 那批把 S03/S09 挤出去过）→ 768（联调期新增 MatchState/大厅用例后全量 513 条）。
+constexpr std::size_t kMaxCases = 768;
 
 namespace detail {
 

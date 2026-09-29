@@ -3,6 +3,7 @@
 #include <chrono>
 #include <span>
 
+#include "config/player.hpp"
 #include "config/waves.hpp"
 #include "core/clock.hpp"
 #include "core/log.hpp"
@@ -209,6 +210,18 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
       record != nullptr && record->phase != ac::net::SessionPhase::kReleased) {
     record->keepAlive.onAnyPacket(wallMs32(nowMs));
   }
+  // §5.3 的服务端半边：**必须回 ack**。客户端把 Command/Join/Resume/KeepAlive/Disconnect 都算同一条
+  // 命令流（`UdpTransport.StreamOf`），所以这些带 reliable ext 的入站包共用同一个接收窗口；回执位图
+  // 随 MatchState 下行（客户端同样把 MatchState 归到命令流上 —— 只有那条流上的 ack 会被它采纳）。
+  // 不回 ack 的后果是联调实测到的：客户端每条命令重传到耗尽 → `OnRetransmitExhausted` → Reconnecting，
+  // retx 一路涨到数千、RTT 恒 0（没有 ack 就没有往返样本）。
+  if (info.hasReliableExt) {
+    if (Client* sender = findClientByTransport(info.header.session); sender != nullptr) {
+      (void)ac::net::ackOnReceive(sender->commandRecv, info.reliableExt.msgId);
+      // 收到可靠包就记一笔"该回执了"：本 poll 结束时合并成一帧 KeepAlive 发回去（§5.6）。
+      sender->ackDue = true;
+    }
+  }
   switch (static_cast<ac::net::PacketType>(info.header.type)) {
     case ac::net::PacketType::kHello:
       handleHello(from, bytes, size, nowMs);
@@ -218,6 +231,11 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
       break;
     case ac::net::PacketType::kCommand:
       handleCommand(info.header.session, bytes, size, payloadBytes, nowMs);
+      break;
+    case ac::net::PacketType::kJoin:
+      // ADR-009「握手时序」的 type 11：昵称上报。方向白名单（security::isClientToServerType）
+      // 收它，所以必须在这里被处置，否则会落到 default 计成丢弃帧。
+      handleJoin(info.header.session, bytes, size);
       break;
     case ac::net::PacketType::kKeepAlive: {
       const ac::net::SessionValidation validation =
@@ -300,8 +318,11 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
   Client* client = claimClient(outcome.session, from, nowMs);
   if (client == nullptr) return;  // 槽位打满：丢包不回（槽位上限是运行时自己的约束）
   client->session.token = record->token;
+  bool admitted = true;
   if (room_ != nullptr && !ac::room::isInRoom(client->session)) {
-    (void)ac::room::roomJoin(*room_, client->session, nowMs);
+    // ADR-012：准入结果不得静默丢弃 —— 被拒（满员 / 对局进行中）时在 HelloAck 之后补一帧 Disconnect。
+    admitted =
+        ac::room::roomJoin(*room_, client->session, nowMs) == ac::room::JoinOutcome::kOk;
   }
   std::uint8_t buffer[64] = {};
   const ac::net::HelloAckPayload ack{room_ == nullptr ? 0u : room_->world->tick, record->salt};
@@ -315,6 +336,19 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
                               static_cast<std::uint64_t>(encoded.bytes));
       ac::metrics::addCounter(counters_, ac::metrics::CounterId::kFramesOut, 1u);
     }
+  }
+  if (!admitted) sendRoomUnavailable(from, outcome.session);
+}
+
+void Runtime::sendRoomUnavailable(const ac::net::Endpoint& to, std::uint16_t session) {
+  std::uint8_t buffer[32] = {};
+  const ac::net::DisconnectPayload body{
+      static_cast<std::uint8_t>(ac::net::DisconnectReason::kRoomUnavailable)};
+  const ac::net::EncodeResult encoded = ac::net::encodeDisconnect(
+      makeHeader(ac::net::PacketType::kDisconnect, session, 0u), ac::net::ReliableExt{}, body,
+      buffer, sizeof(buffer));
+  if (encoded.isOk) {
+    (void)udp_.sendTo(to, std::span<const std::uint8_t>(buffer, encoded.bytes));
   }
 }
 
@@ -381,14 +415,56 @@ void Runtime::handleCommand(std::uint16_t session, const std::uint8_t* frame,
     ac::security::noteValidateFailure(&counters_, tickCheck.reason);
     return;
   }
-  if (!ac::security::noteCommandSequence(client->dedup, decoded.value.seq)) {
+  // §5.5 的窗口去重：`noteCommandSequence` 的契约（`security_test.cpp:security_dedup_window_eviction`）
+  // 是「命中窗口返回 true = 重复，丢」，这里此前写成 `!`，方向反了 —— 结果**每条命令的首次发送都被
+  // 当重复丢掉**，只有可靠层的重传（同 seq 第二次）才会被应用：移动/开火/准备位全部迟一个 RTT 生效，
+  // `ac_dropped_frames_total` 还把这当成"重复"在涨。联调实测（Ready 位第一帧就被丢）抓到这条。
+  if (ac::security::noteCommandSequence(client->dedup, decoded.value.seq)) {
     ac::security::noteValidateFailure(&counters_, ac::security::ValidateReason::kDuplicateSequence);
     return;
   }
   ac::security::ClampReport report{};
   const ac::sim::Command command = ac::security::sanitizeCommand(toSimCommand(decoded.value), report);
+  // ADR-013：大厅就绪来自**客户端命令里的 Ready 位**（config::kButtonReady = 0x80）。此前服务端从不读它，
+  // 只靠 `--auto-ready` 强制就绪，于是"大厅里按准备 → 房主开局"这条产品路径根本不存在（联调实测红）。
+  // 只在 kLobby 相位收（对局中置 ready 无意义），且必须已在房内；`roomSetReady` 幂等且只在真变化时广播。
+  if (room_->phase == ac::room::MatchPhase::kLobby && ac::room::isInRoom(client->session)) {
+    const bool wantReady = (command.buttons & ac::config::kButtonReady) != 0u;
+    // 武器预览沿用大厅口径：只在带 SwitchWeapon 位时把 switchTo 当选择，否则传越界值让 roomSetReady 不碰武器。
+    const std::uint8_t weapon = (command.buttons & ac::config::kButtonSwitchWeapon) != 0u
+                                    ? command.switchTo
+                                    : static_cast<std::uint8_t>(0xFFu);
+    (void)ac::room::roomSetReady(*room_, client->session, wantReady, weapon, deps_);
+  }
   if (!ac::room::roomApplyCommand(*room_, client->session, command)) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+  }
+}
+
+void Runtime::handleJoin(std::uint16_t session, const std::uint8_t* frame, std::size_t size) {
+  // §5.2：非 Hello 包必须带在册 session。
+  if (!handshake_.validateSession(session).isAccepted) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  const ac::net::DecodeResult<ac::net::JoinPayload> decoded = ac::net::decodeJoin(frame, size);
+  if (!decoded.isOk) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  Client* client = findClientByTransport(session);
+  if (client == nullptr) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  // 净化器（setSessionName）是昵称字节合法性的唯一来源：非法 UTF-8 / 全被过滤 / 净化后越界
+  // 一律**保留旧昵称**，这条报文本身不算坏包（重发幂等，客户端可反复上报）。
+  if (!ac::room::setSessionName(client->session, decoded.value.name)) return;
+  // 开局的战绩记录也要跟着改：matches.ndjson 与结算榜读的是记录里的名字，不是会话里的。
+  // joinMatchRecord 是 upsert（找不到才建），所以这里等价于"改名"，不新增 API。
+  if (room_ != nullptr) {
+    ac::room::joinMatchRecord(*room_, client->session.pid, client->session.name,
+                              client->session.nameBytes);
   }
 }
 
@@ -396,6 +472,8 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
   if (!isRunning_) return;
   lastPollMs_ = nowMs;
   receivePackets(nowMs);
+  // §5.6：收完包就处理心跳/回执（同一 poll 内的多个入站包合并成一帧，不按包放大出站量）。
+  flushHeartbeats(nowMs);
 
   const ac::net::SessionTick sessionTick = handshake_.sessions().tick(wallMs32(nowMs));
   if (sessionTick.wentOffline > 0u) {
@@ -586,8 +664,11 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
     ac::replication::DeltaInput input{};
     input.world = room.world.get();
     input.session = client->transportId;
-    input.seq = ++client->seq;
-    input.lastAckedSeq = 0u;
+    input.seq = ++client->snapshotSeq;  // §5.2：快照通道自己的序号（与 MatchState 的分开，见 runtime.hpp）
+    // §5.3 的「最后被采纳的命令 seq」= 本会话最近一次真正执行过的命令载荷 seq。客户端拿它
+    // `buffer.AckUpTo(...)` 裁剪本机输入缓冲（Reconciler/C06 §5(d)）：恒填 0 会让缓冲只进不出
+    // —— 联调里客户端跑几万 tick 后这条线一直在长（服务端一直在按真值执行，只是没回报）。
+    input.lastAckedSeq = session->command.seq;
     // S03 §5.4 + S10 §5.7-5：本 tick 的事件条目随帧下发（生产在房间侧，见 room/event_map.*）。
     input.events = room.eventEntries;
     input.eventCount = room.eventEntryCount;
@@ -634,9 +715,14 @@ void Runtime::onSendMatchState(ac::room::Session& session,
   Client* client = findClientByTransport(static_cast<std::uint16_t>(session.id));
   if (client == nullptr || !client->isUsed) return;
   const ac::net::PacketHeader header =
-      makeHeader(ac::net::PacketType::kMatchState, client->transportId, ++client->seq);
+      makeHeader(ac::net::PacketType::kMatchState, client->transportId, ++client->matchStateSeq);
   ac::net::ReliableExt ext{};
-  ext.msgId = client->seq;
+  // 包头 seq（每条类型独立的流）与 msgId（控制通道共用的可靠消息号）是两回事，见 runtime.hpp。
+  ext.msgId = ++client->seq;
+  // §5.3：回执位图（本客户端命令流的接收窗口）随 MatchState 下行。客户端把 MatchState 归到命令流，
+  // 所以这是它唯一会采纳的 ack 载体；1Hz 的回执足以让客户端在 RTO 表耗尽（约 2.6s）之前收到确认。
+  ext.ackBase = client->commandRecv.ackBase;
+  ext.ackBits = client->commandRecv.ackBits;
   std::uint8_t buffer[ac::room::kMatchStateFrameMaxBytes] = {};
   const ac::net::EncodeResult encoded =
       ac::net::encodeMatchState(header, ext, state, buffer, sizeof(buffer));
@@ -655,6 +741,48 @@ void Runtime::onSendMatchState(ac::room::Session& session,
   ac::metrics::addCounter(counters_, ac::metrics::CounterId::kBytesOut,
                           static_cast<std::uint64_t>(encoded.bytes));
   ac::metrics::addCounter(counters_, ac::metrics::CounterId::kFramesOut, 1u);
+}
+
+void Runtime::sendKeepAlive(Client& client) noexcept {
+  const ac::net::PacketHeader header =
+      makeHeader(ac::net::PacketType::kKeepAlive, client.transportId, ++client.keepAliveSeq);
+  ac::net::ReliableExt ext{};
+  // msgId 与 MatchState 共用一条控制流（§5.2「msgId 与通道 seq 相互独立」）：客户端按 msgId 去重与
+  // ack，两条流混用会让它把对方当成重复/乱序。**必须逐帧推进** —— 写死一个常数的话每一帧心跳都被
+  // 客户端判成重复，连里面的 ack 位图一起丢掉（联调实测：dup 31、rttMs 485 完全等于 MatchState 的 1Hz）。
+  ext.msgId = ++client.seq;
+  ext.ackBase = client.commandRecv.ackBase;
+  ext.ackBits = client.commandRecv.ackBits;
+  std::uint8_t buffer[ac::net::kCommonHeaderBytes + ac::net::kReliableExtBytes] = {};
+  const ac::net::EncodeResult encoded =
+      ac::net::encodeKeepAlive(header, ext, buffer, sizeof(buffer));
+  if (!encoded.isOk) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  const int sent =
+      udp_.sendTo(client.endpoint, std::span<const std::uint8_t>(buffer, encoded.bytes));
+  if (sent <= 0) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  client.bytesOut += encoded.bytes;
+  ac::metrics::addCounter(counters_, ac::metrics::CounterId::kBytesOut,
+                          static_cast<std::uint64_t>(encoded.bytes));
+  ac::metrics::addCounter(counters_, ac::metrics::CounterId::kFramesOut, 1u);
+}
+
+void Runtime::flushHeartbeats(std::uint64_t nowMs) noexcept {
+  const std::uint32_t now = wallMs32(nowMs);
+  for (Client& client : clients_) {
+    if (!client.isUsed) continue;
+    const bool isDue = client.heartbeat.due(now);
+    if (!isDue && !client.ackDue) continue;
+    sendKeepAlive(client);
+    client.ackDue = false;
+    // 纯回执不能顶掉心跳的周期：只有真到点的那一帧才推进 lastSendMs（§5.6 的 500ms 判据不受回执影响）。
+    if (isDue) client.heartbeat.markSent(now);
+  }
 }
 
 void Runtime::recordSnapshotSize(std::size_t bytes) noexcept {
@@ -726,7 +854,7 @@ RuntimeMetrics Runtime::metrics() const {
   out.ticks = scheduler_.tickIndex;  // 进程级累计（/health 的 ticks）；报告里的 ticks.total 是 epoch 口径
   out.clients = clientCount();
   out.rooms = roomCount();
-  out.players = room_ == nullptr ? 0u : ac::room::activePlayerCount(*room_);
+  out.players = room_ == nullptr ? 0u : ac::room::connectedSessionCount(*room_);
   out.graceActive = handshake_.sessions().graceCount();
   out.aliveSheep =
       room_ == nullptr || room_->world == nullptr
@@ -773,7 +901,9 @@ void Runtime::publishMetrics(std::uint64_t nowMs) {
   process_.tickMs = ac::version::kTickMs;
   process_.rooms = static_cast<std::uint32_t>(roomCount());
   process_.connections = static_cast<std::uint32_t>(clientCount());
-  process_.players = room_ == nullptr ? 0u : ac::room::activePlayerCount(*room_);
+  // 诊断口径必须如实：activePlayerCount 对空房夹到 1（那是给波次预算用的夹取，见 waves.hpp），
+  // 拿它渲染 /health 与 ac_players 会让"没人"和"1 个人"无法区分（联调时脚本就被它骗过一次）。
+  process_.players = room_ == nullptr ? 0u : ac::room::connectedSessionCount(*room_);
   process_.graceActive = static_cast<std::uint32_t>(handshake_.sessions().graceCount());
   process_.recordsRetained = store_ == nullptr ? 0u : store_->recordCount();
   process_.uptimeSeconds =

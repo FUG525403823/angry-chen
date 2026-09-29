@@ -5,13 +5,14 @@ namespace Ac.View
     // C08 §5(e)：6 平面视锥 + 距离 + 屏幕占比三级剔除；输出复用调用方给的索引缓冲（零分配）。
     public static class Culling
     {
-        // 注意：C08 §5(e) 冻结 90m，C14 §5 冻结「羊 60m / 场地 80m」——两份计划互斥，
-        // 不能在代码里自己拍板（审查已两次判定"实现方不得自签规格"）。保持 C08 的值，
-        // 冲突登记在 docs/evidence/client-v2-frame.md §4，等人类裁决后一次改齐。
-        public const double CullDistanceM = 90.0;
+        // 距离不再是本模块的常量：C08 §5(e) 的 90m 与 C14 §5 的"羊 60m"互斥，ADR-011 裁决由 C14 §5
+        // 的档位表统一（`Batching` 是唯一来源）。这里只保留算法，读数一律现取。
         public const double CullMinScreenRatio = 0.0015;
         public const int PlaneCount = 6;
         public const float MinDistanceM = 0.01f;   // 贴脸时不做占比判定，免得除零
+
+        // 羊实例的剔除距离（ADR-011 §3）。场地档 80m 保留给场景几何，不在这里用。
+        public static float CullDistanceMeters { get { return Batching.CullDistanceMeters(Batching.CullKindSheep); } }
 
         // 静态缓冲：Filter/IsVisible 共用，故 Culling 不可重入（单线程渲染主循环里够用）
         private static readonly Plane[] Planes = new Plane[PlaneCount];
@@ -22,6 +23,7 @@ namespace Ac.View
             GeometryUtility.CalculateFrustumPlanes(camera, Planes);
             var eye = camera.transform.position;
             var fovTan = Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            var cullDistance = CullDistanceMeters;
             var instances = pool.Instances;
             var count = 0;
             for (var i = 0; i < instances.Length; i++)
@@ -31,7 +33,7 @@ namespace Ac.View
                 var column = instance.Transform.GetColumn(3);
                 var position = new Vector3(column.x, column.y, column.z);
                 var distance = (position - eye).magnitude;
-                if (distance > (float)CullDistanceM) continue;
+                if (distance > cullDistance) continue;
                 if (count >= visible.Length) break;
 
                 var radius = (float)SheepMesh.Form((SheepKind)instance.Kind).RadiusM;   // 羊形半径已是世界尺度
@@ -58,7 +60,7 @@ namespace Ac.View
             GeometryUtility.CalculateFrustumPlanes(camera, Planes);
             var eye = camera.transform.position;
             var distance = (position - eye).magnitude;
-            if (distance > (float)CullDistanceM) return false;
+            if (distance > CullDistanceMeters) return false;
             for (var p = 0; p < PlaneCount; p++) if (Planes[p].GetDistanceToPoint(position) < -radius) return false;
             var fovTan = Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad);
             screenRatio = distance > MinDistanceM ? radius / (distance * fovTan) : 1f;

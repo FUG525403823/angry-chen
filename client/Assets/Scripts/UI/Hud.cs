@@ -35,6 +35,7 @@ namespace Ac.UI
         public bool Reloading;
         public bool Charging;
         public bool TargetInSight;     // 准星可命中目标
+        public float SpreadDeg;        // 准星散布输入（度）= WeaponTable 基线 + 射击累计；夹取由 Crosshair 负责
     }
 
     // C10 §5(d)：字号四档 + 安全区 + 系统字体回退链；§5(a)/§5(e) 的时长常量也在这里。
@@ -159,7 +160,7 @@ namespace Ac.UI
             var combat = CombatUiVisible(sample.Phase);
             if (combat && CrosshairVisible(sample))
             {
-                _crosshair.SetSpread(_crosshair.SpreadDeg);
+                _crosshair.SetSpread(sample.SpreadDeg);
                 _crosshair.SetState(sample.TargetInSight ? CrosshairState.Target : CrosshairState.Normal);
             }
             else

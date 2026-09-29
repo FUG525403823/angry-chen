@@ -33,7 +33,7 @@
 | 偏移 | 字段 | 类型 | 说明 |
 |---|---|---|---|
 | 0 | `version` | u8 | 协议版本，v2 = `1`；不匹配即拒绝并回 `Disconnect(reason=1 versionMismatch)` |
-| 1 | `type` | u8 | 1 Hello / 2 HelloAck / 3 Resume / 4 Command / 5 Snapshot / 6 Event / 7 KeepAlive / 8 Disconnect / 9 Fragment / 10 MatchState（reliable，单播） |
+| 1 | `type` | u8 | 1 Hello / 2 HelloAck / 3 Resume / 4 Command / 5 Snapshot / 6 Event / 7 KeepAlive / 8 Disconnect / 9 Fragment / 10 MatchState（reliable，单播）/ 11 Join（reliable，C→S） |
 | 2 | `flags` | u16 | bit0=reliable，bit1=moreFragments，bit2=ackOnly |
 | 4 | `session` | u16 | 会话短 ID（服务器分配，握手前的包为 0） |
 | 6 | `seq` | u16 | **每通道独立**递增序号（回绕模 2^16） |
@@ -156,8 +156,25 @@
 C→S  Hello{version, clientNonce u32, reconnectToken? }      (type=1, session=0, unreliable)
 S→C  HelloAck{session u16, serverTick u32, salt u32}        (type=2, reliable)
 C→S  Resume{reconnectToken}                                 (type=3, reliable)   // 仅重连
+C→S  Join{nameLen u8, name[nameLen]}                        (type=11, reliable)  // 昵称上报，可重发
 S→C  Disconnect{reason u8}                                  (type=8, reliable)
 ```
+
+> **已裁决（联调轮，2026-09-28 补）：`type = 11 Join` 是「昵称上报」通道。**
+>
+> **原问题**：客户端侧把身份做成了「按昵称在大厅玩家表里认领 pid」（`client/Assets/Scripts/Net/LocalIdentity.cs`），但**线上没有任何报文能把本地昵称送到服务端**——服务端 `room.cpp` 的 `roomJoin` 在 `session.nameBytes < kNameMinBytes` 时兜底填 `"player"`，而 `setSessionName` 在全仓只有这一处调用点。于是真连时所有玩家在 MatchState 里都叫 `player`，按名认领永远认不出自己（只有恰好输入 `player` 才点亮），相机/HUD 的本地绑定整体落不下来。
+>
+> **为什么昵称不放进 Hello 载荷**：客户端在 `GameBootstrap` 里**开机即 `transport.Connect(...)`**（首帧之前），而昵称是大厅相位才由玩家键入的（`Lobby` → `ScreenFlow` → `GameLoop.LocalName`）。Hello 是一次性、早于键入的动作，把昵称挂在 Hello 上在**时序上不可行**（除非把连接推迟到「加入」动作之后，那会连带改变「≤5s 进入大厅」的既有行为）。因此新增一条**可重发的独立消息**，而不是扩 Hello。
+>
+> **载荷（冻结）**：`nameLen u8` + `name[nameLen]`，合计 `2..13` 字节；`name` 是 UTF-8，`1..12` **字节**（与 MatchState 的 `kNameMinBytes/kNameMaxBytes` 同源），由既有 `setSessionName`（`server/src/room/session.cpp`）净化后写入会话。`nameLen` 越界、字节数不足、非 UTF-8 一律 `DecodeFailure`（不得截断使用）。
+>
+> **时序与幂等**：`Join` 可在 `HelloAck` 之后的任意时刻发送；**重发同一昵称是幂等的**（写同一个会话字段）。客户端在「昵称变化」与「进入 Connected」两个时机各发一次（后者覆盖「先连上、后打字」的顺序）。服务端**不回复**：`pid` 仍由 MatchState（type 10）逐玩家行带出的 `pid` + `name` 认领——这是**沿用既有口径**，不新增回显报文。
+>
+> **重连不许改身份**：`Join` 不参与身份判定。`Resume` 路径照旧「只按令牌匹配、昵称不参与」（§5.5），且服务端沿用旧会话的昵称与令牌；与此同名的纪律见 `room.cpp` 的 `roomReconnect`。
+>
+> **不做的事（如实登记，非待办）**：服务端**不强制昵称唯一**，同名多行的歧义由客户端 `LocalIdentity.AmbiguousCount` 如实计数（取最小 `pid`，确定性但不保证正确）。若要消除歧义，需要额外的唯一性裁决或 pid 回显，属后续计划。
+>
+> **实现口径**：`server/src/net/wire.hpp`（`kJoin = 11`、`kMaxPacketType = 11`）、`server/src/net/codec.hpp/.cpp`（`encodeJoin`/`decodeJoin`）、`server/src/security/validate.cpp`（`isClientToServerType` 增分支）、`server/src/server/runtime.cpp`（`case kJoin` → `setSessionName`，开局后同步战绩记录）、客户端 `Assets/Scripts/Net/JoinCodec.cs` 与 `UdpTransport.SendJoin`。用例：`server/tests/codec_test.cpp`、`server/tests/match_flow_test.cpp`、客户端 `Assets/Tests/ContractSuite.cs`/`IdentitySuite.cs`。
 
 `Disconnect.reason` 冻结枚举：1 `versionMismatch` / 2 `tokenInvalid` / 3 `timeout` / 4 `serverShutdown` / 5 `malformedPacket` / 6 `rateLimited` / 7 `slowConsumer`。重连令牌 `reconnectToken` 是 u32，线上以 **8 位小写十六进制 ASCII** 编码。
 

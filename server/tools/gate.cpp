@@ -289,7 +289,8 @@ bool measureSoloServerCpu(const char* argv0, const Options& options, int players
   *sampleCount = 0u;
   Child server{};
   std::vector<std::string> serverArgs{
-      serverExecutable(argv0), "--serve", "--minutes=" + std::to_string((kPhaseSec + 5.0) / 60.0),
+      serverExecutable(argv0), "--serve", "--auto-ready",   // ADR-013：装载场景显式开启自动准备
+      "--minutes=" + std::to_string((kPhaseSec + 5.0) / 60.0),
       "--udp-port=" + std::to_string(soloUdp), "--http-port=" + std::to_string(soloHttp),
       "--data-dir=ac-gate-solo-data", "--seed=" + std::to_string(options.seed)};
   if (!spawnChild(serverArgs[0], serverArgs, server, error)) return false;
@@ -508,6 +509,8 @@ int main(int argc, char** argv) {
   // 门禁是工具、不是生产进程：默认不写 AC_DATA_DIR 的平台默认值（CI runner 非 root 建不了
   // /var/lib/angry-chen）；显式设置了 AC_DATA_DIR 时仍按环境变量走（README §19.2）。
   if (std::getenv("AC_DATA_DIR") == nullptr) config.dataDir = "ac-gate-data";
+  // ADR-013：装载门禁要的是"对局在跑"的流量，而 ac_bot 不发 Ready 位 ⇒ 这里显式开自动准备。
+  config.isAutoReady = true;
   config.udpPort = options.portBase;
   config.httpPort = static_cast<std::uint16_t>(options.portBase - 1u);
   config.seed = options.seed;

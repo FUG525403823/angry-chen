@@ -16,6 +16,7 @@ namespace Ac.Tests
             SelfTest.Add("hud.element_map", ChecksElementMap);
             SelfTest.Add("hud.throttle", ChecksThrottle);
             SelfTest.Add("hud.crosshair", ChecksCrosshair);
+            SelfTest.Add("hud.crosshair_spread", ChecksCrosshairSpread);
             SelfTest.Add("hud.ammo_rage", ChecksAmmoRage);
             SelfTest.Add("hud.visibility", ChecksVisibility);
             SelfTest.Add("hud.wave_killfeed", ChecksWaveKillFeed);
@@ -274,6 +275,54 @@ namespace Ac.Tests
             SelfTest.True(!crosshair.Visible, "隐藏态 Visible=false", "可见");
             crosshair.MarkHurt();
             SelfTest.Equal((long)CrosshairState.Hidden, (long)crosshair.State);   // 隐藏时受伤不复活
+        }
+
+        // 审计 A4：`Hud.Apply` 里原来是 `_crosshair.SetSpread(_crosshair.SpreadDeg)`——自己读自己写，
+        // 采样里的散布从来没进过准星（死输入）。这条用例走 Hud.Apply 把"采样 → 准星"这一段钉住，
+        // 同时钉住散布的**输入值**来自哪里（服务端 weapons.hpp 的基线 + 射击累计）。
+        private static void ChecksCrosshairSpread()
+        {
+            // 武器基线：与 server/src/config/weapons.hpp 的 kWeapons[slot].spreadDeg 同值。
+            SelfTest.True(Ac.Sim.WeaponTable.BaseSpreadOf(0) == 0.8f, "手枪基线 0.8°", Ac.Sim.WeaponTable.BaseSpreadOf(0).ToString("R"));
+            SelfTest.True(Ac.Sim.WeaponTable.BaseSpreadOf(1) == 0.6f, "步枪基线 0.6°", Ac.Sim.WeaponTable.BaseSpreadOf(1).ToString("R"));
+            SelfTest.True(Ac.Sim.WeaponTable.BaseSpreadOf(2) == 4.0f, "霰弹基线 4.0°", Ac.Sim.WeaponTable.BaseSpreadOf(2).ToString("R"));
+            SelfTest.True(Ac.Sim.WeaponTable.BaseSpreadOf(-1) == 0.8f && Ac.Sim.WeaponTable.BaseSpreadOf(9) == 4.0f,
+                "越界槽位夹取到两端", Ac.Sim.WeaponTable.BaseSpreadOf(9).ToString("R"));
+
+            // 单一来源：WeaponAnim 的四个别名必须就是 WeaponTable 的值（客户端不许出现第二份字面量）。
+            SelfTest.True(Ac.View.WeaponAnim.SpreadPerShotDeg == Ac.Sim.WeaponTable.SpreadGrowthPerShotDeg &&
+                Ac.View.WeaponAnim.SpreadMaxDeg == Ac.Sim.WeaponTable.SpreadMaxDeg &&
+                Ac.View.WeaponAnim.SpreadDecayDelayMs == Ac.Sim.WeaponTable.SpreadDecayDelayMs &&
+                Ac.View.WeaponAnim.SpreadDecayPerSecond == Ac.Sim.WeaponTable.SpreadDecayPerSecondDeg,
+                "WeaponAnim 的散布常量取自 WeaponTable", Ac.View.WeaponAnim.SpreadMaxDeg.ToString("R"));
+
+            // 输入 = 该槽位基线 + 本帧射击累计。
+            SelfTest.True(Ac.Sim.WeaponTable.CrosshairSpreadDeg(1, 0.25f) == 0.85f, "步枪基线 + 满累计 = 0.85°",
+                Ac.Sim.WeaponTable.CrosshairSpreadDeg(1, 0.25f).ToString("R"));
+
+            // 采样 → 准星：走 Hud.Apply（旧代码在这里空转，任何采样值都不会改变准星）。
+            var hud = new Hud();
+            var sample = default(HudSample);
+            sample.Phase = Hud.PhasePlaying;
+            sample.SpreadDeg = Ac.Sim.WeaponTable.CrosshairSpreadDeg(1, 0f);
+            hud.Apply(sample);
+            SelfTest.True(hud.Crosshair.SpreadDeg == 0.6f, "采样里的散布进了准星", hud.Crosshair.SpreadDeg.ToString("R"));
+
+            sample.SpreadDeg = Ac.Sim.WeaponTable.CrosshairSpreadDeg(2, Ac.Sim.WeaponTable.SpreadMaxDeg);
+            hud.Apply(sample);
+            SelfTest.True(hud.Crosshair.SpreadDeg == 4.25f, "霰弹基线 + 满累计 = 4.25°", hud.Crosshair.SpreadDeg.ToString("R"));
+            var expectedPx = 2f + 22f * ((4.25f - 0.5f) / 4.5f);
+            SelfTest.True(Math.Abs(hud.Crosshair.SizePx - expectedPx) < 1e-3f, "像素随散布线性变化", hud.Crosshair.SizePx.ToString("R"));
+
+            sample.SpreadDeg = 9f;   // 超出显示域 [0.5°, 5°]：由 Crosshair 夹取
+            hud.Apply(sample);
+            SelfTest.True(hud.Crosshair.SpreadDeg == 5f, "超域夹取到 5°", hud.Crosshair.SpreadDeg.ToString("R"));
+
+            // 非战斗相位不喂散布：准星保持上一次的值，可见性交给 CrosshairVisible 判定。
+            sample.Phase = Hud.PhaseIntermission;
+            sample.SpreadDeg = 0.8f;
+            hud.Apply(sample);
+            SelfTest.True(hud.Crosshair.SpreadDeg == 5f, "非战斗相位不喂散布", hud.Crosshair.SpreadDeg.ToString("R"));
         }
 
         private static void ChecksAmmoRage()

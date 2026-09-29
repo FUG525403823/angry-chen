@@ -12,9 +12,9 @@ namespace Ac.View
         public const float AmbientIntensity = 0.45f;
         public const float FogStartM = 42f;
         public const float FogEndM = 138f;
-        // 注意：C08 冻结单值 60m，C14 §5 冻结「20 / 35 / 50（按画质档）」——互斥，登记待裁决，
-        // 这里同样保持 C08 的值，不自签。
-        public const float ShadowDistanceM = 60f;
+        // 阴影距离随画质档变化（C14 §5 的 20/35/50）。C07 §5(d) 的单值 60m 与 C14 互斥，
+        // ADR-011 裁决由档位表统一：这里不再自带一份距离。
+        public static float ShadowDistanceMeters { get { return Batching.ShadowDistanceFor(Batching.QualityTier); } }
         public const int ShadowResolutionPixels = 2048;
         public const int ShadowCascades = 2;
         public const int RealtimeLightCount = 1;   // §5(d)：只有一盏方向光，无点光/聚光

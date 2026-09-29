@@ -34,7 +34,9 @@ namespace Ac.Net
         public const int MaxPlayers = 4;
         public const int MinNameBytes = 1;
         public const int MaxNameBytes = 12;
-        public const int FixedRecordBytes = 13;  // 名称之外的定长部分
+        // 名称之外的定长部分：pid u16 + nameLen u8 + ready/weapon/hp/kills/mag/reserve/reload/rage/rageLeft/downed/revive
+        // 与 server/src/net/codec.hpp 的 kMatchStatePlayerFixedBytes 同值（16），两侧必须一起改。
+        public const int FixedRecordBytes = 16;
 
         private static readonly UTF8Encoding _strictUtf8 = new UTF8Encoding(false, true);
 

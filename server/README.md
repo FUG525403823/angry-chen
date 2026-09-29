@@ -1360,6 +1360,53 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 
 > §15.3 的条目里，凡涉及「CLI 形式」「G8 未捕获」「G6 替代判据无条件启用」「--minutes 不存在」「bot 20Hz」的表述，均被本节 A1–A16 覆盖（以本节为准）。
 
+### 15.5 ADR-013 之后的复验（2026-09-28，联调期）
+
+ADR-013 改了两件会被门禁量到的事，所以四个场景的数字必须重取：
+
+1. **服务端默认不再自动准备**，大厅成为产品默认；装载/门禁场景显式带 `--auto-ready`（`ac_gate` 已接线）。
+2. **修好命令去重的方向**（`runtime.cpp` 的 `handleCommand` 此前把新 seq 当重复丢，只有可靠层重传才被应用）
+   ⇒ **机器人真的开始动了**，`ac_bot` 现在还会常置 Ready 位。也就是说本节的数字是"会移动的一群人"测出来的，
+   与 §15.2 那些"站桩人群"的数字不可逐字比较（快照差分变大 ⇒ `snapP95/snapMax` 会升高，但是仍在上限内）。
+
+本机复跑（Windows，同一台机器，`--scenario gate-4p2min`，原始 JSON 见 `build/gate-4p2min-postfix.json`）：
+
+```
+verdict=pass exit=0 duration=120.0s cpuMean=1.21% cpuP95=6.08% bw=20.87KB/s
+snapP95=1033B snapMax=1112B schedP95=14.00ms drift=16.0ms dropped=0 skips=0
+G1 1.209/30.000% pass | G2 20.873/40.000KB/s pass | G3 1033/1228B pass | G4 1112/2048B pass
+G5 0.000/5.000 pass | G6 0.000/2.000ms pass | G7 RSS 未测（同 §15.2 的环境边界）| G8 0.000/0.000 pass
+```
+
+`ac_tests` 全量 **511/511**（S15 时的 468 已过期）：本轮新增 `runtime_lobby_ready_bit_starts_match`
+（默认配置下"大厅 → ready=false → 只有房主准备好不开局 → 全房就绪开局"，并钉住"首次发送就生效、
+`ac_dropped_frames_total` 不涨"）、`runtime_room_full_answers_disconnect_reason_eight`（ADR-012 的满员回执）、
+`serve_cli_auto_ready_flag`（默认 `false`；`--auto-ready` 生效；带值与重复都拒绝）。
+
+#### 15.5.1 六步联调第二批（ack / 序号 / 心跳）
+
+联调推进到"能开对局"之后又暴露四个只有真连才看得见的问题，全部是 §5.2/§5.3/§5.6 **冻结契约内部**的实现错，
+故不新增 ADR（详表见 `docs/evidence/server-v2-acceptance.md` §12）：
+
+1. **`encodeMatchState` 的容量检查把载荷预算当整帧预算** —— 满员那条广播整条被吞，客户端只看到 `rows=1`。
+   现在 `payloadBytes > kMatchStateMaxBytes(117)` 与 `8+12+payloadBytes > capacity` 分开判，整帧上限 137。
+2. **无 `kJoin` 的会话昵称长度 0** ⇒ 客户端整包 `BadValue`；行表落 `player` 兜底。
+3. **`seq` 按类型拆号**：Snapshot(5)/MatchState(10)/KeepAlive(7) 各一条流，`msgId` 仍按控制通道共享。
+   此前一条计数器喂两条类型 ⇒ 客户端按类型估期望包数，把插入的包算成丢包（联调第 3 步读到 500‰ 封顶）。
+4. **补上 §5.6 的出站 `KeepAlive` 与及时回执**：`Runtime::flushHeartbeats` 每个 poll 处理一次 —— 到点发
+   `reliable|ackOnly`、载荷 0 的心跳（`msgId` 逐帧推进，`header.seq` 走 `keepAliveSeq`），本 poll 收到过
+   可靠包就合并成一帧立刻回执。此前服务端只有心跳计时器、**从不主动回 ack**，客户端只能等 1Hz 的 MatchState：
+   实测 `rttMs` 344~485、每条命令重传 2~4 次、`dup` 一度到 31；补上后 `rttMs=31`、`retx=0`、`lossPermille=0`。
+
+复跑（同机）：`ac_tests` **`TESTS 514/514` exit 0**；`gate-4p2min` **`verdict=pass exit=0`**
+`cpuMean=1.52% bw=21.56KB/s snapP95=1033B snapMax=1148B schedP95=14.00ms drift=17.0ms dropped=0 skips=0`
+（比 §15.5 多的约 0.7KB/s 就是心跳与回执）；六步联调 **`JOINT-ACCEPTANCE PASS`**。
+
+> **口径提醒（给下一个改这里的人）**：
+> ①`tiny_test.hpp` 的 `kMaxCases`（现 768）太小会**静默丢弃**新增用例 —— 加了用例先看 `TESTS n/n` 的 n 有没有涨；
+> ②"包头 `seq` 按类型、`msgId` 按通道"是本实现的现行口径，`S03 §5.2` 没写死（客户端 `NetStats` 按类型估丢包）；
+> ③出站 ack 的**存在性**两侧单测都测不到，只有真连能证伪 —— 改可靠层时务必重跑 `client/tools/joint-acceptance.ps1`。
+
 ## 16. 硬约束（来自 ADR-008 / ADR-009 / ADR-010）
 
 1. C++20；**无第三方运行时库**——UDP 可靠性层、JSON 日志、测试断言框架全部自研（新增依赖需先写 ADR）。
@@ -1565,6 +1612,10 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | 反代 | `deploy/Caddyfile` / `deploy/nginx.conf` | 只转发上面四个 HTTP 端点，不含任何静态资源托管指令 |
 
 ### 18.3 环境变量
+
+> CLI 开关（`ac_server --serve`）：`--auto-ready` —— 连上即 ready 并开局，**只给装载/门禁/压测用**
+> （`ac_bot` 不发 Ready 位）。**产品默认不带它**：服务端走 S10 §5.4 的真实大厅，客户端不按准备就不开局
+> （ADR-013）。运维起生产进程时不要加这个开关。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|

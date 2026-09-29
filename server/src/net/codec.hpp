@@ -308,6 +308,20 @@ struct DisconnectPayload {
   uint8_t reason;
 };
 
+// ---- 名称口径（Join 与 MatchState 共用，单一来源）----
+inline constexpr std::size_t kNameMinBytes = 1u;
+inline constexpr std::size_t kNameMaxBytes = 12u;
+
+// ---- type 11 Join（ADR-009「握手时序」）：昵称上报 ----
+// 载荷 = nameLen u8 + name[nameLen]；只做**结构**校验（1..12 字节），UTF-8 与会禁用码点的
+// 判断归 `room::setSessionName`（净化器是唯一来源，编解码层不重复一份）。
+inline constexpr std::size_t kJoinMinPayloadBytes = 1u + kNameMinBytes;
+inline constexpr std::size_t kJoinMaxPayloadBytes = 1u + kNameMaxBytes;
+
+struct JoinPayload {
+  std::string name;  // 1..12 字节，UTF-8
+};
+
 EncodeResult encodeHello(const PacketHeader& header, const HelloPayload& payload, uint8_t* out,
                          std::size_t capacity) noexcept;
 DecodeResult<HelloPayload> decodeHello(const uint8_t* bytes, std::size_t size) noexcept;
@@ -328,12 +342,16 @@ EncodeResult encodeDisconnect(const PacketHeader& header, const ReliableExt& ext
                               std::size_t capacity) noexcept;
 DecodeResult<DisconnectPayload> decodeDisconnect(const uint8_t* bytes, std::size_t size) noexcept;
 
+// type 11 Join：可靠、C→S、无回复（ADR-009「握手时序」）。nameLen 越界或载荷长度不等于
+// 1 + nameLen 一律拒收；字节合法性交净化器。
+EncodeResult encodeJoin(const PacketHeader& header, const ReliableExt& ext, const JoinPayload& payload,
+                        uint8_t* out, std::size_t capacity) noexcept;
+DecodeResult<JoinPayload> decodeJoin(const uint8_t* bytes, std::size_t size) noexcept;
+
 // ---- §5.7 MatchState（type 10，reliable，单播）----
 inline constexpr std::size_t kMatchStateMaxPlayers = 4u;
-inline constexpr std::size_t kNameMinBytes = 1u;
-inline constexpr std::size_t kNameMaxBytes = 12u;
 inline constexpr std::size_t kMatchStatePlayerFixedBytes = 16u;  // 3 + nameLen + 13，不含名称
-inline constexpr std::size_t kMatchStateMaxBytes = 117u;         // 5 + 4 * (16 + 12)
+inline constexpr std::size_t kMatchStateMaxBytes = 117u;         // **载荷**上限：5 + 4 * (16 + 12)
 
 struct MatchStatePlayer {
   uint16_t pid;

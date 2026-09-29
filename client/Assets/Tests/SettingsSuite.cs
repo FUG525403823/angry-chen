@@ -57,6 +57,9 @@ namespace Ac.Tests
             SelfTest.True(escaped.KeyBindings[0] == "W", "\\u0057 解码成 W（旧扁平读取会留下 u0057）", escaped.KeyBindings[0]);
             SelfTest.True(escaped.KeyBindings[1].Length == 2, "代理对解成一个字符（旧扁平读取会留下 uD83DuDE00）", escaped.KeyBindings[1].Length.ToString());
             SelfTest.True(escaped.KeyBindings[2] == "A", "数组短了的部分保持默认表", escaped.KeyBindings[2]);
+            // 文件里只写 1 条（v2 收尾前的快照甚至只写 14 条）：新加的 `ready` 那一条必须保持默认。
+            SelfTest.True(escaped.KeyBindings[SettingsDefaults.ActionReady] == "Return",
+                "短数组里新动作保持默认键", escaped.KeyBindings[SettingsDefaults.ActionReady]);
 
             // 键顺序、缩进、制表、CRLF 都不影响取值
             SettingsSnapshot shuffled;
@@ -80,8 +83,9 @@ namespace Ac.Tests
             SettingsSnapshot roundtrip;
             SelfTest.True(SettingsStore.TryParse(SettingsStore.Serialize(store.Get()), out roundtrip), "自写自读", "读失败");
             SelfTest.True(roundtrip.KeyBindings[0] == "Key\u00e9\"\\", "非 ASCII + 转义键名往返一致", roundtrip.KeyBindings[0]);
-            SelfTest.Equal(14, (long)roundtrip.KeyBindings.Length);
+            SelfTest.Equal(15, (long)roundtrip.KeyBindings.Length);
             SelfTest.True(roundtrip.KeyBindings[1] == "S", "往返不影响相邻键位", roundtrip.KeyBindings[1]);
+            SelfTest.Equal((long)SettingsDefaults.ActionCount, (long)SettingsDefaults.KeyBindings.Length);
         }
 
         // 审计：Load 的提前返回不复位 ReadOnlyFile → 装过 v3 之后所有落盘被静默丢弃。
@@ -125,11 +129,12 @@ namespace Ac.Tests
             SelfTest.True(snapshot.Fov == 75f, "fov 默认 75", snapshot.Fov.ToString("R"));
             SelfTest.Equal(0x00FF66, (long)snapshot.CrosshairColor);
             SelfTest.True(!snapshot.ColorblindSafe && !snapshot.ReduceMotion, "两个开关默认 false", "默认 true");
-            SelfTest.Equal(14, (long)snapshot.KeyBindings.Length);
+            SelfTest.Equal(15, (long)snapshot.KeyBindings.Length);
             SelfTest.True(snapshot.KeyBindings[0] == "W" && snapshot.KeyBindings[1] == "S" && snapshot.KeyBindings[2] == "A" && snapshot.KeyBindings[3] == "D", "前后左右 = W/S/A/D", snapshot.KeyBindings[0]);
             SelfTest.True(snapshot.KeyBindings[4] == "LeftShift" && snapshot.KeyBindings[5] == "Space" && snapshot.KeyBindings[6] == "Mouse0", "疾跑/跳跃/开火", snapshot.KeyBindings[6]);
             SelfTest.True(snapshot.KeyBindings[7] == "R" && snapshot.KeyBindings[8] == "E" && snapshot.KeyBindings[9] == "F", "换弹/互动/狂暴", snapshot.KeyBindings[9]);
             SelfTest.True(snapshot.KeyBindings[10] == "Q" && snapshot.KeyBindings[11] == "Return" && snapshot.KeyBindings[12] == "O" && snapshot.KeyBindings[13] == "F3", "换武器/聊天/设置/调试", snapshot.KeyBindings[13]);
+            SelfTest.True(snapshot.KeyBindings[SettingsDefaults.ActionReady] == "Return", "第 15 条 = 大厅准备键（默认 Return）", snapshot.KeyBindings[SettingsDefaults.ActionReady]);
             SelfTest.Equal(4, (long)SettingsDefaults.CrosshairColors.Length);
             SelfTest.True(SettingsDefaults.IsAllowedCrosshairColor(0xFF66CC), "调色板含 0xFF66CC", "不含");
             // 快照不可被外部改动影响默认值
@@ -272,7 +277,7 @@ namespace Ac.Tests
             SelfTest.True(SettingsStore.TryParse(json, out parsed), "含未知键也能读", "读失败");
             SelfTest.True(parsed.Fov == 80f, "已知键照读", parsed.Fov.ToString("R"));
             SelfTest.Equal(2, (long)parsed.QualityTier);       // 类型不符 → 默认值，不整份丢弃
-            SelfTest.True(parsed.KeyBindings.Length == 14, "未知键被丢弃但其它键完整", parsed.KeyBindings.Length.ToString());
+            SelfTest.True(parsed.KeyBindings.Length == SettingsDefaults.ActionCount, "未知键被丢弃但其它键完整", parsed.KeyBindings.Length.ToString());
             SettingsSnapshot clamped;
             SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 2, \"fov\": 999, \"sensitivity\": 0.01}", out clamped), "越界值也能读", "读失败");
             SelfTest.True(clamped.Fov == 100f, "读入时逐键 clamp（上界）", clamped.Fov.ToString("R"));
@@ -398,7 +403,7 @@ namespace Ac.Tests
             SettingsSnapshot parsed;
             SelfTest.True(SettingsStore.TryParse(text, out parsed), "转义过的文件还能读回来", "读失败");
             SelfTest.True(parsed.KeyBindings[0] == "A\"B\\C", "转义往返一致", parsed.KeyBindings[0]);
-            SelfTest.Equal(14, (long)parsed.KeyBindings.Length);
+            SelfTest.Equal(SettingsDefaults.ActionCount, (long)parsed.KeyBindings.Length);
             SelfTest.True(parsed.KeyBindings[13] == "F3", "转义不影响其它键位", parsed.KeyBindings[13]);
             SelfTest.True(parsed.KeyBindings[1] == "S", "转义不影响相邻键位", parsed.KeyBindings[1]);
         }

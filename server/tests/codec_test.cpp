@@ -27,6 +27,7 @@ using net::CommandPayload;
 using net::DecodeFailure;
 using net::EntityRecord;
 using net::EventEntry;
+using net::JoinPayload;
 using net::MatchStatePlayer;
 using net::PacketHeader;
 using net::PacketType;
@@ -640,7 +641,7 @@ AC_TEST(codec_command_bad_type) {
   const auto wrongType = net::decodeCommand(buffer, sizeof buffer);
   AC_CHECK(!wrongType.isOk);
   AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
-  buffer[1] = 11u;  // 未知类型码
+  buffer[1] = 12u;  // 尚未分配的类型码（11 = Join，见 codec_join_roundtrip）
   const auto badType = net::decodePacket(buffer, sizeof buffer);
   AC_CHECK(!badType.isOk);
   AC_CHECK(badType.failure == DecodeFailure::kBadType);
@@ -909,6 +910,87 @@ AC_TEST(codec_event_id_dedup) {
   AC_CHECK(snapshotDecoded.isOk);
   AC_CHECK_EQ(snapshotDecoded.value.events.size(), 1u);
   AC_CHECK_EQ(snapshotDecoded.value.duplicateEventCount, 1u);
+}
+
+// ---------- type 11 Join（昵称上报，ADR-009「握手时序」）----------
+
+AC_TEST(codec_join_roundtrip) {
+  const PacketHeader header = makeHeader(PacketType::kJoin, net::kFlagReliable, 0x123u, 3u);
+  const JoinPayload payload{std::string("alpha")};
+  uint8_t buffer[64] = {};
+  const auto encoded = net::encodeJoin(header, makeExt(7u, 0u, 0u), payload, buffer, sizeof buffer);
+  AC_CHECK(encoded.isOk);
+  const std::size_t expectedBytes = net::kCommonHeaderBytes + net::kReliableExtBytes + 1u + 5u;
+  AC_CHECK_EQ(encoded.bytes, expectedBytes);
+  // 载荷首字节是 nameLen，其后是原样名称字节（不加结尾 NUL）
+  AC_CHECK_EQ(buffer[net::kCommonHeaderBytes + net::kReliableExtBytes], 5u);
+  AC_CHECK(std::memcmp(buffer + net::kCommonHeaderBytes + net::kReliableExtBytes + 1u, "alpha", 5u) == 0);
+  const auto decoded = net::decodeJoin(buffer, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.name, std::string("alpha"));
+  // 通道标志：Join 是可靠 C→S，无 ackOnly（否则会落进 KeepAlive 的形状）
+  AC_CHECK_EQ(net::requiredFlags(PacketType::kJoin), net::kFlagReliable);
+  // 类型码在 §5.1 的闭区间内，否则 decodePacket 会先把它判成非法类型
+  AC_CHECK(net::kMaxPacketType >= static_cast<uint8_t>(PacketType::kJoin));
+}
+
+AC_TEST(codec_join_name_length_bounds) {
+  const PacketHeader header = makeHeader(PacketType::kJoin, net::kFlagReliable, 1u, 1u);
+  uint8_t buffer[64] = {};
+  const ReliableExt ext = makeExt(1u, 0u, 0u);
+  // 空名不可编码（MatchState 的 1..12 字节口径同源）
+  AC_CHECK(!net::encodeJoin(header, ext, JoinPayload{std::string()}, buffer, sizeof buffer).isOk);
+  // 12 字节是上界，可以编码；13 字节拒绝
+  const auto edge = net::encodeJoin(header, ext, JoinPayload{std::string(12u, 'x')}, buffer, sizeof buffer);
+  AC_CHECK(edge.isOk);
+  AC_CHECK_EQ(edge.bytes, net::kCommonHeaderBytes + net::kReliableExtBytes + net::kJoinMaxPayloadBytes);
+  AC_CHECK(!net::encodeJoin(header, ext, JoinPayload{std::string(13u, 'x')}, buffer, sizeof buffer).isOk);
+  // 自定义包头（type 写错）不许借道：编码入口自己校验类型
+  const PacketHeader wrong = makeHeader(PacketType::kCommand, net::kFlagReliable, 1u, 1u);
+  AC_CHECK(!net::encodeJoin(wrong, ext, JoinPayload{std::string("a")}, buffer, sizeof buffer).isOk);
+}
+
+AC_TEST(codec_join_decode_rejects_malformed) {
+  const PacketHeader header = makeHeader(PacketType::kJoin, net::kFlagReliable, 1u, 1u);
+  uint8_t buffer[64] = {};
+  const auto encoded =
+      net::encodeJoin(header, makeExt(1u, 0u, 0u), JoinPayload{std::string("alpha")}, buffer, sizeof buffer);
+  AC_CHECK(encoded.isOk);
+  const std::size_t nameLenOffset = net::kCommonHeaderBytes + net::kReliableExtBytes;
+
+  // nameLen = 0：低于 kNameMinBytes
+  buffer[nameLenOffset] = 0u;
+  const auto zero = net::decodeJoin(buffer, encoded.bytes);
+  AC_CHECK(!zero.isOk);
+  AC_CHECK(zero.failure == DecodeFailure::kBadValue);
+
+  // nameLen = 13：高于 kNameMaxBytes
+  buffer[nameLenOffset] = 13u;
+  const auto tooLong = net::decodeJoin(buffer, encoded.bytes);
+  AC_CHECK(!tooLong.isOk);
+  AC_CHECK(tooLong.failure == DecodeFailure::kBadValue);
+
+  // nameLen 大于实际剩余字节：必须报截断，不许读出缓冲区外的数据
+  buffer[nameLenOffset] = 5u;
+  const auto shortFrame = net::decodeJoin(buffer, encoded.bytes - 3u);
+  AC_CHECK(!shortFrame.isOk);
+  AC_CHECK(shortFrame.failure == DecodeFailure::kTruncated);
+
+  // 多带字节：nameLen 与实际长度不一致是格式错误，不是"忽略尾巴"
+  buffer[nameLenOffset] = 5u;
+  const auto trailing = net::decodeJoin(buffer, encoded.bytes + 1u);
+  AC_CHECK(!trailing.isOk);
+  AC_CHECK(trailing.failure == DecodeFailure::kBadLength);
+
+  // 类型不符：拿一条 Command 帧喂 decodeJoin
+  CommandPayload command{};
+  uint8_t other[64] = {};
+  const auto commandFrame = net::encodeCommand(makeHeader(PacketType::kCommand, net::kFlagReliable, 1u, 1u),
+                                              makeExt(1u, 0u, 0u), command, other, sizeof other);
+  AC_CHECK(commandFrame.isOk);
+  const auto wrongType = net::decodeJoin(other, commandFrame.bytes);
+  AC_CHECK(!wrongType.isOk);
+  AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
 }
 
 // ---------- §5.5 字节级 fixture（--filter=hex）----------
@@ -1220,7 +1302,9 @@ AC_TEST(match_roundtrip_two_players) {
   AC_CHECK(encoded.isOk);
   AC_CHECK_EQ(encoded.bytes, 8u + 12u + 5u + (16u + 5u) + (16u + 3u));
   AC_CHECK_EQ(encoded.bytes, matchStateFrameBytes(state));
-  AC_CHECK(encoded.bytes <= net::kMatchStateMaxBytes);
+  // `kMatchStateMaxBytes` 是**载荷**预算：包头那 20 字节不算在里面（拿整帧去比它会平白砍掉 20 字节，
+  // 满员 4 行必然被判超限 —— 那正是联调里"服务端 4 个人、客户端只有 1 行"的根因）。
+  AC_CHECK(encoded.bytes - (8u + 12u) <= net::kMatchStateMaxBytes);
   const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
   AC_CHECK(decoded.isOk);
   AC_CHECK_EQ(decoded.value.phase, 2u);
@@ -1231,6 +1315,38 @@ AC_TEST(match_roundtrip_two_players) {
   AC_CHECK_EQ(decoded.value.players[0].weapon, 2u);
   AC_CHECK_EQ(decoded.value.players[1].kills, 12u);
   AC_CHECK_EQ(decoded.value.players[1].reviveRatio255, 255u);
+}
+
+// 满员最坏情形：4 行 + 每行 12 字节昵称 = 载荷正好顶到 `kMatchStateMaxBytes`（5 + 4*(16+12) = 117）。
+// 这条用例是联调根因的回归锚点：修好之前 `encodeMatchState` 拿**整帧**去比 117，满员帧必被判超限，
+// 于是"房间 4 个人、客户端只看到自己那一行"（MatchState 整条广播静默消失）。
+AC_TEST(match_full_room_four_twelve_byte_names) {
+  const char* const twelve = "123456789012";
+  net::MatchState state{0u, 2u, 0u, {}};
+  for (std::uint16_t i = 0u; i < 4u; ++i) {
+    state.players.push_back(makePlayer(i + 1u, twelve, static_cast<uint8_t>(i % 3u)));
+  }
+  uint8_t buffer[net::kMaxPacketBytes] = {};
+  const auto encoded = net::encodeMatchState(
+      makeHeader(PacketType::kMatchState, net::kFlagReliable, 7u, 4u), makeExt(4u, 0u, 0u), state,
+      buffer, sizeof buffer);
+  AC_CHECK(encoded.isOk);
+  AC_CHECK_EQ(encoded.bytes - (8u + 12u), net::kMatchStateMaxBytes);  // 载荷正好是预算上限
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + net::kMatchStateMaxBytes);
+  AC_CHECK(encoded.bytes <= net::kMaxPacketBytes);                   // 单包上限（含头）
+  const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.players.size(), 4u);
+  AC_CHECK(decoded.value == state);
+  for (const MatchStatePlayer& player : decoded.value.players) {
+    AC_CHECK_EQ(player.name.size(), net::kNameMaxBytes);
+  }
+  // 再多一行必须被拒（不是静默截断）：容量校验要在编码前就挡住。
+  state.players.push_back(makePlayer(5u, twelve, 0u));
+  const auto overflow = net::encodeMatchState(
+      makeHeader(PacketType::kMatchState, net::kFlagReliable, 7u, 4u), makeExt(4u, 0u, 0u), state,
+      buffer, sizeof buffer);
+  AC_CHECK(!overflow.isOk);
 }
 
 AC_TEST(match_name_one_byte_boundary) {

@@ -20,10 +20,12 @@ namespace Ac.View
         public const float ReloadPitchRad = 0.42f;
         public const float ReloadRollRad = 0.30f;
         public const float DownedPitchRad = 0.46f;
-        public const float SpreadPerShotDeg = 0.1f;
-        public const float SpreadMaxDeg = 0.25f;
-        public const float SpreadDecayDelayMs = 350f;
-        public const float SpreadDecayPerSecond = 6.0f;
+        // 散布四件套的唯一来源是 Ac.Sim.WeaponTable（服务端 weapons.hpp 的镜像）；这里只做别名，
+        // 免得同一组冻结值在客户端出现第二份字面量。
+        public const float SpreadPerShotDeg = Ac.Sim.WeaponTable.SpreadGrowthPerShotDeg;
+        public const float SpreadMaxDeg = Ac.Sim.WeaponTable.SpreadMaxDeg;
+        public const float SpreadDecayDelayMs = Ac.Sim.WeaponTable.SpreadDecayDelayMs;
+        public const float SpreadDecayPerSecond = Ac.Sim.WeaponTable.SpreadDecayPerSecondDeg;
         public const int PistolRpm = 300;
         public const int RifleRpm = 600;
         public const int ShotgunRpm = 70;

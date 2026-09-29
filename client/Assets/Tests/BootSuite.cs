@@ -16,6 +16,58 @@ namespace Ac.Tests
             SelfTest.Add("boot.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("boot.stage_sinks", ChecksStageSinks);
             SelfTest.Add("boot.server_config", ChecksServerConfig);
+            SelfTest.Add("boot.join_reported_once_per_name", ChecksJoinReport);
+            SelfTest.Add("boot.command_uplink", ChecksCommandUplink);
+        }
+
+        // C05 §5.1/§5.2 的产品上行：采样器出的命令必须真的从传输发出去（type=4），且 `clientTick`
+        // 等于**最近一条权威快照的 tick**。服务端 `security::validateClientTick` 要求与服务端 tick
+        // 严格相等（预支/滞后一样丢）—— 联调里战绩 `aliveMs: 0` 就是这条链路没接线的后果。
+        private static void ChecksCommandUplink()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new Ac.Net.UdpTransport(socket, delegate { return now; });
+            SnapshotFrame frame;
+            var loop = NewLoop(2, out frame);
+            loop.Transport = transport;
+            var sampler = new InputSampler();
+            sampler.SetKey(UnityEngine.KeyCode.W, true);   // 一直按着 W：意图恒定，便于逐条比对
+            loop.Sampler = sampler;
+
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "Connect 返回 false");
+            // 先喂一条权威快照：clientTick 只能来自它（不是本地帧计数、不是预测 tick）。
+            Feed(loop, ref frame, 2, 23, true);
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+
+            var before = loop.CommandsSent;
+            for (var i = 0; i < 60; i++)   // 1s @60fps
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            var sent = loop.CommandsSent - before;
+            SelfTest.True(sent >= 29 && sent <= 31, "1s 内上行 30±1 条命令（C05 §5.1）", sent.ToString());
+            SelfTest.Equal(0, (long)loop.CommandSendFailures);
+
+            var commands = socket.CommandPayloads();
+            SelfTest.True(commands.Count >= 29, "传输里真的出现了 type=4 帧", commands.Count.ToString());
+            var last = commands[commands.Count - 1];
+            SelfTest.Equal(23, (long)last.ClientTick);              // 权威 tick，逐条一致
+            SelfTest.Equal(InputSampler.AxisFull, (long)last.MoveX);
+            SelfTest.True(last.Seq != 0, "seq 逐条推进（0 表示没走 NextSeq）", last.Seq.ToString());
+            SelfTest.True(loop.LocalSteps > 0, "同一条命令也要进本地预测", loop.LocalSteps.ToString());
+
+            // 断开后不许再往上行塞包：状态不是 Connected 时只喂预测，不发。
+            var afterDisconnect = loop.CommandsSent;
+            transport.Close();
+            for (var i = 0; i < 60; i++) { now += 16.6667; loop.Frame(16.6667); }
+            SelfTest.Equal((long)afterDisconnect, (long)loop.CommandsSent);
         }
 
         // 传输/会话的配置面（B1 审查点 5）：地址只从配置来，且编辑器/批处理一律不连服务器；
@@ -51,8 +103,8 @@ namespace Ac.Tests
             SelfTest.True(GameBootstrap.Loop == null || GameBootstrap.Loop.Transport == null,
                 "自检进程里帧回路不许挂着传输（测试路径不连服务器）", "挂着传输");
 
-            // 键位表 → KeyCode：14 条默认项每条都要认得（表改了却忘了改映射，这里就红）。
-            // 表就是这套键名的全集（InputSampler 的 14 个动作用的是同一套名字），没有第二个候选表。
+            // 键位表 → KeyCode：默认表每条都要认得（表改了却忘了改映射，这里就红）。
+            // 表就是这套键名的全集（InputSampler 的 15 个动作用的是同一套名字），没有第二个候选表。
             for (var i = 0; i < SettingsDefaults.KeyBindings.Length; i++)
             {
                 SelfTest.True(GameBootstrap.KeyOf(SettingsDefaults.KeyBindings[i]) != UnityEngine.KeyCode.None,
@@ -70,6 +122,30 @@ namespace Ac.Tests
             broken[SettingsDefaults.ActionDebugPanel] = "NotAKey";
             SelfTest.True(GameBootstrap.DebugPanelKeyFor(broken) == UnityEngine.KeyCode.F3,
                 "表里写了不认识的键名 → 退回默认表的同一条（而不是代码里的字面量）", GameBootstrap.DebugPanelKeyFor(broken).ToString());
+
+            // 大厅准备键（ADR-013）走的是同一个 helper：默认表那条是 Return，改表就改键，采样器里没有第二份。
+            SelfTest.True(SettingsDefaults.KeyBindings[SettingsDefaults.ActionReady] == "Return", "默认表里准备键就是 Return",
+                SettingsDefaults.KeyBindings[SettingsDefaults.ActionReady]);
+            var readyRemap = (string[])SettingsDefaults.KeyBindings.Clone();
+            readyRemap[SettingsDefaults.ActionReady] = "Q";
+            SelfTest.True(GameBootstrap.ReadyKeyFor(readyRemap) == UnityEngine.KeyCode.Q,
+                "准备键必须跟着键位表走（不许硬编码 Return）", GameBootstrap.ReadyKeyFor(readyRemap).ToString());
+            SelfTest.True(GameBootstrap.ReadyKeyFor(null) == UnityEngine.KeyCode.Return, "键位表缺失 → 退回默认表那一条",
+                GameBootstrap.ReadyKeyFor(null).ToString());
+            var readyBroken = (string[])SettingsDefaults.KeyBindings.Clone();
+            readyBroken[SettingsDefaults.ActionReady] = "NotAKey";
+            SelfTest.True(GameBootstrap.ReadyKeyFor(readyBroken) == UnityEngine.KeyCode.Return,
+                "不认识的键名 → 退回默认表的同一条", GameBootstrap.ReadyKeyFor(readyBroken).ToString());
+            var defaultSampler = new InputSampler();
+            SelfTest.True(defaultSampler.ConfirmKey == GameBootstrap.KeyOf(SettingsDefaults.KeyBindings[SettingsDefaults.ActionReady]),
+                "采样器默认准备键 = 默认表那一条", defaultSampler.ConfirmKey.ToString());
+            // 灵敏度（C13 的第三项设置）：采样器自带钳制，面板给的值走的就是这条路。
+            defaultSampler.SetSensitivity(99.0);
+            SelfTest.True(Math.Abs(defaultSampler.SensitivityValue - InputSampler.MaxSensitivity) < 1e-9,
+                "灵敏度超上限要钳到 MaxSensitivity", defaultSampler.SensitivityValue.ToString("R"));
+            defaultSampler.SetSensitivity(0.0);
+            SelfTest.True(Math.Abs(defaultSampler.SensitivityValue - InputSampler.MinSensitivity) < 1e-9,
+                "灵敏度超下限要钳到 MinSensitivity", defaultSampler.SensitivityValue.ToString("R"));
         }
 
         private static GameLoop NewLoop(int entities, out SnapshotFrame frame)
@@ -175,6 +251,151 @@ namespace Ac.Tests
             }
             // C14 §5：稳态每帧 0 B 分配。这条闸挂了就说明帧回路里有隐藏分配。
             AllocMeter.AssertZero(before);
+        }
+
+        // ADR-009「握手时序」的 type 11 Join 接线：帧回路必须在**连上之后**把昵称报上去，
+        // 昵称再变时补报一次，且同一会话同一昵称只发一次（稳态不许有包）。
+        // 这条用例钉的是 GameLoop.FlushJoin 的两个时机，不是编解码本身（那是 net.join_wire）。
+        private static void ChecksJoinReport()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new Ac.Net.UdpTransport(socket, delegate { return now; });
+            SnapshotFrame frame;
+            var loop = NewLoop(1, out frame);
+            loop.Transport = transport;
+
+            // 顺序 A：昵称先敲好、之后才连上（"进大厅就打字、连接晚一拍"）。
+            loop.LocalName = "alpha";
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "Connect 返回 false");
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 50.0;
+                loop.Frame(50.0);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+            var joins = socket.JoinNames();
+            SelfTest.Equal(1, joins.Count);
+            SelfTest.Equal("alpha", joins[0]);
+
+            // 稳态：昵称没变，跑 20 帧不许再出现任何 Join。
+            for (var i = 0; i < 20; i++) { now += 50.0; loop.Frame(50.0); }
+            SelfTest.Equal(1, socket.JoinNames().Count);
+
+            // 顺序 B：昵称在大厅里被改了 ⇒ 必须补报一次（否则服务端一直叫旧名字）。
+            loop.LocalName = "beta";
+            loop.Frame(50.0);
+            joins = socket.JoinNames();
+            SelfTest.Equal(2, joins.Count);
+            SelfTest.Equal("beta", joins[1]);
+
+            // 空昵称不上线：清洗器可能把整串都过滤掉，此时必须**不发**而不是发空名。
+            loop.LocalName = string.Empty;
+            loop.Frame(50.0);
+            SelfTest.Equal(2, socket.JoinNames().Count);
+        }
+
+        // 脚本化的最小服务端桩件：把 UdpTransport 推进到 Connected，并对可靠消息回 ack。
+        // ack 不是可选的装饰：不确认的话客户端会按 RTO 重传，Join 于是出现在日志里好几次——
+        // 那是"重传"，不是"重复上报"，不 ack 就测不出这两者的区别。
+        private sealed class ScriptedSocket : Ac.Net.IDatagramSocket
+        {
+            private readonly System.Collections.Generic.Queue<byte[]> _inbound =
+                new System.Collections.Generic.Queue<byte[]>();
+            private readonly System.Collections.Generic.List<byte[]> _sent =
+                new System.Collections.Generic.List<byte[]>();
+            private readonly Ac.Net.ReliabilityChannel _received = new Ac.Net.ReliabilityChannel();
+            private uint _nextMsgId = 1;
+            private bool _bound;
+
+            public bool IsBound { get { return _bound; } }
+            public int Port { get { return 40404; } }
+            public bool HasDatagram { get { return _inbound.Count > 0; } }
+            public bool Bind(int port) { _bound = true; return true; }
+            public void Connect(string host, int port) { _bound = true; }
+
+            public int Receive(byte[] buffer)
+            {
+                if (_inbound.Count == 0) return 0;
+                var next = _inbound.Dequeue();
+                Array.Copy(next, buffer, next.Length);
+                return next.Length;
+            }
+
+            public bool Send(byte[] datagram, int length)
+            {
+                var copy = new byte[length];
+                Array.Copy(datagram, copy, length);
+                _sent.Add(copy);
+                var reader = new Ac.Net.PacketReader(copy);
+                Ac.Net.PacketHeader header;
+                if (Ac.Net.PacketHeader.Read(reader, out header) != Ac.Net.DecodeFailure.Ok) return true;
+                if (header.IsReliable) _received.NoteReceived(header.MsgId);
+                if (header.Type == Ac.Net.PacketType.Hello)
+                {
+                    var payload = Ac.Net.HandshakeCodec.EncodeHelloAck(1234u, 0xCAFEBABEu);
+                    _inbound.Enqueue(Control(Ac.Net.PacketType.HelloAck, payload));
+                    return true;
+                }
+                // 可靠消息一律确认（KeepAlive 恒为 reliable|ackOnly，进不了重传表）。
+                if (header.IsReliable) _inbound.Enqueue(Control(Ac.Net.PacketType.KeepAlive, null));
+                return true;
+            }
+
+            private byte[] Control(Ac.Net.PacketType type, byte[] payload)
+            {
+                var header = new Ac.Net.PacketHeader();
+                header.Version = Ac.Net.PacketHeader.ProtocolVersion;
+                header.Type = type;
+                header.Flags = (Ac.Net.PacketFlags)Ac.Net.PacketHeader.RequiredFlags(type);
+                header.Session = 7;
+                header.Seq = 1;
+                header.MsgId = _nextMsgId++;
+                header.AckBase = _received.AckBase;
+                header.AckBits = _received.AckBits;
+                if (payload == null) return Ac.Net.PacketWriter.Build(header);
+                return Ac.Net.PacketWriter.Build(header, payload, 0, payload.Length);
+            }
+
+            public void Close() { _bound = false; }
+
+            // 客户端发出的 type=4 载荷按序解出来（§5.2 固定 14 字节）。
+            internal System.Collections.Generic.List<Ac.Net.CommandPayload> CommandPayloads()
+            {
+                var list = new System.Collections.Generic.List<Ac.Net.CommandPayload>();
+                for (var i = 0; i < _sent.Count; i++)
+                {
+                    var reader = new Ac.Net.PacketReader(_sent[i]);
+                    Ac.Net.PacketHeader header;
+                    if (Ac.Net.PacketHeader.Read(reader, out header) != Ac.Net.DecodeFailure.Ok) continue;
+                    if (header.Type != Ac.Net.PacketType.Command) continue;
+                    byte[] body;
+                    if (!reader.TryReadBytes(reader.Remaining, out body)) continue;
+                    Ac.Net.CommandPayload payload;
+                    if (Ac.Net.CommandCodec.Decode(body, out payload) != Ac.Net.DecodeFailure.Ok) continue;
+                    list.Add(payload);
+                }
+                return list;
+            }
+
+            // 客户端发出的 type=11 载荷按序解出来（nameLen u8 + UTF-8 字节）。
+            internal System.Collections.Generic.List<string> JoinNames()
+            {
+                var names = new System.Collections.Generic.List<string>();
+                var utf8 = new System.Text.UTF8Encoding(false, true);
+                for (var i = 0; i < _sent.Count; i++)
+                {
+                    var reader = new Ac.Net.PacketReader(_sent[i]);
+                    Ac.Net.PacketHeader header;
+                    if (Ac.Net.PacketHeader.Read(reader, out header) != Ac.Net.DecodeFailure.Ok) continue;
+                    if (header.Type != Ac.Net.PacketType.Join) continue;
+                    byte[] body;
+                    if (!reader.TryReadBytes(reader.Remaining, out body)) continue;
+                    if (body.Length < 2) continue;
+                    names.Add(utf8.GetString(body, 1, body[0]));
+                }
+                return names;
+            }
         }
     }
 }

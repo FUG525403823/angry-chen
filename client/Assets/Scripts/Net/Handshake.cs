@@ -3,7 +3,8 @@ using System.Collections.Generic;
 
 namespace Ac.Net
 {
-    // C03 §5.2 / S04 §5.5 冻结的 Disconnect 原因（1..7，两侧同序同义）。
+    // C03 §5.2 / S04 §5.5 冻结的 Disconnect 原因（1..7，两侧同序同义）；8 由 ADR-012 追加
+    //（房间拒绝准入：满员或对局进行中）。
     public enum DisconnectReason : byte
     {
         VersionMismatch = 1,
@@ -13,6 +14,7 @@ namespace Ac.Net
         MalformedPacket = 5,
         RateLimited = 6,
         SlowConsumer = 7,
+        RoomUnavailable = 8,
     }
 
     public struct HelloPayload
@@ -147,7 +149,7 @@ namespace Ac.Net
             return new[] { (byte)reason };
         }
 
-        // 1..7 之外一律 BadValue（枚举是闭集，未知原因不允许静默通过）。
+        // 1..8 之外一律 BadValue（枚举是闭集，未知原因不允许静默通过）。
         public static DecodeFailure DecodeDisconnect(byte[] payload, out DisconnectReason reason)
         {
             reason = DisconnectReason.ServerShutdown;
@@ -155,7 +157,7 @@ namespace Ac.Net
             byte raw;
             if (!reader.TryReadU8(out raw)) return DecodeFailure.Truncated;
             if (reader.Remaining != 0) return DecodeFailure.BadLength;
-            if (raw < (byte)DisconnectReason.VersionMismatch || raw > (byte)DisconnectReason.SlowConsumer) return DecodeFailure.BadValue;
+            if (raw < (byte)DisconnectReason.VersionMismatch || raw > (byte)DisconnectReason.RoomUnavailable) return DecodeFailure.BadValue;
             reason = (DisconnectReason)raw;
             return DecodeFailure.Ok;
         }

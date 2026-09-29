@@ -194,13 +194,19 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 - 现阶段**最小可用迁移**（不要求一次写完全量投影）：① 形状校验改为 `version == 2` 且 `hashChain.length == ticks`；② 用 `script`（RLE 展开 + 自补 `seq`/`clientTick`）从 `setup` 驱动本地 sim；③ 在 `keyframes[].tick` 那 3–5 个点上对 `entities[]`/`events[]` 逐字段、逐位比（字段名与 v1 投影同名）；④ `hashChain`/`snapshot` 先只校验"长度与十六进制形状"，全量投影就绪后再接链。
 - `configHash` 仍必须一字不差（当前 `19a978ea`）：它是 §5.6 常量表摘要，两侧同源。
 
-### 7.4 客户端当前会红的用例（按读取器代码推断，未运行 Unity 用例）
+### 7.4 客户端迁移结果（**已落地**，Unity 批处理用例实测）
 
-| 位置 | 现状（读的键） | 为什么会红 |
+上面那张表是迁移前的"按读取器代码推断"；客户端批次已按 §7.2/§7.3 完成迁移，下表是实测
+（入口 `pwsh -File client/tools/selftest.ps1`，断言行取自 `client/Assets/Tests/FixtureSuite.cs` 与
+`FixturePredictSuite.cs`）：
+
+| 位置 | 迁移后 | 实测 |
 |---|---|---|
-| `client/Assets/Scripts/Sim/FixtureLoader.cs:45-46`、`:84-94` | `TicksKey="ticks"`、`ExpectedKey="expected"`；`IsShaped` 要求 `ticks` 是数组且 `ticks[0].expected` 存在 | v2 的 `ticks` 是数字、没有 `expected` ⇒ `Load` 返回 **0 份**（`TickCount` 也会算成 0） |
-| `client/Assets/Tests/FixtureSuite.cs:26-31` | 断言"至少 4 份向量、≥ 1000 帧" | 承上 ⇒ 0 份 ⇒ 断言直接红 |
-| `client/Assets/Tests/FixturePredictSuite.cs:42`、`:73`、`:80`、`:84-87`、`:180` | `Discover` 要 `ticks` 数组；`ChecksFixture` 读 `ticks[t].commands[]` 与 `ticks[t].expected.entities[]` | 两个键都不存在 ⇒ `fixture_predict.manifest` 的覆盖断言先红，逐份用例拿不到命令/实体同样红 |
-| `client/Assets/Tests/FixtureSuite.cs:61-62` | 探针字符串（`$.ticks[1].x` 等） | 只是探针文本，迁移时跟着改路径即可，不是数据问题 |
+| `client/Assets/Scripts/Sim/FixtureLoader.cs` | 形状校验按 `version == 2`；`ticks` 是数字，`hashChain`/`keyframes`/`script` 逐键读；`Compare` 报差异时给 `$.path` 与期望/实际 | `fixtures.loader`：加载 **14/14** 份、逐份 `SchemaVersion == 2`、`hashChain.Count == TickCount`、合计 tick 数 **≥ 5560**、关键帧数达标；扰动探针报 `$.entities[0].pos[2]`（expected=150 actual=151） |
+| `client/Assets/Tests/FixturePredictSuite.cs` | 名单按 14 份校验（`Unrecognized == 0`）；**5 份**逐位重放，**9 份**登记 `NotReplayable` 并附理由（该区间"无移动命令却位移"⇒ 本机预测复现不出），跳过者仍必须有关键帧 | `fixture_predict`：名单、`DtMs == 50`、跳过理由、关键帧区间逐字段比较全绿 |
 
-> 结论：这是 ADR-010 §8 的**双侧契约变更**，不是"服务端单方面换格式"。本批（服务端）只保证 v2 向量在盘上自洽（`--check` 14/14、体积门 272 291 B ≤ 524 288 B）；客户端的读取与比较按 §7.2/§7.3 在客户端批次里迁移。缺口与风险照本目录 §6 的口径登记，本节不放宽任何门限。
+`configHash` 仍一字不差（两侧同源）。
+
+> 结论（未变）：这是 ADR-010 §8 的**双侧契约变更**，不是"服务端单方面换格式"。服务端保证 v2 向量在盘上自洽
+> （`--check` 14/14、体积门 272 291 B ≤ 524 288 B）；客户端侧的读取与比较按上表通过。缺口与风险照本目录 §6 的口径登记，
+> 本节不放宽任何门限；9 份 `NotReplayable` 是**登记在案的缺口**，不是静默跳过（跳过必须给出理由，理由不成立即红）。

@@ -26,66 +26,106 @@
 
 | 优先级 | 事项 | 一句话 | 卡住什么 |
 |---|---|---|---|
-| **P0** | **A7** fixture 格式 | 服务端已提交 15 份新格式向量，客户端 loader 仍读 0 份 ⇒ 自测 2 条红 | 客户端自测全绿（其余 162 例已绿） |
-| **P0** | **A2** C15 六步联合验收 | 服务端在场跑连接→大厅→对局→波次→结算→重连，两侧版本行入档 | **`MC15` 无法打标签** |
-| **P1** | **A8** 昵称上报通道 | 客户端没有上报昵称的报文，服务端把所有人叫 `player` | 真连时本地身份落不下来 |
-| **P1** | **A1** 有 GPU 的机器 | 跑一次 `frame-bench.ps1` 补三项 GPU 指标 | **`MC14` 仍是"未验收"** |
-| **P2** | **A3** 三项跨计划冲突 | 剔除距离 / 阴影距离 / 准星散布口径 | 三个数值口径悬空 |
-| **P2** | **A4** `Send`/`Track` 拒收回滚 | 被积压封顶拒收的可靠消息是否回滚 | 跨服务端语义 |
+| ✅ | ~~A7 fixture 格式~~ | 客户端 loader 已适配服务端新 schema（14 向量 + `trig-table.json`，5560 tick），自测全绿 | 已闭环（187 例 `SELFTEST OK`） |
+| ✅ | ~~A2 C15 六步联合验收~~ | 2026-XX-XX 本机 `JOINT-ACCEPTANCE PASS`（退出码 0），六步原始行 + 两侧版本行已入档 | **`MC15` 可以打标签** |
+| ✅ | ~~A8 昵称上报通道~~ | 新增 `type=11 kJoin`（可靠，昵称 1–12 字节），服务端行表落真名（联调里是"牧羊人阿"） | 已闭环 |
+| ✅ | ~~A9 产品侧输入链未接线~~ | 采样器 → 30Hz 上行（type=4）+ 本地预测 + 权威 tick 回填 + 准备键 + 指针锁定全部接上 | 已闭环（`boot.command_uplink`/`input.ready_key` 守着） |
+| **P1** | **A1** C14 计划场景基准 | 计划场景已量到：图形四项/分配/分段全达标，只有 `frameP95` 红——**根因是 `-batchmode` 机制**（空 URP 场景单独就 23.9 ms > 20 ms 预算） | 机制改"引擎自己拥有帧循环"（player），预算不动；`MC14` 未验收 |
+| ✅ | ~~A3 三项跨计划冲突~~ | 剔除距离=档位表 60/80m；阴影=档位表 20/35/50m；准星散布与服务端 `weapons.hpp` 逐值相同 | 三条都只是**文档滞后**，代码早已同源（见 A3 段） |
+| ✅ | ~~A4 `Send`/`Track` 拒收回滚~~ | `Send` 先 `Enqueue` 后 `Track`，被拒消息既不在重传表、也不上线（`net.send_reject_no_retransmit`） | 已闭环 |
+| ✅ | ~~A10 "通道"与"类型"两套口径~~ | `seq` 每 `type` 一条、`msgId` 每可靠通道一条，已写进 S03 §5.1 / C02 §5.1 | 已闭环（联调 `lossPermille=0`） |
 | **P3** | **A6** IL2CPP 模块（可选） | 想发 IL2CPP 包才需要 | 现在走 Mono 兜底并如实标注 |
-| ✅ | ~~A5 本地玩家身份~~ | 已按"玩家自己输入昵称"落地客户端侧 | （真连仍受 A8 阻塞） |
+| ✅ | ~~A5 本地玩家身份~~ | 已按"玩家自己输入昵称"落地客户端侧 | （A8 已闭环） |
 
-### A1. 一台有真实图形设备的机器 —— C14 收口前置
-本机 `GPU = Null Device`、`Screen 640×480`，PlaybackEngines 只有 Mono 变体，`frame-bench.ps1 -Runs 1` 两次都是 `exit 2`（"run produced no JSON"）。C14 §6/DoD 的 `1920×1080` / `drawCalls ≤ 120` / `triangles ≤ 180000` 无法测量，所以 `MC14` 是"**未验收**"里程碑。拿到有 GPU 的机器后：
+### A9. ✅ 产品侧输入链已接线（本轮）
+联调当时是用**测试桩**（`client/Assets/Tests/JointSuite.cs` 的 `Link`）把六步跑通的 —— 采样器、命令编解码、`UdpTransport.Send` 三者都在仓库里，却**没有任何东西把它们接起来**（`new InputSampler()` / `GameLoop.QueueCommand` / `SetClientTick` / `SetReadyHeld` / `SetPointerLocked` 全仓只有测试在用）。本轮全部接上：
+
+| 环节 | 落点 | 钉住它的用例 |
+|---|---|---|
+| 键鼠 → 30Hz 命令 → **真发 type=4** | `GameLoop.PumpInput`：`sampler.Update` → `TryTakeCommand` → `CommandCodec.Encode` → `Transport.Send(PacketType.Command, …)`（只在 `Connected` 时发） | `boot.command_uplink`（1s 内 30±1 条、断开后不再发） |
+| `clientTick` = **权威 tick** | `sampler.SetClientTick(_view.AppliedTick)`：来源是最近一条已应用快照，不是本地帧计数、不是预测 tick | 同上（逐帧断言 `ClientTick == 23`） |
+| 同一条命令进本地预测 | `QueueCommand(CommandCodec.ToStepCommand(payload))` —— 与上行共用**同一份量化载荷**，不重新采样 | 同上（`LocalSteps > 0`） |
+| 大厅准备键 | `InputSampler.ConfirmPressed`（只报按下沿）+ `GameLoop` 在大厅相位翻转 `ReadyHeld`；键位来自 `KeyBindings[ActionReady]`（默认 `Return`），灵敏度来自 `SettingsStore` | `input.ready_key`（边沿语义）、`input.ready_bit`（位域）、`boot.server_config`（键位/灵敏度接线） |
+| 指针锁定 / 焦点 | `GameLoopDriver.Update`：点画面 `SetPointerLocked(true)` + `Cursor.lockState`，Escape 解锁，焦点跳变时 `OnFocusChanged` | `input.lock_flush`（失焦清理） |
+| 装配 | `GameBootstrap.Start` 里 `Loop.Sampler = new InputSampler()`（离线/帧基准也接，采样器自己按焦点说话） | —— |
+
+**键位与灵敏度也进了这条链**（本轮同批，之前是"存了盘没下游"）：准备键不再写死 —— `InputSampler.ConfirmKey` 由 `GameBootstrap` 从 `SettingsDefaults.KeyBindings[ActionReady]` 解析（默认表那条就是 `Return`），`SettingsKey.KeyBindings` 变化时重解析；鼠标灵敏度 `SettingsStore.Sensitivity`（0.2–3.0 钳制）在装配时与 `SettingsKey.Sensitivity` 变化时都写进采样器。`GameBootstrap.KeyBindingFor` 是调试面板与准备键共用的解析器（表项缺失/名字不认识 ⇒ 退回默认表同一条，代码里没有第二份键名）。用例：`boot.server_config`（键位表 + 灵敏度钳制）、`input.ready_key`（按下沿语义）。
+
+### A10. ✅ "通道"与"类型"两套口径已写死（选①，与服务端现状一致）
+`NetStats.OnInbound(type, seq, bytes)` 按**类型**（`PacketType`）记期望包数（`_seqSeen[(int)type]`，见 `NetStats.cs:91-105`），而 `S03 §5.2` 的"通道"把多条类型归一条流（MatchState 与 KeepAlive 同属控制方向）。本轮联调就踩在这里：服务端原先一条 `seq` 计数器同时喂 Snapshot(5) 与 MatchState(10)，客户端把插入的另一种包算成丢包，`PacketLossPermille` 直接顶到 500‰（第 3 步红）。
+
+**裁决（用户 2026-XX-XX：按推荐来）＝①**：包头 `seq` 按**类型**独立，`msgId` 按**可靠通道**共享。已写进 [S03 §5.1](../plans-v2/server/S03-二进制协议与编解码.md) 的 `seq` 行与"序号口径"两条（含 `MatchState`/`KeepAlive` 共用控制通道、两者才是唯一回执载体），客户端侧在 [C02 §5.1](../plans-v2/client/C02-客户端数学量化与协议解码.md) 复述同一句。客户端统计不用改（本来就是按类型），服务端也不用改（上一轮已拆号）。
+
+### A1. C14 收口（真实图形设备 + **计划场景基准**）
+上一轮的结论有两处失实，一并订正：
+
+- **本机不是没有图形设备**：不带 `-nographics` 时编辑器拿到的是真设备（`client/Logs/frame-bench/run-20260928-112243-1.json`：`"gpu": "AMD Radeon(TM) Graphics"`、`"driver": "Direct3D 11.0 [level 11.1]"`、`Screen 640×480`）。带 `-nographics` 的那次（`direct.json`）才是 `Null Device` —— 那是我们自己的临时脚本 `direct.cmd` 传了 `-nographics`，`frame-bench.ps1` 本身从不传（§5 测量规则第 1 条）。
+- **真正的拦路虎是基准入口只有合成 CPU 路径**：`Ac.Tests.FrameBench.Run` 造的是裸 `GameLoop`（不挂呈现层），`sceneKind=synthetic-cpu`、图形四项恒 -1、8 段里 fx/audio/draw/overlay 永不打点 ⇒ `verdict=UNVERIFIED`，门禁按设计退 2。**这与机器无关**，换任何一台机器都一样。
+
+本轮补做：给同一个入口加**计划场景**路径（`GameBootstrap` 真装配：竞技场 7 部件 / 羊群池 / 相机 / 阳光 / 视图模型 / `Effects` / HUD，4 玩家 + 60 羊含王羊，逐帧合成战斗事件让 fx/draw/overlay 真的做功，真出帧，图形四项取真实渲染统计），跑三次取中位。**结果：图形四项与全部分段都达标，只有 `frameP95/P99` 红**（46.375 / 50.974 ms，限 20 / 33）：
+
+| 指标 | 实测（三次一致） | 限 |
+|---|---|---|
+| `drawCalls` | **11** | 120 |
+| `triangles` | **11608** | 180000 |
+| `particles` | 256（池上限；`particleOverflow=12704` 如实登记） | 256 |
+| `materials` | **8** | 24 |
+| `managedAllocBytesPerFrame` / `gc0Delta` | **0 B/帧 / 0** | 0 / 0 |
+| 8 段 P95 | 全在（最大 `draw` 0.127 ms） | 10 ms |
+| `frameP95Ms` / `frameP99Ms` | **46.375 / 50.974** ❌ | 20 / 33 |
+
+**红的根因是机制，不是客户端**（子代理实测归因，不是推断）：帧内分相计时显示客户端做功 P95 = **0.196 ms**（喂快照 0.0455 + `GameLoop.Frame` 0.157），`render` = **46.22 ms**；对照实验里 URP **空场景** 1920×1080 单独就要 **23.9 ms**（已经超掉整个 20 ms 预算），且 640×480（53.9）≈ 1920×1080（55.5）——**与分辨率、与被画的东西都无关**；同一内容换内置管线 16.2 ms；耗时还随渲染次数从 15.5 涨到 45.6 ms。结论：`-batchmode` 下引擎没有自己的帧循环，只能靠编辑器里手动 `Camera.Render()`，而它每次都把 URP 管线重建一遍。**任何内容都不可能在这个机制下达标**，所以这不是"客户端慢 46 ms"。
+
+**裁决（按"按推荐来"）**：把 `frameP95/P99` 的测量机制改成**引擎自己拥有帧循环**的那一种（出包后跑窗口化 player，关 VSync；`frame-bench.ps1` 的批处理路径保留为诊断口径，`sceneKind` 里区分），预算**不动**；player 若同样超 20 ms，那就是诚实的 FAIL。在机制修好之前，`MC14` 保持"未验收"、门禁保持红 —— 不放松预算、不换口径去凑绿（`client-v2-frame.md` 已按此留档）。
 
 ```
 git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 ```
 
-门禁 fail-closed：`verdict=UNVERIFIED`（本机必然如此）或 `sceneKind≠plan-scene` ⇒ 退出 2；超预算 ⇒ 退出 1 + `FRAME-BENCH FAIL`；**只有 JSON 说 PASS 才可能 PASS**。
+门禁 fail-closed：`verdict=UNVERIFIED` 或 `sceneKind≠plan-scene` ⇒ 退出 2；超预算 ⇒ 退出 1 + `FRAME-BENCH FAIL`；**只有 JSON 说 PASS 才可能 PASS**。
 
-### A2. 服务端在场跑完 C15 六步联合验收 —— `MC15` 唯一前置
-连接 → 大厅 → 对局 → 波次 → 结算 → 重连，每步贴原始输出，两侧版本行同时入档：
+### A2. ✅ 服务端在场跑完 C15 六步联合验收 —— `MC15` 已可打标签
+2026-XX-XX 本机实测：`pwsh -File client/tools/joint-acceptance.ps1` → `SELFTEST OK cases=187` + `JOINT-ACCEPTANCE PASS`（退出码 0）。
 
 ```
-客户端：ac-client 0.1.0+<sha7> proto=1
+客户端：ac-client 0.1.0+unknown proto=1              # 编辑器内跑；出包时 +<sha7> 由 build.ps1 注入
 服务端：ac_server 0.1.0 protocol=1 tick=50ms
-核对：proto == protocol 且 MAJOR.MINOR 相等；+<sha7> 与 tick=50ms 不参与
+核对：proto == protocol（1 == 1）且 MAJOR.MINOR 相等（0.1 == 0.1）；+<sha7> 与 tick=50ms 不参与
 ```
 
-粘进 `docs/evidence/client-v2-acceptance.md` 第 2 节即可打 `MC15`。
+六步原始行、服务端旁证（`/health`、`/metrics`、`matches-recent.json`、宽限期）与"已知口径"已全部写进 `docs/evidence/client-v2-acceptance.md` 第 2 节；联调期间发现并修掉的 8 个问题在该文件第 4 节。**遗留**：产品侧输入链未接线（A9）——验收是测试桩跑通的，真人还打不了。
 
 ### A3. 三项跨计划冲突需裁决
 | # | 冲突 | 现状 |
 |---|---|---|
-| 1 | 剔除距离 | `Batching` 档位表已有生产调用者，但 `View/Culling` 仍在用 C08 的 `90m/60m`，C14 档位表写 `60/80m` |
-| 2 | 阴影距离 | C07 `LightingRig.ShadowDistanceM=60f`；C14 档位表 `20/35/50m`，高画质 50 < C07 的 60 |
-| 3 | 准星散布值域 | 与 `server/src/config/weapons.hpp:25-27` 的 `0.8/0.6/4.0` 口径不一致，需服务端链结论 |
+| ✅ 1 | ~~剔除距离~~ | **已对齐**：`Batching.SheepCullDistanceM=60` / `ArenaCullDistanceM=80`（C14 档位表），`View/Culling` 与 `View/LightingRig` 都只读这张表，C08 的 `90m/60m` 已无调用路径（全仓搜 `90f` 无命中） |
+| ✅ 2 | ~~阴影距离~~ | **已对齐**：`Batching.ShadowDistanceM={20,35,50}`，`LightingRig.ShadowDistanceMeters` 读 `Batching.ShadowDistanceFor(QualityTier)`；C07 的常量 `60f` 已删 |
+| ✅ 3 | ~~准星散布值域~~ | **已对齐**：客户端 `Sim/WeaponTable.BaseSpreadDeg={0.8,0.6,4.0}`、`SpreadGrowthPerShotDeg=0.1`、`SpreadMaxDeg=0.25`、`SpreadDecayDelayMs=350`、`SpreadDecayPerSecondDeg=6.0` 与服务端 `server/src/config/weapons.hpp:24-35` **逐值相同**；超界只发生在**显示域**，由 `Crosshair.SetSpread` 夹到 `[0.5°, 5°]`（`WeaponTable.cs:26` 注明） |
 
-### A4. `Send` / `Track` 拒收回滚语义（跨服务端）
-`UdpTransport` 在 `Enqueue` 之前就把可靠消息挂进重传表（`UdpTransport.cs:237-242`），被积压封顶拒收的消息会留在表里"待发但永不出队"。是否回滚取决于 S04 语义。
+> 三条都是"文档滞后"而非代码分歧：数值早就同源，是本文件上面的旧描述没跟上。上面这张表保留为核对记录 —— 以后谁再动其中一处，另一处必须同一提交改。
+
+### A4. ✅ `Send` / `Track` 拒收回滚语义已闭环
+`UdpTransport.Send` 现在是**先 `Enqueue`、后 `Track`**（`UdpTransport.cs:241-250`）：被 §5.1 积压封顶拒收（`Enqueue` 返回 false）的可靠消息**不会**进重传表，"受理失败却照样重发"的两本账对不上问题不存在。`TransportSuite` 的"拒收必须来自封顶而不是断开"钉住受理语义，`net.send_reject_no_retransmit` 钉住"被拒的消息此后再也不出现在任何数据报里"。
 
 ### A5. **本地玩家身份** ✅ 已按"玩家自己输入昵称"落地（客户端侧），但**真连仍落不下来**——见 A8
 服务端 v1 的定论：**`pid` 就是玩家实体的 `EntityId`**（`server/src/room/match_controller.hpp:21`：`room.world.entities[pid - 1]`）。身份消费方早已就位（`GameLoop.LocalPlayerId`、`SnapshotView.SetLocalPlayer`、`PresentationLayer` 的屏幕流与相机/HUD 绑定），缺的是"我是谁"。
 
 已实现（客户端）：大厅相位捕获键入 → `Ac.UI.NameInput`（char 缓冲 + 缓存字符串，非输入帧零分配）→ `Lobby.SetName`（清洗/校验 1–12 字节，与 wire 上限一致）→ `GameLoop.LocalName`；MatchState（type=10）到达或改名时，`Net/LocalIdentity.cs` 按玩家行 `Name` 与本地昵称**序数相等**认领 pid（同名多行取最小 pid 并记 `AmbiguousCount`；名字不在表里 ⇒ `pid=0`，不留旧 pid），写入 `GameLoop.LocalPlayerId` 并同步 `SnapshotView`。用例 8 条（含"相机/HUD 真绑到认领出的实体"与"身份已解析下 60 帧 0 分配"），变异测试两处各自打红。
 
-### A8. **服务端需要一个"上报昵称"的通道**（客户端已就绪，卡在协议）
-实测：客户端 `Net/` 没有加入/上报昵称的报文；`Handshake` 的 Hello(12B=nonce+token) 与 HelloAck(8B=serverTick+salt) 都不带昵称与 pid；**服务端自己把昵称兜底填成 `"player"`**（`server/src/room/room.cpp:176`），且重连"只按令牌匹配、昵称不参与身份判定"（`room.cpp:208`），pid 只在 MatchState 里下发（`server/src/net/codec.hpp:338-363`）。
+### A8. ✅ 昵称上报通道已落地（`type=11 kJoin`）
+服务端会话给出的协议结论（用户裁决 D2）：**新增 `type=11 kJoin`**（可靠 C→S，载荷 = 昵称 1–12 字节），`ADR-009` 的握手时序里紧跟 `HelloAck` 之后上报，服务端把它写进房间会话行并在 MatchState 行里下发。客户端侧：
 
-后果：现在的按名认领只是**过渡方案**（类注释与用例都写明"服务端一回 pid 必须整体替换"），真连时只有当玩家恰好输入 `player` 才会点亮。**要你或服务端链定**其中一条：
-1. 在 Hello 载荷里加昵称字段（客户端已能清洗/校验 1–12 字节），或
-2. 新增一条"加入房间/上报昵称"消息，并在回复里**回显 pid**（这样客户端可以直接用 pid，删掉按名认领）。
+- `Net/PacketType.Join = 11`、`Net/PacketWriter`/`Reader` 的编解码、`Handshake` 在 `HelloAck` 后自动发一次（昵称来自 `Lobby`，清洗/校验 1–12 字节）；
+- 服务端 `runtime` 收到 `kJoin` 后落真名；联调实战里 `/api/matches/recent` 的玩家行是 `"name":"牧羊人阿"`（不再是 `player`），队友三条仍走 `player` 兜底（机器人不发 `kJoin`，这条兜底路径由服务端用例 `runtime_row_without_join_uses_player_fallback` 守着）；
+- 按名认领（`Net/LocalIdentity.cs`）仍然在，且仍是"过渡方案"：服务端尚未在任何下行包里回显 `pid` 与 `clientNonce` 的绑定，所以客户端只能按行内 `Name` 序数相等认领。**要彻底删掉按名认领**，还需服务端在 `HelloAck`/`MatchState` 里回显本会话的 `pid`（新开口子，另立 ADR）。
 
-附带一项：`View/EntityViews.cs` 的 `SetLocalPlayer` 仍无调用者（计划未点名）——等身份权威化后一并接。
+附带一项仍未接：`View/EntityViews.cs` 的 `SetLocalPlayer` 无调用者（A9 的表里）。
 
 ### A6.（可选）IL2CPP 模块
 `-Backend auto` 现走 Mono 兜底并在日志与 `manifest.json` 标注 `backend=mono`。要发 IL2CPP 包需补装 IL2CPP（Windows x64）模块 + VS C++ 工作负载。
 
-### A7. **并行会话的 fixture 冲突**（不是我能碰的）
-`docs/evidence/fixtures/*.json` 已被并行服务端会话重写并**提交**（现 15 份），但客户端 `fixtures.loader` 仍**加载到 0 份**、`fixture_predict.manifest` 报"缺少向量 still-60t"——**文件在，schema 对不上**。客户端自测因此 164 例里 2 条红（非 fixture 失败 = 0，其余 162 例全绿）。这些文件不属于客户端，我没有动。
-
-**要你定一条**：① 服务端新 schema 是权威 ⇒ 我一轮把客户端 loader/用例适配过去；② fixture 是两侧冻结契约 ⇒ 请服务端按客户端已实现的 schema 补回向量；③ fixture 由服务端单方拥有、客户端不再加载 ⇒ 我把这组用例改成读不到就 `UNVERIFIED`（不再当红）。**在此之前客户端自测无法全绿。**
+### A7. ✅ fixture 冲突已闭环
+服务端会话重写的 `docs/evidence/fixtures/*.json`（14 份向量 + `trig-table.json`，`dtMs=50`、5560 tick、`schemaVersion` v2）现在**就是**两侧的冻结契约，客户端 `fixtures.loader` 已按 v2 schema 适配（字段名/量纲/trigger 表口径），`fixture_predict.manifest` 不再报缺向量。客户端自测 `SELFTEST OK cases=187`（适配前 164 例里 2 条红）。
 
 ---
 

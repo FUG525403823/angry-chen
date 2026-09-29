@@ -4,17 +4,18 @@ namespace Ac.Net
 {
     // 本地玩家身份 —— **过渡方案**，不是权威身份。
     //
-    // 服务端事实（只读核对过，见汇报）：
-    //  · pid 就是玩家实体的 EntityId（server/src/room/match_controller.hpp:21-23）。
-    //  · HelloAck 只有 serverTick + salt（server/src/net/codec.hpp:300-303）；整个报文表里
-    //    没有"加入房间/上报昵称"的消息 ⇒ 服务端**不会**把 pid 回给客户端。
-    //  · 昵称只由服务端自己兜底填 "player"（server/src/room/room.cpp:176），
-    //    roomReconnect 明写"只按令牌匹配、昵称不参与身份判定"（room.cpp:208）。
-    //  · 所以 MatchState（type=10，§5.7）是唯一带 pid + name 的下行通道，
+    // 服务端事实（联调时逐条核对，见 docs/evidence/client-v2-acceptance.md）：
+    //  · pid 就是玩家实体的 EntityId（server/src/room/match_controller.hpp）。
+    //  · HelloAck 只有 serverTick + salt（server/src/net/codec.hpp）；kJoin（type 11，ADR-009）
+    //    是**客户端单向上报**昵称，服务端不回 pid ⇒ 客户端仍然拿不到权威身份。
+    //  · 昵称确实被服务端采用：`handleJoin` → `setSessionName`（净化失败则丢弃这一帧、保留旧值）；
+    //    准入在 Hello 那一步完成，房间满/开局中会被 `Disconnect(8)` 拒掉（ADR-012）。
+    //    `roomJoin` 里的 "player" 只是**从未发过 kJoin**时的兜底。
+    //  · 所以 MatchState（type=10，§5.7）仍是唯一带 pid + name 的下行通道，
     //    本地身份只能按"昵称严格相等"从玩家表里认领一行。
     //
-    // 这个方案的代价必须写明：服务端不保证昵称唯一 ⇒ **同名会串**（本类取最小 pid 并把次数
-    // 记进 AmbiguousCount，不假装它是权威身份）。一旦服务端在握手/加入回复里带回 pid，
+    // 这个方案的代价必须写明：服务端不保证昵称唯一（净化后仍可能同名）⇒ **同名会串**（本类取最小 pid
+    // 并把次数记进 AmbiguousCount，不假装它是权威身份）。一旦服务端在握手/加入回复里带回 pid，
     // 本类必须整体替换，不能继续沿用。
     public sealed class LocalIdentity
     {

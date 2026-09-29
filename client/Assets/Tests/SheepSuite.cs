@@ -285,10 +285,15 @@ namespace Ac.Tests
             float ratio;
             SelfTest.True(Culling.IsVisible(camera, new Vector3(0f, 0f, 10f), 0.5f, out ratio), "10m 处可见", ratio.ToString("R"));
             SelfTest.True(!Culling.IsVisible(camera, new Vector3(0f, 0f, 95f), 0.5f, out ratio), "95m 被距离剔除", ratio.ToString("R"));
-            SelfTest.True(Culling.IsVisible(camera, new Vector3(0f, 0f, 80f), 0.5f, out ratio), "80m 处仍在（占比够）", ratio.ToString("R"));
-            SelfTest.True(!Culling.IsVisible(camera, new Vector3(0f, 0f, 80f), 0.05f, out ratio), "占比不足被剔除", ratio.ToString("R"));
+            // ADR-011：剔除距离改由 C14 §5 的羊档（60m）决定，所以"仍然可见"的样本必须落在 60m 以内，
+            // 否则这条断言会在距离检查处提前返回，"占比不足"那一路就再也没被真正走过。
+            SelfTest.True(Culling.IsVisible(camera, new Vector3(0f, 0f, 55f), 0.5f, out ratio), "55m 处仍在（占比够）", ratio.ToString("R"));
+            SelfTest.True(!Culling.IsVisible(camera, new Vector3(0f, 0f, 55f), 0.05f, out ratio), "占比不足被剔除", ratio.ToString("R"));
             SelfTest.True(ratio < (float)Culling.CullMinScreenRatio, "被剔除时占比确实低于阈值", ratio.ToString("R"));
-            SelfTest.True(Culling.CullDistanceM == 90.0 && Culling.CullMinScreenRatio == 0.0015, "剔除阈值", Culling.CullDistanceM.ToString("R"));
+            SelfTest.True(Culling.CullMinScreenRatio == 0.0015, "占比阈值", Culling.CullMinScreenRatio.ToString("R"));
+            // 单一来源（ADR-011）：Culling 不再自带距离，读数必须与 Batching 的羊档逐位相同。
+            SelfTest.True(Culling.CullDistanceMeters == Batching.CullDistanceMeters(Batching.CullKindSheep) &&
+                Culling.CullDistanceMeters == 60f, "剔除距离取自 Batching 羊档", Culling.CullDistanceMeters.ToString("R"));
 
             // 平面外扩：把一个点放在视锥侧平面外一点点——半径不够时被剔除，羊王半径（1.6m）够得着
             var edge = new Vector3(0f, 0f, 0f);

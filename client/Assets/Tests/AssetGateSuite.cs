@@ -16,6 +16,7 @@ namespace Ac.Tests
             "00000000000000000000000000000000",
             "0000000000000000f000000000000000",
             "de02f9e1d18f588468e474319d09a723",   // ShaderGraphSettings 的包内 m_Script
+            "247994e1f5a72c2419c26a37e9334c01",   // URPProjectSettings（URP 自动生成）的包内 m_Script
         };
 
         public static void Register()

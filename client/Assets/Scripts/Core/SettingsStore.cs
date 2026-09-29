@@ -48,15 +48,19 @@ namespace Ac.Core
         public const float FovMin = 60f;
         public const float FovMax = 100f;
 
-        public const int ActionCount = 14;
+        public const int ActionCount = 15;
         // 第 14 条（下标 13）是调试面板热键：Boot 侧不许再硬编码 F3，一律按这个下标读键位表。
         public const int ActionDebugPanel = 13;
+        // 第 15 条（下标 14）= 大厅"准备"确认键（ADR-013 的 Ready 位），v2 收官新增：
+        // 默认与下标 11 的 `chat` 同为 Return，是**刻意**的 —— 两者相位互斥（`ready` 只在大厅读，
+        // `chat` 只在 playing 读），重绑面板按用户选择解绑。采样器里不许写死 Return。
+        public const int ActionReady = 14;
 
-        // 顺序即 keyBindings 下标，逐条照抄 C05 §5.2
+        // 顺序即 keyBindings 下标，逐条照抄 C13 §5 的动作表（v2 收官时新增第 15 条 `ready`）
         public static readonly string[] KeyBindings =
         {
             "W", "S", "A", "D", "LeftShift", "Space", "Mouse0",
-            "R", "E", "F", "Q", "Return", "O", "F3",
+            "R", "E", "F", "Q", "Return", "O", "F3", "Return",
         };
 
         public static readonly int[] CrosshairColors = { 0x00FF66, 0x66E0FF, 0xFFFF66, 0xFF66CC };

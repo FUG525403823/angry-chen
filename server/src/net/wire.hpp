@@ -31,7 +31,7 @@ inline constexpr std::size_t kMaxFragments = 8u;
 inline constexpr std::size_t kMaxLogicalMessageBytes = 9408u;  // 8 分片
 
 // 类型码（§5.1）：1 Hello / 2 HelloAck / 3 Resume / 4 Command / 5 Snapshot / 6 Event /
-// 7 KeepAlive / 8 Disconnect / 9 Fragment / 10 MatchState
+// 7 KeepAlive / 8 Disconnect / 9 Fragment / 10 MatchState / 11 Join（昵称上报，ADR-009「握手时序」）
 enum class PacketType : uint8_t {
   kHello = 1,
   kHelloAck = 2,
@@ -43,10 +43,11 @@ enum class PacketType : uint8_t {
   kDisconnect = 8,
   kFragment = 9,
   kMatchState = 10,
+  kJoin = 11,
 };
 
 inline constexpr uint8_t kMinPacketType = 1u;
-inline constexpr uint8_t kMaxPacketType = 10u;
+inline constexpr uint8_t kMaxPacketType = 11u;
 
 struct PacketHeader {
   uint8_t version;

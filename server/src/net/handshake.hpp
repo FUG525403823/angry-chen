@@ -9,7 +9,7 @@
 
 namespace ac::net {
 
-// §5.5 冻结 1–7（与客户端逐字一致）。
+// §5.5 冻结 1–7（与客户端逐字一致）；ADR-012 追加 8（房间拒绝准入的回执）。
 enum class DisconnectReason : uint8_t {
   kVersionMismatch = 1u,
   kTokenInvalid = 2u,
@@ -18,6 +18,7 @@ enum class DisconnectReason : uint8_t {
   kMalformedPacket = 5u,
   kRateLimited = 6u,
   kSlowConsumer = 7u,
+  kRoomUnavailable = 8u,  // ADR-012：房间拒绝准入（满员 / 对局进行中）
 };
 
 // §5.1/§5.2：同时在册会话上限（含宽限期）；打满后按 §8 先驱逐最早进宽限期的会话。

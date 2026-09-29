@@ -137,3 +137,66 @@
 
 `ci / quality`、`ci / server`、`ci / server-perf` **全绿**：编译期真红（GCC 格式截断）、数据目录的
 "root 假象"、G6 判据不可跨环境复现、G1 量错对象 —— 四类问题全部收口，A1 结案。
+
+## 11. 2026-09-28 联调期服务端修复与复验（本机 Windows）
+
+背景：客户端侧的六步联调（C15 §5）是本批唯一"服务端必须在场"的验收。第一次真连就暴露出服务端侧三个
+问题，逐个定位到代码并修掉（契约变更走 ADR：ADR-012 回执、ADR-013 大厅/自动准备）：
+
+| # | 现象（联调现场） | 根因 | 处置 |
+|---|---|---|---|
+| 1 | 第 2 步"新进大厅 ready=false"实测 `actual=True` | `RuntimeConfig::isAutoReady` 默认 `true` 且**没有开关能关**：`ensureMatchRunning` 对每个会话无条件 `roomSetReady(true)` 后 `tryStartMatch` ⇒ 大厅在真连时不可达 | ADR-013：默认改 `false`，新增 `--auto-ready`（装载/门禁显式开），`ac_bot` 常置 Ready 位扮演"已准备的玩家" |
+| 2 | 第 5 人（超员）在 HelloAck 之后**没有任何回执**，客户端只能干等 | Hello 路径把准入结果丢掉（`kRoomFull` 静默） | ADR-012：新增 `Disconnect` reason 8 `kRoomUnavailable`，Hello 后补一帧；用例 `runtime_room_full_answers_disconnect_reason_eight` 连"重发也要再补一帧"一起钉住 |
+| 3 | 客户端举了 Ready 位，服务端**毫无反应**（`ready` 一直 0） | ① `config::kButtonReady = 0x80` 全仓库只被定义、从没被读；② `handleCommand` 里 §5.5 的窗口去重**方向反了**：`if (!noteCommandSequence(...)) → 丢`，而该函数命中窗口才返回 `true` ⇒ 每条命令的**首次发送**都被当重复丢掉，只有重传才被应用 | ADR-013 裁决 5/7：`handleCommand` 在大厅相位按 Ready 位调 `roomSetReady`；去重改回 `if (noteCommandSequence(...)) → 丢` |
+
+复验（同一台 Windows 机器、同一条生产路径）：
+
+- `ac_tests` 全量 **`TESTS 511/511` exit 0**（本批新增 3 条：大厅就绪路径、满员回执、`--auto-ready` 选项解析）。
+- `ac_gate --scenario gate-4p2min`：**`verdict=pass exit=0`**，`cpuMean=1.21%`、`bw=20.87KB/s`、
+  `snapP95=1033B`（限 1228）、`snapMax=1112B`（限 2048）、`schedP95=14.00ms`、`drift=16.0ms`、`dropped=0`、
+  `skips=0`；原始 JSON `build/gate-4p2min-postfix.json`。**注意口径**：去重方向修好后机器人真的会移动
+  （此前只有重传那一份被应用 ⇒ 实际是"站桩人群"），所以本节数字与 §10.3 不可逐字比较（见 README §15.5）。
+- HTTP 面空房口径同步修正：`/health` 的 `players` 与 `/metrics` 的 `ac_players` 此前用的是
+  `activePlayerCount()`（"空房夹到 1"是**波次预算**的口径），空房时两端点都报 1；改为房间真实会话数
+  `connectedSessionCount()`，用例断言空房为 `0`（`runtime_serves_health_and_metrics_over_http`）。
+
+> 这三个问题都是**服务端侧遗留**，不是客户端用例的问题：客户端那条断言（`ready=false`）在只有客户端、
+> 没有服务端的隔离环境里永远测不出来 —— 这正是"两个 agent 各自隔离、没有联调"漏掉的那一类缺陷。
+> 分工回写：ADR-012/ADR-013 是契约，`server/src/**` 与 `server/tests/**` 是本批改动，
+> 客户端侧只动了 `LocalIdentity` 的注释与 `InputSampler` 的 Ready 状态位（见 `client-v2-acceptance.md`）。
+
+## 12. 2026-XX-XX 联调复跑期服务端修复（第二批：ack/序号/心跳）
+
+§11 那批修完，联调从"进不去大厅"推进到"能开对局但六步仍红"，又暴露四个**只有真连才看得见**的问题。
+本批全部落在 §5.2/§5.3/§5.6 的**已冻结契约内部**（实现错，不是契约错），故不新增 ADR。
+
+| # | 现象（联调现场） | 根因 | 处置 |
+|---|---|---|---|
+| 1 | `/health` 说 `players=4`，客户端只解出 `rows=1`、`matchStates` 几乎不涨 ⇒ 对局根本没在客户端跑起来 | `encodeMatchState` 用**整帧长度**去比 `kMatchStateMaxBytes`（那是**载荷**预算 `5 + 4×(16+12) = 117`），满员那一条广播整条被容量检查吞掉（平白多算 20 字节包头） | 容量检查改成两段：`payloadBytes > kMatchStateMaxBytes` 与 `8+12+payloadBytes > capacity` 分开判；`kMatchStateMaxBytes=117`、`kMatchStateFrameMaxBytes=137`；新用例 `match_full_room_four_twelve_byte_names`（4 行 × 12 字节昵称，`payload==117`、整帧 `137`、第 5 行被拒） |
+| 2 | 机器人进房后客户端**整包判 `BadValue`** | 机器人从不发 `kJoin`，行表里昵称是 0 长度 —— 而 0 长度昵称非法 | 行表构造对无 `kJoin` 的会话落 `player` 兜底值；新用例 `runtime_row_without_join_uses_player_fallback`（4 个真实 socket、每会话时间戳错开、`isAutoReady=false`，断言 `lastFrame=40/55/70/85B`、`rows=1..4`、`name=player`） |
+| 3 | 第 3 步"丢包 ≤5%"读到 **500‰**（封顶）且 `retx` 持续增长 | 服务端**一条 `seq` 计数器**同时喂 Snapshot(5) 与 MatchState(10)；客户端按**类型**估期望包数（`NetStats.cs:91-105` 的 `_seqSeen[(int)type]`）⇒ 插入的另一种包被算成丢包 | 拆成每类型一条流：`snapshotSeq` / `matchStateSeq` / `keepAliveSeq`（`msgId` 仍按通道共享）；用例断言 Snapshot 与 MatchState 两条流各自**严格连续**（`last+1`） |
+| 4 | `rttMs=344~485`、每条命令重传 2~4 次、`dup` 一度到 31 | 服务端**从不主动回 ack**：§5.6 的 500ms `KeepAlive` 只有计时器、包没发出去，客户端只能等 1Hz 的 MatchState 带 ack（RTO 表 200/300/450/675/1000ms 全走完） | 新增 `Runtime::sendKeepAlive` + `flushHeartbeats`（每个 poll 处理一次）：① 到点发 §5.6 的 `reliable\|ackOnly`、载荷 0 的心跳；② 本 poll 收到过可靠包就**合并成一帧**立刻回执。`msgId` 逐帧推进（写死常数会被客户端当重复包整帧丢弃，连 ack 一起丢）；`header.seq` 走 `keepAliveSeq`。用例 `runtime_match_state_carries_command_acks` 断言心跳形状（`isAckOnly && isReliable && payloadBytes==0 && hasReliableExt`）、首帧及时性（≤ 第 2 个 poll）、`isAckedBy(peer, msgId)` 与 1.5s 内 ≥2 帧 |
+
+复验（同一台 Windows 机器、同一条生产路径）：
+
+- `ac_tests` 全量 **`TESTS 514/514` exit 0**（本批新增 4 条：满员行表编码、无 `kJoin` 兜底、命令 ack 与两条流的连续性、心跳形状/及时性/确认）。另：`tiny_test.hpp` 的 `kMaxCases` 从 512 提到 768 —— 用例数超过上限时**新增用例会被静默丢弃**（本轮就撞上了"用例数已达上限 512"）。
+- `ac_gate --scenario gate-4p2min`：**`verdict=pass exit=0`**，`cpuMean=1.52%`、`bw=21.56KB/s`（限 40）、
+  `snapP95=1033B`（限 1228）、`snapMax=1148B`（限 2048）、`schedP95=14.00ms`、`drift=17.0ms`、`dropped=0`、`skips=0`。
+  相比 §11 的 `bw=20.87KB/s` 多出的约 0.7KB/s 就是本批新增的心跳/回执（20 帧/s × 20 字节 ≈ 0.4KB/s，另加每客户端 2 帧/s 的周期心跳），远在 40KB/s 门槛内。
+- 六步联调：**`JOINT-ACCEPTANCE PASS`（退出码 0）**，客户端 `SELFTEST OK cases=187`。第 3 步 `rttMs=31.0`、`lossPermille=0`、`retx=0`、`worstSnapshotHz=20.0`；第 5 步战绩里本地会话 `aliveMs=21650`（本批之前同一条是 `aliveMs: 0`）。逐字原始行见 `docs/evidence/client-v2-acceptance.md` 第 2 节。
+
+> 教训（已写进 README §15.5）：**"服务端有没有把 ack 送出去"这件事，任何单侧用例都测不出来**——
+> 服务端的可靠层只有重传表、没有对端视角；客户端只能看见"我的命令迟迟没被确认"。
+> 两侧各自绿，合起来 `aliveMs=0`：又是隔离开发漏掉的那一类缺陷。
+
+## 13. 2026-XX-XX 收官裁决（三项挂账的跨侧口径）
+
+联调收尾时挂了三项"要人拍板"的口径，用户裁决：**按建议来**。逐条落点：
+
+| # | 挂账 | 裁决 | 落点 |
+|---|---|---|---|
+| A4 | 被积压封顶**拒收**的可靠消息，要不要回滚重传表？ | **fail-closed：受理失败就一个字节都不许上线**（`Send` 先 `Enqueue` 后 `Track`） | 语义属 S04，实现在客户端 `Net/UdpTransport.cs:241-250`；服务端侧无对应路径（服务端发送不做积压封顶）。新用例 `net.send_reject_no_retransmit`：链路硬失败期连发 200 条（部分受理、部分拒收），放开链路推过 6s（多个 RTO）后，逐字节扫 `MemoryLink` 留档的**每个出站数据报**，被拒载荷的标记一个都不许出现 |
+| A10 | 包头 `seq` 到底是"每通道"还是"每类型"？ | **`seq` 每 `type` 一条；`msgId` 每可靠通道一条**（与 §12 第 3、4 条的实现一致，客户端统计不改） | 写进 [S03 §5.1](../plans-v2/server/S03-二进制协议与编解码.md) 的 `seq` 行 + "序号口径"两条（并写明服务器→客户端只有 `MatchState`/`KeepAlive` 带 `ackBase/ackBits`，快照不带回执）；客户端 [C02 §5.1](../plans-v2/client/C02-客户端数学量化与协议解码.md) 复述同一句 |
+| A3 | 剔除距离 / 阴影距离 / 准星散布三处数值"对不上" | **以实现侧的档位表为唯一来源**，客户端散布值与 `server/src/config/weapons.hpp` 对齐 | 核对结果：三项**逐值已同源**（`Batching.SheepCullDistanceM=60`/`ArenaCullDistanceM=80`、`Batching.ShadowDistanceM={20,35,50}`、`BaseSpreadDeg={0.8,0.6,4.0}` + 生长 0.1/上限 0.25 与 `weapons.hpp:24-35` 相同）——是文档滞后，不是代码分歧。核对记录见 `docs/evidence/client-v2-remaining-work.md` A3 段 |
+
+三项都不动 wire 格式，故不新增 ADR（A10 属 §5.1 的**措辞澄清**，与 ADR-009 的包头定义不冲突）。

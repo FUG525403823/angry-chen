@@ -68,6 +68,7 @@ bool parseSeed(const std::string& value, std::uint32_t& out, std::string* error)
 
 bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* error) {
   bool seenServe = false;
+  bool seenAutoReady = false;
   bool seenMinutes = false;
   bool seenUdpPort = false;
   bool seenHttpPort = false;
@@ -95,6 +96,20 @@ bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* e
         return false;
       }
       seenServe = true;
+      continue;
+    }
+    // ADR-013：无取值开关。产品默认走大厅，装载/门禁/压测必须显式打开。
+    if (key == "--auto-ready") {
+      if (eq != std::string::npos) {
+        *error = "--auto-ready 不接受取值";
+        return false;
+      }
+      if (seenAutoReady) {
+        *error = "重复选项: --auto-ready";
+        return false;
+      }
+      seenAutoReady = true;
+      options.config.isAutoReady = true;
       continue;
     }
 

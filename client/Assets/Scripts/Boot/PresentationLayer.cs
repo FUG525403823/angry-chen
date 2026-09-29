@@ -43,6 +43,9 @@ namespace Ac.Boot
         private readonly Mesh[] _emblemMeshes = new Mesh[SheepMesh.FormCount];
         // 剔除结果缓冲：Culling 把实例下标写进来，绘制按羊形分桶（池是 form * PerFormCapacity + cursor 的跨步布局）
         private readonly int[] _visible = new int[SheepInstancePool.EntityCapacity];
+        // 每形三角形数（构造期从真网格数一次，帧内只做乘法：Mesh.triangles 每次取值都会分配一份 int[]）
+        private readonly int[] _sheepTriangles = new int[SheepMesh.FormCount];
+        private readonly int[] _emblemTriangles = new int[SheepMesh.FormCount];
         // 每形上限 = PerFormCapacity(256) ≤ MaxInstancesPerBatch(1023) ⇒ BatchCount 恒为 1；
         // 数组按每形上限开，而不是按 1023 开（4 份 1023 是 256KB 白占）。
         private readonly Matrix4x4[] _bodyBatch = new Matrix4x4[SheepInstancePool.PerFormCapacity];
@@ -95,6 +98,10 @@ namespace Ac.Boot
         public int CulledSheepCount { get; private set; }
         public int DrawnSheepCount { get; private set; }
         public int SubmittedDraws { get; private set; }
+        // C14 帧基准的 triangles 度量来源：引擎的渲染统计（ProfilerCategory.Render 的 Draw Calls/Triangles
+        // Count 与 UnityEditor.UnityStats）在 -batchmode 下恒为 0（探针实测），所以三角形只能"数提交"。
+        // 这里累加的是本帧真正提交给渲染的网格三角形数（羊身 + 额标 × 实例数），不写凑数常量。
+        public int SubmittedTriangles { get; private set; }
         public DrawMode LastDrawMode { get; private set; }
 
         public IFrameStageSink FxSink { get { return _fxSink; } }
@@ -173,6 +180,8 @@ namespace Ac.Boot
             {
                 _sheepMeshes[form] = SheepMesh.Build((SheepKind)form);
                 _emblemMeshes[form] = SheepMesh.BuildEmblem((SheepKind)form);
+                _sheepTriangles[form] = _sheepMeshes[form].triangles.Length / 3;
+                _emblemTriangles[form] = _emblemMeshes[form].triangles.Length / 3;
             }
             _sheepMaterial = MakeInstancedMaterial("Ac/Sheep", SheepMesh.ColorOf(SheepKind.Grunt));
             _emblemMaterial = MakeInstancedMaterial("Ac/Emblem", SheepMesh.EmblemColorPure(SheepKind.Grunt));
@@ -323,6 +332,7 @@ namespace Ac.Boot
 
             var drawn = 0;
             var submitted = 0;
+            var triangles = 0;
             if (culled > 0 && _sheepMaterial != null)
             {
                 // 画质档的实例上限（256/512/1024）在这里生效：低档先保帧率
@@ -356,6 +366,7 @@ namespace Ac.Boot
                             Graphics.DrawMeshInstanced(_sheepMeshes[form], 0, _sheepMaterial, _bodyBatch, n);
                             Graphics.DrawMeshInstanced(_emblemMeshes[form], 0, _emblemMaterial, _emblemBatch, n);
                             submitted += 2;
+                            triangles += n * (_sheepTriangles[form] + _emblemTriangles[form]);
                         }
                     }
                     else
@@ -366,12 +377,14 @@ namespace Ac.Boot
                             Graphics.DrawMesh(_emblemMeshes[form], _emblemBatch[i], _emblemMaterial, WorldLayer);
                         }
                         submitted += 2 * count;
+                        triangles += count * (_sheepTriangles[form] + _emblemTriangles[form]);
                     }
                     drawn += count;
                 }
             }
             DrawnSheepCount = drawn;
             SubmittedDraws = submitted;
+            SubmittedTriangles = triangles;
             // 没有提交就不返回 true ⇒ GameLoop 不给 draw 打点（见 IFrameWorkSink）
             return submitted > 0;
         }

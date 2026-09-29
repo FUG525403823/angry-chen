@@ -16,7 +16,7 @@ namespace Ac.Net
         DuplicateEventId = 8,
     }
 
-    // C02 §5.1 / S03 §5.1 的 type 码表。
+    // C02 §5.1 / S03 §5.1 的 type 码表。11 = Join（昵称上报，ADR-009「握手时序」）。
     public enum PacketType
     {
         Hello = 1,
@@ -29,6 +29,7 @@ namespace Ac.Net
         Disconnect = 8,
         Fragment = 9,
         MatchState = 10,
+        Join = 11,
     }
 
     [Flags]
@@ -86,7 +87,10 @@ namespace Ac.Net
             header.Seq = seq;
 
             if (version != ProtocolVersion) return DecodeFailure.BadVersion;
-            if (type < (byte)PacketType.Hello || type > (byte)PacketType.MatchState) return DecodeFailure.BadType;
+            // 上界必须跟着码表走（server/src/net/wire.hpp 的 kMaxPacketType 是同一条线）。这里原本写死成
+            // PacketType.MatchState，于是新增 type 11 之后**任何**读到它的解析器都按 BadType 拒收：
+            // 发送侧一切正常，接收侧却"未知类型"。新增类型时只改 MaxPacketType 这一处。
+            if (type < (byte)PacketType.Hello || type > MaxPacketType) return DecodeFailure.BadType;
             if (!IsFlagsValidForType(header.Type, flags)) return DecodeFailure.BadValue;
 
             if (header.IsReliable)
@@ -134,6 +138,9 @@ namespace Ac.Net
         }
 
         public const byte ProtocolVersion = 1;
+        // 码表上界（= 最后一个已分配的 type）。新增类型时与 wire.hpp 的 kMaxPacketType 一起改，
+        // 否则收包路径会把新类型判成 BadType（见 Read 里的注释）。
+        public const byte MaxPacketType = (byte)PacketType.Join;
         public const int CommonHeaderSize = 8;
         public const int ReliableHeaderSize = 12;
         public const int FragmentHeaderSize = 4;

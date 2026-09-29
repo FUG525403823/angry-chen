@@ -15,6 +15,8 @@ namespace Ac.Tests
             SelfTest.Add("input.rate_30hz", ChecksRate30Hz);
             SelfTest.Add("input.backlog_merge", ChecksBacklogMerge);
             SelfTest.Add("input.lock_flush", ChecksLockFlush);
+            SelfTest.Add("input.ready_bit", ChecksReadyBit);
+            SelfTest.Add("input.ready_key", ChecksReadyKey);
             SelfTest.Add("camera.pitch_clamp", ChecksPitchClamp);
             SelfTest.Add("sim.local_step", ChecksLocalStep);
         }
@@ -100,6 +102,77 @@ namespace Ac.Tests
             SelfTest.True(!sampler.TryTakeCommand(out none), "失焦期间不采样", "又采样了");
             sampler.OnFocusChanged(true);
             SelfTest.True(sampler.Update(40.0), "重获焦点后恢复采样", "没恢复");
+        }
+
+        // §5.4 的 Ready 位（0x80）：它是**大厅里的状态**（界面"准备"动作设置），不是"按住"的按键，
+        // 所以必须 ①真的进到命令载荷与字节里，②与其它按键位可共存，③不被局内失焦清零带走。
+        private static void ChecksReadyBit()
+        {
+            SelfTest.Equal(128, (long)InputSampler.ButtonReady);
+
+            var sampler = new InputSampler();
+            sampler.Update(40.0);
+            InputIntent idle;
+            SelfTest.True(sampler.TryTakeCommand(out idle), "未准备时照发命令", "没发出");
+            SelfTest.Equal(0, idle.Buttons);
+            SelfTest.True(!sampler.ReadyHeld, "默认未准备", sampler.ReadyHeld.ToString());
+
+            sampler.SetReadyHeld(true);
+            sampler.Update(40.0);
+            InputIntent ready;
+            SelfTest.True(sampler.TryTakeCommand(out ready), "准备后发命令", "没发出");
+            SelfTest.Equal(InputSampler.ButtonReady, ready.Buttons);
+            // 跨层映射 + 字节布局：0x80 必须真的出现在 CommandPayload 与编码后的字节里（第 6 字节 = buttons）。
+            var payload = CommandCodec.IntentToPayload(ready);
+            SelfTest.Equal(InputSampler.ButtonReady, payload.Buttons);
+            SelfTest.Equal(0, (long)CommandCodec.Decode(CommandCodec.Encode(payload), out var decoded));
+            SelfTest.Equal(InputSampler.ButtonReady, decoded.Buttons);
+
+            // 与其它按键位相或：服务端按位读，准备位不与开火/疾跑互斥。
+            sampler.SetKey(KeyCode.Mouse0, true);
+            sampler.Update(40.0);
+            InputIntent both;
+            SelfTest.True(sampler.TryTakeCommand(out both), "准备 + 开火", "没发出");
+            SelfTest.Equal(InputSampler.ButtonReady | InputSampler.ButtonFire, both.Buttons);
+
+            // 失焦：§5.6 要求那条 flush 命令是**零意图**（按钮全 0），但"已准备"这个状态不能被撤销
+            // ——撤销了就等于"掉个焦点就不会开局的房间"，重获焦点后它必须随状态回来。
+            sampler.OnFocusChanged(false);
+            InputIntent flushed;
+            SelfTest.True(sampler.TryTakeCommand(out flushed), "失焦必须 flush 一条", "没 flush");
+            SelfTest.Equal(0, flushed.Buttons);
+            SelfTest.True(sampler.ReadyHeld, "失焦不撤销已准备", sampler.ReadyHeld.ToString());
+            sampler.OnFocusChanged(true);
+            sampler.Update(40.0);
+            InputIntent refocused;
+            SelfTest.True(sampler.TryTakeCommand(out refocused), "重获焦点后继续发", "没发出");
+            SelfTest.Equal(InputSampler.ButtonReady, refocused.Buttons);
+
+            sampler.SetReadyHeld(false);
+            sampler.Update(40.0);
+            InputIntent cleared;
+            SelfTest.True(sampler.TryTakeCommand(out cleared), "取消准备", "没发出");
+            SelfTest.Equal(0, cleared.Buttons);
+        }
+
+        // 大厅准备键（ADR-013）：采样器只报**按下沿**，按住不重复 —— 重复报会让 GameLoop 里的
+        // "按一次翻转一次准备位"被连点来回翻。语义（相位判定、翻转）在 GameLoop，这里只钉边沿。
+        private static void ChecksReadyKey()
+        {
+            var sampler = new InputSampler();
+            sampler.SetConfirm(true);
+            sampler.Update(50.0);
+            SelfTest.True(sampler.ConfirmPressed, "按下的那一帧必须报边沿", "没报");
+            sampler.Update(50.0);
+            SelfTest.True(!sampler.ConfirmPressed, "按住不许重复报", "又报了");
+            sampler.SetConfirm(false);
+            sampler.Update(50.0);
+            SelfTest.True(!sampler.ConfirmPressed, "松开那一帧不是按下沿", "报了");
+            sampler.SetConfirm(true);
+            sampler.Update(50.0);
+            SelfTest.True(sampler.ConfirmPressed, "再按一次必须是新的边沿", "没报");
+            sampler.Update(50.0);
+            SelfTest.True(!sampler.ConfirmPressed, "第二次按住也不重复", "又报了");
         }
 
         // §5.5/§7：俯仰钳到 ±π/2（越界输入不产生滚动），FOV 钳在 60..100，视图模型参数逐条对表。

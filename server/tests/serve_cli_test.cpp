@@ -100,7 +100,29 @@ AC_TEST(serve_cli_rejects_illegal_and_duplicate_options) {
   AC_CHECK(helpError.empty());
 }
 
-// ③ 停止请求的缝：注入与信号两条路径都必须置上同一个可观察标志，且可复位。
+// ③ ADR-013：产品默认走大厅（`isAutoReady == false`），装载/门禁/压测必须显式开 `--auto-ready`。
+AC_TEST(serve_cli_auto_ready_flag) {
+  ac::server::ServeOptions plain{};
+  std::string plainError;
+  AC_CHECK(parse(Args{"--serve"}, plain, &plainError));
+  AC_CHECK(!plain.config.isAutoReady);
+
+  ac::server::ServeOptions armed{};
+  std::string armedError;
+  AC_CHECK(parse(Args{"--serve", "--auto-ready", "--minutes=0.5"}, armed, &armedError));
+  AC_CHECK(armed.config.isAutoReady);
+
+  const Args autoReadyWithValue{"--serve", "--auto-ready=1"};
+  const Args autoReadyTwice{"--serve", "--auto-ready", "--auto-ready"};
+  for (const Args* args : {&autoReadyWithValue, &autoReadyTwice}) {
+    ac::server::ServeOptions rejected{};
+    std::string error;
+    AC_CHECK(!parse(*args, rejected, &error));
+    AC_CHECK(!error.empty());
+  }
+}
+
+// ④ 停止请求的缝：注入与信号两条路径都必须置上同一个可观察标志，且可复位。
 AC_TEST(serve_shutdown_request_is_observable_and_resettable) {
   ac::server::installShutdownHandlers();
   ac::server::clearStopRequest();

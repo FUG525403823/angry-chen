@@ -708,6 +708,44 @@ DecodeResult<DisconnectPayload> decodeDisconnect(const uint8_t* bytes, std::size
   return decodedOk(payload);
 }
 
+EncodeResult encodeJoin(const PacketHeader& header, const ReliableExt& ext, const JoinPayload& payload,
+                        uint8_t* out, std::size_t capacity) noexcept {
+  if (out == nullptr || !isEncodeHeaderValid(header, PacketType::kJoin)) return encodeFail();
+  const std::size_t nameBytes = payload.name.size();
+  if (nameBytes < kNameMinBytes || nameBytes > kNameMaxBytes) return encodeFail();
+  const std::size_t payloadBytes = 1u + nameBytes;
+  const std::size_t total = kCommonHeaderBytes + kReliableExtBytes + payloadBytes;
+  if (total > capacity) return encodeFail();
+  ByteWriter writer = reliableWriter(header, ext, out, capacity);
+  writer.writeU8(static_cast<uint8_t>(nameBytes));
+  writer.writeBytes(payload.name.data(), nameBytes);
+  if (writer.isOverflow || writer.size() != total) return encodeFail();
+  return encodeOk(writer.size());
+}
+
+DecodeResult<JoinPayload> decodeJoin(const uint8_t* bytes, std::size_t size) noexcept {
+  const auto packet = decodePacket(bytes, size);
+  if (!packet.isOk) return decodedFail<JoinPayload>(packet.failure);
+  if (packet.value.header.type != static_cast<uint8_t>(PacketType::kJoin)) {
+    return decodedFail<JoinPayload>(DecodeFailure::kBadType);
+  }
+  if (packet.value.payloadBytes < kJoinMinPayloadBytes) return decodedFail<JoinPayload>(DecodeFailure::kTruncated);
+  ByteReader reader = payloadReader(packet.value, bytes, size);
+  const uint8_t nameBytes = reader.readU8();
+  if (reader.isTruncated) return decodedFail<JoinPayload>(DecodeFailure::kTruncated);
+  if (nameBytes < kNameMinBytes || nameBytes > kNameMaxBytes) {
+    return decodedFail<JoinPayload>(DecodeFailure::kBadValue);
+  }
+  JoinPayload payload{};
+  payload.name.resize(nameBytes);
+  if (!reader.readBytes(payload.name.data(), nameBytes)) {
+    return decodedFail<JoinPayload>(DecodeFailure::kTruncated);
+  }
+  // nameLen 必须与实际长度一致：多带字节的载荷是格式错误，不是"忽略尾巴"。
+  if (reader.remaining() != 0u) return decodedFail<JoinPayload>(DecodeFailure::kBadLength);
+  return decodedOk(payload);
+}
+
 std::size_t matchStatePlayerBytes(const MatchStatePlayer& player) noexcept {
   return kMatchStatePlayerFixedBytes + player.name.size();
 }
@@ -731,8 +769,13 @@ EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext
     if (!isValidMatchStatePlayer(player)) return encodeFail();
     payloadBytes += matchStatePlayerBytes(player);
   }
+  // `kMatchStateMaxBytes` 是**载荷**预算（5 + 4*(16+12)），而 `total` 含 20 字节包头 —— 拿 total 去比它
+  // 等于把预算砍掉 20 字节：满员（4 行、昵称 12 字节）的 MatchState 必然被判超限，整条广播静默消失。
+  // 联调实测（build/joint-run-diag3.out.txt）：`health.players=4` 而客户端 `msFrames=3 rows=1`，
+  // 服务端侧 `ms encodeFail rows=4 cap=137`。
+  if (payloadBytes > kMatchStateMaxBytes) return encodeFail();
   const std::size_t total = kCommonHeaderBytes + kReliableExtBytes + payloadBytes;
-  if (total > capacity || total > kMatchStateMaxBytes) return encodeFail();
+  if (total > capacity) return encodeFail();
   ByteWriter writer = reliableWriter(header, ext, out, capacity);
   writer.writeU8(state.phase);
   writer.writeU8(state.wave);

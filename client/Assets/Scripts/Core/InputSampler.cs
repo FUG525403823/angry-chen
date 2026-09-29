@@ -45,6 +45,8 @@ namespace Ac.Core
         private readonly bool[] _keys = new bool[12];
         private double _mouseDx;
         private double _mouseDy;
+        private bool _confirmDown;
+        private bool _confirmWasDown;
 
         public InputSampler()
         {
@@ -57,6 +59,10 @@ namespace Ac.Core
 
         public ushort Seq { get; private set; }
         public uint ClientTick { get; private set; }
+        // §5.4 的 Ready 位（0x80）：**大厅里的持续状态**，不是"按住的按钮"——所以它由界面的"准备"动作
+        // （或按键翻一次）设置，不参与失焦清零。服务端只在大厅相位读它（ADR-013）。
+        public bool ReadyHeld { get; private set; }
+        public void SetReadyHeld(bool ready) { ReadyHeld = ready; }
         public double SensitivityValue { get; private set; }
         public double YawRad { get; private set; }
         public double PitchRad { get; private set; }
@@ -65,6 +71,13 @@ namespace Ac.Core
         public int PendingCount { get { return _pendingCount; } }
         // §5.6：只有指针锁定时鼠标增量才计入视角（引擎路径；注入路径不受影响）。
         public bool PointerLocked { get; private set; }
+
+        // 大厅"准备"确认键（ADR-013）：采样器只把**按下沿**报出去，切不切换准备位、在哪个相位生效由
+        // GameLoop 定（采样器不知道相位）。按住不重复报 —— 重复报会让准备位被连点来回翻转。
+        public bool ConfirmPressed { get; private set; }
+
+        // 键位来自 SettingsDefaults.KeyBindings[ActionReady]（Boot 侧解析后写进来），默认表那条就是 Return。
+        public KeyCode ConfirmKey = KeyCode.Return;
 
         public void SetPointerLocked(bool locked) { PointerLocked = locked; }
 
@@ -98,6 +111,13 @@ namespace Ac.Core
             _injected = true;
             _mouseDx += dx;
             _mouseDy += dy;
+        }
+
+        // 确认键的注入面（用例/回放）。不塞进 §5.1 的键位表：那张表是局内意图，准备位不是局内意图。
+        public void SetConfirm(bool down)
+        {
+            _injected = true;
+            _confirmDown = down;
         }
 
         // §5.6：失焦立即清空全部按键位与移动轴，并 flush 一条零意图命令。
@@ -181,6 +201,10 @@ namespace Ac.Core
             var switchDown = KeyDown(KeyCode.Q);
             if (switchDown && !_switchWasDown) _switchTo = (byte)(_switchTo == 0 ? 1 : 0);
             _switchWasDown = switchDown;
+            // 大厅准备键的按下沿。引擎路径读真实按键（键位由 ConfirmKey 给，默认表的 ActionReady）；注入路径用 SetConfirm。
+            var confirmDown = _injected ? _confirmDown : Input.GetKey(ConfirmKey);
+            ConfirmPressed = confirmDown && !_confirmWasDown;
+            _confirmWasDown = confirmDown;
         }
 
         private InputIntent ZeroIntent()
@@ -200,6 +224,9 @@ namespace Ac.Core
         private InputIntent BuildIntent()
         {
             var intent = ZeroIntent();
+            // 准备位先落，且**不受失焦清零影响**：失焦清的是移动/视角/开火那一套局内意图，而"已准备"
+            // 是玩家在大厅做出的承诺，重获焦点前撤销它会让大厅永远开不了局。服务端只在大厅相位采用它。
+            if (ReadyHeld) intent.Buttons |= ButtonReady;
             // 失焦清理之后一律零意图：引擎路径读的是真实按键，不能只看 _keys。
             if (_intentCleared) return intent;
             // §5.1 采样源：移动轴走 Input.GetAxisRaw("Vertical"/"Horizontal")，按钮走 Input.GetKey；
@@ -220,7 +247,8 @@ namespace Ac.Core
             if (KeyDown(KeyCode.E)) buttons |= ButtonInteract;
             if (KeyDown(KeyCode.F)) buttons |= ButtonRage;
             if (KeyDown(KeyCode.Q)) buttons |= ButtonSwitchWeapon;
-            intent.Buttons = (byte)(buttons & 0xff);
+            // 与 ReadyHeld 相或：准备位是状态，不随按键采样消失（见 BuildIntent 顶部）。
+            intent.Buttons = (byte)((buttons | intent.Buttons) & 0xff);
             intent.SwitchTo = _switchTo;
             return intent;
         }

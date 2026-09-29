@@ -188,8 +188,9 @@ namespace Ac.Tests
             PacketHeader header;
             SelfTest.Equal((long)DecodeFailure.BadVersion,
                 (long)PacketHeader.Read(new PacketReader(new byte[] { 2, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
+            // 12 = 尚未分配的类型码（11 自 ADR-009「握手时序」起是 Join）。
             SelfTest.Equal((long)DecodeFailure.BadType,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, 11, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, 12, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.Truncated,  // flags 合法但包头的 seq 不完整
                 (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Command, 1, 0, 0, 0 }), out header));
 
@@ -350,6 +351,12 @@ namespace Ac.Tests
             SelfTest.Equal(3, state.Players[0].Kills);
             SelfTest.Equal("玩家一", state.Players[1].Name);
             SelfTest.Equal(3000, state.IntermissionMs);
+
+            // FixedRecordBytes 必须**等于布局**（不是抄来的字面量）：按 wire 顺序造一条记录，去掉名称字节后
+            // 剩下的长度就是定长部分。常量写小（曾经是 13）会让这个检查漏掉 pid+nameLen 这两个字节。
+            var nameBytes = Encoding.UTF8.GetBytes("ace");
+            var record = BuildRawPlayer(3, nameBytes, (byte)nameBytes.Length, 1, 1);
+            SelfTest.Equal((long)MatchStateCodec.FixedRecordBytes, (long)(record.Length - nameBytes.Length));
 
             // 边界正例：4 名玩家（上限）与 12 字节名（上限）都要能过。
             SelfTest.Equal((long)DecodeFailure.Ok,

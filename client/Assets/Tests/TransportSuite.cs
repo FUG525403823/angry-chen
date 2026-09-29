@@ -18,6 +18,9 @@ namespace Ac.Tests
             SelfTest.Add("net.fragment_1200", ChecksFragment1200);
             SelfTest.Add("net.stats_p99", ChecksStatsP99);
             SelfTest.Add("net.backlog_cap", ChecksBacklogCap);
+            SelfTest.Add("net.send_reject_no_retransmit", ChecksRejectedNeverOnWire);
+            SelfTest.Add("net.join_wire", ChecksJoinOnWire);
+            SelfTest.Add("net.disconnect_reason", ChecksDisconnectReason);
         }
 
         // ---- 1. 握手与状态机（真套接字回环）----------------------------------------------------------
@@ -54,6 +57,9 @@ namespace Ac.Tests
             var payload = new byte[1000];
             var accepted = 0;
             var rejected = 0;
+            // 拒收还必须体现在**重传表**上：被拒的消息一旦挂进重传表，RTO 到期就会被重发，
+            // 于是"返回 false = 没受理"就成了假话（旧实现正是先 Track 再 Enqueue）。
+            var outstandingBefore = client.OutstandingReliable(PacketType.Command);
             for (var i = 0; i < 200; i++)
             {
                 if (client.Send(PacketType.Command, payload)) accepted += 1;
@@ -62,7 +68,201 @@ namespace Ac.Tests
             SelfTest.True(accepted > 0, "封顶之前必须受理", accepted.ToString());
             // 旧实现这里 rejected == 0（恒 true），积压会一路涨到 200KB 以上。
             SelfTest.True(rejected > 0, "无快照可丢时必须拒收", rejected.ToString());
+            SelfTest.Equal((long)accepted, (long)(client.OutstandingReliable(PacketType.Command) - outstandingBefore));
             SelfTest.True(client.State == ConnectionState.Connected, "拒收必须来自封顶而不是断开", client.State.ToString());
+        }
+
+        // 被 §5.1 积压封顶**拒收**的可靠消息，一个字节都不许上线：拒收之后放开链路、推过好几个 RTO，
+        // 线上（MemoryLink.Wire 留档的每一个出站数据报）不得出现任何一条被拒载荷的标记。
+        // 旧实现先 Track 再 Enqueue：调用方被告知"没受理"，字节却还挂在重传表里等 RTO 到期重发。
+        private static void ChecksRejectedNeverOnWire()
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            var peer = new MiniPeer(link.Create(2));
+            peer.Attach(link);
+            peer.Start();
+            link.Pump();
+            client.Connect("mem", 0);
+            for (var i = 0; i < 40 && client.State != ConnectionState.Connected; i++)
+            {
+                clock.Advance(50.0);
+                link.NowMs = clock.NowMs;
+                client.Poll(UdpTransport.MaxInboundPacketsPerPoll);
+                peer.Pump(link.NowMs);
+                link.Pump();
+            }
+            SelfTest.True(client.State == ConnectionState.Connected, "握手必须先成功", client.State.ToString());
+
+            // 链路硬失败 ⇒ 积压只增不减，中途起全部拒收。每条载荷整段填同一条 2 字节"毒记"
+            // （i, 0x5A）—— 不是只在头部埋 4 字节窗口，免得扫描时撞出跨字段的假命中。
+            link.FailSends = true;
+            var sentBefore = link.Sent;
+            var rejected = new List<int>();
+            var accepted = 0;
+            for (var i = 0; i < 200; i++)
+            {
+                var payload = Poison(i);
+                if (client.Send(PacketType.Command, payload)) accepted += 1;
+                else rejected.Add(i);
+            }
+            SelfTest.True(accepted > 0 && rejected.Count > 0, "既要受理也要拒收", accepted + "/" + rejected.Count);
+            SelfTest.Equal((long)sentBefore, (long)link.Sent);   // 硬失败期间（不推时钟、不 Pump）没有数据报离开发送端
+
+            // 放开链路并推过多个 RTO（默认 RTO 上限 1s 量级，6s 足够）：受理过的照重传表重发，
+            // 被拒的一条都不许出现。
+            link.FailSends = false;
+            for (var i = 0; i < 120; i++)
+            {
+                clock.Advance(50.0);
+                link.NowMs = clock.NowMs;
+                client.Poll(UdpTransport.MaxInboundPacketsPerPoll);
+                peer.Pump(link.NowMs);
+                link.Pump();
+            }
+            SelfTest.True(link.Sent > 0, "放开链路后受理过的消息必须真的上线（否则下面的扫描是空跑）", link.Sent.ToString());
+            // 只看**发出去的 Command 帧**：Wire 里两个方向、所有类型都留档，把别的帧也扫进来会撞出假命中。
+            // 被拒的载荷若真上了线，必然是一条 type=4，且载荷第一字节就是那一条的序号。
+            var commandDatagrams = 0;
+            var strayIndex = -1;
+            for (var i = 0; i < link.Wire.Count; i++)
+            {
+                var datagram = link.Wire[i];
+                if (!IsCommandDatagram(datagram)) continue;
+                commandDatagrams += 1;
+                var index = PoisonIndex(datagram);
+                if (index >= 0 && rejected.Contains(index)) { strayIndex = index; break; }
+            }
+            SelfTest.True(commandDatagrams > 0, "线上必须出现过 Command 帧", commandDatagrams.ToString());
+            // 毒记逐条唯一，且"受理"发生在"拒收"之前 ⇒ 命中即说明真的把被拒的载荷发出去了。
+            SelfTest.Equal(-1, (long)strayIndex);
+        }
+
+        // 整段填 (index, 0x5A) 的载荷：任何一条数据报都能唯一反查它是第几次调用的。
+        private static byte[] Poison(int index)
+        {
+            var payload = new byte[1000];
+            for (var i = 0; i + 1 < payload.Length; i += 2)
+            {
+                payload[i] = (byte)index;
+                payload[i + 1] = 0x5A;
+            }
+            return payload;
+        }
+
+        // 命令载荷从帧头之后开始：8 字节通用头 + 12 字节可靠扩展头。
+        private static int PoisonIndex(byte[] datagram)
+        {
+            const int payloadOffset = 20;
+            if (datagram.Length <= payloadOffset + 1) return -1;
+            if (datagram[payloadOffset + 1] != 0x5A) return -1;
+            return datagram[payloadOffset];
+        }
+
+        private static bool IsCommandDatagram(byte[] datagram)
+        {
+            return datagram.Length >= 8 && datagram[0] == 1 && datagram[1] == (byte)PacketType.Command;
+        }
+
+        // ADR-009「握手时序」的 type 11（昵称上报）：载荷必须是 nameLen u8 + UTF-8 字节，
+        // 走可靠通道上线，且非法名字在**客户端**就拦下（不发半截、不截断）。
+        private static void ChecksJoinOnWire()
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            var peer = new MiniPeer(link.Create(2));
+            peer.Attach(link);
+            peer.Start();
+            link.Pump();
+            client.Connect("mem", 0);
+            for (var i = 0; i < 40 && client.State != ConnectionState.Connected; i++)
+            {
+                clock.Advance(50.0);
+                link.NowMs = clock.NowMs;
+                client.Poll(UdpTransport.MaxInboundPacketsPerPoll);
+                peer.Pump(link.NowMs);
+                link.Pump();
+            }
+            SelfTest.Equal((long)ConnectionState.Connected, (long)client.State);
+
+            // 上界回归：NewType 之前这里写死成 MatchState，新增 type 11 后收包侧把 Join 判成 BadType
+            // ——发送侧"成功"、接收侧"未知类型"。上界必须与码表同一步走，且 12 仍须被拒。
+            SelfTest.Equal((long)PacketType.Join, (long)PacketHeader.MaxPacketType);
+            PacketHeader probe;
+            var joinFrame = new byte[22];              // 8 通用包头 + 12 可靠扩展头 + nameLen + 1 字节名
+            joinFrame[0] = 1;
+            joinFrame[1] = (byte)PacketType.Join;
+            joinFrame[2] = 1;                          // reliable
+            joinFrame[20] = 5;
+            joinFrame[21] = (byte)'a';
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)PacketHeader.Read(new PacketReader(joinFrame), out probe));
+            var unknownFrame = new byte[22];
+            unknownFrame[0] = 1;
+            unknownFrame[1] = 12;                      // 尚未分配的类型码
+            unknownFrame[2] = 1;
+            SelfTest.Equal((long)DecodeFailure.BadType, (long)PacketHeader.Read(new PacketReader(unknownFrame), out probe));
+
+            // 未连接时的受理语义与其他 C→S 消息一致：这里已经连上，所以先验非法名字。
+            SelfTest.True(!client.SendJoin(null), "空昵称不上线", "空昵称被受理");
+            SelfTest.True(!client.SendJoin(string.Empty), "空串昵称不上线", "空串被受理");
+            // 13 个 ASCII 字节超上界；服务端 decodeJoin 会判 kBadValue ⇒ 客户端必须自己拦下。
+            SelfTest.True(!client.SendJoin(new string('x', 13)), "超 12 字节不上线", "超长被受理");
+            SelfTest.Equal(0, peer.JoinsSeen.Count);   // 三次非法调用一个包都不该出去
+
+            // 汉字是 3 字节：4 个汉字 = 12 字节，正好在上界内（按**字节**算而不是字符数）。
+            SelfTest.True(client.SendJoin("牧羊人阿"), "12 字节的汉字昵称必须受理", "按字符数误判");
+            link.Pump();
+            peer.Pump(link.NowMs);
+            SelfTest.Equal(1, peer.JoinsSeen.Count);
+            SelfTest.Equal(13, peer.JoinsSeen[0].Length);
+            SelfTest.Equal(12, (long)peer.JoinsSeen[0][0]);   // nameLen 按字节
+            var utf8 = new System.Text.UTF8Encoding(false, true);
+            SelfTest.True(utf8.GetString(peer.JoinsSeen[0], 1, 12) == "牧羊人阿",
+                "名称字节原样上线（无结尾 NUL）", utf8.GetString(peer.JoinsSeen[0], 1, 12));
+
+            // 英文短名：载荷 = 1 + 5
+            SelfTest.True(client.SendJoin("alpha"), "短昵称被受理", "SendJoin 返回 false");
+            link.Pump();
+            peer.Pump(link.NowMs);
+            SelfTest.Equal(2, peer.JoinsSeen.Count);
+            SelfTest.Equal(6, peer.JoinsSeen[1].Length);
+            SelfTest.Equal(5, (long)peer.JoinsSeen[1][0]);
+            SelfTest.Equal((long)'a', (long)peer.JoinsSeen[1][1]);
+            SelfTest.Equal((long)'a', (long)peer.JoinsSeen[1][5]);
+        }
+
+        // ADR-012：服务端拒绝准入（满员 / 对局进行中）的回执是 Disconnect(reason = 8)，原因码必须留下来 ——
+        // 这是客户端唯一能得知"自己被拒"的通道（被拒时没有 MatchState、kJoin 也不回包）。
+        private static void ChecksDisconnectReason()
+        {
+            // 线格式：8 进了闭集；0 与 9 仍是 BadValue；长度不合规照旧拒（枚举是闭集，未知原因不许静默通过）。
+            DisconnectReason parsed;
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)HandshakeCodec.DecodeDisconnect(new byte[] { 8 }, out parsed));
+            SelfTest.Equal((long)DisconnectReason.RoomUnavailable, (long)parsed);
+            SelfTest.Equal((long)DecodeFailure.BadValue, (long)HandshakeCodec.DecodeDisconnect(new byte[] { 9 }, out parsed));
+            SelfTest.Equal((long)DecodeFailure.BadValue, (long)HandshakeCodec.DecodeDisconnect(new byte[] { 0 }, out parsed));
+            SelfTest.Equal((long)DecodeFailure.Truncated, (long)HandshakeCodec.DecodeDisconnect(new byte[0], out parsed));
+            SelfTest.Equal((long)DecodeFailure.BadLength, (long)HandshakeCodec.DecodeDisconnect(new byte[] { 8, 8 }, out parsed));
+
+            var clock = new Clock();
+            var server = new MiniPeer(new UdpTransport.RealUdpSocket());
+            var client = new UdpTransport(new UdpTransport.RealUdpSocket(), clock.Now);
+            server.Start();
+            SelfTest.True(client.Connect("127.0.0.1", server.Port), "Connect 成功", "Connect 返回 false");
+            Drive(client, server, clock, 100, 20.0);
+            SelfTest.Equal((long)ConnectionState.Connected, (long)client.State);
+
+            server.SendMessage(PacketType.Disconnect, HandshakeCodec.EncodeDisconnect(DisconnectReason.RoomUnavailable));
+            Drive(client, server, clock, 5, 20.0);
+            SelfTest.Equal((long)ConnectionState.Disconnected, (long)client.State);
+            SelfTest.True(client.Machine.DisconnectedByServer, "记录了服务端断开", "未记录");
+            SelfTest.Equal((long)DisconnectReason.RoomUnavailable, (long)client.Machine.LastDisconnectReason);
+            SelfTest.Equal(0, client.Session);
+
+            client.Close();
+            server.Stop();
         }
 
         private static void ChecksHandshake()
@@ -547,6 +747,7 @@ namespace Ac.Tests
             internal uint ServerTick = 1234;
             internal uint Salt = 0xCAFEBABE;
             internal readonly List<byte[]> CommandsSeen = new List<byte[]>();
+            internal readonly List<byte[]> JoinsSeen = new List<byte[]>();
                 internal int Port { get { return _socket.Port; } }
     
             internal void Attach(MemoryLink link) { Link = link; }
@@ -654,6 +855,7 @@ namespace Ac.Tests
             private void Deliver(PacketType type, byte[] body)
             {
                 if (type == PacketType.Command) CommandsSeen.Add(body);
+                if (type == PacketType.Join) JoinsSeen.Add(body);
                 }
 
             // 返回 true 表示这是新消息（可以投递）；重复的 msgId 直接丢弃，不二次投递。
@@ -756,6 +958,9 @@ namespace Ac.Tests
             internal double JitterMs;
             internal int Dropped;
             internal int Sent;
+            // 出站数据报留档（每个 Send 已经各自拷过一份，这里直接存）：给"被拒的消息不许上线"这类
+            // 用例一个能逐字节扫的证据面，而不是只能数计数。
+            internal readonly List<byte[]> Wire = new List<byte[]>();
 
             internal IDatagramSocket Create(int id)
             {
@@ -771,6 +976,7 @@ namespace Ac.Tests
             internal void Transmit(int from, byte[] bytes)
             {
                 Sent += 1;
+                Wire.Add(bytes);
                 if (NextUnit() < LossRate)
                 {
                     Dropped += 1;

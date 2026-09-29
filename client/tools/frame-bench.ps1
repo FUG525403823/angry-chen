@@ -47,7 +47,14 @@ for ($i = 1; $i -le $Runs; $i++) {
     $json = (Get-Location).Path + "/" + $OutDir + "/run-$stamp-$i.json"
     $tierArg = @()
     if ($QualityTier -ge 0) { $tierArg = @("-frameBenchQuality", $QualityTier) }
-    & $Unity -batchmode -projectPath $Project -logFile (Join-Path $OutDir "run-$stamp-$i.log") -executeMethod Ac.Tests.FrameBench.Run -frameBenchScene $Scene -frameBenchOut $json -frameBenchWarmup $WarmupFrames -frameBenchSample $Frames -frameBenchRuns $Runs @tierArg
+    # Tuanjie.exe 是 GUI 子系统程序：PowerShell 的调用运算符 & 不等它，脚本会在编辑器写 JSON 之前
+    # 就去 Test-Path，于是每次运行都报"没有 JSON"（实测）。必须显式等进程退出后再读它写下的文件。
+    $editorArgs = @("-batchmode", "-projectPath", $Project, "-logFile", (Join-Path $OutDir "run-$stamp-$i.log"),
+        "-executeMethod", "Ac.Tests.FrameBench.Run", "-frameBenchScene", $Scene, "-frameBenchOut", $json,
+        "-frameBenchWarmup", $WarmupFrames, "-frameBenchSample", $Frames, "-frameBenchRuns", $Runs) + $tierArg
+    $editor = Start-Process -FilePath $Unity -ArgumentList $editorArgs -NoNewWindow -PassThru
+    $editor.WaitForExit()
+    Write-Host ("  editor exit code " + $editor.ExitCode)
     # 没有数字就谈不上"超预算"：这在 §9 里是"环境不可用"（2），不是 FAIL（1）。
     if (-not (Test-Path $json)) { Write-Host "ENV: run $i produced no JSON (editor could not run the bench - no verdict is possible)"; exit 2 }
     try { $sample = Get-Content -Raw -Encoding UTF8 $json | ConvertFrom-Json } catch { Write-Host "FAIL: run $i JSON parse error"; exit 1 }
@@ -124,15 +131,19 @@ if (-not (Test-Path -LiteralPath $summaryPath) -or (Get-Item -LiteralPath $summa
 }
 $p95 = [double]$summary["frameP95Ms"]
 $alloc = [double]$summary["managedAllocBytesPerFrame"]
-if ($notPass.Count -gt 0) {
-    # verdict 不是 PASS 就不许走 PASS 分支：UNVERIFIED/FAIL 都是"没有通过"。
-    foreach ($r in $notPass) { Write-Host ("verdict=" + $r.verdict + " sceneKind=" + $r.sceneKind + " missingStages=[" + (@($missingStages) -join ",") + "]") }
-    exit 2
-}
-if ($failures.Count -gt 0) {
+# 超预算 = FAIL（1），环境/测不到 = 2：退出码契约见 §9。判定顺序必须"先 FAIL 再 2"，
+# 否则一轮超预算会被报成"机器不可用"，把排查引到错误的方向。
+$failRuns = @($results | Where-Object { [string]$_.verdict -eq "FAIL" })
+if ($failures.Count -gt 0 -or $failRuns.Count -gt 0) {
     foreach ($f in $failures) { Write-Host ("over budget: " + $f) }
+    foreach ($r in $failRuns) { Write-Host ("over budget (run verdict FAIL): p95=" + $r.frameP95Ms + " alloc=" + $r.managedAllocBytesPerFrame) }
     Write-Host ("FRAME-BENCH FAIL p95=" + $p95 + "ms alloc=" + $alloc + "B")
     exit 1
+}
+if ($notPass.Count -gt 0) {
+    # verdict 不是 PASS 就不许走 PASS 分支：UNVERIFIED 也是"没有通过"。
+    foreach ($r in $notPass) { Write-Host ("verdict=" + $r.verdict + " sceneKind=" + $r.sceneKind + " missingStages=[" + (@($missingStages) -join ",") + "]") }
+    exit 2
 }
 Write-Host ("FRAME-BENCH PASS p95=" + $p95 + "ms alloc=" + $alloc + "B")
 exit 0

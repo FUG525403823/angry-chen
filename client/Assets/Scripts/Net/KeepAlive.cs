@@ -56,6 +56,9 @@ namespace Ac.Net
         internal double GraceStartMs { get { return _graceStartMs; } }
         public string Endpoint { get; private set; }
         public bool DisconnectedByServer { get; private set; }
+        // ADR-012：服务端拒绝准入（满员 / 对局进行中）走 reason = 8。原因码必须**留下来**：
+        // 它到不了别处（没有 MatchState、没有别的下行），UI 与验收都只能从这里读。
+        public DisconnectReason LastDisconnectReason { get; private set; }
         public ReconnectTokenStore Tokens { get { return _tokens; } }
 
         public event Action<ConnectionState, ConnectionState> StateChanged;
@@ -109,6 +112,7 @@ namespace Ac.Net
         public void OnDisconnect(DisconnectReason reason, double nowMs)
         {
             DisconnectedByServer = true;
+            LastDisconnectReason = reason;
             _tokens.Forget(Endpoint);
             Session = 0;
             Transition(ConnectionState.Disconnected, nowMs);

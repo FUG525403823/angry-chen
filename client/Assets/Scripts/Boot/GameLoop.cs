@@ -52,6 +52,10 @@ namespace Ac.Boot
         private byte _phase = Hud.PhaseLobby;
         private int _wave;
         private int _intermissionMs;
+        // type 11 Join 的上报去重：_joinSessionSent = 已经上报过昵称的会话号（0 = 还没报过），
+        // _joinDirty = 昵称在上报之后又变过。两个条件任一成立就补发一次。
+        private ushort _joinSessionSent;
+        private bool _joinDirty;
 
         public GameLoop(SnapshotView view, EntityViews views, Hud hud, FrameProfiler profiler)
         {
@@ -62,6 +66,12 @@ namespace Ac.Boot
         }
 
         public UdpTransport Transport { get; set; }      // 离线（单机/帧基准）时为 null
+        // 输入采样器（C05 §5.1）：**产品侧唯一的键鼠来源**。接上之后本帧的命令会①从传输发出去
+        // ②进本地预测；为 null 时（帧基准/无头）一帧都不采样。此前它连 `new` 都没有生产调用者：
+        // 采样器、编解码、传输三者都在，却没有任何东西把它们接起来（联调只能靠测试桩手搓命令）。
+        public InputSampler Sampler { get; set; }
+        public int CommandsSent { get; private set; }
+        public int CommandSendFailures { get; private set; }
         public IFrameStageSink Fx { get; set; }
         public IFrameStageSink Audio { get; set; }
         public IFrameWorkSink Draw { get; set; }         // 有绘制提交才打点（见 IFrameWorkSink）
@@ -91,6 +101,8 @@ namespace Ac.Boot
             set
             {
                 _identity.SetName(value);
+                // 昵称变了就得再上报一次（type 11）；已连上时会由本帧的 FlushJoin 发出去。
+                _joinDirty = true;
                 if (MatchStateCount > 0) ResolveLocalPlayer();
             }
         }
@@ -205,11 +217,39 @@ namespace Ac.Boot
             if (handler != null) handler(hudEvent);
         }
 
+        // C05 §5.1/§5.2 的产品接线：键鼠 → 30Hz 命令 → ①真发 type=4 ②同一条命令进本地预测。
+        // 两条路用**同一份量化载荷**：不重新采样，避免"发出去的和本地预测的不是一条"（本地会漂）。
+        private void PumpInput(double dtMs)
+        {
+            var sampler = Sampler;
+            if (sampler == null) return;
+            // clientTick 必须是**权威 tick**：服务端 `security::validateClientTick` 与服务端 tick 严格相等，
+            // 预支或滞后一样整批丢掉（联调里战绩 `aliveMs: 0` 的根因）。来源 = 最近一条已应用快照的 tick。
+            sampler.SetClientTick(_view != null ? (uint)_view.AppliedTick : 0u);
+            sampler.Update(dtMs);
+            // 大厅的准备位（ADR-013）：确认键一次翻转一次。服务端只在大厅相位采用这一位。
+            if (sampler.ConfirmPressed && _phase == Hud.PhaseLobby) sampler.SetReadyHeld(!sampler.ReadyHeld);
+
+            InputIntent intent;
+            while (sampler.TryTakeCommand(out intent))
+            {
+                var payload = CommandCodec.IntentToPayload(intent);
+                var transport = Transport;
+                if (transport != null && transport.State == ConnectionState.Connected)
+                {
+                    if (transport.Send(PacketType.Command, CommandCodec.Encode(payload))) CommandsSent += 1;
+                    else CommandSendFailures += 1;
+                }
+                QueueCommand(CommandCodec.ToStepCommand(payload));
+            }
+        }
+
         public void Frame(double dtMs)
         {
             _profiler.Begin();
 
-            // ① input：本帧命令进预测器与未确认缓冲
+            // ① input：采样 → 上行 + 本地预测
+            PumpInput(dtMs);
             if (_hasPending)
             {
                 _predictor.Advance((int)dtMs, _pending);
@@ -219,7 +259,11 @@ namespace Ac.Boot
             _profiler.Mark(FrameStage.Input);
 
             // ② sync：收包（离线时什么都没发生）
-            if (Transport != null) Transport.Poll(MaxInboundPerPoll);
+            if (Transport != null)
+            {
+                Transport.Poll(MaxInboundPerPoll);
+                FlushJoin();
+            }
             _profiler.Mark(FrameStage.Sync);
 
             // ③ predict：本地权威 + 和解
@@ -262,6 +306,20 @@ namespace Ac.Boot
 
             _profiler.End();
             Frames += 1;
+        }
+
+        // type 11 Join（ADR-009「握手时序」）：把本地昵称送到服务端。两个时机都要覆盖：
+        // ① 连上了（含重连换了 session）而昵称已经敲好；② 昵称在上报之后又变了。
+        // 以 session 号 + 脏标记去重 ⇒ 稳态 0 包、0 分配；发送失败（未连接/名字非法）留到下一帧重试。
+        private void FlushJoin()
+        {
+            var transport = Transport;
+            if (transport == null || transport.State != ConnectionState.Connected) return;
+            var session = transport.Session;
+            if (!_joinDirty && session == _joinSessionSent) return;
+            if (!transport.SendJoin(_identity.Name)) return;
+            _joinSessionSent = session;
+            _joinDirty = false;
         }
 
         private void FillSample()

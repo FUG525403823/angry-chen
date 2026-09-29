@@ -174,6 +174,10 @@ namespace Ac.Net
         public string Endpoint { get { return _session.Endpoint; } }
         internal int BacklogBytes { get { return _backlogBytes; } }
 
+        // 只读诊断口：某条可靠通道上尚未被 ack 的消息数。§5.1 的"拒收"必须同时体现在
+        // 积压队列与重传表上（被拒的消息不得挂进重传表），这个计数是那件事唯一可观测的面。
+        public int OutstandingReliable(PacketType channel) { return ChannelFor(channel).OutstandingCount; }
+
         public event Action<ConnectionState, ConnectionState> StateChanged;
         public event Action<PacketHeader, byte[]> ApplicationPacket;
 
@@ -234,13 +238,27 @@ namespace Ac.Net
             uint msgId;
             var datagrams = BuildDatagrams(channel, payload, 0, payloadBytes, out reliable, out msgId);
             if (datagrams.Count == 0) return false;
+            // 先入队、再挂重传表：这一步的顺序是有语义的。旧的顺序是"先 Track 再 Enqueue"，
+            // 于是被 §5.1 **拒收**（返回 false）的可靠消息照样躺在重传表里，RTO 一到就被重发——
+            // 调用方被告知"没受理"，字节却还是发了出去，积压与重传表两本账从此对不上。
+            if (!Enqueue(datagrams)) return false;
             if (reliable)
             {
                 // 分片消息的每一片共用同一个 msgId，都挂在逻辑通道的重传表上：分片本身不另开一条可靠流。
                 var stream = ChannelFor(channel);
                 foreach (var datagram in datagrams) stream.Track(msgId, datagram, NowMs);
             }
-            return Enqueue(datagrams);
+            return true;
+        }
+
+        // ADR-009「握手时序」的 type 11：把本地昵称送到服务端（可靠、无回复）。
+        // 受理语义与其它 C→S 消息一致：名字非法或本端未连接都返回 false，重传由逻辑通道负责。
+        // 无回复 ⇒ 本地 pid 仍由 MatchState 的玩家行按名认领（Ac.Net.LocalIdentity）。
+        public bool SendJoin(string name)
+        {
+            byte[] payload;
+            if (!JoinCodec.TryEncode(name, out payload)) return false;
+            return Send(PacketType.Join, payload);
         }
 
         public void Close()

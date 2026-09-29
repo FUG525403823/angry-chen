@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "config/player.hpp"
 #include "core/clock.hpp"
 #include "core/quantize.hpp"
 #include "core/rng.hpp"
@@ -171,7 +172,10 @@ void sendCommand(Bot& bot, const Options& options) {
   payload.moveY = ac::quantizeAxis(static_cast<double>((roll / 3u) % 3u) - 1.0);
   payload.yaw = ac::quantizeAngle(static_cast<double>((roll / 9u) % 628u) / 100.0);
   payload.pitch = 0u;
-  payload.buttons = static_cast<std::uint8_t>(((roll / 7u) % 4u) == 0u ? 0x09u : 0x00u);
+  // ADR-013：机器人**自己按准备**（0x80）。产品默认不再自动就绪，装载/联调场景要的是"真实大厅 +
+  // 一群准备了的玩家"，所以这里把 Ready 位常置；0x09 是原来的 Fire|Reload 抖动。
+  payload.buttons = static_cast<std::uint8_t>(
+      ((((roll / 7u) % 4u) == 0u) ? 0x09u : 0x00u) | ac::config::kButtonReady);
   payload.switchTo = 0u;
   payload.seq = bot.seq;
   // 用 HelloAck 的 serverTick + 本地流逝推算服务器当前 tick（§5 的 clientTick 必须等于服务器 tick）。
