@@ -172,6 +172,13 @@ namespace Ac.Net
         public ConnectionState State { get { return _session.State; } }
         public ushort Session { get { return _session.Session; } }
         public string Endpoint { get { return _session.Endpoint; } }
+        // 产品路径把它打开（GameBootstrap）：断线之后自动按退避重连。测试默认关，保持旧语义。
+        public bool AutoReconnect
+        {
+            get { return _session.AutoReconnect; }
+            set { _session.AutoReconnect = value; }
+        }
+        public int ReconnectAttempts { get { return _session.ReconnectAttempts; } }
         internal int BacklogBytes { get { return _backlogBytes; } }
 
         // 只读诊断口：某条可靠通道上尚未被 ack 的消息数。§5.1 的"拒收"必须同时体现在

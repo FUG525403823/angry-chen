@@ -21,6 +21,8 @@ namespace Ac.Boot
 
         private PresentationLayer _layer;
         private GUIStyle[] _styles;
+        private Font[] _fonts;
+        private float _stylesScale = -1f;
         private GUIStyle _defaultStyle;
         private readonly GUIContent _content = new GUIContent();
         private readonly Rect[] _arms = new Rect[CrosshairArmCount];
@@ -58,6 +60,21 @@ namespace Ac.Boot
             _drawnFrames += 1;
         }
 
+        // 模型的口径 → IMGUI 的矩形（两者必须在这里对齐，否则"居中"会画到屏幕外）：
+        //   Left  ：X = 左边缘   → rect 起点 X（样式 MiddleLeft，正文从 X 开始）
+        //   Center：X = 中心线   → rect 起点 X - W/2（样式 MiddleCenter 在矩形内居中 ⇒ 中心落在 X）
+        //   Right ：X = 右边缘   → rect 起点 X - W  （样式 MiddleRight 让正文右端落在 X）
+        // 出包实测（2560×1440）：Center 按 X 当左边缘时，标题/波次横幅被推到 1.5 倍屏宽处（右缘外），
+        // 而 Right 按 X 当左边缘时弹药行整条落在屏幕外 —— 两个症状都是这一处口径错位造成的。
+        // 公开给用例：`render.overlay_in_bounds` 直接按它把每条绘制项换算成屏幕矩形做越界判定。
+        public static Rect ItemRect(in OverlayItem item)
+        {
+            var x = item.X;
+            if (item.Align == OverlayAlign.Center) x -= item.W / 2;
+            else if (item.Align == OverlayAlign.Right) x -= item.W;
+            return new Rect(x, item.Y, item.W, item.H);
+        }
+
         private void DrawItem(in OverlayItem item)
         {
             var color = Rgb(item.ColorRgb);
@@ -67,7 +84,7 @@ namespace Ac.Boot
             {
                 case OverlayItemKind.Text:
                     _content.text = item.Text;
-                    GUI.Label(new Rect(item.X, item.Y, item.W, item.H), _content, Style(item.Role, item.Align));
+                    GUI.Label(ItemRect(item), _content, Style(item.Role, item.Align));
                     break;
                 case OverlayItemKind.Bar:
                     DrawBar(item);
@@ -117,6 +134,7 @@ namespace Ac.Boot
         }
 
         // 资源只在**第一次真的要画**时创建（无头下永不创建，所以也不会泄漏纹理/字体）。
+        // 字号随视口高度缩放（Hud.ScaleFor）：缩放值变了就重建样式与字体，否则 2560×1440 上还是 16~32px 的小字。
         private void EnsureResources()
         {
             if (_pixel == null)
@@ -126,19 +144,25 @@ namespace Ac.Boot
                 _pixel.Apply();
                 _pixel.hideFlags = HideFlags.HideAndDontSave;
             }
-            if (_styles != null) return;
+            var scale = Hud.ScaleFor(Screen.height);
+            if (_styles != null && Mathf.Approximately(_stylesScale, scale)) return;
 
             _defaultStyle = GUI.skin.label;
             _content.text = string.Empty;
             _styles = new GUIStyle[RoleCount * AlignCount];
+            _fonts = new Font[RoleCount];
+            _stylesScale = scale;
+            var viewportHeight = Screen.height;
             for (var role = 0; role < RoleCount; role++)
             {
-                // 字号只从 Hud.FontPx 来（title/numeric/label/feed 四档），不另立一套
-                var font = Hud.CreateFont(Hud.FontPx(OverlayModel.RoleName((OverlayTextRole)role)));
+                // 字号只从 Hud 来（title/numeric/label/feed 四档 + 分辨率缩放），不另立一套
+                var sizePx = Hud.ScaledFontPx(OverlayModel.RoleName((OverlayTextRole)role), viewportHeight);
+                var font = Hud.CreateFont(sizePx);
+                _fonts[role] = font;
                 for (var align = 0; align < AlignCount; align++)
                 {
                     var style = new GUIStyle(GUI.skin.label);
-                    style.fontSize = Hud.FontPx(OverlayModel.RoleName((OverlayTextRole)role));
+                    style.fontSize = sizePx;
                     if (font != null) style.font = font;
                     style.alignment = AlignOf((OverlayAlign)align);
                     style.richText = false;
@@ -148,6 +172,22 @@ namespace Ac.Boot
                     _styles[role * AlignCount + align] = style;
                 }
             }
+        }
+
+        // 动态字体是运行期造的，视口变化重建时要把旧的销毁，否则每换一次分辨率就漏一批。
+        private void ReleaseStyles()
+        {
+            if (_fonts != null)
+            {
+                for (var i = 0; i < _fonts.Length; i++)
+                {
+                    if (_fonts[i] == null) continue;
+                    Destroy(_fonts[i]);
+                    _fonts[i] = null;
+                }
+            }
+            _styles = null;
+            _stylesScale = -1f;
         }
 
         private static TextAnchor AlignOf(OverlayAlign align)
@@ -168,6 +208,7 @@ namespace Ac.Boot
 
         private void OnDestroy()
         {
+            ReleaseStyles();
             if (_pixel == null) return;
             if (Application.isPlaying) Destroy(_pixel);
             else DestroyImmediate(_pixel);

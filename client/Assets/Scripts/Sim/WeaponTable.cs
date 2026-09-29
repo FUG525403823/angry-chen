@@ -10,6 +10,12 @@ namespace Ac.Sim
         // kWeapons[slot].spreadDeg（手枪 0.8 / 步枪 0.6 / 霰弹 4.0）
         public static readonly float[] BaseSpreadDeg = { 0.8f, 0.6f, 4.0f };
 
+        // kWeapons[slot].mag（手枪 12 / 步枪 30 / 霰弹 6）——HUD 的低弹色判据用它；
+        // 此前客户端没有这张表，sample.MagSize 恒 0，弹药行只能显示原始数字、低弹色永远不触发。
+        public static readonly int[] MagSizePx = { 12, 30, 6 };
+
+        public static int MagSizeOf(int slot) { return MagSizePx[ClampSlot(slot)]; }
+
         public const float SpreadGrowthPerShotDeg = 0.1f;    // kSpreadGrowthPerShotDeg
         public const float SpreadMaxDeg = 0.25f;             // kSpreadMaxDeg
         public const float SpreadDecayDelayMs = 350f;        // kSpreadDecayDelayMs

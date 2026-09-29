@@ -1,6 +1,7 @@
 using System;
 using Ac.Boot;
 using Ac.Core;
+using Ac.Net;
 using Ac.Sim;
 using Ac.UI;
 using Ac.View;
@@ -19,6 +20,246 @@ namespace Ac.Tests
             SelfTest.Add("boot.client_log_wiring", ChecksClientLogWiring);
             SelfTest.Add("boot.join_reported_once_per_name", ChecksJoinReport);
             SelfTest.Add("boot.command_uplink", ChecksCommandUplink);
+            SelfTest.Add("boot.snapshot_reaches_mirror", ChecksSnapshotReachesMirror);
+            SelfTest.Add("boot.command_tick_from_snapshot", ChecksCommandTickFromSnapshot);
+            SelfTest.Add("boot.hud_ammo_rage_from_match_state", ChecksHudAmmoRage);
+        }
+
+        // 弹药/怒气 HUD 的权威来源：**本地玩家那行 MatchState**。此前客户端没有任何地方把 MatchState 的
+        // mag/reserve/rage 填进 HudSample（AmmoLedger 只有用例在用），出包 HUD 恒显示 "0 / 0"、怒气恒 0。
+        private static void ChecksHudAmmoRage()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.LocalPlayerId = 3;      // 身份已认领（由 MatchState 行按昵称认领，见 IdentitySuite）
+            SelfTest.Equal(0, loop.Hud.Ammo.Mag);
+
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
+                new ushort[] { 3 }, new[] { "牧羊人" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 7 }, new ushort[] { 90 }, new byte[] { 42 }));
+            loop.Frame(1000.0 / 60.0);
+
+            SelfTest.Equal(7, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(90, loop.Hud.Ammo.Reserve);
+            SelfTest.Equal(30, loop.Hud.Ammo.MagSize);   // 手枪弹匣 12（WeaponTable 与服务端 kWeapons 同值）
+            SelfTest.Equal(42, loop.Hud.Rage.Rage);
+
+            // 不是本地玩家那一行就不许串到 HUD 上
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
+                new ushort[] { 9 }, new[] { "b" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 1 }, new byte[] { 99 }));
+            loop.Frame(1000.0 / 60.0);
+            SelfTest.Equal(7, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(42, loop.Hud.Rage.Rage);
+        }
+
+        // 大厅 ready 这条产品路径的死因（ADR-013）：命令的 clientTick 必须**等于**服务端 tick
+        // （`security::validateClientTick` 严格相等，S06/S11 冻结），而客户端取自最近一条**已应用**的
+        // 权威快照。修复前快照全被丢弃（见 boot.snapshot_reaches_mirror）⇒ AppliedTick 恒 0，
+        // 于是任何已经打过一局的服务（world tick ≠ 0）都把每一条大厅命令**整条丢掉**（Ready 位一起丢）
+        // ⇒ 按回车永远 `准备 0/1`、永远开不了局。实测对照：生产实例（tick≈48590）按回车无反应；
+        // 新起实例（tick=0）按回车立刻进对局。这条用例把"大厅命令带活 tick + Ready 位"钉住。
+        private static void ChecksCommandTickFromSnapshot()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new Ac.Net.UdpTransport(socket, delegate { return now; });
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.Transport = transport;
+            var sampler = new InputSampler();
+            sampler.SetReadyHeld(true);          // 玩家在大厅按下了准备
+            loop.Sampler = sampler;
+
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "Connect 返回 false");
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+
+            // 大厅的空快照：世界 tick 冻结在生产实例的量级（不是 0）
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(48590u, 0u, new byte[0][], new ushort[0]));
+            SelfTest.Equal(48590, loop.View.AppliedTick);
+
+            for (var i = 0; i < 30; i++)         // 0.5s @60fps：30Hz 上行至少发几条
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            var commands = socket.CommandPayloads();
+            SelfTest.True(commands.Count >= 10, "大厅也要有 30Hz 上行", commands.Count.ToString());
+            var last = commands[commands.Count - 1];
+            SelfTest.Equal(48590, last.ClientTick);   // ← 不是 0（0 会被服务端判 kStaleTick 整条丢掉）
+            SelfTest.True((last.Buttons & (byte)CommandButtons.Ready) != 0, "Ready 位要随命令上行",
+                last.Buttons.ToString());
+        }
+
+        // 真收包缝（type=5）：快照必须**经 OnPacket** 进镜像。这条缝此前零覆盖 —— 帧基准自己造帧调
+        // `ApplySnapshot`、六步联调自带解包器（JointSuite.cs:408），于是 OnPacket 里
+        // `_scratchFrame = default(SnapshotFrame)` 把复用帧的数组置空、`TryToFrame` 因 null 每帧拒收
+        // （只进 DecodeFailures），一路绿灯到出包：实跑 inboundBytesPerSec 19240 而 entityCount=0、
+        // serverTick=0，世界里一个实体都没有（相机因此没有本地实体可跟，画面是几何体内壁）。
+        private static void ChecksSnapshotReachesMirror()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+
+            // ① 全量帧（baselineTick=0）：两条记录 —— 玩家 1 + 羊 8
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(100u, 0u,
+                new[]
+                {
+                    SnapshotRecord(1, 0, 150, 0, -300, 16384, 0, 255, 0),
+                    SnapshotRecord(8, 1, 900, 0, -1200, 32768, 0, 200, 0),
+                },
+                new ushort[0]));
+            SelfTest.Equal(0, loop.DecodeFailures);
+            SelfTest.Equal(100, loop.View.AppliedTick);
+            SelfTest.Equal(1, loop.View.AppliedFrames);
+            FrameEntity entity;
+            SelfTest.True(loop.View.TryGetEntity(1, out entity), "本地玩家实体要进镜像", "没进");
+            SelfTest.Equal(150, entity.XCm);
+            SelfTest.Equal(-300, entity.ZCm);
+            SelfTest.Equal(16384, entity.YawUnits);
+            SelfTest.Equal(255, entity.HpRatioUnits);
+            SelfTest.True(loop.View.TryGetEntity(8, out entity), "羊实体要进镜像", "没进");
+            SelfTest.Equal(900, entity.XCm);
+            SelfTest.Equal(1, entity.KindFlags);
+
+            // ② 差分帧（baselineTick=上一帧 tick）：更新一条 + 移除一条
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(101u, 100u,
+                new[] { SnapshotRecord(1, 0, 250, 0, -300, 8192, 0, 255, 0) },
+                new ushort[] { 8 }));
+            SelfTest.Equal(0, loop.DecodeFailures);
+            SelfTest.Equal(101, loop.View.AppliedTick);
+            SelfTest.Equal(2, loop.View.AppliedFrames);
+            SelfTest.True(loop.View.TryGetEntity(1, out entity) && entity.XCm == 250, "差分要改到镜像上", "没改");
+            SelfTest.True(!loop.View.TryGetEntity(8, out entity), "移除列表要真的删掉", "还在");
+
+            // ③ 坏载荷：只计数、镜像一动不动、也不卡死（下一帧照收）
+            loop.OnPacket(SnapshotHeader(), new byte[] { 1, 2, 3 });
+            SelfTest.True(loop.DecodeFailures >= 1, "坏载荷要计进 DecodeFailures", loop.DecodeFailures.ToString());
+            SelfTest.Equal(101, loop.View.AppliedTick);
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(102u, 101u,
+                new[] { SnapshotRecord(1, 0, 300, 0, -300, 8192, 0, 255, 0) }, new ushort[0]));
+            SelfTest.Equal(102, loop.View.AppliedTick);
+        }
+
+        // type=5 的包头（unreliable，flags 由 RequiredFlags 给）。载荷字节由下面的helper按**线上顺序**拼。
+        // type=10 的包头（reliable）
+        private static PacketHeader MatchStateHeader()
+        {
+            var header = new PacketHeader();
+            header.Version = PacketHeader.ProtocolVersion;
+            header.Type = PacketType.MatchState;
+            header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.MatchState);
+            return header;
+        }
+
+        private static PacketHeader SnapshotHeader()        {
+            var header = new PacketHeader();
+            header.Version = PacketHeader.ProtocolVersion;
+            header.Type = PacketType.Snapshot;
+            header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.Snapshot);
+            return header;
+        }
+
+        // 快照载荷（S03 §5.4 的服务端写入顺序）：
+        //   tick u32 | serverTimeMs u32 | lastAckedSeq u16 | baselineTick u32 | changedCount u8 |
+        //   records(changedCount × 15B) | removedCount u8 | removedIds u16 × n | eventCount u8
+        // 记录 15B 的线上顺序：id u16 | kindFlags u8 | xCm i16 | yCm i16 | zCm i16 | yawUnits u16 |
+        //   pitchUnits u16 | hpRatioUnits u8 | state u8。
+        private static byte[] SnapshotPayload(uint tick, uint baselineTick, byte[][] records, ushort[] removed)
+        {
+            var size = 4 + 4 + 2 + 4 + 1 + records.Length * 15 + 1 + removed.Length * 2 + 1;
+            var bytes = new byte[size];
+            var offset = 0;
+            WriteU32(bytes, ref offset, tick);
+            WriteU32(bytes, ref offset, tick * 20u);
+            WriteU16(bytes, ref offset, (ushort)(tick & 0xFFFFu));
+            WriteU32(bytes, ref offset, baselineTick);
+            bytes[offset++] = (byte)records.Length;
+            for (var i = 0; i < records.Length; i++)
+            {
+                System.Array.Copy(records[i], 0, bytes, offset, 15);
+                offset += 15;
+            }
+            bytes[offset++] = (byte)removed.Length;
+            for (var i = 0; i < removed.Length; i++) WriteU16(bytes, ref offset, removed[i]);
+            bytes[offset] = 0;   // eventCount
+            SelfTest.Equal(size, offset + 1);
+            return bytes;
+        }
+
+        private static byte[] SnapshotRecord(ushort id, byte kindFlags, short xCm, short yCm, short zCm,
+            ushort yawUnits, ushort pitchUnits, byte hpRatioUnits, byte state)
+        {
+            var bytes = new byte[15];
+            var offset = 0;
+            WriteU16(bytes, ref offset, id);
+            bytes[offset++] = kindFlags;
+            WriteI16(bytes, ref offset, xCm);
+            WriteI16(bytes, ref offset, yCm);
+            WriteI16(bytes, ref offset, zCm);
+            WriteU16(bytes, ref offset, yawUnits);
+            WriteU16(bytes, ref offset, pitchUnits);
+            bytes[offset++] = hpRatioUnits;
+            bytes[offset] = state;
+            return bytes;
+        }
+
+        private static void WriteU16(byte[] bytes, ref int offset, ushort value)
+        {
+            bytes[offset++] = (byte)(value & 0xFF);
+            bytes[offset++] = (byte)((value >> 8) & 0xFF);
+        }
+
+        private static void WriteI16(byte[] bytes, ref int offset, short value)
+        {
+            WriteU16(bytes, ref offset, unchecked((ushort)value));
+        }
+
+        private static void WriteU32(byte[] bytes, ref int offset, uint value)
+        {
+            bytes[offset++] = (byte)(value & 0xFF);
+            bytes[offset++] = (byte)((value >> 8) & 0xFF);
+            bytes[offset++] = (byte)((value >> 16) & 0xFF);
+            bytes[offset++] = (byte)((value >> 24) & 0xFF);
+        }
+
+        // MatchState 载荷（S03 §5.5 的服务端写入顺序）：phase u8 | wave u8 | intermissionMs u16 |
+        // count u8 | 逐行（pid u16 | nameLen u8 | name | ready u8 | weapon u8 | hp u8 | kills u16 |
+        // mag u8 | reserve u16 | reloadLeft u8 | rage u8 | rageLeft u8 | downed u8 | revive u8）。
+        private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids,
+            string[] names, bool[] ready, byte[] weapons, byte[] mags, ushort[] reserves, byte[] rages)
+        {
+            var size = 5;
+            for (var i = 0; i < pids.Length; i++) size += 16 + System.Text.Encoding.UTF8.GetByteCount(names[i]);
+            var bytes = new byte[size];
+            var offset = 0;
+            bytes[offset++] = phase;
+            bytes[offset++] = wave;
+            WriteU16(bytes, ref offset, intermissionMs);
+            bytes[offset++] = (byte)pids.Length;
+            for (var i = 0; i < pids.Length; i++)
+            {
+                WriteU16(bytes, ref offset, pids[i]);
+                var nameBytes = System.Text.Encoding.UTF8.GetBytes(names[i]);
+                bytes[offset++] = (byte)nameBytes.Length;
+                System.Array.Copy(nameBytes, 0, bytes, offset, nameBytes.Length);
+                offset += nameBytes.Length;
+                bytes[offset++] = (byte)(ready[i] ? 1 : 0);
+                bytes[offset++] = weapons[i];
+                bytes[offset++] = 200;                 // hpRatio
+                WriteU16(bytes, ref offset, 0);        // kills
+                bytes[offset++] = mags[i];
+                WriteU16(bytes, ref offset, reserves[i]);
+                bytes[offset++] = 0;                   // reloadLeft10Ms
+                bytes[offset++] = rages[i];
+                bytes[offset++] = 0;                   // rageLeft100Ms
+                bytes[offset++] = 0;                   // downed
+                bytes[offset++] = 0;                   // reviveRatio255
+            }
+            SelfTest.Equal(size, offset);
+            return bytes;
         }
 
         // C05 §5.1/§5.2 的产品上行：采样器出的命令必须真的从传输发出去（type=4），且 `clientTick`

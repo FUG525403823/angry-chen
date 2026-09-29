@@ -29,6 +29,12 @@ namespace Ac.Net
         public const int HelloRetryIntervalMs = 1000;
         public const int HelloMaxAttempts = 5;
         public const int ResumeRetryIntervalMs = 1000;
+        // 断线重连（产品路径）：Disconnected 之后按 1s→2s→4s→8s 退避重新握手。
+        // 没有它的话，任何一次"宽限期耗尽/服务端 Disconnect/Resume 被拒"都会把客户端永久钉在
+        // 僵死大厅（缓存花名册 + 0 B/s + 按键无反应）——实跑就是这么坏的：失焦 33 秒 → 会话被释放 →
+        // 回来按键全无反应、界面还显示着旧的一队人。
+        public const int ReconnectBaseDelayMs = 1000;
+        public const int ReconnectMaxDelayMs = 8000;
 
         private readonly ISessionControlSink _sink;
         private readonly ReconnectTokenStore _tokens = new ReconnectTokenStore();
@@ -37,6 +43,7 @@ namespace Ac.Net
         private double _nextKeepAliveMs;
         private double _graceStartMs;
         private double _nextResumeMs;
+        private double _nextReconnectMs;
 
         public SessionStateMachine(ISessionControlSink sink)
         {
@@ -48,6 +55,9 @@ namespace Ac.Net
         public ConnectionState State { get; private set; }
         public ushort Session { get; private set; }
         public uint ClientNonce { get; private set; }
+        // 产品路径打开它（GameBootstrap 在 Connect 之后设 true）；用例默认关，保持"失败就停在 Disconnected"的旧语义。
+        public bool AutoReconnect { get; set; }
+        public int ReconnectAttempts { get; private set; }
         internal uint ServerTick { get; private set; }
         internal uint Salt { get; private set; }
         public int HelloAttempts { get; private set; }
@@ -77,6 +87,8 @@ namespace Ac.Net
             LastRecvMs = nowMs;
             _nextHelloMs = nowMs;
             _nextKeepAliveMs = nowMs;
+            _nextReconnectMs = nowMs;
+            ReconnectAttempts = 0;
             Transition(ConnectionState.Connecting, nowMs);
         }
 
@@ -185,8 +197,44 @@ namespace Ac.Net
                     }
                     if (nowMs >= _nextResumeMs) sent += SendResume(nowMs);
                     break;
+
+                // 断线重连：Disconnected 是**可恢复**的终点（产品路径），按退避重新握手。
+                // 一旦 HelloAck 回来，会话号是新的 ⇒ GameLoop 的 FlushJoin 会按"会话变了"重发昵称，
+                // 身份也随之重新认领（不需要另立一条恢复路径）。
+                case ConnectionState.Disconnected:
+                    if (!AutoReconnect || string.IsNullOrEmpty(Endpoint)) break;
+                    if (nowMs < _nextReconnectMs) break;
+                    BeginReconnect(nowMs);
+                    sent += 1;
+                    break;
             }
             return sent;
+        }
+
+        // 用**新 nonce** 重开一次握手（服务端按 nonce 在 5s 内去重，复用旧 nonce 会拿到旧会话）。
+        private void BeginReconnect(double nowMs)
+        {
+            ClientNonce = (uint)(((long)(nowMs * 1000.0) & 0xFFFFFFFFL) ^ 0x9E3779B9u);
+            Session = 0;
+            ServerTick = 0;
+            Salt = 0;
+            HelloAttempts = 0;
+            ResumeAttempts = 0;
+            DisconnectedByServer = false;
+            LastRecvMs = nowMs;
+            _nextHelloMs = nowMs;
+            _nextKeepAliveMs = nowMs;
+            ReconnectAttempts += 1;
+            Transition(ConnectionState.Connecting, nowMs);
+        }
+
+        // 退避：1s、2s、4s，上限 8s。GiveUp / OnDisconnect / OnResumeRejected 之后都要排下一次。
+        private void ScheduleReconnect(double nowMs)
+        {
+            var delayMs = ReconnectBaseDelayMs;
+            for (var i = 0; i < ReconnectAttempts && delayMs < ReconnectMaxDelayMs; i++) delayMs *= 2;
+            if (delayMs > ReconnectMaxDelayMs) delayMs = ReconnectMaxDelayMs;
+            _nextReconnectMs = nowMs + delayMs;
         }
 
         public void Reset(double nowMs)
@@ -194,7 +242,9 @@ namespace Ac.Net
             Session = 0;
             HelloAttempts = 0;
             ResumeAttempts = 0;
+            ReconnectAttempts = 0;
             LastRecvMs = nowMs;
+            _nextReconnectMs = nowMs;
             _tokens.Forget(Endpoint);
             Transition(ConnectionState.Disconnected, nowMs);
         }
@@ -245,6 +295,9 @@ namespace Ac.Net
             if (State == next) return;
             var previous = State;
             State = next;
+            // 进入 Disconnected 的四条路（服务端 Disconnect / Resume 被拒 / Hello 用尽 / 宽限期耗尽）
+            // 都在这里统一排下一次重连，避免漏掉一条就出现"僵死大厅"。
+            if (next == ConnectionState.Disconnected) ScheduleReconnect(nowMs);
             var handler = StateChanged;
             if (handler != null) handler(previous, next);
         }

@@ -366,6 +366,8 @@ namespace Ac.Boot
                 // 收包路径只有这一条：会话层（HelloAck/KeepAlive/Disconnect）在 UdpTransport 内部消化，
                 // 应用包（快照/事件/match state）交给帧回路的既有入口 OnPacket。
                 transport.ApplicationPacket += loop.OnPacket;
+                // 断线自动重连（产品路径）：没有它，任何一次会话释放都会把客户端永久钉在僵死大厅。
+                transport.AutoReconnect = true;
                 loop.Transport = transport;
             }
             catch (Exception ex)
@@ -408,6 +410,9 @@ namespace Ac.Boot
     // 唯一的 MonoBehaviour：只做"每帧把 dt 交给帧回路"这一件事，逻辑全在 GameLoop 里（可无头测试）。
     public sealed class GameLoopDriver : MonoBehaviour
     {
+        // 玩家按 ESC 主动解锁指针后，不要在同一场对局里自动锁回去（进对局/点击画面会复位它）。
+        private bool _pointerUnlockRequested;
+
         // 本帧是否按下了"聊天"键（键位表 [ActionChat] 解析出来的 KeyCode，设置面板改了它跟着改）。
         // 表的默认值是 Return —— 与大厅准备键同键，两者相位互斥（ADR-013 / ActionChat 的注释）。
         private static bool ChatKeyDown()
@@ -454,15 +459,26 @@ namespace Ac.Boot
                 else if (Input.GetKeyDown(KeyCode.Escape))
                 {
                     sampler.SetPointerLocked(false);
+                    _pointerUnlockRequested = true;      // 玩家自己解锁：别下一帧又自动锁回去
                     Cursor.lockState = CursorLockMode.None;
                     Cursor.visible = true;
                 }
                 else if (Input.GetMouseButtonDown(0) && !sampler.PointerLocked)
                 {
                     sampler.SetPointerLocked(true);
+                    _pointerUnlockRequested = false;
                     Cursor.lockState = CursorLockMode.Locked;
                     Cursor.visible = false;
                 }
+                else if (loop.CombatVisible && !sampler.PointerLocked && !_pointerUnlockRequested)
+                {
+                    // 进对局自动锁定指针：以前必须"先点一下画面"才锁，玩家第一反应是"视角转了不了/无法调整"
+                    // （实跑反馈）。ESC 仍然能解锁，而且解锁后不会在下一帧被自动锁回去。
+                    sampler.SetPointerLocked(true);
+                    Cursor.lockState = CursorLockMode.Locked;
+                    Cursor.visible = false;
+                }
+                if (!loop.CombatVisible) _pointerUnlockRequested = false;   // 出对局就复位，下次进对局重新自动锁
                 if (Application.isFocused != sampler.Focused) sampler.OnFocusChanged(Application.isFocused);
                 // 打字期间不能一边聊天一边开枪：意图按 0 处理，但 30Hz 上行照发零意图（服务端语义明确）
                 if (typing) sampler.Suspend();

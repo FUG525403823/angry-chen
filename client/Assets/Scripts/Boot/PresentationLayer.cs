@@ -268,6 +268,8 @@ namespace Ac.Boot
             sources.Chat = flow == null ? null : flow.Chat;      // 局内聊天（显隐由 GameLoop 按相位驱动）
             sources.Players = loop == null ? null : loop.LastMatchState.Players;
             sources.SelfPid = loop == null ? 0 : loop.LocalPlayerId;
+            sources.Connected = loop != null && loop.IsConnected;
+            sources.ReconnectAttempts = loop == null ? 0 : loop.ReconnectAttempts;
             return sources;
         }
 

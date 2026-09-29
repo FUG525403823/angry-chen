@@ -21,6 +21,54 @@ namespace Ac.Tests
             SelfTest.Add("net.send_reject_no_retransmit", ChecksRejectedNeverOnWire);
             SelfTest.Add("net.join_wire", ChecksJoinOnWire);
             SelfTest.Add("net.disconnect_reason", ChecksDisconnectReason);
+            SelfTest.Add("net.auto_reconnect", ChecksAutoReconnect);
+        }
+
+        // 断线自动重连（产品路径）：Disconnected 不再是终点。没有它，任何一次会话释放都会把客户端永久
+        // 钉在"僵死大厅"——缓存着旧花名册、0 B/s、按键全无反应（实跑事故：失焦 33 秒 ⇒ 会话被服务端
+        // 释放 ⇒ 回来就是这个状态，而界面上没有任何提示）。
+        private static void ChecksAutoReconnect()
+        {
+            var sink = new CountingSink();
+            var machine = new SessionStateMachine(sink);
+            var now = 1000.0;
+            machine.AutoReconnect = true;
+            machine.StartConnect("mem:0", 0x11112222u, now);
+            SelfTest.Equal((long)ConnectionState.Connecting, (long)machine.State);
+            SelfTest.True(machine.OnHelloAck(7, 100u, 0xABCDu, now), "HelloAck 要把状态推到 Connected", "没推到");
+            SelfTest.Equal((long)ConnectionState.Connected, (long)machine.State);
+
+            // 服务端明确断开（reason=8 满员/对局中这类）：进入 Disconnected，并排下一次重连
+            machine.OnDisconnect(DisconnectReason.RoomUnavailable, now);
+            SelfTest.Equal((long)ConnectionState.Disconnected, (long)machine.State);
+            machine.Tick(now + 500.0);
+            SelfTest.Equal(0, sink.Hellos);                       // 退避窗口内不许重连（防止重连风暴）
+            machine.Tick(now + SessionStateMachine.ReconnectBaseDelayMs + 1.0);
+            SelfTest.Equal((long)ConnectionState.Connecting, (long)machine.State);
+            SelfTest.Equal(1, machine.ReconnectAttempts);
+            machine.Tick(now + SessionStateMachine.ReconnectBaseDelayMs + 2.0);
+            SelfTest.True(sink.Hellos >= 1, "退避到点必须真的重发 Hello", sink.Hellos.ToString());
+            SelfTest.True(sink.LastNonce != 0x11112222u, "重连必须换新 nonce（服务端按 nonce 去重）",
+                sink.LastNonce.ToString("X8"));
+
+            // 重连成功 ⇒ 回到 Connected；关掉开关就回到旧语义（用例/离线路径不被自动重连打扰）
+            SelfTest.True(machine.OnHelloAck(8, 200u, 0x1234u, now + 2000.0), "重连的 HelloAck 也要认", "没认");
+            SelfTest.Equal((long)ConnectionState.Connected, (long)machine.State);
+            machine.AutoReconnect = false;
+            machine.OnDisconnect(DisconnectReason.ServerShutdown, now + 3000.0);
+            machine.Tick(now + 20000.0);
+            SelfTest.Equal((long)ConnectionState.Disconnected, (long)machine.State);   // 开关关着就不重连
+        }
+
+        private sealed class CountingSink : ISessionControlSink
+        {
+            public int Hellos;
+            public int KeepAlives;
+            public int Resumes;
+            public uint LastNonce;
+            public void SendHello(uint clientNonce, uint reconnectToken) { Hellos += 1; LastNonce = clientNonce; }
+            public void SendKeepAlive() { KeepAlives += 1; }
+            public void SendResume(uint reconnectToken) { Resumes += 1; }
         }
 
         // ---- 1. 握手与状态机（真套接字回环）----------------------------------------------------------

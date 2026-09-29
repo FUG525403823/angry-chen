@@ -16,7 +16,7 @@ namespace Ac.UI
         public OverlayItemKind Kind;
         public OverlayTextRole Role;
         public OverlayAlign Align;
-        public int X;             // Align=Left/Right 时是左边缘；Center 时是中心线
+        public int X;             // Left：左边缘；Center：中心线；Right：右边缘（渲染侧按此换算矩形，见 OverlayRenderer.ItemRect）
         public int Y;             // 上边缘
         public int W;
         public int H;
@@ -40,6 +40,10 @@ namespace Ac.UI
         public Chat Chat;
         public MatchStatePlayer[] Players;
         public int SelfPid;
+        // 连接状态（GameLoop.IsConnected）：断线时界面必须说出来，
+        // 不允许继续显示过期的花名册（实跑事故：缓存着旧队伍 + 0 B/s + 按键无反应）。
+        public bool Connected;
+        public int ReconnectAttempts;
     }
 
     // C10/C12/C13 的**布局模型**：把 HUD 采样、屏幕流相位、准星状态、队伍表、波间倒计时、结算榜单与调试面板
@@ -84,6 +88,9 @@ namespace Ac.UI
         public const string SkipDisabledText = "不可跳过（剩余时间 > 15s）";
         public const string ResultsTitle = "结算";
         public const string StaleBannerText = "榜单暂不可用（本地摘要）";
+        // 与服务器失联时的可见横幅（断线不能静默：实跑事故就是界面继续显示过期花名册 + 按键无反应）
+        public const string OfflineText = "与服务器断线，正在重连…";
+
         public const string ChatPromptPrefix = "说: ";
         public static readonly string ChatPromptEmpty = ChatPromptPrefix + "_";   // 缓冲空时也看得见光标
 
@@ -118,6 +125,8 @@ namespace Ac.UI
         private string _reviveLine = string.Empty;
         private int _reviveCache = int.MinValue;
         private string _waveTitleLine = string.Empty;
+        private string _offlineLine = string.Empty;
+        private int _offlineCache = int.MinValue;
         private int _waveTitleCache = int.MinValue;
         private string _countdownLine = string.Empty;
         private int _countdownCache = int.MinValue;
@@ -189,7 +198,7 @@ namespace Ac.UI
             var lobby = sources.Lobby;
             var y = inset;
             AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, LobbyTitle);
-            y += Hud.FontTitlePx + 12;
+            y += Hud.ScaledFontPx("title", h) + 12;
 
             // 昵称只**显示**：输入的唯一通路是 GameLoopDriver → ScreenFlow.CaptureName → Ac.UI.NameInput，
             // 这里再挂一个 IMGUI TextField 就是第二条平行输入源（会双重输入）。
@@ -200,7 +209,7 @@ namespace Ac.UI
                 _nameLine = "昵称: " + (string.IsNullOrEmpty(name) ? "(未设置)" : name);
             }
             AddText(OverlayTextRole.Numeric, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, _nameLine);
-            y += Hud.FontNumericPx + 4;
+            y += Hud.ScaledFontPx("numeric", h) + 4;
 
             var valid = lobby.IsNameValid;
             if (!_nameValidSet || valid != _nameValidCache)
@@ -211,7 +220,7 @@ namespace Ac.UI
             }
             AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset,
                 valid ? Hud.ColorNormal : Hud.ColorHurt, 1f, _nameStatusLine);
-            y += Hud.FontLabelPx + 16;
+            y += Hud.ScaledFontPx("label", h) + 16;
 
             var code = lobby.RoomCode == null ? null : lobby.RoomCode.Code;
             if (!ReferenceEquals(code, _roomCodeCache))
@@ -220,37 +229,45 @@ namespace Ac.UI
                 _roomLine = "房间码: " + (string.IsNullOrEmpty(code) ? "(未输入)" : code);
             }
             AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, _roomLine);
-            y += Hud.FontLabelPx + 4;
+            y += Hud.ScaledFontPx("label", h) + 4;
 
             AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, ReadyLine(lobby));
-            y += Hud.FontLabelPx + 6;
+            y += Hud.ScaledFontPx("label", h) + 6;
 
             // 备战条：已准备人数 / 总人数
             var total = lobby.PlayerCount;
             var fill = total <= 0 ? 0f : lobby.ReadyCount / (float)total;
-            AddBar(inset, y, BarWidthPx, 10, Hud.ColorRage, 1f, fill);
+            AddBar(inset, y, Hud.ScaledPx(BarWidthPx, h), Hud.ScaledPx(10, h), Hud.ColorRage, 1f, fill);
             y += 10 + 14;
 
             AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 0.8f, LobbyHint);
-            y += Hud.FontLabelPx + 16;
+            y += Hud.ScaledFontPx("label", h) + 16;
 
             if (Roster.VisibleRows(sources.Players) > 0)
             {
                 AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorTarget, 1f, RosterHeader);
-                y += Hud.FontLabelPx + 2;
+                y += Hud.ScaledFontPx("label", h) + 2;
                 BuildRosterRows(sources, inset, y, w - inset);
             }
         }
 
         private void BuildLoading(int w, int h)
         {
-            AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, h / 2 - Hud.FontTitlePx, w, Hud.ColorNormal, 1f, "载入中");
+            AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, h / 2 - Hud.ScaledFontPx("title", h), w, Hud.ColorNormal, 1f, "载入中");
         }
 
         private void BuildCombat(in OverlaySources sources, int w, int h, int inset)
         {
             var hud = sources.Hud;
             var bottom = h - inset;
+            // 字号/条宽/行高都随视口高度缩放：HUD 的像素常量按 1080p 设计（见 Hud.ScaleFor）。
+            // 不缩放时 2560×1440 上 16~32px 的字又小又糊，且固定偏移会被放大后的字号压到一起。
+            var fontTitle = Hud.ScaledFontPx("title", h);
+            var fontNumeric = Hud.ScaledFontPx("numeric", h);
+            var fontLabel = Hud.ScaledFontPx("label", h);
+            var barW = Hud.ScaledPx(BarWidthPx, h);
+            var barH = Hud.ScaledPx(BarHeightPx, h);
+            var feedRow = Hud.ScaledPx(FeedRowHeightPx, h);
 
             var wave = hud.DisplayedWave;
             if (wave < 0) wave = 0;
@@ -260,6 +277,12 @@ namespace Ac.UI
                 _waveLine = "波次 " + wave;
             }
             if (wave >= 1) AddText(OverlayTextRole.Numeric, OverlayAlign.Center, w / 2, inset, w, Hud.ColorNormal, 1f, _waveLine);
+            if (!sources.Connected)
+            {
+                // 对局中掉线同样要说出来（否则看起来就是"操作没反应"）
+                AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, inset + fontNumeric + 10, w, Hud.ColorHurt, 1f,
+                    OfflineLine(sources.ReconnectAttempts));
+            }
 
             // 波次横幅（4500ms / 队列 3 由 WaveBanner 自己管，这里只读它当前该显示的那一波）
             var banner = hud.Banner;
@@ -272,7 +295,7 @@ namespace Ac.UI
                         ? "第 " + banner.CurrentWave + " 波 · BOSS"
                         : "第 " + banner.CurrentWave + " 波";
                 }
-                AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, inset + Hud.FontNumericPx + 10, w, Hud.ColorTarget, 1f, _bannerLine);
+                AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, inset + fontNumeric + 10, w, Hud.ColorTarget, 1f, _bannerLine);
             }
 
             // 血条 + 血量（显示值来自 Hud 的 10Hz 镜像）
@@ -285,8 +308,8 @@ namespace Ac.UI
                 _hpLine = "HP " + hp;
             }
             var hpColor = hp <= HpLowPercent ? Hud.ColorHurt : Hud.ColorNormal;
-            AddText(OverlayTextRole.Numeric, OverlayAlign.Left, inset, bottom - Hud.FontNumericPx - 40, 260, hpColor, 1f, _hpLine);
-            AddBar(inset, bottom - 34, BarWidthPx, BarHeightPx, hpColor, 1f, hp / 100f);
+            AddText(OverlayTextRole.Numeric, OverlayAlign.Left, inset, bottom - fontNumeric - 40, Hud.ScaledPx(260, h), hpColor, 1f, _hpLine);
+            AddBar(inset, bottom - Hud.ScaledPx(34, h), barW, barH, hpColor, 1f, hp / 100f);
 
             // 弹药 / 备弹（低弹色由 AmmoCounter 按该武器的弹匣容量判）
             var ammo = hud.Ammo;
@@ -296,8 +319,8 @@ namespace Ac.UI
                 _reserveCache = ammo.Reserve;
                 _ammoLine = ammo.Mag + " / " + ammo.Reserve;
             }
-            AddText(OverlayTextRole.Numeric, OverlayAlign.Right, w - inset, bottom - Hud.FontNumericPx - 40, 320, ammo.Color, 1f, _ammoLine);
-            if (ammo.Reloading) AddText(OverlayTextRole.Label, OverlayAlign.Right, w - inset, bottom - 22, 320, Hud.ColorNormal, 1f, ReloadText);
+            AddText(OverlayTextRole.Numeric, OverlayAlign.Right, w - inset, bottom - fontNumeric - 40, Hud.ScaledPx(320, h), ammo.Color, 1f, _ammoLine);
+            if (ammo.Reloading) AddText(OverlayTextRole.Label, OverlayAlign.Right, w - inset, bottom - Hud.ScaledPx(22, h), Hud.ScaledPx(320, h), Hud.ColorNormal, 1f, ReloadText);
 
             // 怒气条 / 狂暴倒计时
             var rage = hud.Rage;
@@ -309,8 +332,8 @@ namespace Ac.UI
                 _rageLeftCache = rageTenths;
                 _rageLine = rage.RageMode ? "狂暴 " + DebugPanel.Fmt1(rage.RageLeftMs) + " s" : "怒气 " + rage.Rage;
             }
-            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, bottom - Hud.FontLabelPx - 26, 260, rage.Color, 1f, _rageLine);
-            AddBar(inset, bottom - 12, 140, 10, rage.Color, 1f, rage.Fill01);
+            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, bottom - fontLabel - 26, Hud.ScaledPx(260, h), rage.Color, 1f, _rageLine);
+            AddBar(inset, bottom - Hud.ScaledPx(12, h), Hud.ScaledPx(140, h), barH, rage.Color, 1f, rage.Fill01);
 
             // 准星（四段十字 + 扩散），中心固定在视口中心
             var crosshair = hud.Crosshair;
@@ -332,7 +355,7 @@ namespace Ac.UI
                     _feedWave[i] = entry.Wave;
                     _feedLines[i] = entry.Headshot ? "击杀 #" + entry.VictimId + " 爆头" : "击杀 #" + entry.VictimId;
                 }
-                AddText(OverlayTextRole.Feed, OverlayAlign.Right, w - inset, inset + i * FeedRowHeightPx, w / 2,
+                AddText(OverlayTextRole.Feed, OverlayAlign.Right, w - inset, inset + i * feedRow, w / 2,
                     feed.ColorOf(i), feed.AlphaOf(i), _feedLines[i]);
             }
 
@@ -340,7 +363,7 @@ namespace Ac.UI
             if (hud.Downed != null && hud.Downed.Visible)
             {
                 AddBar(0, 0, w, h, Hud.ColorHurt, DownedShadeAlpha, 1f);
-                AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, h / 2 - Hud.FontTitlePx / 2, w, Hud.ColorNormal, 1f, DownedText);
+                AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, h / 2 - fontTitle / 2, w, Hud.ColorNormal, 1f, DownedText);
             }
             if (hud.Revive != null && hud.Revive.Visible)
             {
@@ -350,8 +373,8 @@ namespace Ac.UI
                     _reviveCache = percent;
                     _reviveLine = "救援中 " + percent + "%";
                 }
-                AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, bottom - Hud.FontLabelPx - 40, w, Hud.ColorNormal, 1f, _reviveLine);
-                AddBar(w / 2 - BarWidthPx / 2, bottom - 30, BarWidthPx, 10, Hud.ColorRage, 1f, hud.Revive.Progress);
+                AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, bottom - fontLabel - 40, w, Hud.ColorNormal, 1f, _reviveLine);
+                AddBar(w / 2 - barW / 2, bottom - Hud.ScaledPx(30, h), barW, barH, Hud.ColorRage, 1f, hud.Revive.Progress);
             }
             if (hud.ChargeWarningRemainingMs > 0f)
             {
@@ -406,7 +429,7 @@ namespace Ac.UI
             var lobby = sources.Lobby;
             var y = inset;
             AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, IntermissionTitle);
-            y += Hud.FontTitlePx + 12;
+            y += Hud.ScaledFontPx("title", h) + 12;
 
             // 倒计时只显示服务器下发的权威值（§5：不本地外推），按 100ms 取整后缓存
             var ms = intermission == null ? 0 : intermission.RemainingMs;
@@ -417,10 +440,10 @@ namespace Ac.UI
                 _countdownLine = (tenths / 10) + "." + (tenths % 10) + " s";
             }
             AddText(OverlayTextRole.Numeric, OverlayAlign.Center, w / 2, y, w, Hud.ColorTarget, 1f, _countdownLine);
-            y += Hud.FontNumericPx + 8;
+            y += Hud.ScaledFontPx("numeric", h) + 8;
 
             var fill = ms <= 0 ? 0f : (ms >= Intermission.IntermissionInitialMs ? 1f : ms / (float)Intermission.IntermissionInitialMs);
-            AddBar(w / 2 - BarWidthPx / 2, y, BarWidthPx, BarHeightPx, Hud.ColorRage, 1f, fill);
+            AddBar(w / 2 - Hud.ScaledPx(BarWidthPx, h) / 2, y, Hud.ScaledPx(BarWidthPx, h), Hud.ScaledPx(BarHeightPx, h), Hud.ColorRage, 1f, fill);
             y += BarHeightPx + 12;
 
             var wave = lobby.Wave;
@@ -430,18 +453,25 @@ namespace Ac.UI
                 _waveTitleLine = "第 " + wave + " 波准备中";
             }
             AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, _waveTitleLine);
-            y += Hud.FontLabelPx + 8;
+            y += Hud.ScaledFontPx("label", h) + 8;
 
             AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, ReadyLine(lobby));
-            y += Hud.FontLabelPx + 6;
+            y += Hud.ScaledFontPx("label", h) + 6;
+            if (!sources.Connected)
+            {
+                // 断线必须可见：否则界面继续显示过期花名册，玩家只看到"按键没反应"。
+                AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, Hud.ColorHurt, 1f,
+                    OfflineLine(sources.ReconnectAttempts));
+                y += Hud.ScaledFontPx("label", h) + 6;
+            }
             var total = lobby.PlayerCount;
-            AddBar(w / 2 - BarWidthPx / 2, y, BarWidthPx, 10, Hud.ColorRage, 1f, total <= 0 ? 0f : lobby.ReadyCount / (float)total);
+            AddBar(w / 2 - Hud.ScaledPx(BarWidthPx, h) / 2, y, Hud.ScaledPx(BarWidthPx, h), Hud.ScaledPx(10, h), Hud.ColorRage, 1f, total <= 0 ? 0f : lobby.ReadyCount / (float)total);
             y += 10 + 14;
 
             var skip = intermission != null && intermission.SkipEnabled;
             AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, skip ? Hud.ColorNormal : Hud.ColorHurt, 1f,
                 skip ? SkipEnabledText : SkipDisabledText);
-            y += Hud.FontLabelPx + 16;
+            y += Hud.ScaledFontPx("label", h) + 16;
 
             BuildRosterRows(sources, inset, y, w - inset);
         }
@@ -451,7 +481,7 @@ namespace Ac.UI
             var results = sources.Results;
             var y = inset;
             AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, ResultsTitle);
-            y += Hud.FontTitlePx + 12;
+            y += Hud.ScaledFontPx("title", h) + 12;
 
             if (results != null)
             {
@@ -462,12 +492,12 @@ namespace Ac.UI
                     _summaryLine = "到达波次 " + results.WaveReached + " · 胜方 队伍 " + results.WinnerTeam;
                 }
                 AddText(OverlayTextRole.Numeric, OverlayAlign.Center, w / 2, y, w, Hud.ColorTarget, 1f, _summaryLine);
-                y += Hud.FontNumericPx + 8;
+                y += Hud.ScaledFontPx("numeric", h) + 8;
 
                 if (results.StaleBanner)
                 {
                     AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, Hud.ColorHurt, 1f, StaleBannerText);
-                    y += Hud.FontLabelPx + 4;
+                    y += Hud.ScaledFontPx("label", h) + 4;
                 }
                 if (results.RetryPending)
                 {
@@ -477,7 +507,7 @@ namespace Ac.UI
                         _retryLine = "重试中 " + results.RetryCount + "/" + Results.RetryMax;
                     }
                     AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, _retryLine);
-                    y += Hud.FontLabelPx + 4;
+                    y += Hud.ScaledFontPx("label", h) + 4;
                 }
                 y += 8;
 
@@ -621,6 +651,17 @@ namespace Ac.UI
             item.Target = target;
             _items[_count] = item;
             _count += 1;
+        }
+
+        // 断线横幅文案：随重连次数变化，按次数缓存（帧预算 0 B/帧的纪律）。
+        private string OfflineLine(int attempts)
+        {
+            if (attempts != _offlineCache)
+            {
+                _offlineCache = attempts;
+                _offlineLine = attempts <= 0 ? OfflineText : OfflineText + "（第 " + attempts + " 次）";
+            }
+            return _offlineLine;
         }
     }
 }

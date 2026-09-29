@@ -63,6 +63,14 @@ namespace Ac.Boot
             _views = views;
             _hud = hud;
             _profiler = profiler;
+            // 复用帧的数组**必须在这里分配一次**：`SnapshotCodec.TryToFrame` 要求 Entities/RemovedIds 非空，
+            // 而 OnPacket 此前每包把它重置成 `default(SnapshotFrame)`（引用字段为 null）⇒ **每一条下行
+            // 快照都被判失败丢弃**（只进 DecodeFailures，界面上什么都看不见）。出包实跑的症状：
+            // inboundBytesPerSec 19240（快照真的在收）却 entityCount=0 / serverTick=0，
+            // 世界镜像恒空 ⇒ 相机没有本地实体可跟（停在装配原点，画面是几何体内壁）、HUD HP 恒 0。
+            // 用例 `boot.snapshot_reaches_mirror` 钉住这条缝；跨帧复用也满足帧预算的 0 B/帧。
+            _scratchFrame.Entities = new FrameEntity[SnapshotView.MaxRecordsPerFrame];
+            _scratchFrame.RemovedIds = new ushort[SnapshotView.MaxRecordsPerFrame];
         }
 
         public UdpTransport Transport { get; set; }      // 离线（单机/帧基准）时为 null
@@ -167,7 +175,7 @@ namespace Ac.Boot
                 {
                     SnapshotPayload decoded;
                     if (SnapshotCodec.Decode(payload, Events, out decoded) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
-                    _scratchFrame = default(SnapshotFrame);
+                    // 只复用、**不重建**：数组在构造期分配一次，TryToFrame 负责把计数与内容抄进来。
                     if (!SnapshotCodec.TryToFrame(decoded, ref _scratchFrame)) { DecodeFailures += 1; return; }
                     ApplySnapshot(_scratchFrame);
                     return;
@@ -248,6 +256,15 @@ namespace Ac.Boot
         // 读 `_phase`（MatchState 的权威字节）而不是 `_sample.Phase`：后者由帧末的 FillSample 写，
         // 在帧首问它会拿到上一帧的值。
         public bool ChatVisible { get { return Hud.CombatUiVisible(_phase); } }
+
+        // 同一条判据的对外名字：进对局自动锁指针、断线横幅都用它（与 HUD 不各推一套相位）。
+        public bool CombatVisible { get { return Hud.CombatUiVisible(_phase); } }
+
+        // 连接状态：给 UI 用。断线时大厅/HUD 必须**说出来** —— 实跑事故就是"缓存着旧的一队人 + 0 B/s +
+        // 按键无反应"而界面上没有任何提示，玩家只能认为游戏坏了。
+        public bool IsConnected { get { return Transport != null && Transport.State == ConnectionState.Connected; } }
+        public ConnectionState Connection { get { return Transport == null ? ConnectionState.Disconnected : Transport.State; } }
+        public int ReconnectAttempts { get { return Transport == null ? 0 : Transport.ReconnectAttempts; } }
 
         public void Frame(double dtMs)
         {
@@ -341,6 +358,23 @@ namespace Ac.Boot
             _sample.Phase = _phase;
             _sample.Wave = _wave;
             _sample.IntermissionMs = _intermissionMs;
+
+            // 弹药/怒气取自**本地玩家那行 MatchState**（mag u8 / reserve u16 / reloadLeft10Ms u8 / rage u8 /
+            // rageLeft100Ms u8，见 codec.hpp 的 MatchStatePlayer）。此前这两项在客户端没有任何权威来源
+            // （AmmoLedger 只有用例在用、sample 也没人填），出包 HUD 恒显示 "0 / 0"、怒气恒 0 —— 实跑可见。
+            var players = LastMatchState.Players;
+            if (players == null || LocalPlayerId == 0) return;
+            for (var i = 0; i < players.Length; i++)
+            {
+                if (players[i].Pid != LocalPlayerId) continue;
+                _sample.Mag = players[i].Mag;
+                _sample.Reserve = players[i].Reserve;
+                _sample.ReloadLeft10Ms = players[i].ReloadLeft10Ms;
+                _sample.MagSize = Ac.Sim.WeaponTable.MagSizeOf(players[i].Weapon);
+                _sample.Rage = players[i].Rage;
+                _sample.RageLeft100Ms = players[i].RageLeft100Ms;
+                return;
+            }
         }
     }
 }

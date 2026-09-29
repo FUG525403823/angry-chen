@@ -113,6 +113,33 @@ namespace Ac.UI
             return FontNumericPx;
         }
 
+        // 分辨率缩放：HUD 的像素常量按 1920×1080 设计，出包实测在 2560×1440 上 16~32px 的字又小又糊
+        // （用户反馈"文字看不清/越界"）。唯一的缩放源就是视口高度，钳在 0.75~2.0，避免极端窗口下爆掉。
+        public const float DesignHeightPx = 1080f;
+        public const float MinUiScale = 0.75f;
+        public const float MaxUiScale = 2.0f;
+
+        public static float ScaleFor(int viewportHeightPx)
+        {
+            if (viewportHeightPx <= 0) return 1f;
+            var scale = viewportHeightPx / DesignHeightPx;
+            if (scale < MinUiScale) return MinUiScale;
+            if (scale > MaxUiScale) return MaxUiScale;
+            return scale;
+        }
+
+        public static int ScaledFontPx(string role, int viewportHeightPx)
+        {
+            var px = (int)(FontPx(role) * ScaleFor(viewportHeightPx) + 0.5f);
+            return px < 1 ? 1 : px;
+        }
+
+        public static int ScaledPx(int px, int viewportHeightPx)
+        {
+            var scaled = (int)(px * ScaleFor(viewportHeightPx) + 0.5f);
+            return scaled < 1 ? 1 : scaled;
+        }
+
         public static float SafeAreaInsetPx(int viewportHeightPx) { return viewportHeightPx * SafeAreaPercent; }
 
         public static bool CombatUiVisible(byte phase) { return phase == PhasePlaying; }

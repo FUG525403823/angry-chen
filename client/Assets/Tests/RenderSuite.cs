@@ -29,6 +29,55 @@ namespace Ac.Tests
             SelfTest.Add("render.debug_panel_items", ChecksDebugPanelItems);
             SelfTest.Add("render.no_viewport_no_items", ChecksNoViewportNoItems);
             SelfTest.Add("render.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
+            SelfTest.Add("render.overlay_in_bounds", ChecksOverlayInBounds);
+        }
+
+        // 分辨率 × 相位：**每一条绘制项**都必须完全落在视口内。这条缝此前整体错位 ——
+        // OverlayItem.X 对 Center 是"中心线"、对 Right 是"右边缘"，而渲染侧一律按"左边缘"起矩形，
+        // 于是居中标题/波次被推到 1.5 倍屏宽处（右缘外裁掉）、右对齐的弹药行整条出屏
+        // （用户实跑反馈"波次、怒气等文字越界或者看不清"）。同一条用例钉住字号随视口缩放。
+        private static void ChecksOverlayInBounds()
+        {
+            // 缩放口径本身（Hud.ScaleFor / ScaledFontPx）
+            SelfTest.Equal(1000, (long)(Hud.ScaleFor(1080) * 1000.0));
+            SelfTest.Equal(Hud.FontNumericPx, (long)Hud.ScaledFontPx("numeric", 1080));
+            SelfTest.True(Hud.ScaledFontPx("numeric", 1440) > Hud.ScaledFontPx("numeric", 1080),
+                "字号必须随视口高度变大（看不清的根因）",
+                Hud.ScaledFontPx("numeric", 1080) + " -> " + Hud.ScaledFontPx("numeric", 1440));
+            SelfTest.Equal(1, (long)Hud.ScaleFor(0));                       // 无高度信息时回退 1.0
+            SelfTest.True(Hud.ScaleFor(100000) <= Hud.MaxUiScale, "缩放有上限", Hud.ScaleFor(100000).ToString());
+
+            var viewports = new[] { new[] { 1280, 720 }, new[] { 1920, 1080 }, new[] { 2560, 1440 } };
+            var phases = new[] { Hud.PhaseLobby, Hud.PhasePlaying, Hud.PhaseIntermission, Hud.PhaseEnded };
+            foreach (var phase in phases)
+            {
+                using (var rig = new Rig())
+                {
+                    var wave = phase == Hud.PhasePlaying || phase == Hud.PhaseIntermission || phase == Hud.PhaseEnded ? 3 : 0;
+                    rig.Loop.OnPacket(MatchStateHeader(),
+                        MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 1, 2 }, new[] { "牧羊人", "b" }, new[] { true, true }));
+                    rig.Loop.Frame(1000.0 / 60.0);
+                    foreach (var vp in viewports)
+                    {
+                        var w = vp[0];
+                        var h = vp[1];
+                        var count = rig.Layer.BuildOverlay(w, h);
+                        SelfTest.True(count > 0, "有视口就必须产出绘制项 phase=" + phase, "一条都没有");
+                        var items = rig.Layer.Overlay.Items;
+                        for (var i = 0; i < count; i++)
+                        {
+                            var item = items[i];
+                            var rect = OverlayRenderer.ItemRect(item);
+                            var inside = rect.xMin >= -0.5f && rect.yMin >= -0.5f &&
+                                rect.xMax <= w + 0.5f && rect.yMax <= h + 0.5f;
+                            SelfTest.True(inside,
+                                "绘制项必须在视口内（phase=" + phase + " " + w + "x" + h + " kind=" + item.Kind +
+                                " align=" + item.Align + " text=" + item.Text + "）",
+                                "rect=" + rect.xMin + "," + rect.yMin + "," + rect.xMax + "," + rect.yMax);
+                        }
+                    }
+                }
+            }
         }
 
         private const int ViewW = 1280;
@@ -88,7 +137,7 @@ namespace Ac.Tests
             // pid <= 0 的行整行不渲染：需要一条"表里有玩家、但都不可见"的载荷。
             internal void PushStateZeroPid(byte phase, byte wave)
             {
-                Loop.OnPacket(MatchStateHeader(), MatchStateBytes(phase, wave, 0, new ushort[] { 0 }, new[] { "ghost" }, new[] { false }));
+                Loop.OnPacket(MatchStateHeader(), MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 0 }, new[] { "ghost" }, new[] { false }));
                 Loop.Frame(1000.0 / 60.0);
             }
 
