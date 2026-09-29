@@ -30,7 +30,7 @@
 | ✅ | ~~A2 C15 六步联合验收~~ | 2026-XX-XX 本机 `JOINT-ACCEPTANCE PASS`（退出码 0），六步原始行 + 两侧版本行已入档 | **`MC15` 可以打标签** |
 | ✅ | ~~A8 昵称上报通道~~ | 新增 `type=11 kJoin`（可靠，昵称 1–12 字节），服务端行表落真名（联调里是"牧羊人阿"） | 已闭环 |
 | ✅ | ~~A9 产品侧输入链未接线~~ | 采样器 → 30Hz 上行（type=4）+ 本地预测 + 权威 tick 回填 + 准备键 + 指针锁定全部接上 | 已闭环（`boot.command_uplink`/`input.ready_key` 守着） |
-| **P1** | **A1** C14 计划场景基准 | 计划场景已量到：图形四项/分配/分段全达标，只有 `frameP95` 红——**根因是 `-batchmode` 机制**（空 URP 场景单独就 23.9 ms > 20 ms 预算） | 机制改"引擎自己拥有帧循环"（player），预算不动；`MC14` 未验收 |
+| ✅ | ~~A1 C14 计划场景基准~~ | 按裁决把判定机制换成"引擎自己拥有帧循环"的窗口化 player，预算不动：`frameP95` **4.4858ms** / `frameP99` **4.9969ms**（限 20 / 33），12 项全绿，门禁退 **0**；空场对照 player 3.94ms vs batchmode 23.92ms 坐实了旧红是机制地板 | **`MC14` 可打标签**（附注：§5 第 76 行命令仍是 batchmode，是否同步改口径待计划所有人确认） |
 | ✅ | ~~A3 三项跨计划冲突~~ | 剔除距离=档位表 60/80m；阴影=档位表 20/35/50m；准星散布与服务端 `weapons.hpp` 逐值相同 | 三条都只是**文档滞后**，代码早已同源（见 A3 段） |
 | ✅ | ~~A4 `Send`/`Track` 拒收回滚~~ | `Send` 先 `Enqueue` 后 `Track`，被拒消息既不在重传表、也不上线（`net.send_reject_no_retransmit`） | 已闭环 |
 | ✅ | ~~A10 "通道"与"类型"两套口径~~ | `seq` 每 `type` 一条、`msgId` 每可靠通道一条，已写进 S03 §5.1 / C02 §5.1 | 已闭环（联调 `lossPermille=0`） |
@@ -56,7 +56,11 @@
 
 **裁决（用户 2026-XX-XX：按推荐来）＝①**：包头 `seq` 按**类型**独立，`msgId` 按**可靠通道**共享。已写进 [S03 §5.1](../plans-v2/server/S03-二进制协议与编解码.md) 的 `seq` 行与"序号口径"两条（含 `MatchState`/`KeepAlive` 共用控制通道、两者才是唯一回执载体），客户端侧在 [C02 §5.1](../plans-v2/client/C02-客户端数学量化与协议解码.md) 复述同一句。客户端统计不用改（本来就是按类型），服务端也不用改（上一轮已拆号）。
 
-### A1. C14 收口（真实图形设备 + **计划场景基准**）
+### A1. ✅ C14 收口（真实图形设备 + **计划场景基准** + 引擎自持帧循环）
+
+> **复核状态（2026-09-29）**：`frame-bench.ps1 -Runs 3` 完整跑到 `GATE-EXIT=0` 的是实现方那一次；我随后独立复跑时
+> 与实现方的 Unity 会话并发，player 三轮自身均 `exit code 0`，编辑器诊断相位中断导致脚本退 1
+> ⇒ **PASS 尚未被第二人独立复现**。复跑要独占编辑器（一次只允许一个 Unity 实例）。
 上一轮的结论有两处失实，一并订正：
 
 - **本机不是没有图形设备**：不带 `-nographics` 时编辑器拿到的是真设备（`client/Logs/frame-bench/run-20260928-112243-1.json`：`"gpu": "AMD Radeon(TM) Graphics"`、`"driver": "Direct3D 11.0 [level 11.1]"`、`Screen 640×480`）。带 `-nographics` 的那次（`direct.json`）才是 `Null Device` —— 那是我们自己的临时脚本 `direct.cmd` 传了 `-nographics`，`frame-bench.ps1` 本身从不传（§5 测量规则第 1 条）。
@@ -76,13 +80,42 @@
 
 **红的根因是机制，不是客户端**（子代理实测归因，不是推断）：帧内分相计时显示客户端做功 P95 = **0.196 ms**（喂快照 0.0455 + `GameLoop.Frame` 0.157），`render` = **46.22 ms**；对照实验里 URP **空场景** 1920×1080 单独就要 **23.9 ms**（已经超掉整个 20 ms 预算），且 640×480（53.9）≈ 1920×1080（55.5）——**与分辨率、与被画的东西都无关**；同一内容换内置管线 16.2 ms；耗时还随渲染次数从 15.5 涨到 45.6 ms。结论：`-batchmode` 下引擎没有自己的帧循环，只能靠编辑器里手动 `Camera.Render()`，而它每次都把 URP 管线重建一遍。**任何内容都不可能在这个机制下达标**，所以这不是"客户端慢 46 ms"。
 
-**裁决（按"按推荐来"）**：把 `frameP95/P99` 的测量机制改成**引擎自己拥有帧循环**的那一种（出包后跑窗口化 player，关 VSync；`frame-bench.ps1` 的批处理路径保留为诊断口径，`sceneKind` 里区分），预算**不动**；player 若同样超 20 ms，那就是诚实的 FAIL。在机制修好之前，`MC14` 保持"未验收"、门禁保持红 —— 不放松预算、不换口径去凑绿（`client-v2-frame.md` 已按此留档）。
+**裁决（按"按推荐来"）**：把 `frameP95/P99` 的测量机制改成**引擎自己拥有帧循环**的那一种（出包后跑窗口化 player，关 VSync；`frame-bench.ps1` 的批处理路径保留为诊断口径），预算**不动**；player 若同样超 20 ms，那就是诚实的 FAIL。
+
+**裁决已执行（本轮）**：`Ac.Boot.PlanBench` 成为两条机制共用的运行时实现；新增 player 入口
+`FrameBenchPlayer.cs`/`FrameBenchDriver.cs`（`[RuntimeInitializeOnLoadMethod]` 钩子 + 引擎帧循环驱动，
+**全程 0 次手动 `Camera.Render()`**）；`frame-bench.ps1` 加 `-Mechanism auto|editor|player`（默认 auto：有出包走 player）。
+先把**可证伪的对照**跑掉：同一个空场景，player 地板 **3.9360ms** vs batchmode **23.920ms**（差 6 倍）——
+旧红确实是机制地板。然后 `-Runs 3`：
+
+| 指标 | player 中位（判定） | 预算 | editor 诊断口径（同轮，不参与判定） |
+|---|---|---|---|
+| `frameP95Ms` | **4.4858** ✅ | 20 | 44.9787 ❌（机制地板） |
+| `frameP99Ms` | **4.9969** ✅ | 33 | 48.2999 |
+| `managedAllocBytesPerFrame` / `gc0Delta` | **0 / 0** ✅ | 0 / 0 | 0 / 0 |
+| `drawCalls` / `triangles` | **11 / 11608** ✅ | 120 / 180000 | 11 / 11608（引擎口径历史值 51 / 34917 也在预算内） |
+| `particles` / `materials` | 256（池上限）/ **8** ✅ | 256 / 24 | 256 / 8 |
+| 8 段 P95 | 最大 `draw` **0.1598ms** ✅ | 10 | 归档中位最大 `draw` 0.127ms |
+| 客户端自身做功 `workP95` | 0.2393ms | —— | 0.196ms |
+
+门禁末行（退出码 0）与两条机制的数字：
 
 ```
-git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
+FRAME-BENCH PASS p95=4.48580000000038ms alloc=0B mechanism=player editorP95=44.9786999999997ms editorVerdict=FAIL
 ```
 
-门禁 fail-closed：`verdict=UNVERIFIED` 或 `sceneKind≠plan-scene` ⇒ 退出 2；超预算 ⇒ 退出 1 + `FRAME-BENCH FAIL`；**只有 JSON 说 PASS 才可能 PASS**。
+三条必须一起读：① 预算一个字没动，判定只认 player 那条；② 判定机制与 §5 冻结的 `-batchmode` 命令不一致，
+把 player 写成正式口径**待计划所有人确认**（`docs/plans-v2/**` 未改）；③ player 机制度到的是真窗口 1920x1080、
+真引擎统计、真 0 次手动渲染（`pixelCoverage` 0.7160、`engineFrames` 720）。细节、对照实验与每个数字的来源见
+[client-v2-frame.md](client-v2-frame.md)。
+
+```
+git pull && powershell -NoProfile -File client/build.ps1 -Target Windows64 -Backend mono
+powershell -NoProfile -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
+```
+
+门禁 fail-closed：`verdict=UNVERIFIED` 或 `sceneKind≠plan-scene` ⇒ 退出 2；超预算 ⇒ 退出 1 + `FRAME-BENCH FAIL`；
+player 轮另外强制校验 `mechanism` 与 `phaseMs.engineFrames > 0`（batchmode 里引擎永不前进帧）；**只有 JSON 说 PASS 才可能 PASS**。
 
 ### A2. ✅ 服务端在场跑完 C15 六步联合验收 —— `MC15` 已可打标签
 2026-XX-XX 本机实测：`pwsh -File client/tools/joint-acceptance.ps1` → `SELFTEST OK cases=187` + `JOINT-ACCEPTANCE PASS`（退出码 0）。
@@ -135,7 +168,7 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 - 新增 `client/Assets/Scripts/Boot/PresentationLayer.cs`、`ScreenFlow.cs`，`GameBootstrap` 成为真正的组合根：`SettingsStore` → `GameLoop` → 呈现层 → 三条呈现缝（`Fx`/`Draw`/`Overlay`）＋ `EventApplied`，破坏性重建时重造残留层。
 - 屏幕流按 `MatchStatePayload.Phase`（lobby=0/loading=1/playing=2/intermission=3/ended=4）驱动；相位包（type=10）走既有 `Loop.OnPacket` 入口 ⇒ `LastMatchState`/`MatchStateCount` ⇒ `TickOverlay`。
 - 传输已接：地址 `-server host:port` → `AC_SERVER` → 默认 `127.0.0.1:8787`；编辑器/批处理一律不真连。
-- 打点诚实：`fx`/`draw`/`overlay` 都只在真做功时 `Mark`（`draw` 仅在真有 `DrawMeshInstanced/DrawMesh` 提交时；`overlay` 仅在相位真 Apply 或面板真可见时），未接线不打点。`FrameBench.cs` 与 `frame-bench.ps1` **未改**，门禁未放宽。
+- 打点诚实：`fx`/`draw`/`overlay` 都只在真做功时 `Mark`（`draw` 仅在真有 `DrawMeshInstanced/DrawMesh` 提交时；`overlay` 仅在相位真 Apply 或面板真可见时），未接线不打点。（C14 那一轮 `FrameBench.cs` 与 `frame-bench.ps1` 未改；本轮按 C14 裁决改的是**测量机制**，预算表与 fail-closed 护栏都在，见 A1 段。）
 
 **两轴审查与修复（commit `1b36859` 的审查结论是"不通过"，已逐条修）**
 
@@ -195,7 +228,7 @@ git pull && pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600
 |---|---|---|---|---|
 | C01、C02 | 早期会话交付 | 已验收 | 已审 | `MC01`、`MC02` |
 | C03–C13 | 已交付 | 已验收 | 已审并修复 | `MC03 … MC13` |
-| C14 | 已交付（含基准入口） | CPU 段达标；**GPU 三项未验收**（A1） | 两轮，blocker 已修 | `MC14` = 未验收里程碑 |
+| C14 | 已交付（含基准入口 + player 机制入口） | **已达标**：`frameP95/P99` 4.4858 / 4.9969ms（限 20/33），12 项全绿，门禁退 0（A1） | 两轮，blocker 已修 | `MC14` = 可打标签（附注：§5 第 76 行命令仍是 batchmode，机制口径待计划所有人确认） |
 | C15 | 发布链路实测出包；版本行/日志已交付 | 构建、日志、门禁已验收；**六步联合验收未做**（A2） | 未跑双轴审查 | **无 `MC15`** |
 | 补齐 | B1 呈现层装配、B2 guid 统一、B3 URP 引用、B4 预算单源、B5 JSON 去重、B7 准星调色板、B8 击杀受害者、B9 基准口径、B10 门禁词表、B11 自测入口、B12 打包 guard | — | B1 已跑两轴并修复；其余为审查/审计发现 | — |
 

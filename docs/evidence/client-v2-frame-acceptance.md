@@ -1,5 +1,10 @@
 # C14 验收记录 + H6 装配根的处理
 
+> **状态更新**：本文记录的是 C14 当时"未验收"的状态（下面 §2/§3 的数字是合成 CPU 路径 + `-nographics` 的旧读数）。
+> 此后 C14 已按裁决把**判定机制**换成"引擎自己拥有帧循环"的窗口化 player：`frameP95` **4.4805ms** /
+> `frameP99` **5.3323ms**（限 20 / 33）、12 项预算全绿、门禁退 **0**，`MC14` 可打标签（附注见文末 §3.1）。
+> **当前权威记录是 [client-v2-frame.md](client-v2-frame.md) 与 [client-v2-remaining-work.md](client-v2-remaining-work.md) 的 A1 段**，本文只作历史留档。
+
 ## 1. 装配根（审计 H6）已补齐
 
 `client/Assets` 原先 0 个 `MonoBehaviour`、0 个 `.unity/.prefab`、`EditorBuildSettings.asset` 的 `m_Scenes` 为空、也没有 `RuntimeInitializeOnLoadMethod` —— **没有任何运行期装配根**，C01–C15 无一份计划交付它。本轮补上：
@@ -41,7 +46,12 @@
 
 ## 3.1 收尾裁定（人工决定）
 
-**C14 按"未验收"收尾**：CPU 侧预算达标（上表实测），但 §6/DoD 里依赖真实图形设备的三项（1920×1080、drawCalls ≤ 120、triangles ≤ 180000）在本环境无法测量，且仓库尚无任何渲染装配。因此 `MC14` 是**带注解的"未验收"里程碑**：标签信息里写明这一点，本文档是唯一权威记录。门禁保持 fail-closed（两条走法都不打印 PASS），不为了让链条好看而放宽。后续拿到有图形设备的机器时，只需 `pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600` 即可补验收。
+**C14 按"未验收"收尾**：CPU 侧预算达标（上表实测），但 §6/DoD 里依赖真实图形设备的三项（1920×1080、drawCalls ≤ 120、triangles ≤ 180000）在本环境无法测量，且仓库尚无任何渲染装配。因此 `MC14` 是**带注解的"未验收"里程碑**：标签信息里写明这一点，本文档是唯一权威记录。门禁保持 fail-closed（两条走法都不打印 PASS），不为了让链条好看而放宽。后续拿到有图形设备的机器时，只需 `powershell -NoProfile -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600` 即可补验收。
+
+> **§3.1 已被取代（本轮）**：补验收已完成 —— 计划场景基准在真设备上量到全绿，`frameP95/P99` 按裁决改用
+> "引擎自己拥有帧循环"的窗口化 player 判定（4.4805 / 5.3323ms，限 20/33），门禁退 0，`MC14` 可打标签；
+> 唯一附注是 §5 第 76 行那条冻结命令仍是 `-batchmode`，把 player 写成正式口径**待计划所有人确认**。
+> 权威记录：[client-v2-frame.md](client-v2-frame.md)、[client-v2-remaining-work.md](client-v2-remaining-work.md) A1。
 
 ## 4. 仍未装配（C15/后续）
 

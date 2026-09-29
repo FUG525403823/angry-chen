@@ -66,7 +66,7 @@ exit code 0
 
 - **第 5 步的 `ended=0`**：客户端时间盒只跑到"六步验收项全部满足"就收工，此时对局往往还在进行中，所以对账用的是**服务端战绩记录**（对局结束后入库，脚本最多等 90s）。`winnerTeam`/`kills` 这两项在 `ended=0` 时只作信息展示，不参与相等判定；`waveReached` 恒参与。
 - **第 4 步的第 3 波**：需要人类会话（`ac_bot` 不会放墙/救援），本轮到 `wave=1` 为止。四类羊形（`kind`）在同一条快照里只有 4 个取值、且形状是客户端本地资源，线上**不可区分**，所以"羊形齐全"这条只能在客户端资源侧验收（`c11`/`c12` 用例）。
-- **画面帧率**：联合验收在 `-nographics` 下跑，只验协议与流程；`drawCalls`/`triangles` 四项已由 `frame-bench.ps1` 的**计划场景**路径在本机量到（`drawCalls 11/120`、`triangles 11608/180000`），但 `frameP95 ≤ 20ms` 在 `-batchmode` 机制下不可能达标 —— 详见 `docs/evidence/client-v2-frame.md` 与 `client-v2-remaining-work.md` A1。
+- **画面帧率**：联合验收在 `-nographics` 下跑，只验协议与流程；图形四项与 `frameP95/P99` 由 `frame-bench.ps1` 的**计划场景**路径在本机量到。`drawCalls 11/120`、`triangles 11608/180000`；`frameP95/P99` 按裁决改用"引擎自己拥有帧循环"的窗口化 player 机制判定 = **4.4805 / 5.3323ms**（限 20/33，门禁退 0），`-batchmode` 那条路径保留为诊断口径（同轮 46.33ms，是机制地板：空场对照 player 3.94ms vs batchmode 23.92ms）—— 详见 `docs/evidence/client-v2-frame.md` 与 `client-v2-remaining-work.md` A1。
 
 ## 3. 本轮发现并已修的发布链路问题
 
