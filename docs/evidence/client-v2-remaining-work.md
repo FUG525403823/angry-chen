@@ -1,22 +1,23 @@
 # 客户端链条（C01–C15）收官清单
 
-> 更新：2026-09-28 ｜ 最近提交 `4611f2e`（B5）＋本轮 B1 修复轮（未提交前） ｜ 标签 `MC01 … MC15`（`MC15` 见 A2，联合验收已通过）
+> 更新：2026-09-29 ｜ 本轮（在 `0d2bc6f` 上，未提交前）：A14 产品侧连接入口、A15 角度表随包、
+> A16 运行期日志落盘、A17 真机复现 C14 门禁 ｜ 标签 `MC01 … MC15`（`MC15` 见 A2，联合验收已通过）
 > 本文每条都有实测出处。A 段是要你出手的，B 段是我能独立做完的。
 
 ## 0. 现状
 
-**能跑的**：帧回路（输入 → 预测/和解 → 快照镜像 → 视图同步 → HUD → 特效 → 覆盖层 → 绘制）、音频 mixer、**运行期呈现层装配**（相机/灯光/竞技场/羊群/特效/屏幕流/调试面板）、版本行与日志落盘、一条命令出发布包、资源引用守卫。
-**已上屏**：HUD/准星/大厅/结算/波间/调试面板/局内聊天由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定；**材质来源已收口**：运行期着色器一律来自 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），不再靠 `Shader.Find` 按名字查（见 A13）。**还不能的**：`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）；产品侧连接参数入口（`-server` 在出包版里不可用，见 A13-3）。
+**能跑的**：帧回路（输入 → 预测/和解 → 快照镜像 → 视图同步 → HUD → 特效 → 覆盖层 → 绘制）、音频 mixer、**运行期呈现层装配**（相机/灯光/竞技场/羊群/特效/屏幕流/调试面板）、版本行与**日志落盘**（A16 起真接线）、一条命令出发布包、资源引用守卫、**出包版可用 `server.txt`/`-acserver` 指定服务器**（A14）。
+**已上屏**：HUD/准星/大厅/结算/波间/调试面板/局内聊天由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定；**材质来源已收口**：运行期着色器一律来自 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），不再靠 `Shader.Find` 按名字查（见 A13）；**角度表随包**（A15/ADR-017），出包 player 不再每帧抛异常。**还不能的**：`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）；IL2CPP 出包（本机只有 Mono 变体）。
 
 | 事实 | 结果 |
 |---|---|
 | 场景 / 预制体 | 仍为 `0 / 0`——**这是设计选择**：`GameBootstrap` 用 `[RuntimeInitializeOnLoadMethod]` 纯代码自举（不手写 `.unity` YAML） |
 | B1 后真正被构造的类 | `Camera`+`FpsCamera`、`LightingRig`、`ArenaMesh`（7 部件/6 材质/5 碰撞盒）、`Materials`、`SheepInstancePool`+`SheepVisuals`（经 `Culling`/`Batching`）、`Effects`、`ViewModel`、`Lobby`/`Results`/`Intermission`（按 `MatchStatePayload.Phase` 驱动）、`DebugPanel`（F3，走键位表）、准星调色板 |
 | 帧分段 | `input/sync/predict/hud/fx/overlay/draw` 有生产打点；`audio` 仅在音频设备可用时接线。**打点规则**：只在该段真的做功时 `Mark` |
-| 资产 guid | 156 个 `.meta`：**151 个 32 位十六进制、0 重复、0 例外**；另 5 个是**既有**的 base64 形式（`Resources`/`FrameBenchUrpLit.mat`/`FrameBenchDriver.cs`/`FrameBenchPlan.cs`/`FrameBenchPlayer.cs`），全部已在 `assets.guid_references_resolve` 的白名单里（它们的引用方在 `ProjectSettings/*.asset`，不在本用例扫描面）。本轮新增的 4 个 `.meta`（`ArenaUrpLit`、`ArenaUrpLitInstanced`、`MaterialAssetSuite.cs`、`ChatSuite.cs`）都按 32 位十六进制手写 |
-| 自测 | `SELFTEST OK cases=193`（本轮 A13 新增 6 条），零失败 |
-| 发布包 | `BUILD OK ac-client-0.1.0+2bb9d18-win64.zip`（`backend=Mono`） |
-| CPU 帧预算 | P95 0.0069 ms、P99 0.0088 ms、0 B/帧、GC0=0 |
+| 资产 guid | 本轮新增 **1 个** `.meta`（`Resources/trig-table.json`，TextAsset；guid 按 32 位十六进制手写）；`assets.guid_references_resolve` 仍是守门用例 |
+| 自测 | `SELFTEST OK cases=195`（A14/A15/A16 新增 2 条用例 + A14 在既有用例内扩断言），零失败 |
+| 发布包 | `BUILD OK ac-client-0.1.0+0d2bc6f-win64.zip`（`backend=Mono`；含 `Resources/trig-table.json`） |
+| 帧预算（真机 player 口径） | P95 **0.9970** ms、P99 **1.7447** ms、0 B/帧、GC0=0、`drawCalls=51`、`triangles=34917`（限 20/33/0/0/120/180000，见 A17） |
 
 ---
 
@@ -38,8 +39,10 @@
 | ✅ | ~~A5 本地玩家身份~~ | 已按"玩家自己输入昵称"落地客户端侧 | （A8 已闭环） |
 | ✅ | ~~A13-1 Shader.Find 出包剥离（ADR-014 §后果-1 的正式修法）~~ | 材质改为对 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），全仓 `Shader.Find` 只剩两处兜底 | 已闭环（`assets.material_shader_reference` + `assets.material_shader_runtime` 守着） |
 | ✅ | ~~A13-2 局内聊天 UI~~ | 键位表第 11 条 `chat`（一直是死绑定）接上：输入缓冲 + 左下角渲染 + 打字期间挂起意图 | 已闭环（4 条 `chat.*` 用例） |
-| ⏳ | **A13-3 产品侧连接参数入口** | `-server` 在出包版里被播放器自己吃掉（ADR-014 §后果-2），产品侧入口仍未立任务，目前只有 `AC_SERVER` 一条通路 | 需另立任务 |
-| ⏳ | **A13-4 真机复核** | 本轮按用户要求不开 Unity 界面，因此真机复跑、`InputCameraSuite` 执行、`frameP95/P99` 门禁、IL2CPP 出包**仍未做** | 需一台能跑图形设备的机器 |
+| ✅ | ~~A13-3 产品侧连接参数入口~~ | 已裁决并落地（ADR-016）：`-acserver` → `AC_SERVER` → exe 同级 `server.txt` → `-server` → 默认；**默认端口 8787（HTTP 面）纠正为 8788（游戏面 UDP）** | 已闭环（`boot.server_config`，附变异打红） |
+| ⏳ | **A13-4 真机复核** | **本轮已做一半**：真机（RTX 4060 Ti / 1920×1080）出包 + `frameP95/P99` 门禁**已独立复现 PASS**（0.9970/1.7447 ms，见 A17）、无头 195 例全绿（含 `InputCameraSuite` 的用例）；**仍未做**：IL2CPP 出包（本机只有 Mono 变体）、真人试玩验收 | 真人试玩 + IL2CPP 模块 |
+| ✅ | ~~A15 角度表随包~~ | 出包 player 里没有仓库根 ⇒ 修前**每帧**抛 `TrigTableException`（预测整条废掉）；ADR-017 把表作为 `Resources/trig-table` 资产随包 + 镜像门禁 | 已闭环（194 例 + 真机 0 异常） |
+| ✅ | ~~A16 运行期日志落盘~~ | `LogSink` 只有用例在用、出包版一个文件都不落；本批把引擎日志通道接上（`logs/client-<date>.log` + `crash-*.log`） | 已闭环（195 例 + 真机出文件） |
 
 ### A9. ✅ 产品侧输入链已接线（本轮）
 联调当时是用**测试桩**（`client/Assets/Tests/JointSuite.cs` 的 `Link`）把六步跑通的 —— 采样器、命令编解码、`UdpTransport.Send` 三者都在仓库里，却**没有任何东西把它们接起来**（`new InputSampler()` / `GameLoop.QueueCommand` / `SetClientTick` / `SetReadyHeld` / `SetPointerLocked` 全仓只有测试在用）。本轮全部接上：
@@ -217,6 +220,89 @@ player 轮另外强制校验 `mechanism` 与 `phaseMs.engineFrames > 0`（batchm
 **时序坑（本轮实测踩到，已修）**：`chat` 键按下的那一帧，`Input.inputString` **已经带上了那个 `'\n'`**。若把"回车"当开关、又把 `'\n'` 喂进缓冲，同一次回车就变成"开 → 立刻发一条空消息 → 关"。修法是 `Chat._pendingOpen`：**只吃开户那一帧**的前导换行，之后的每一帧回车都是"发送"。反面教训同样实测过：把"吃前导换行"写成无条件的，回车就永远发不出去（第一版就是这么红在 `chat.open_and_submit` 上的）。
 
 **状态：`SELFTEST OK cases=193`（本轮新增 6 条：`assets.material_shader_reference`、`assets.material_shader_runtime`、`chat.input_buffer`、`chat.open_and_submit`、`chat.escape_closes`、`chat.overlay_lines`；适配前基线 187 例，零回归）。**
+
+### A14. ✅ 产品侧连接参数入口（ADR-016）—— 含一处**默认端口错到 HTTP 面**的纠错
+
+ADR-014 §后果-2 把"产品侧连接参数入口"挂成"仍未做"：`-server` 在出包版里被 Unity 播放器自己吃掉，
+产品侧只剩 `AC_SERVER` 环境变量一条通路。本轮把这条做完，并在做的时候挖出一个**默认值级**的产品缺陷。
+
+| # | 事项 | 落点 | 钉住它的用例 |
+|---|---|---|---|
+| 1 | **默认端口 8787 → 8788**：8787 是 HTTP 诊断面（TCP），游戏面是 UDP **8788**（`server/README.md` §18.2）——客户端原先拿着 8787 去发 UDP `Hello`，`HelloAck` 永远回不来（出包版"连不上"的成因之一）。没被更早发现是因为：编辑器/批处理一律不连、六步联调每次显式传 `AC_JOINT_UDP=127.0.0.1:8788`、机器人用的是自己的 `--port` | `GameBootstrap.DefaultServerPort` | `boot.server_config`（`== 8788` 且 `!= 8787` 两条断言） |
+| 2 | **产品侧入口**：解析顺序 `-acserver host:port` → `AC_SERVER` → **exe 同级 `server.txt`** → `-server` → 默认 `127.0.0.1:8788`。`-acserver` 不是任何播放器开关（`-server` 是），原样落到 `Environment.GetCommandLineArgs()` | `GameBootstrap.ChooseServer` / `FirstConfigLine` / `ServerSource` | 优先级四条 + "四条都空→默认" + "第一个非空解析失败即离线" |
+| 3 | **`server.txt` 的读法**：exe 同级（出包版取 `Application.dataPath` 父目录）、空行与 `#` 注释跳过、**UTF-8 BOM 剥掉**、读坏了当没配 | 同上 | BOM / CRLF / 注释 / 两侧空白四种写法 |
+| 4 | **可观测**：`ServerSource` 记录生效来源，真连前打一条 `Ac.Boot: 连接 host:port（来源 …）` | `GameBootstrap.ResolveServer` | —— |
+| 5 | **分发模板**：`client/server.txt.example`（复制成 `server.txt` 放在 exe 同级，改一行即可）；`client/.gitignore` 忽略本地的 `server.txt` | 仓库文件 | `git check-ignore -v client/server.txt` 命中 |
+
+**判别力证据（本轮）**：把第 106 行的 `DefaultServerPort == 8788` 临时改成 `== 8787` 后重跑自检 →
+`FAIL boot.server_config expected=默认端口 = 游戏面 UDP 8788（server/README §18.2 的 AC_UDP_PORT） actual=8788`、
+退出码 1；回滚后 `SELFTEST OK cases=193`（与 A13 基线同数，零回归）。**改动只碰客户端"连哪儿"**：
+wire 格式、量化、握手时序与 `server/**` 一个字没动。
+
+### A15. ✅ 出包阻断级：角度表没随包（出包 player 每帧抛 `TrigTableException`）—— ADR-017
+
+**怎么发现的**：A14 做完后拿**真出包 player**（`client/Build/Windows64/ac-client-0.1.0+0d2bc6f-win64.zip`，
+Mono 后端）跑了一次"改 `server.txt` 就换服务器"的实跑复核，第一屏日志除了正确的那条连接行，还跟着
+**每帧一条**异常：
+
+```
+Ac.Boot: 连接 43.143.120.65:8788（来源 server.txt）
+TrigTableException: 角度表缺失：C:\Users\…\Temp\docs\evidence\fixtures\trig-table.json
+  at Ac.Sim.TrigTable.LoadFromFile → get_Shared → LocalStep.StepLocalPlayer → Predictor.StepWith → GameLoop.Frame
+```
+
+15 秒的 `Player.log` 涨到 **81 KB**。含义：**出包版的本地预测链路整条是废的**（每帧抛异常、没有预测、
+玩家本地移动不可能对）。编辑器、批处理自检、六步联调都看不见 —— 三者都在仓库里跑，`RepoPaths` 能往上找到仓库根。
+
+**根因**：C02 §5.6 只说"两侧共用 `docs/evidence/fixtures/trig-table.json`"，并把打包留给 C15；
+C15 交付了出包链路但**这条留白没补**，`RepoPaths` 是"从工程根往上找仓库目录"的定位器，而 player 里没有仓库根。
+
+**裁决与落地（ADR-017）**：把表作为 Unity `TextAsset` 随包（`Assets/Resources/trig-table.json`，
+资产名 `trig-table`），Boot 层装配时喂进 `Ac.Sim.TrigTable`（`Ac.Sim` 自己不引 UnityEngine）；
+镜像由 `tools/export-trig-table.mjs` 一次写两份、`--check` 双侧逐字节比；客户端新增用例
+`quantize.trig_table_packaged` 在运行期再比一次并断言装配真能把表装上。三道门任意一道都能抓到"只改一侧"。
+
+**真机复核（同一天、同一个包路径）**：重新出包后同一个场景 `Player.log` **0 条 `Exception`**、整份 **1.1 KB**
+（修前 81 KB）；`client/Assets/Resources/trig-table.json` 与 `docs/evidence/fixtures/trig-table.json` 逐字节相同。
+
+### A16. ✅ 运行期日志落盘从未接线（运维手册承诺的文件一个都不落）
+
+`LogSink`（C15 §5：`logs/client-<yyyyMMdd>.log`、8 MiB 轮转保留 5 份、`crash-<yyyyMMdd-HHmmss>.log`）
+**全仓只有用例引用**，生产路径没有构造者 ⇒ 出包版跑完，`%USERPROFILE%\AppData\LocalLow\AngryChen\angry-chen\logs\`
+根本不存在（A14/A15 的两次真机跑都证实了这一点）。本批接线：
+
+| 环节 | 落点 |
+|---|---|
+| 装配 | `GameBootstrap.Start()` 第一件事调 `ClientLog.Attach(Application.persistentDataPath)`（幂等） |
+| 通道 | 订阅 `Application.logMessageReceived`（**只订阅不拦截**，Unity 自己的 `Player.log` 照旧） |
+| 级别 | `Log/Warning/Error/Assert/Exception` → 小写 `log/warning/error/assert/exception` |
+| 崩溃 | `Exception`/`Assert` 另写 `crash-*.log`（首行版本行、≤200 行），**同一段异常只写一份**（上限 16 份）——出问题的那一帧会每帧抛，不设限会把日志目录刷爆 |
+| 失败姿态 | 落盘不可用只记一条 warning，客户端照常能玩 |
+
+**真机证据**：重新出包后跑 15 秒，`logs/client-20260929.log` 出现（192 行，含 player 自己的
+`连接 …（来源 server.txt）` 与那条身份 warning，每行都带 `version":"ac-client 0.1.0+0d2bc6f proto=1"`），
+无 `crash-*.log`（因为已无异常）。用例 `boot.client_log_wiring` 钉住：根目录、`msg`/`level`/`version` 三个字段、
+crash 首行是版本行、同段异常只写一份、`Detach` 之后不再落盘。
+
+### A17. ✅ 真机复核：C14 帧门禁独立复现 PASS（并修掉门禁脚本的一处死路）
+
+本轮在一台**有图形设备**的机器（RTX 4060 Ti / 1920×1080 / quality tier 2）上重新出包并复跑
+`pwsh -File client/tools/frame-bench.ps1 -Runs 3 -Frames 600`：
+
+```
+FRAME-BENCH PASS p95=0.996999999999844ms alloc=0B mechanism=player emptyP95=0.664699999999812ms editorP95=32.503999999999ms editorVerdict=FAIL
+```
+
+`frameP95` **0.9970 ms**（限 20）、`frameP99` **1.7447 ms**（限 33）、0 B/帧、`drawCalls=51`（限 120）、
+`triangles=34917`（限 180000）、`particles=256`（限 256）、`materials=8`（限 24）、8 段 `stageP95` 全在
+（最大 `draw` 0.0548 ms）、`missingStages=[]`、空场地板 0.6647 ms < 20 ms ⇒ 机制不变式成立。
+
+**顺带修掉的工具死路**：ADR-014 引入的"同轮空场地板"对照跑**按设计**不装配呈现层，于是图形四项与
+`engineFrames` 都是"未测得"（`-1` / `0`），而 `frame-bench.ps1` 的 fail-closed 检查把它们一律判成
+"这台机器没有图形设备" ⇒ **`-Mechanism player` 这条路恒退出 2、永远给不出判定**（这解释了本轮第一次复跑
+为什么是 `ENV` 退出）。修法是给这一次跑加 `-FloorProbe`：只放宽"图形四项"与"引擎帧计数"两条
+（ADR-014 裁决 4 只要求它回答"地板是否低于预算"），**仍要求真图形设备与 `P95 < 预算`**；
+被判定的三轮一项都不放宽。明细见 `docs/evidence/client-v2-frame-acceptance.md` §4。
 
 ---
 

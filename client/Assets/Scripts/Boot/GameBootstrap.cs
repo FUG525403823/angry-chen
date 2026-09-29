@@ -15,11 +15,24 @@ namespace Ac.Boot
     {
         public const string RootName = "Ac.Boot";
 
-        // 服务器地址只从配置来：命令行 -server host:port → 环境变量 AC_SERVER → 这两个默认值。
+        // 服务器地址的**产品侧解析顺序**（ADR-016）：`-acserver host:port` → 环境变量 `AC_SERVER` →
+        // **exe 同级的 `server.txt`** → `-server host:port`（编辑器/历史写法）→ 默认值。
+        // 为什么另起一个开关而不是修 `-server`：Unity 播放器自己解析 `-server`（headless server 开关）
+        // 并在参数不合法时中止进程，出包版里 GameBootstrap 根本收不到那个值（ADR-014 §后果-2），
+        // 而 `-acserver` 不是任何播放器开关，原样落到 `Environment.GetCommandLineArgs()`。
         public const string DefaultServerHost = "127.0.0.1";
-        public const int DefaultServerPort = 8787;
+        // 8788 = **游戏面 UDP 端口**（server/README.md §18.2 的 `AC_UDP_PORT`）。这里曾经写 8787 —— 那是
+        // HTTP 诊断面（TCP）：客户端拿着默认值去发 UDP `Hello`，服务端根本没有那个 UDP 端口，永远收不到
+        // `HelloAck`（出包版"连不上"的一个默认值级成因）；联调之所以没暴露，是因为脚本每次都显式传
+        // `AC_JOINT_UDP=127.0.0.1:8788`。
+        public const int DefaultServerPort = 8788;
         public const string ServerArgument = "-server";
+        // 产品侧开关（出包版唯一可用的命令行入口）。
+        public const string ProductServerArgument = "-acserver";
         public const string ServerEnvironment = "AC_SERVER";
+        // 产品侧配置文件：与可执行文件同级，内容是第一行有效的 `host:port`（空行与 `#` 注释跳过）。
+        // 分发形态就是"解压 → 改这一行 → 双击 exe"，不需要环境变量、也不需要会写命令行。
+        public const string ServerConfigFileName = "server.txt";
 
         // 默认昵称：**不输名字也必须能玩**。本地身份（过渡方案，见 Ac.Net.LocalIdentity）是按昵称严格相等
         // 去 MatchState 玩家表里认领一行的，而 Lobby.Name 的初值是空串 ⇒ 空名字永远认领不到 ⇒
@@ -34,6 +47,9 @@ namespace Ac.Boot
         // 解析后的连接目标（ResolveServer 的结果）。null host = 本进程不连接。
         public static string ServerHost { get; private set; }
         public static int ServerPort { get; private set; }
+        // 这个目标是从哪条候选读出来的（`-acserver` / `AC_SERVER` / `server.txt` / `-server` / `default`）。
+        // 排障时"我改了 server.txt 怎么没生效"这类问题只看这一条。
+        public static string ServerSource { get; private set; }
         // 调试面板热键：从 SettingsDefaults.KeyBindings[ActionDebugPanel] 的表里解析，不在代码里写 F3。
         public static KeyCode DebugPanelKey { get; private set; }
         // 大厅准备键（ADR-013）：同样从键位表（[ActionReady]，默认表那条是 Return）解析，
@@ -45,9 +61,29 @@ namespace Ac.Boot
 
         private static bool _settingsSubscribed;
 
+        // 角度表（C02 §5.6 / C15）：**出包 player 里没有仓库根**，`TrigTable.Shared` 的仓库路径必然抛
+        // `TrigTableException`（实测：player 里每帧一条，预测步进整条废掉）。所以装配第一件事就是把
+        // `Assets/Resources/trig-table.json`（资产名 `trig-table`，与 `docs/evidence/fixtures/` 逐字节相同）
+        // 装进 `Ac.Sim.TrigTable`。装不上只记一条 error，让 `Shared` 的仓库路径兜底（编辑器/自检）。
+        public static void InstallTrigTable()
+        {
+            if (TrigTable.IsInstalled) return;
+            var asset = Resources.Load<TextAsset>(TrigTable.ResourceName);
+            if (asset == null)
+            {
+                Debug.LogError("Ac.Boot: 角度表资产缺失（Resources/" + TrigTable.ResourceName +
+                    "），预测步进会退化到仓库路径");
+                return;
+            }
+            TrigTable.Install(asset.text);
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         public static void Start()
         {
+            // 日志落盘（C15 §5）：放在最前面 —— 后面每一步的失败都要留下结构化证据。
+            ClientLog.Attach(Application.persistentDataPath);
+            InstallTrigTable();
             if (Settings == null)
             {
                 Settings = new SettingsStore();
@@ -186,6 +222,76 @@ namespace Ac.Boot
             return true;
         }
 
+        // 产品侧的连接来源（ADR-016）。纯函数：把四个候选值折成"连哪儿、凭哪一条"，好让无头用例
+        // 逐条钉住优先级 —— 命令行/环境变量/文件这三条读法本身在 ResolveServer 里做（依赖 Application）。
+        // 语义两条：① 第一个**非空**的候选赢；② 它若解析不了就**离线**（fail-closed），不许悄悄退到
+        // 默认值去连一个没人写过的地址（`boot.server_config` 早就钉住了"不许悄悄连默认端口"）。
+        public static ServerChoice ChooseServer(string productArg, string environment, string configText, string legacyArg)
+        {
+            var candidates = new[]
+            {
+                new ServerCandidate(ProductServerArgument, productArg),
+                new ServerCandidate(ServerEnvironment, environment),
+                new ServerCandidate(ServerConfigFileName, FirstConfigLine(configText)),
+                new ServerCandidate(ServerArgument, legacyArg),
+            };
+            for (var i = 0; i < candidates.Length; i++)
+            {
+                if (string.IsNullOrEmpty(candidates[i].Value)) continue;
+                string host;
+                int port;
+                if (!TryParseServer(candidates[i].Value, out host, out port))
+                {
+                    return new ServerChoice { Source = candidates[i].Source, IsValid = false };
+                }
+                return new ServerChoice { Host = host, Port = port, Source = candidates[i].Source, IsValid = true };
+            }
+            return new ServerChoice
+            {
+                Host = DefaultServerHost,
+                Port = DefaultServerPort,
+                Source = "default",
+                IsValid = true,
+            };
+        }
+
+        // `server.txt` 的第一行有效内容：空行与 `#` 注释跳过；开头的 UTF-8 BOM 也吃掉
+        //（Windows 记事本"另存为 UTF-8"会写 BOM，不剥的话第一行永远解析失败）。
+        public static string FirstConfigLine(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            if (text[0] == '\uFEFF') text = text.Substring(1);
+            var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i].Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                return line;
+            }
+            return null;
+        }
+
+        // 产品侧连接来源的解析结果。`Source` 只用于日志与排障（"到底哪条配置生效了"）。
+        public struct ServerChoice
+        {
+            public string Host;
+            public int Port;
+            public string Source;
+            public bool IsValid;
+        }
+
+        private struct ServerCandidate
+        {
+            public readonly string Source;
+            public readonly string Value;
+
+            public ServerCandidate(string source, string value)
+            {
+                Source = source;
+                Value = value;
+            }
+        }
+
         // 编辑器与批处理（自检 / 帧基准）**一律不连**：测试路径不许真的开套接字去连服务器。
         public static bool ShouldConnect(string host, int port, bool isEditor, bool isBatchMode)
         {
@@ -195,25 +301,48 @@ namespace Ac.Boot
 
         private static void ResolveServer()
         {
-            var configured = ArgumentValue(ServerArgument);
-            if (string.IsNullOrEmpty(configured)) configured = Environment.GetEnvironmentVariable(ServerEnvironment);
-            if (string.IsNullOrEmpty(configured))
+            var choice = ChooseServer(
+                ArgumentValue(ProductServerArgument),
+                Environment.GetEnvironmentVariable(ServerEnvironment),
+                ReadServerConfigFile(),
+                ArgumentValue(ServerArgument));
+            if (!choice.IsValid)
             {
-                ServerHost = DefaultServerHost;
-                ServerPort = DefaultServerPort;
+                Debug.LogWarning("Ac.Boot: 服务器地址来自 " + choice.Source + " 但无法解析（期望 host:port），本进程保持离线");
+                ServerHost = null;
+                ServerPort = 0;
+                ServerSource = choice.Source;
                 return;
             }
-            string host;
-            int port;
-            if (TryParseServer(configured, out host, out port))
+            ServerHost = choice.Host;
+            ServerPort = choice.Port;
+            ServerSource = choice.Source;
+        }
+
+        private static string ReadServerConfigFile()
+        {
+            try
             {
-                ServerHost = host;
-                ServerPort = port;
-                return;
+                var root = ServerConfigRoot();
+                if (root == null) return null;
+                var path = System.IO.Path.Combine(root, ServerConfigFileName);
+                return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : null;
             }
-            Debug.LogWarning("Ac.Boot: 服务器地址 '" + configured + "' 无法解析（期望 host:port），本进程保持离线");
-            ServerHost = null;
-            ServerPort = 0;
+            catch (Exception)
+            {
+                // 读不到/读坏了就是"没配"：产品侧不许因为一个坏配置文件起不来（退回下一条候选/默认值）。
+                return null;
+            }
+        }
+
+        // "exe 同级"：出包版的 `Application.dataPath` 是 `<app>/angry-chen_Data`，父目录就是解压目录；
+        // 编辑器里是 `<project>/Assets`，父目录是工程根（编辑器不连服务器，这里只是同一套解析）。
+        private static string ServerConfigRoot()
+        {
+            var data = Application.dataPath;
+            if (string.IsNullOrEmpty(data)) return null;
+            var dir = new System.IO.DirectoryInfo(data).Parent;
+            return dir == null ? null : dir.FullName;
         }
 
         private static void AttachTransport(GameLoop loop)
@@ -227,6 +356,7 @@ namespace Ac.Boot
             }
             try
             {
+                Debug.Log("Ac.Boot: 连接 " + ServerHost + ":" + ServerPort + "（来源 " + ServerSource + "）");
                 var transport = new UdpTransport(new UdpTransport.RealUdpSocket());
                 if (!transport.Connect(ServerHost, ServerPort))
                 {

@@ -27,3 +27,7 @@
 *.app
 crashlytics-build.properties
 sysinfo.txt
+# ADR-016: product-side server.txt (lives next to the built exe)
+server.txt
+# ADR-014: frame-bench summary output
+TestResults/

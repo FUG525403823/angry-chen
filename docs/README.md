@@ -38,6 +38,8 @@
 | [00-共识/ADR/ADR-013-服务端默认关闭自动准备.md](00-共识/ADR/ADR-013-服务端默认关闭自动准备.md) | **v2 收尾裁决**：`isAutoReady` 默认改为 `false`（产品默认走大厅），装载/门禁场景用新选项 `--auto-ready` 显式开启 |
 | [00-共识/ADR/ADR-014-帧预算判据的测量机制.md](00-共识/ADR/ADR-014-帧预算判据的测量机制.md) | **v2 收尾裁决**：`frameP95/P99` 改在**出包 player**（引擎自有帧循环）上判，`-batchmode` 降为诊断口径；预算与 C15 §6 判据行格式不动 |
 | [00-共识/ADR/ADR-015-鼠标视角两轴的符号.md](00-共识/ADR/ADR-015-鼠标视角两轴的符号.md) | **实跑修复**：C05 §5.5 的 `yaw -= dx` / `pitch -= dy` 在本仓"pitch 抬头为正"语义下是双重取反（两轴全反），改为 `+=`；线上语义与协议不动 |
+| [00-共识/ADR/ADR-016-产品侧连接参数入口.md](00-共识/ADR/ADR-016-产品侧连接参数入口.md) | **产品侧入口**：出包版的连接解析顺序 `-acserver` → `AC_SERVER` → exe 同级 `server.txt` → `-server` → 默认；默认端口 8787（HTTP 面）纠正为 **8788（游戏面 UDP）**；线上语义不动 |
+| [00-共识/ADR/ADR-017-角度表随包分发.md](00-共识/ADR/ADR-017-角度表随包分发.md) | **出包阻断级**：角度表随包（`Assets/Resources/trig-table.json` 资产名 `trig-table`）+ 生成器写镜像 + `--check` 与用例双侧比逐字节；修前出包 player **每帧**抛 `TrigTableException` |
 
 ## 2. 前提层
 

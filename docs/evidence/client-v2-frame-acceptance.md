@@ -53,6 +53,40 @@
 > 唯一附注是 §5 第 76 行那条冻结命令仍是 `-batchmode`，把 player 写成正式口径**待计划所有人确认**。
 > 权威记录：[client-v2-frame.md](client-v2-frame.md)、[client-v2-remaining-work.md](client-v2-remaining-work.md) A1。
 
-## 4. 仍未装配（C15/后续）
+## 4. 2026-09-29 独立复现（第二人、同一机制、含一处门禁工具缺陷的修复）
+
+A1 段登记的"PASS 尚未被第二人独立复现"在本轮完成，并在复现过程中挖出**门禁脚本自身的一个死路**：
+
+- **工具缺陷（已修）**：ADR-014 加进来的"同轮空场地板"对照跑（`-frameBenchEmpty 1`）**按设计**不装配呈现层，
+  于是四项图形统计与引擎帧计数都是"未测得"（`-1` / `engineFrames=0`）；而 `Invoke-BenchRun` 里第 142 行的
+  fail-closed 检查把 `-1` 一律当成"这台机器没有图形设备" ⇒ **空场对照永远过不了校验、门禁恒退出 2**，
+  也就是"`-Mechanism player` 这条路不可能给出任何判定"。修法是给这一次跑加 `-FloorProbe`：
+  探针只放宽"四项图形统计"与"引擎帧计数"两条（它们的判据角色由 ADR-014 裁决 4 定义：只回答"地板是否低于预算"），
+  仍然要求**真图形设备**（`gpu` 非 `Null Device`、分辨率非 `headless`）与 `frameP95 < 预算`；
+  **被判定的一轮一项都不放宽**（`plan-scene`、四项图形统计可测、`engineFrames>0`、`engineDeltaP95>0` 全保留）。
+
+复跑（本机 Windows、RTX 4060 Ti、1920×1080、quality tier 2、git `0d2bc6f` + 本批工作树改动）：
+
+```
+FRAME-BENCH PASS p95=0.996999999999844ms alloc=0B mechanism=player emptyP95=0.664699999999812ms editorP95=32.503999999999ms editorVerdict=FAIL
+（退出码 0）
+```
+
+| 指标 | 三次运行中位 | §5 预算 |
+|---|---|---|
+| `frameP95Ms` | **0.9970** | ≤ 20 |
+| `frameP99Ms` | **1.7447** | ≤ 33 |
+| `managedAllocBytesPerFrame` / `gc0Delta` | **0 / 0** | 0 / 0 |
+| `drawCalls` / `triangles` | **51 / 34917** | 120 / 180000 |
+| `particles` / `materials` | **256 / 8** | 256 / 24 |
+| 8 段 `stageP95` | 全在（最大 `draw` **0.0548 ms**），`missingStages=[]` | 10 ms |
+| 空场地板（同轮） | **0.6647 ms** < 20 ms 预算 ⇒ 机制不变式成立 | —— |
+| 编辑器诊断口径（不参与判定） | 32.5 ms（机制地板） | —— |
+
+三点口径不变：① 判定只认 `-Mechanism player`（引擎自己的帧循环，无手动 `Camera.Render()`）；
+② 预算表来自样本自带的 `budget` 对象，脚本不另存一份；③ §5 第 76 行那条冻结命令仍是 `-batchmode`，
+"把 player 写成正式口径"仍待计划所有人确认（ADR-014 附注）。
+
+## 5. 仍未装配（C15/后续）
 
 音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**已做**：HUD/准星/大厅/结算/波间/调试面板的渲染器（`Ac.UI/OverlayModel.cs` 布局模型 + `Ac.Boot/OverlayRenderer.cs` IMGUI 适配层，无显示设备时不画）；本地玩家身份（昵称输入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定）。**仍未做**：`AmmoLedger`/武器 HUD 数值的权威来源（需 C06 开火路径或 S10 单播 mag）、武器视图网格（C09 无生成器）。**已补做**：局内聊天 UI（键位表第 11 条 `chat` 的输入缓冲 + `OverlayModel` 渲染，见 `client-v2-remaining-work.md` §A13）。`View/Culling` 的 C08×C14 冲突已按 A3-1 对齐（`Batching.SheepCullDistanceM=60`/`ArenaCullDistanceM=80`，全仓无 90m 调用路径）。详见 `client-v2-remaining-work.md`。

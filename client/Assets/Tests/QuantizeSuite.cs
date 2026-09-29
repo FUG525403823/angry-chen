@@ -1,4 +1,5 @@
 using System;
+using Ac.Boot;
 using Ac.Core;
 using Ac.Sim;
 
@@ -14,6 +15,7 @@ namespace Ac.Tests
         {
             SelfTest.Add("quantize.edge", ChecksEdges);
             SelfTest.Add("quantize.rounding", ChecksRoundHalfUp);
+            SelfTest.Add("quantize.trig_table_packaged", ChecksPackagedTrigTable);
         }
 
         // §5.4 的取整是「四舍五入、.5 朝 +∞」（不是对称的 away-from-zero）：负半值向 0 收。
@@ -114,6 +116,36 @@ namespace Ac.Tests
 
             ChecksTrigTable();
             ChecksTableFailures();
+        }
+
+        // C15 打包（ADR-017）：出包 player 里**没有仓库根**，角度表必须随包，否则预测步进每帧抛
+        // `TrigTableException`（实跑 player 日志实测）。这条用例钉三件事：① 资产在（`Resources/trig-table`）；
+        // ② 它与仓库那份 `docs/evidence/fixtures/trig-table.json` **逐字节相同**（镜像不许漂移）；
+        // ③ 装配入口真的把它装进 `Ac.Sim.TrigTable`（Reset 后从"未装载"起步，装不上就红）。
+        private static void ChecksPackagedTrigTable()
+        {
+            var asset = UnityEngine.Resources.Load<UnityEngine.TextAsset>(TrigTable.ResourceName);
+            SelfTest.True(asset != null,
+                "Resources/" + TrigTable.ResourceName + " 必须随包（player 里没有仓库根）",
+                asset == null ? "资产缺失" : "在");
+            if (asset == null) return;
+            var repoPath = TrigTable.DefaultPath();
+            SelfTest.True(System.IO.File.Exists(repoPath), "仓库那份角度表要能定位到（自检在仓库里跑）", repoPath);
+            var repoText = System.IO.File.Exists(repoPath) ? System.IO.File.ReadAllText(repoPath) : null;
+            SelfTest.True(repoText != null && repoText == asset.text,
+                "随包资产必须与 docs/evidence/fixtures/trig-table.json 逐字节相同（改一份就要重跑镜像）",
+                repoText == null ? "仓库文件缺失"
+                    : ("资产 " + asset.text.Length + " 字符 / 仓库 " + repoText.Length + " 字符"));
+
+            TrigTable.Reset();
+            SelfTest.True(!TrigTable.IsInstalled, "Reset 之后回到未装载", "仍是装载态");
+            GameBootstrap.InstallTrigTable();
+            SelfTest.True(TrigTable.IsInstalled, "装配入口必须把随包角度表装上（Assets/Resources）", "没装上");
+            var table = TrigTable.Shared;
+            SelfTest.Equal(1073741824, table.SinRaw(16384));
+            SelfTest.Equal(-1073741824, table.SinRaw(49152));
+            SelfTest.Equal(8192, table.AtanUnitsRaw(1024));
+            SelfTest.Equal(16384, table.AsinUnitsRaw(1024));
         }
 
         // §5.6：共享角度表的形状（scale / units / 三个数组长度）任一不符都必须抛错，

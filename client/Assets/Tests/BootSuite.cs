@@ -16,6 +16,7 @@ namespace Ac.Tests
             SelfTest.Add("boot.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("boot.stage_sinks", ChecksStageSinks);
             SelfTest.Add("boot.server_config", ChecksServerConfig);
+            SelfTest.Add("boot.client_log_wiring", ChecksClientLogWiring);
             SelfTest.Add("boot.join_reported_once_per_name", ChecksJoinReport);
             SelfTest.Add("boot.command_uplink", ChecksCommandUplink);
         }
@@ -72,8 +73,41 @@ namespace Ac.Tests
 
         // 传输/会话的配置面（B1 审查点 5）：地址只从配置来，且编辑器/批处理一律不连服务器；
         // 调试面板热键（审查点 8）必须跟着 SettingsDefaults.KeyBindings 走，不许再硬编码 F3。
-        private static void ChecksServerConfig()
+        // C15 §5：日志落盘此前**只有用例在用**（`LogSink` 全仓没有生产调用方）—— 出包版一个文件都不落，
+        // 而运维手册承诺 `logs/client-<yyyyMMdd>.log` 与 `crash-<yyyyMMdd-HHmmss>.log`。这条钉住运行期接线。
+        private static void ChecksClientLogWiring()
         {
+            var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                "ac-clientlog-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            ClientLog.Detach();                       // 回到"未装配"，避免踩运行期那份 sink
+            SelfTest.True(ClientLog.AttachRoot(root), "AttachRoot 要成功", "失败");
+            SelfTest.True(ClientLog.Sink != null, "装配后 Sink 不许为空", "为空");
+
+            ClientLog.Handle("hello-log", "", UnityEngine.LogType.Log);
+            var path = ClientLog.Sink.CurrentPath;
+            SelfTest.True(System.IO.File.Exists(path), "普通行要落到 client-<yyyyMMdd>.log", path);
+            var text = System.IO.File.ReadAllText(path);
+            SelfTest.True(text.Contains("\"msg\":\"hello-log\""), "行里要有 msg", text);
+            SelfTest.True(text.Contains("\"level\":\"log\""), "Log 级要折成小写 log", text);
+            SelfTest.True(text.Contains("\"version\":\"" + VersionInfo.VersionLine + "\""), "每行都要带版本行", text);
+
+            ClientLog.Handle("boom-exception", "stack-line-1\nstack-line-2", UnityEngine.LogType.Exception);
+            var crashes = System.IO.Directory.GetFiles(root, "crash-*.log");
+            SelfTest.Equal(1, crashes.Length);
+            var crash = System.IO.File.ReadAllText(crashes[0]);
+            SelfTest.True(crash.StartsWith(VersionInfo.VersionLine), "crash 首行是版本行", crash.Substring(0, 12));
+            SelfTest.True(crash.Contains("boom-exception") && crash.Contains("stack-line-2"), "crash 要带消息与栈", crash);
+            ClientLog.Handle("boom-exception", "stack-line-1\nstack-line-2", UnityEngine.LogType.Exception);
+            SelfTest.Equal(1, System.IO.Directory.GetFiles(root, "crash-*.log").Length);  // 同一段异常只写一份
+
+            ClientLog.Detach();
+            ClientLog.Handle("after-detach", "", UnityEngine.LogType.Log);
+            SelfTest.True(!System.IO.File.ReadAllText(path).Contains("after-detach"), "Detach 之后不许再落盘", "还在写");
+            ClientLog.Attach(UnityEngine.Application.persistentDataPath);   // 把运行期那份接回去
+            try { System.IO.Directory.Delete(root, true); } catch (Exception) { }
+        }
+
+        private static void ChecksServerConfig()        {
             string host;
             int port;
             SelfTest.True(GameBootstrap.TryParseServer("10.0.0.5:9999", out host, out port) && host == "10.0.0.5" && port == 9999,
@@ -100,6 +134,44 @@ namespace Ac.Tests
                 UnityEngine.Application.isEditor, UnityEngine.Application.isBatchMode), "自检进程不许连服务器", "会去连");
             SelfTest.True(GameBootstrap.DefaultServerPort > 0 && GameBootstrap.DefaultServerPort < 65536, "默认端口在范围内",
                 GameBootstrap.DefaultServerPort.ToString());
+
+            // 产品侧连接入口（ADR-016）：出包版既没有环境变量、也拿不到被播放器吃掉的 `-server`，
+            // 所以①默认值必须指向**游戏面 UDP 端口**，②四条候选的优先级要钉死。
+            SelfTest.True(GameBootstrap.DefaultServerPort == 8788,
+                "默认端口 = 游戏面 UDP 8788（server/README §18.2 的 AC_UDP_PORT）",
+                GameBootstrap.DefaultServerPort.ToString());
+            SelfTest.True(GameBootstrap.DefaultServerPort != 8787,
+                "默认端口不许是 HTTP 面 8787（把 UDP Hello 发到 TCP 端口永远等不到 HelloAck）",
+                GameBootstrap.DefaultServerPort.ToString());
+            SelfTest.True(GameBootstrap.ProductServerArgument == "-acserver" &&
+                GameBootstrap.ProductServerArgument != GameBootstrap.ServerArgument,
+                "产品侧开关与 Unity 播放器自用的 -server 不是同一个", GameBootstrap.ProductServerArgument);
+
+            var choice = GameBootstrap.ChooseServer("10.0.0.5:9999", "1.1.1.1:1111", "2.2.2.2:2222\n", "3.3.3.3:3333");
+            SelfTest.True(choice.IsValid && choice.Host == "10.0.0.5" && choice.Port == 9999 &&
+                choice.Source == GameBootstrap.ProductServerArgument, "-acserver 压过另外三条", choice.Source);
+            choice = GameBootstrap.ChooseServer(null, "1.1.1.1:1111", "2.2.2.2:2222\n", "3.3.3.3:3333");
+            SelfTest.True(choice.IsValid && choice.Host == "1.1.1.1" && choice.Source == GameBootstrap.ServerEnvironment,
+                "AC_SERVER 压过 server.txt 与 -server", choice.Source);
+            choice = GameBootstrap.ChooseServer(null, null, "# 注释\n\n2.2.2.2:2222\n", "3.3.3.3:3333");
+            SelfTest.True(choice.IsValid && choice.Host == "2.2.2.2" && choice.Source == GameBootstrap.ServerConfigFileName,
+                "server.txt 压过 -server（注释与空行跳过）", choice.Source);
+            choice = GameBootstrap.ChooseServer(null, null, null, "3.3.3.3:3333");
+            SelfTest.True(choice.IsValid && choice.Host == "3.3.3.3" && choice.Source == GameBootstrap.ServerArgument,
+                "-server 仍然认（编辑器与历史写法）", choice.Source);
+            choice = GameBootstrap.ChooseServer(null, null, "  \n# 只有注释\n", null);
+            SelfTest.True(choice.IsValid && choice.Host == GameBootstrap.DefaultServerHost &&
+                choice.Port == GameBootstrap.DefaultServerPort && choice.Source == "default",
+                "四条候选都空 → 默认值", choice.Source + ":" + choice.Port);
+            choice = GameBootstrap.ChooseServer("没有端口", "1.1.1.1:1111", "2.2.2.2:2222", null);
+            SelfTest.True(!choice.IsValid && choice.Host == null,
+                "第一个非空候选解析失败 → 离线（不许退到环境变量或默认值）", choice.Source + "/" + (choice.Host ?? "null"));
+            SelfTest.True(GameBootstrap.FirstConfigLine("\uFEFF10.0.0.5:9999\n") == "10.0.0.5:9999",
+                "server.txt 的 UTF-8 BOM 要被吃掉", GameBootstrap.FirstConfigLine("\uFEFF10.0.0.5:9999\n"));
+            SelfTest.True(GameBootstrap.FirstConfigLine("  # 注释\r\n\r\n 7.7.7.7:8788 \r\n") == "7.7.7.7:8788",
+                "CRLF + 注释 + 两侧空白", GameBootstrap.FirstConfigLine("  # 注释\r\n\r\n 7.7.7.7:8788 \r\n"));
+            SelfTest.True(GameBootstrap.FirstConfigLine("# 只有注释\n\n") == null, "只有注释与空行 = 没配",
+                GameBootstrap.FirstConfigLine("# 只有注释\n\n") ?? "null");
             SelfTest.True(GameBootstrap.Loop == null || GameBootstrap.Loop.Transport == null,
                 "自检进程里帧回路不许挂着传输（测试路径不连服务器）", "挂着传输");
 

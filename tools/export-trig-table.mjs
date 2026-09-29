@@ -11,6 +11,8 @@ import { SCALE, UNITS, FROZEN_CRCS, buildTables, frozenMismatch, tableCrcs, toHe
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TARGET = join(ROOT, 'docs', 'evidence', 'fixtures', 'trig-table.json');
+// ADR-017：同一份表还要作为 Unity TextAsset 随包（出包 player 里没有仓库根）。
+const MIRROR = join(ROOT, 'client', 'Assets', 'Resources', 'trig-table.json');
 
 function fail(message) {
   console.log('FAIL：' + message);
@@ -40,20 +42,34 @@ if (process.argv.includes('--check')) {
   }
   console.log('trig-table.json OK (' + tables.sin.length + ' entries) sin=' + toHex(crcs.sin) +
     ' atan=' + toHex(crcs.atanUnits) + ' asin=' + toHex(crcs.asinUnits));
+  // ADR-017：随包那份必须与仓库这份**逐字节相同**（出包 player 里没有仓库根，角度表只能是资产）。
+  const mirrorText = canonical();
+  if (!existsSync(MIRROR)) fail('缺少随包镜像 ' + MIRROR + '（跑一次 node tools/export-trig-table.mjs）');
+  if (readFileSync(MIRROR, 'utf8') !== mirrorText) {
+    fail('随包镜像与仓库那份不一致：' + MIRROR + '（跑一次 node tools/export-trig-table.mjs）');
+  }
+  console.log('镜像 OK：' + MIRROR + ' 与 ' + TARGET + ' 逐字节相同');
   process.exit(0);
 }
 
+function canonical() {
+  return JSON.stringify({
+    scale: SCALE,
+    units: UNITS,
+    sin: tables.sin,
+    atanUnits: tables.atanUnits,
+    asinUnits: tables.asinUnits,
+  });
+}
+
 mkdirSync(dirname(TARGET), { recursive: true });
-writeFileSync(TARGET, JSON.stringify({
-  scale: SCALE,
-  units: UNITS,
-  sin: tables.sin,
-  atanUnits: tables.atanUnits,
-  asinUnits: tables.asinUnits,
-}));
+mkdirSync(dirname(MIRROR), { recursive: true });
+writeFileSync(TARGET, canonical());
+writeFileSync(MIRROR, canonical());
 console.log('写入 ' + TARGET +
   '\n  sin       ' + tables.sin.length + ' 项 crc=' + toHex(crcs.sin) +
   '\n  atanUnits ' + tables.atanUnits.length + ' 项 crc=' + toHex(crcs.atanUnits) +
   '\n  asinUnits ' + tables.asinUnits.length + ' 项 crc=' + toHex(crcs.asinUnits) +
   '\n  冻结值    sin=' + toHex(FROZEN_CRCS.sin) + ' atan=' + toHex(FROZEN_CRCS.atanUnits) +
-  ' asin=' + toHex(FROZEN_CRCS.asinUnits) + '（一致）');
+  ' asin=' + toHex(FROZEN_CRCS.asinUnits) + '（一致）' +
+  '\n写入镜像 ' + MIRROR + '（ADR-017：出包 player 读它）');

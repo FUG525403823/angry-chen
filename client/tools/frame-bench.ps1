@@ -77,7 +77,7 @@ function Get-Median([double[]]$v) {
 
 # 跑一次基准并读回它的 JSON。$UsePlayer 决定用哪条机制（engine frame loop / batchmode 手动渲染）。
 # 判定一律从 JSON 读：进程自己的退出码只当交叉校验，不当结论。
-function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @(), [string]$FileTag = "") {
+function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @(), [string]$FileTag = "", [switch]$FloorProbe) {
     $tag = if ($UsePlayer) { "player" } else { "editor" }
     # $FileTag 只影响文件名：同一机制要跑第二个用途（如空场对照）时不能覆盖判定轮的 JSON。
     if ([string]::IsNullOrEmpty($FileTag)) { $FileTag = $tag }
@@ -139,13 +139,18 @@ function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @
     if ([string]$sample.sceneKind -ne "plan-scene") { Write-Host ("ENV: " + $tag + " run " + $Index + " sceneKind=" + $sample.sceneKind + " is not 'plan-scene' - a synthetic load is not the section 5 scene"); exit 2 }
     # Fail closed: an unmeasured metric (-1) is NOT "under budget". -1 -gt 120 is false, so without
     # this check a Null-graphics-device run would sail through as PASS.
-    foreach ($k in $GraphicsMetrics) {
-        if ([double]$sample.$k -lt 0) { Write-Host ("ENV: " + $tag + " run " + $Index + " metric " + $k + " not measurable on this machine (no graphics device) - cannot judge section 5"); exit 2 }
+    # 地板探针（-frameBenchEmpty 1）例外：它**按设计**不装配呈现层，四项图形统计与引擎帧计数都不是
+    # 判据（空场的地板只回答一个问题——"这条机制下地板是否低于预算"，见 ADR-014 裁决 4）。
+    # 被判定的一轮一项都不放宽；探针自己仍要过下面那条"真图形设备"检查。
+    if (-not $FloorProbe) {
+        foreach ($k in $GraphicsMetrics) {
+            if ([double]$sample.$k -lt 0) { Write-Host ("ENV: " + $tag + " run " + $Index + " metric " + $k + " not measurable on this machine (no graphics device) - cannot judge section 5"); exit 2 }
+        }
     }
     if ([string]$sample.gpu -match "Null Device|none" -or [string]$sample.resolution -eq "headless") {
         Write-Host ("ENV: " + $tag + " run " + $Index + " has no graphics device (gpu=" + $sample.gpu + " resolution=" + $sample.resolution + ") - section 5 needs a real display"); exit 2
     }
-    if ($UsePlayer) {
+    if ($UsePlayer -and -not $FloorProbe) {
         # "引擎自己拥有帧循环"必须留下可证伪的痕迹：-batchmode 下 Time.frameCount 根本不前进，
         # 而 player 的采样窗口里它必须真的在走（这是 player 机制区别于 editor 机制的唯一实质判据）。
         if ($null -eq $sample.phaseMs -or [double]$sample.phaseMs.engineFrames -le 0) {
@@ -164,7 +169,7 @@ for ($i = 1; $i -le $Runs; $i++) { $results += (Invoke-BenchRun -Index $i -UsePl
 if ($Mechanism -eq "player") {
     # ADR-014 裁决 4：判 PASS 的第三条不变式 = **同轮**空场景地板低于预算。判据是这一轮里量出来的，
     # 不是别处抄来的：地板 >= 预算 说明这条机制下任何内容都不可能达标（机制/环境不可用 ⇒ 2，不是 FAIL）。
-    $emptyControl = Invoke-BenchRun -Index 1 -UsePlayer $true -ExtraArgs @("-frameBenchEmpty", "1") -FileTag "player-empty"
+    $emptyControl = Invoke-BenchRun -Index 1 -UsePlayer $true -ExtraArgs @("-frameBenchEmpty", "1") -FileTag "player-empty" -FloorProbe
     $emptyP95 = [double]$emptyControl.frameP95Ms
     $emptyBudget = [double]$emptyControl.budget.frameP95Ms
     Write-Host ("  player empty-scene floor: frameP95=" + $emptyP95 + "ms frameP99=" + [double]$emptyControl.frameP99Ms + "ms engineFrames=" + [int]$emptyControl.phaseMs.engineFrames + " pixelCoverage=" + [double]$emptyControl.graphics.pixelCoverage)

@@ -44,6 +44,27 @@ namespace Ac.Sim
             }
         }
 
+        // 出包版的角度表来源（C15）：**player 里没有仓库根**，所以打包时把
+        // `docs/evidence/fixtures/trig-table.json` 作为 TextAsset 放进 `Assets/Resources/`
+        // （资产名 `trig-table`），由 Boot 层在装配时把文本喂进来 —— `Ac.Sim` 自己不引 UnityEngine
+        // （引擎无关的确定性内核）。两条路是同一份 JSON、同一个 `Load`；`Shared` 里的仓库路径
+        // 只是编辑器/自检的兜底（实测：出包 player 里那条路必然抛 `TrigTableException`）。
+        public static void Install(string json)
+        {
+            _shared = Load(json);
+        }
+
+        public static bool IsInstalled
+        {
+            get { return _shared != null; }
+        }
+
+        // 丢掉缓存（域重载被关掉时静态字段会残留；用例也用它把"未装载"这个起点恢复出来）。
+        public static void Reset()
+        {
+            _shared = null;
+        }
+
         public static TrigTable Load(string json)
         {
             var root = MiniJson.Parse(json);
@@ -70,11 +91,16 @@ namespace Ac.Sim
             return Load(File.ReadAllText(path));
         }
 
-        // 角度表是仓库级的对拍产物，编辑器里从工程根往上找；构建产物的打包由 C15 决定。
+        // 角度表是仓库级的对拍产物，编辑器里从工程根往上找；出包版走 `Install`（Resources 资产）。
+        // 打包链：`tools/export-trig-table.mjs` 写 `docs/evidence/fixtures/trig-table.json` **并镜像**
+        // 到 `client/Assets/Resources/trig-table.json`，`--check` 两侧都比（见 ADR-017）。
         public static string DefaultPath()
         {
             return RepoPaths.Locate(Path.Combine("docs", "evidence", "fixtures", "trig-table.json"));
         }
+
+        // 出包版的资产名（`Assets/Resources/trig-table.json`）；Boot 层与用例都读这一个常量。
+        public const string ResourceName = "trig-table";
 
         public double Sin(ushort units)
         {
