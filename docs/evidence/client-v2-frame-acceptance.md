@@ -42,7 +42,7 @@
 - 分位口径改成 §5 冻结的 `ceil(q*n)-1`（原先第三份实现 `floor(q*(n-1))`）；
 - `GameLoop` 把镜像同步从 `draw` 段改回 `sync` 段。
 
-**当前真实结论**：走 §5 合规命令（不加 `-nographics`）时编辑器在本机起不来 ⇒ 无 JSON ⇒ `exit 2`（环境不可用，不是"超预算"）；走 `-nographics` 得到上表 CPU 数字，但 `stageP95.fx/audio/draw/overlay` 缺段 ⇒ 门禁判 FAIL。**两种走法都无法得到 PASS**，因此 **C14 的 §6/DoD 在本机未验收**，未打 `MC14` 标签。
+**当时的真实结论（已被 §3.1 的取代注推翻）**：走 §5 合规命令（不加 `-nographics`）时编辑器在本机起不来 ⇒ 无 JSON ⇒ `exit 2`（环境不可用，不是"超预算"）；走 `-nographics` 得到上表 CPU 数字，但 `stageP95.fx/audio/draw/overlay` 缺段 ⇒ 门禁判 FAIL。**当时两种走法都无法得到 PASS**，因此 **C14 的 §6/DoD 当时未验收**，未打 `MC14` 标签。补验收已由 §3.1 的取代注闭环（player 机制、门禁退 0）。
 
 ## 3.1 收尾裁定（人工决定）
 
@@ -55,4 +55,4 @@
 
 ## 4. 仍未装配（C15/后续）
 
-音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**已做**：HUD/准星/大厅/结算/波间/调试面板的渲染器（`Ac.UI/OverlayModel.cs` 布局模型 + `Ac.Boot/OverlayRenderer.cs` IMGUI 适配层，无显示设备时不画）；本地玩家身份（昵称输入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定）。**仍未做**：`AmmoLedger`/武器 HUD 数值的权威来源（需 C06 开火路径或 S10 单播 mag）、武器视图网格（C09 无生成器）、局内聊天 UI。`View/Culling` 仍在用 C08 的 90m/60m ⇒ 该冲突（C08×C14）仍需裁决，未自签。详见 `client-v2-remaining-work.md`。
+音频 `Layers/Mixer`、特效 `Effects/Particles`、`FpsCamera`、`ArenaMesh/Colliders`、`Batching` §5 档位表（剔除/阴影/实例上限）**已在 B1 装配**（`Boot/PresentationLayer.cs`，`Batching` 现有生产调用者；屏幕流按相位驱动，`DebugPanel` 走键位表）。**已做**：HUD/准星/大厅/结算/波间/调试面板的渲染器（`Ac.UI/OverlayModel.cs` 布局模型 + `Ac.Boot/OverlayRenderer.cs` IMGUI 适配层，无显示设备时不画）；本地玩家身份（昵称输入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定）。**仍未做**：`AmmoLedger`/武器 HUD 数值的权威来源（需 C06 开火路径或 S10 单播 mag）、武器视图网格（C09 无生成器）。**已补做**：局内聊天 UI（键位表第 11 条 `chat` 的输入缓冲 + `OverlayModel` 渲染，见 `client-v2-remaining-work.md` §A13）。`View/Culling` 的 C08×C14 冲突已按 A3-1 对齐（`Batching.SheepCullDistanceM=60`/`ArenaCullDistanceM=80`，全仓无 90m 调用路径）。详见 `client-v2-remaining-work.md`。

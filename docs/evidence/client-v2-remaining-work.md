@@ -1,20 +1,20 @@
 # 客户端链条（C01–C15）收官清单
 
-> 更新：2026-09-28 ｜ 最近提交 `4611f2e`（B5）＋本轮 B1 修复轮（未提交前） ｜ 标签 `MC01 … MC14`，**无 `MC15`**
+> 更新：2026-09-28 ｜ 最近提交 `4611f2e`（B5）＋本轮 B1 修复轮（未提交前） ｜ 标签 `MC01 … MC15`（`MC15` 见 A2，联合验收已通过）
 > 本文每条都有实测出处。A 段是要你出手的，B 段是我能独立做完的。
 
 ## 0. 现状
 
 **能跑的**：帧回路（输入 → 预测/和解 → 快照镜像 → 视图同步 → HUD → 特效 → 覆盖层 → 绘制）、音频 mixer、**运行期呈现层装配**（相机/灯光/竞技场/羊群/特效/屏幕流/调试面板）、版本行与日志落盘、一条命令出发布包、资源引用守卫。
-**已上屏**：HUD/准星/大厅/结算/波间/调试面板由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定。**还不能的**：真连时身份落不下来（客户端没有上报昵称的报文，服务端把所有人叫 `player`，见 A8）；`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）。
+**已上屏**：HUD/准星/大厅/结算/波间/调试面板/局内聊天由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定；**材质来源已收口**：运行期着色器一律来自 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），不再靠 `Shader.Find` 按名字查（见 A13）。**还不能的**：`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）；产品侧连接参数入口（`-server` 在出包版里不可用，见 A13-3）。
 
 | 事实 | 结果 |
 |---|---|
 | 场景 / 预制体 | 仍为 `0 / 0`——**这是设计选择**：`GameBootstrap` 用 `[RuntimeInitializeOnLoadMethod]` 纯代码自举（不手写 `.unity` YAML） |
 | B1 后真正被构造的类 | `Camera`+`FpsCamera`、`LightingRig`、`ArenaMesh`（7 部件/6 材质/5 碰撞盒）、`Materials`、`SheepInstancePool`+`SheepVisuals`（经 `Culling`/`Batching`）、`Effects`、`ViewModel`、`Lobby`/`Results`/`Intermission`（按 `MatchStatePayload.Phase` 驱动）、`DebugPanel`（F3，走键位表）、准星调色板 |
 | 帧分段 | `input/sync/predict/hud/fx/overlay/draw` 有生产打点；`audio` 仅在音频设备可用时接线。**打点规则**：只在该段真的做功时 `Mark` |
-| 资产 guid | 136 个 `.meta` **全部 32 位十六进制**，0 例外、0 重复 |
-| 自测 | `cases=164`，**非 fixture 失败 = 0**；另有 2 条失败来自并行会话已提交的 fixture 重写（见 A7） |
+| 资产 guid | 156 个 `.meta`：**151 个 32 位十六进制、0 重复、0 例外**；另 5 个是**既有**的 base64 形式（`Resources`/`FrameBenchUrpLit.mat`/`FrameBenchDriver.cs`/`FrameBenchPlan.cs`/`FrameBenchPlayer.cs`），全部已在 `assets.guid_references_resolve` 的白名单里（它们的引用方在 `ProjectSettings/*.asset`，不在本用例扫描面）。本轮新增的 4 个 `.meta`（`ArenaUrpLit`、`ArenaUrpLitInstanced`、`MaterialAssetSuite.cs`、`ChatSuite.cs`）都按 32 位十六进制手写 |
+| 自测 | `SELFTEST OK cases=193`（本轮 A13 新增 6 条），零失败 |
 | 发布包 | `BUILD OK ac-client-0.1.0+2bb9d18-win64.zip`（`backend=Mono`） |
 | CPU 帧预算 | P95 0.0069 ms、P99 0.0088 ms、0 B/帧、GC0=0 |
 
@@ -36,6 +36,10 @@
 | ✅ | ~~A10 "通道"与"类型"两套口径~~ | `seq` 每 `type` 一条、`msgId` 每可靠通道一条，已写进 S03 §5.1 / C02 §5.1 | 已闭环（联调 `lossPermille=0`） |
 | **P3** | **A6** IL2CPP 模块（可选） | 想发 IL2CPP 包才需要 | 现在走 Mono 兜底并如实标注 |
 | ✅ | ~~A5 本地玩家身份~~ | 已按"玩家自己输入昵称"落地客户端侧 | （A8 已闭环） |
+| ✅ | ~~A13-1 Shader.Find 出包剥离（ADR-014 §后果-1 的正式修法）~~ | 材质改为对 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），全仓 `Shader.Find` 只剩两处兜底 | 已闭环（`assets.material_shader_reference` + `assets.material_shader_runtime` 守着） |
+| ✅ | ~~A13-2 局内聊天 UI~~ | 键位表第 11 条 `chat`（一直是死绑定）接上：输入缓冲 + 左下角渲染 + 打字期间挂起意图 | 已闭环（4 条 `chat.*` 用例） |
+| ⏳ | **A13-3 产品侧连接参数入口** | `-server` 在出包版里被播放器自己吃掉（ADR-014 §后果-2），产品侧入口仍未立任务，目前只有 `AC_SERVER` 一条通路 | 需另立任务 |
+| ⏳ | **A13-4 真机复核** | 本轮按用户要求不开 Unity 界面，因此真机复跑、`InputCameraSuite` 执行、`frameP95/P99` 门禁、IL2CPP 出包**仍未做** | 需一台能跑图形设备的机器 |
 
 ### A9. ✅ 产品侧输入链已接线（本轮）
 联调当时是用**测试桩**（`client/Assets/Tests/JointSuite.cs` 的 `Link`）把六步跑通的 —— 采样器、命令编解码、`UdpTransport.Send` 三者都在仓库里，却**没有任何东西把它们接起来**（`new InputSampler()` / `GameLoop.QueueCommand` / `SetClientTick` / `SetReadyHeld` / `SetPointerLocked` 全仓只有测试在用）。本轮全部接上：
@@ -199,6 +203,21 @@ player 轮另外强制校验 `mechanism` 与 `phaseMs.engineFrames > 0`（batchm
 ### A7. ✅ fixture 冲突已闭环
 服务端会话重写的 `docs/evidence/fixtures/*.json`（14 份向量 + `trig-table.json`，`dtMs=50`、5560 tick、`schemaVersion` v2）现在**就是**两侧的冻结契约，客户端 `fixtures.loader` 已按 v2 schema 适配（字段名/量纲/trigger 表口径），`fixture_predict.manifest` 不再报缺向量。客户端自测 `SELFTEST OK cases=187`（适配前 164 例里 2 条红）。
 
+### A13. ✅ v2 收尾三件（本轮：ADR-014 的正式修法 + 局内聊天 + 文档纠错）
+
+**本轮只碰不需要开 Unity 界面的活**；真机复跑、`InputCameraSuite` 执行、`frameP95/P99` 门禁、IL2CPP 出包仍**未做**（见文末"仍未复核"）。
+
+| # | 事项 | 落点 | 钉住它的用例 |
+|---|---|---|---|
+| 1 | **ADR-014 §后果-1 的正式修法**：运行期材质不再 `Shader.Find` 按名字查（出包被剥离 ⇒ player 里 `materialsReady=false`） | 新增 `Assets/Resources/ArenaUrpLit.mat` + `ArenaUrpLitInstanced.mat`（与 `FrameBenchUrpLit.mat` 同源、同一 URP Lit shader guid `933532a4…`）；新增 `Ac.View.ArenaMaterials`（`Resources.Load` 取资产引用，取不到才退按名字查，成功与否可观测）；`Materials.Bind` 与 `PresentationLayer.MakeInstancedMaterial` 都改走它 | `assets.material_shader_reference`（盘上：两资产存在、guid 合法且互不相同、都引用同一 URP Lit、实例化标志只开在实例化那张）、`assets.material_shader_runtime`（运行期：`Shader != null` 且 `ResolvedFromAsset == true`，不许退到按名字查） |
+| 2 | **局内聊天 UI**：键位表第 11 条 `chat`（默认 `Return`，一直在表里但**全仓无消费方**）之前是死绑定 | `SettingsDefaults.ActionChat = 11`（与 `ActionReady=14` 同键是刻意的，相位互斥）；`SettingsPanel.ActionNames` 补第 15 条"准备"（此前 14 条 vs `ActionCount=15` 不对称）；`Chat` 补输入缓冲（`Focus`/`Apply`/`Feed`/`Submit`）；`GameLoop.ChatVisible` 按相位（`Hud.CombatUiVisible`，读 `_phase` 不读帧末才写的 `_sample.Phase`）；`ScreenFlow.Chat` + `OverlayModel.BuildChat`（左下角，底边抬起 96px，**不挪动任何既有绘制项**）；`GameLoopDriver` 接线 | `chat.input_buffer`、`chat.open_and_submit`、`chat.escape_closes`、`chat.overlay_lines` |
+| 3 | **`InputSampler.Suspend/Resume`**：打字期间意图按 0，但 30Hz 上行照发零意图（不改 `Focused`，与失焦清理解耦）；`OnFocusChanged(true)` 在挂起期间不许把意图放回来 | `InputSampler.cs` | 由 `chat.*` 与既有 `input.lock_flush` 共同覆盖 |
+| 4 | **文档纠错**：本文 §D 表此前仍写"C15 六步联合验收未做 / 无 `MC15`"，与本文 A2 的盖章自相矛盾；`client-v2-frame-acceptance.md` §3 的"未验收"结论同样只挂着一条取代注 | 本文 §D 的 C15 行、文首标签行；`client-v2-frame-acceptance.md` §3 | 无（文档） |
+
+**时序坑（本轮实测踩到，已修）**：`chat` 键按下的那一帧，`Input.inputString` **已经带上了那个 `'\n'`**。若把"回车"当开关、又把 `'\n'` 喂进缓冲，同一次回车就变成"开 → 立刻发一条空消息 → 关"。修法是 `Chat._pendingOpen`：**只吃开户那一帧**的前导换行，之后的每一帧回车都是"发送"。反面教训同样实测过：把"吃前导换行"写成无条件的，回车就永远发不出去（第一版就是这么红在 `chat.open_and_submit` 上的）。
+
+**状态：`SELFTEST OK cases=193`（本轮新增 6 条：`assets.material_shader_reference`、`assets.material_shader_runtime`、`chat.input_buffer`、`chat.open_and_submit`、`chat.escape_closes`、`chat.overlay_lines`；适配前基线 187 例，零回归）。**
+
 ---
 
 ## B. 已完成
@@ -268,7 +287,7 @@ player 轮另外强制校验 `mechanism` 与 `phaseMs.engineFrames > 0`（batchm
 | C01、C02 | 早期会话交付 | 已验收 | 已审 | `MC01`、`MC02` |
 | C03–C13 | 已交付 | 已验收 | 已审并修复 | `MC03 … MC13` |
 | C14 | 已交付（含基准入口 + player 机制入口） | **已达标**：`frameP95/P99` 4.4858 / 4.9969ms（限 20/33），12 项全绿，门禁退 0（A1） | 两轮，blocker 已修 | `MC14` = 可打标签（附注：§5 第 76 行命令仍是 batchmode，机制口径待计划所有人确认） |
-| C15 | 发布链路实测出包；版本行/日志已交付 | 构建、日志、门禁已验收；**六步联合验收未做**（A2） | 未跑双轴审查 | **无 `MC15`** |
+| C15 | 发布链路实测出包；版本行/日志已交付；**六步联合验收已通过**（A2：`SELFTEST OK cases=187` + `JOINT-ACCEPTANCE PASS`，退出码 0） | 已验收 | 未跑双轴审查（唯一未做项） | `MC15` |
 | 补齐 | B1 呈现层装配、B2 guid 统一、B3 URP 引用、B4 预算单源、B5 JSON 去重、B7 准星调色板、B8 击杀受害者、B9 基准口径、B10 门禁词表、B11 自测入口、B12 打包 guard | — | B1 已跑两轴并修复；其余为审查/审计发现 | — |
 
 提交链：`ac9b9ec` → `099d1f6` → `a2bbe2b` → `42e0260` → `88663c9` → `2bb9d18` → `71c123b` → `982092a` → `22b452a` → `1b36859`（B1）→ `4611f2e`（B5）→ 本轮 B1 修复轮。
