@@ -304,6 +304,27 @@ FRAME-BENCH PASS p95=0.996999999999844ms alloc=0B mechanism=player emptyP95=0.66
 （ADR-014 裁决 4 只要求它回答"地板是否低于预算"），**仍要求真图形设备与 `P95 < 预算`**；
 被判定的三轮一项都不放宽。明细见 `docs/evidence/client-v2-frame-acceptance.md` §4。
 
+### A18. ✅ 真机连上公网部署（`43.143.120.65`）—— 产品侧入口 + 身份绑定 + 诊断纠错
+
+服务端部署在 `43.143.120.65`（详见 `docs/evidence/server-v2-acceptance.md` §14），部署方放行安全组
+`8000-9000` TCP+UDP 后，本轮用**真出包客户端**（`ac-client-0.1.0+778c15d-win64.zip`、`backend=Mono`）
+从公网直连，`server.txt` 只写一行 `43.143.120.65:8788`：
+
+```
+Ac.Boot: 连接 43.143.120.65:8788（来源 server.txt）
+Ac.Boot: 本地身份已绑定 pid=3（大厅昵称="牧羊人"）
+```
+
+含义：`Hello → HelloAck → kJoin(昵称) → MatchState 行表 → 按名认领 pid → 相机/HUD 绑定` 整条链路
+在**公网真机**上打通（服务端同刻 `/health` 报 `connections:1 players:1 graceActive:1`）。整份 `Player.log`
+**0 条异常**。
+
+**顺带修掉的诊断缺陷**：「本地身份未绑定」那条警告原来在**第一帧**就发（`LocalPlayerId` 起跑线必然为 0），
+而身份要到 1 Hz 的 MatchState 回来才可能绑上 ⇒ 每次正常启动都喊一次狼来了，实跑排障只能靠猜。
+本批改为：① 宽限期 `NoIdentityWarnSeconds = 5.0` 秒（纯函数 `ShouldWarnNoIdentity` 可复算，用例
+`presentation.identity_warn_grace`）；② 认领成功时补一条配对日志 `本地身份已绑定 pid=…`。
+基线用例数 195 → **196**（`SELFTEST OK cases=196`）。
+
 ---
 
 ## B. 已完成

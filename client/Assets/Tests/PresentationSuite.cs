@@ -30,6 +30,20 @@ namespace Ac.Tests
             SelfTest.Add("presentation.crosshair_palette", ChecksCrosshairPalette);
             SelfTest.Add("presentation.sheep_pool_and_draw", ChecksSheepPoolAndDraw);
             SelfTest.Add("presentation.dispose_cleanup", ChecksDisposeCleanup);
+            SelfTest.Add("presentation.identity_warn_grace", ChecksIdentityWarnGrace);
+        }
+
+        // 真机实跑暴露的诊断缺陷：「本地身份未绑定」原来第一帧就报，而**起跑线上必然没绑上**
+        //（Hello → HelloAck → kJoin → 首条 MatchState(1 Hz) 才带回玩家表）⇒ 每次正常启动都喊一次狼来了。
+        // 这条钉住宽限期语义（纯函数，判据可复算）；配对消息"已绑定 pid=" 由同一处代码打。
+        private static void ChecksIdentityWarnGrace()
+        {
+            SelfTest.True(!PresentationLayer.ShouldWarnNoIdentity(0.0, false), "起跑线不报", "报了");
+            SelfTest.True(!PresentationLayer.ShouldWarnNoIdentity(4.999, false), "宽限期内不报", "报了");
+            SelfTest.True(!PresentationLayer.ShouldWarnNoIdentity(-1.0, false), "还没装配不报", "报了");
+            SelfTest.True(PresentationLayer.ShouldWarnNoIdentity(PresentationLayer.NoIdentityWarnSeconds, false),
+                "过了宽限期仍没绑上才报", "没报");
+            SelfTest.True(!PresentationLayer.ShouldWarnNoIdentity(99.0, true), "只报一次", "重复报");
         }
 
         // 装配 + 帧回路的最小组合：用例统一用它，Dispose 里把两条一起丢掉。

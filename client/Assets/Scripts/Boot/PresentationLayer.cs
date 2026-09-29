@@ -63,6 +63,10 @@ namespace Ac.Boot
         private bool _disposed;
         // "本地身份没认领到"的警告只打一次（每帧打会把日志刷爆，反而不看见）
         private bool _warnedNoIdentity;
+        // 认领到身份的**成功**日志只打一次（与上面那条配对：只有失败有声音，实跑排障时只能靠猜）
+        private bool _identityBoundLogged;
+        // 装配时刻（Time.realtimeSinceStartup）：见 NoIdentityWarnSeconds 的宽限
+        private double _attachedAtSeconds = -1.0;
         // 版本行是计算属性（含非常量 BuildCommit）：构造期拼一次就冻住。帧内再取一次就是一次字符串分配
         //（+ int 装箱），而帧预算的托管分配上限是 0 B。
         private readonly string _versionLine;
@@ -225,6 +229,7 @@ namespace Ac.Boot
         public void Attach(GameLoop loop)
         {
             _loop = loop;
+            _attachedAtSeconds = Time.realtimeSinceStartup;
             if (loop == null) return;
             loop.EventApplied = OnEventApplied;
             // 昵称 → 本地身份：大厅里键入的昵称进 Lobby（清洗），清洗后的值转给帧回路去认领 MatchState 的行。
@@ -453,21 +458,38 @@ namespace Ac.Boot
             if (_loop != null) _loop.LocalName = name;
         }
 
-        private void SyncCamera()
+        // 「本地身份未绑定」这条诊断的宽限期（秒）：Hello → HelloAck → kJoin → 首条 MatchState(1 Hz)
+        // 全在这个窗口内完成。起跑线上 LocalPlayerId 必然为 0，所以第一帧就报等于每次正常启动都喊一次狼来了。
+        public const double NoIdentityWarnSeconds = 5.0;
+
+        // 纯函数：什么时候才该报"身份没绑上"。`elapsedSeconds` 负值（还没装配）不报。
+        public static bool ShouldWarnNoIdentity(double elapsedSeconds, bool alreadyWarned)
         {
-            var loop = _loop;
+            return !alreadyWarned && elapsedSeconds >= NoIdentityWarnSeconds;
+        }
+
+        private void SyncCamera()
+        {            var loop = _loop;
             if (loop == null || MainCamera == null) return;
             // 认领不到本地身份时给一条可见诊断：相机不跟人 = 画面诡异 + 键鼠不驱动任何实体，
             // 而屏幕上看不出原因（联调外的实测现象：大厅昵称为空 ⇒ 玩家表里没有这一行）。
+            // **但起跑线上必然认领不到**（Hello→HelloAck→kJoin→首条 MatchState(1 Hz) 才带回玩家表），
+            // 所以加一条宽限期：实测真机出包里原来第一帧就报，等于每次正常启动都喊一次狼来了。
             if (loop.LocalPlayerId == 0)
             {
-                if (!_warnedNoIdentity)
+                if (ShouldWarnNoIdentity(Time.realtimeSinceStartup - _attachedAtSeconds, _warnedNoIdentity))
                 {
                     _warnedNoIdentity = true;
                     Debug.LogWarning("Ac.Boot: 本地身份未绑定（大厅昵称=\"" + (loop.LocalName ?? string.Empty) +
                         "\" 未出现在 MatchState 玩家表里）⇒ 相机停在装配原点、键鼠不驱动任何实体");
                 }
                 return;
+            }
+            if (!_identityBoundLogged)
+            {
+                _identityBoundLogged = true;
+                Debug.Log("Ac.Boot: 本地身份已绑定 pid=" + loop.LocalPlayerId +
+                    "（大厅昵称=\"" + (loop.LocalName ?? string.Empty) + "\"）");
             }
             EntityView local;
             if (!loop.Views.TryGet(loop.LocalPlayerId, out local) || local == null) return;
