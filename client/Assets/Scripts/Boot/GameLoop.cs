@@ -43,6 +43,7 @@ namespace Ac.Boot
         // 过渡方案与代价写在 Ac.Net.LocalIdentity 的类注释里。
         private readonly LocalIdentity _identity = new LocalIdentity();
         private SnapshotFrame _scratchFrame;
+        private int _mirrorReconnectCount;   // 镜像对应的重连次数（重连一次就复位镜像与 tick 原点）
         private ushort _localPlayerId;
 
         private HudSample _sample;
@@ -78,6 +79,9 @@ namespace Ac.Boot
         // ②进本地预测；为 null 时（帧基准/无头）一帧都不采样。此前它连 `new` 都没有生产调用者：
         // 采样器、编解码、传输三者都在，却没有任何东西把它们接起来（联调只能靠测试桩手搓命令）。
         public InputSampler Sampler { get; set; }
+        // 最后一条采样到的移动意图（给视图模型的行走摆动用）
+        public double LastMoveX { get; private set; }
+        public double LastMoveY { get; private set; }
         public int CommandsSent { get; private set; }
         public int CommandSendFailures { get; private set; }
         public IFrameStageSink Fx { get; set; }
@@ -241,6 +245,9 @@ namespace Ac.Boot
             InputIntent intent;
             while (sampler.TryTakeCommand(out intent))
             {
+                // 最后一条意图的移动轴（视图模型的行走摆动取它）
+                LastMoveX = intent.MoveX;
+                LastMoveY = intent.MoveY;
                 var payload = CommandCodec.IntentToPayload(intent);
                 var transport = Transport;
                 if (transport != null && transport.State == ConnectionState.Connected)
@@ -283,6 +290,18 @@ namespace Ac.Boot
             // ② sync：收包（离线时什么都没发生）
             if (Transport != null)
             {
+                // 会话换了（重连 / 服务端重启后的新会话）⇒ 镜像与 tick 原点一并复位。不复位就会
+                // "连上了却什么都动不了"：旧的高 tick 让新服务端的低 tick 快照过不了单调过滤，
+                // 而命令带着高 tick 又被判 kFutureTick 全丢（实跑实测）。
+                // 只在“真的重连过”时复位镜像与 tick 原点（计数器只在 BeginReconnect 里加）。
+                // 不能用“会话号变了”做触发：断线那一帧会话会变 0，把刚应用的快照也一并丢掉
+                // （用例 boot.command_uplink / boot.command_tick_from_snapshot 抓到的就是这个）。
+                var reconnects = Transport.ReconnectAttempts;
+                if (reconnects != _mirrorReconnectCount)
+                {
+                    _mirrorReconnectCount = reconnects;
+                    _view.ResetForNewSession();
+                }
                 Transport.Poll(MaxInboundPerPoll);
                 FlushJoin();
             }

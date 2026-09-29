@@ -87,9 +87,16 @@ ValidateResult validateOpcode(uint8_t type) noexcept {
   return ValidateResult{};
 }
 
+// S11 §5 的 clientTick 校验：**受理「服务端当前或刚过去」的 tick，一律拒收未来 tick**。
+// 为什么不是严格相等（实跑实测）：客户端只能拿「最近一条已应用快照的 tick」（20Hz 快照 / 50ms 一格），
+// 而命令在 30Hz 上行的下一格才到服务端；16ms RTT 下实测约 **43%** 的命令被判 kStaleTick 整条丢掉
+// （连按键一起）⇒ 客户端预测被和解反复拽回，表现就是「移动一顿一顿」。放一个 kClientTickSlackTicks
+// 的窗口把「迟到但合法」的输入收下来；反作弊语义不变：预支（未来 tick）照旧拒收。
 ValidateResult validateClientTick(uint32_t clientTick, uint32_t serverTick) noexcept {
-  if (clientTick < serverTick) return ValidateResult{false, ValidateReason::kStaleTick};
   if (clientTick > serverTick) return ValidateResult{false, ValidateReason::kFutureTick};
+  if (serverTick - clientTick > kClientTickSlackTicks) {
+    return ValidateResult{false, ValidateReason::kStaleTick};
+  }
   return ValidateResult{};
 }
 

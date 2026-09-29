@@ -39,7 +39,13 @@ ValidateResult validatePayloadSize(std::size_t bytes) noexcept;
 bool isClientToServerType(uint8_t type) noexcept;
 ValidateResult validateOpcode(uint8_t type) noexcept;
 
-// §5 字段表：tick 早于服务器当前 tick 者过期丢弃；晚于者丢弃（不重放、不预支）
+// §5 字段表：**受理窗口 = [serverTick - kClientTickSlackTicks, serverTick]**；晚于服务端 tick（预支）
+// 一律拒收，早于窗口的过期丢弃。
+// 2026-09-30 实跑修订：严格相等在真实网络上不成立 —— 客户端只能拿「最近一条已应用快照的 tick」，
+// 而 30Hz 命令的下一格才到服务端，16ms RTT 下实测约 43% 的命令被判 kStaleTick 整条丢掉（连按键一起），
+// 表现为「移动一顿一顿」。窗口只收「迟到但合法」的输入，反作弊语义不变。
+inline constexpr uint32_t kClientTickSlackTicks = 2u;   // 2 格 = 100ms：覆盖上行一格 + 一个 RTT
+
 ValidateResult validateClientTick(uint32_t clientTick, uint32_t serverTick) noexcept;
 
 // §5 字段表：NaN/±Inf 归零；moveX/moveY 夹到 [-1,1]；yaw 取模到 [-π,π]；pitch 夹到 [-π/2,π/2]；

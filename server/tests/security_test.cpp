@@ -281,7 +281,12 @@ AC_TEST(security_malicious_10c_switch_to_seven_zeroed) {
 // ---- 矩阵 11：负 / 未来 tick ----
 AC_TEST(security_malicious_11a_future_tick_dropped) { expectTickDropped(101u, 100u, sec::ValidateReason::kFutureTick); }
 AC_TEST(security_malicious_11b_negative_tick_encoding_dropped) { expectTickDropped(0xFFFFFFFFu, 100u, sec::ValidateReason::kFutureTick); }
-AC_TEST(security_malicious_11c_stale_tick_dropped) { expectTickDropped(99u, 100u, sec::ValidateReason::kStaleTick); }
+// 2026-09-30 实跑修订：接受窗口 [serverTick - kClientTickSlackTicks, serverTick]，不再要求严格相等
+AC_TEST(security_malicious_11c_stale_tick_dropped) {
+  AC_CHECK(sec::validateClientTick(99u, 100u).isOk);      // 滞后 1 格：在窗口内
+  AC_CHECK(sec::validateClientTick(98u, 100u).isOk);      // 滞后 2 格 = kClientTickSlackTicks
+  expectTickDropped(97u, 100u, sec::ValidateReason::kStaleTick);   // 超出窗口才丢
+}
 
 // ---- 矩阵 12：请求回退 300 ms ----
 AC_TEST(security_malicious_12a_rewind_300ms_not_ok) { expectRewindOverLimit(600u); }
@@ -351,9 +356,10 @@ AC_TEST(security_opcode_whitelist) {
 }
 
 AC_TEST(security_tick_boundary_accepts_equal) {
-  AC_CHECK(sec::validateClientTick(100u, 100u).isOk);
-  AC_CHECK(!sec::validateClientTick(100u, 101u).isOk);
-  AC_CHECK(!sec::validateClientTick(101u, 100u).isOk);
+  AC_CHECK(sec::validateClientTick(100u, 100u).isOk);                                 // 当前格
+  AC_CHECK(sec::validateClientTick(100u, 100u + sec::kClientTickSlackTicks).isOk);    // 窗口边界内
+  AC_CHECK(!sec::validateClientTick(100u, 101u + sec::kClientTickSlackTicks).isOk);    // 超出窗口才丢
+  AC_CHECK(!sec::validateClientTick(101u, 100u).isOk);                                // 预支：仍然拒收
 }
 
 AC_TEST(security_clamp_table_full) {

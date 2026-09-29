@@ -58,8 +58,7 @@ namespace Ac.Sim
         private int _visibleCount;
 
         public SnapshotView()
-        {
-            for (var i = 0; i < HistoryFrames; i++)
+        {            for (var i = 0; i < HistoryFrames; i++)
             {
                 _ringEntities[i] = new FrameEntity[MaxRecordsPerFrame];
                 _ringRemoved[i] = new ushort[MaxRemovedPerFrame];
@@ -81,6 +80,21 @@ namespace Ac.Sim
 
         // §5.2：解码失败（或帧内字段越界）→ 丢弃并计 invalidSnapshots，已应用状态原样保留。
         public void NoteDecodeFailure() { InvalidSnapshots += 1; }
+
+        // 会话换了（重连 / 服务端重启后的新会话）⇒ 镜像与 tick 原点一起复位。
+        // 不复位的后果（实跑实测）：旧会话的高 tick（例如 46051）会让重启后从 0 开始的
+        // 服务端 tick 永远过不了 ApplyFrame 的单调过滤（frame.Tick <= AppliedTick 直接丢），
+        // 而命令又带着那个高 tick 被判 kFutureTick 全丢 ⇒ “连上了却什么都动不了”。
+        public void ResetForNewSession()
+        {
+            ClearMirror();
+            AppliedTick = 0u;
+            _serverTimeMs = 0u;
+            FrameCount = 0;
+            _newestSlot = -1;
+            BaselineMismatch = 0;
+            InvalidSnapshots = 0;
+        }
 
         public bool ApplyFrame(SnapshotFrame frame)
         {

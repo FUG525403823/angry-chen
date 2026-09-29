@@ -198,13 +198,13 @@ namespace Ac.Tests
 
             // ADR-015：水平轴同向 —— 鼠标右移视角右转（yaw 增大），左移反向。
             var turnedRight = new InputSampler();
-            turnedRight.AddMouse(1000.0, 0.0);
+            turnedRight.AddMouse(300.0, 0.0);   // 灵敏度提高后 1000px 会绕圈（yaw 取模），用不绕圈的位移验方向
             turnedRight.Update(40.0);
             InputIntent turned;
             SelfTest.True(turnedRight.TryTakeCommand(out turned), "右移也要出命令", "没发出");
             SelfTest.True(turnedRight.YawRad > 0.0, "右移 ⇒ yaw 增大（视角右转）", turnedRight.YawRad.ToString("R"));
             var turnedLeft = new InputSampler();
-            turnedLeft.AddMouse(-1000.0, 0.0);
+            turnedLeft.AddMouse(-300.0, 0.0);
             turnedLeft.Update(40.0);
             SelfTest.True(turnedLeft.YawRad < 0.0, "左移 ⇒ yaw 减小（视角左转）", turnedLeft.YawRad.ToString("R"));
             SelfTest.True(Math.Abs(FpsCamera.ClampPitch(3.0) - FpsCamera.PitchLimitRad) < 1e-12, "相机俯仰上限", FpsCamera.ClampPitch(3.0).ToString("R"));
@@ -213,7 +213,8 @@ namespace Ac.Tests
             // 灵敏度范围 0.2..3.0，超出即钳制；鼠标增量只按 GetAxisRaw 口径计入
             var sensitivity = new InputSampler();
             sensitivity.SetSensitivity(9.0);
-            SelfTest.Equal(3000, (long)(sensitivity.SensitivityValue * 1000.0));
+            SelfTest.Equal((long)(InputSampler.MaxSensitivity * 1000.0),   // 不写死：上限从 3.0 提到 5.0（实跑手感）
+                (long)(sensitivity.SensitivityValue * 1000.0));
             sensitivity.SetSensitivity(0.0);
             SelfTest.Equal(200, (long)(sensitivity.SensitivityValue * 1000.0 + 0.5));
 

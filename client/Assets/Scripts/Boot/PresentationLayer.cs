@@ -54,6 +54,21 @@ namespace Ac.Boot
 
         private Texture2D[] _textures;
         private Material _sheepMaterial;
+        // 视图模型（C09）：此前 ViewModel 只有锚点、没有网格，所以“手里没有枪”。
+        // 锚点 ViewModelAnchor.OffsetZ 是 -0.02（几乎贴在眼位），而横向偏移是 0.17m：在 z≈0 的深度上
+        // 这个横向偏移会被投影到屏幕右外侧（实测：枪完全看不见）。把整枪沿 +Z 前推，
+        // 让枪口落在 ViewModel.MuzzleOffset.z 附近（0.30 + 0.30 ≈ 0.60）。
+        private const float WeaponForwardM = 0.42f;
+        private GameObject _weaponObject;
+        private MeshRenderer _weaponRenderer;
+        private MeshFilter _weaponFilter;
+        private GameObject _muzzleFlash;
+        private double _weaponSwayMs;
+        private float _weaponKick01;          // 1 = 刚开火，随时间衰减到 0
+        private int _weaponSlotBuilt = -1;
+        private int _lastMagForKick = -1;
+        private float _bobPhase;
+
         private Material _emblemMaterial;
         private GameLoop _loop;
         private double _nowMs;
@@ -196,6 +211,7 @@ namespace Ac.Boot
             Effects = new Effects();
             ViewModel = new ViewModel();
             ViewModel.Attach(MainCamera);
+            BuildWeaponView();
 
             // ⑥ 屏幕流与调试面板
             Flow = new ScreenFlow();
@@ -296,6 +312,7 @@ namespace Ac.Boot
             FxTicks += 1;
             SyncCamera();
             ViewModel.Refresh();
+            UpdateWeaponView(dtMs);
             Effects.Tick((float)dtMs);
         }
 
@@ -494,7 +511,14 @@ namespace Ac.Boot
                     "（大厅昵称=\"" + (loop.LocalName ?? string.Empty) + "\"）");
             }
             EntityView local;
-            if (!loop.Views.TryGet(loop.LocalPlayerId, out local) || local == null) return;
+            if (!loop.Views.TryGet(loop.LocalPlayerId, out local) || local == null)
+            {
+                // 认领到了 pid 但世界里还没有本地实体（大厅等开局、加载相位）：
+                // 不能就停在装配原点（那里在谷仓内部，画面是一片壁墙），
+                // 给一条固定机位：1 号出生点 + 眼高，朝向场地中心。
+                ApplyLobbyCameraPose();
+                return;
+            }
             Fps.SetPose(local.RenderX, local.RenderY, local.RenderZ, local.YawRad, local.PitchRad);
             // 眼高由 FpsCamera 加（SetPose 内部），俯仰取负号是 Unity 的朝向约定
             _cameraObject.transform.SetPositionAndRotation(
@@ -618,6 +642,141 @@ namespace Ac.Boot
             private readonly PresentationLayer _layer;
             internal OverlayStage(PresentationLayer layer) { _layer = layer; }
             public bool Tick(double dtMs) { return _layer.TickOverlay(dtMs); }
+        }
+
+        // 视图模型：程序化网格（ADR-003 零素材）+挂在相机下的基座，
+        // 加上待机摆动、行走摆动、开火后坐力与枪口火花。
+        private void BuildWeaponView()
+        {
+            if (MainCamera == null) return;
+            _weaponObject = new GameObject("Ac.WeaponView");
+            _weaponObject.transform.SetParent(MainCamera.transform, false);
+            _weaponObject.transform.localPosition = WeaponBasePosition();
+            _weaponObject.transform.localRotation = Quaternion.Euler(0f, 2.5f, 0f);
+            _weaponFilter = _weaponObject.AddComponent<MeshFilter>();
+            _weaponRenderer = _weaponObject.AddComponent<MeshRenderer>();
+            var material = MakeInstancedMaterial("Ac/Weapon", new Color32(0x55, 0x57, 0x5E, 255));
+            material.color = new Color(0.42f, 0.43f, 0.47f, 1f);
+            // 双面：手写长方体的绕序难免有个别面朝里，单面会看到“空心的枪”
+            MaterialCullOff(material);
+            _weaponRenderer.sharedMaterial = material;
+            _weaponRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            _weaponRenderer.receiveShadows = false;
+            SetWeaponSlot(0);
+
+            // 枪口火花：一个小方块，平时隐藏，开火那几帧亮起来
+            _muzzleFlash = new GameObject("Ac.MuzzleFlash");
+            _muzzleFlash.transform.SetParent(_weaponObject.transform, false);
+            _muzzleFlash.transform.localPosition = WeaponMesh.MuzzleLocal;
+            _muzzleFlash.transform.localScale = new Vector3(0.055f, 0.055f, 0.055f);
+            var flashFilter = _muzzleFlash.AddComponent<MeshFilter>();
+            var flashRenderer = _muzzleFlash.AddComponent<MeshRenderer>();
+            flashFilter.sharedMesh = BuildFlashMesh();
+            var flashMaterial = MakeInstancedMaterial("Ac/MuzzleFlash", new Color32(0xFF, 0xC2, 0x4D, 255));
+            flashMaterial.color = new Color(1f, 0.78f, 0.30f, 1f);
+            MaterialCullOff(flashMaterial);
+            flashRenderer.sharedMaterial = flashMaterial;
+            flashRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            _muzzleFlash.SetActive(false);
+        }
+
+        private static Mesh BuildFlashMesh()
+        {
+            var mesh = new Mesh();
+            mesh.name = "MuzzleFlash";
+            mesh.vertices = new[]
+            {
+                new Vector3(-0.5f, -0.5f, 0f), new Vector3(0.5f, -0.5f, 0f),
+                new Vector3(0.5f, 0.5f, 0f), new Vector3(-0.5f, 0.5f, 0f),
+            };
+            mesh.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        // 切换当前武器的网格（与 MatchState 行里的 weapon 字节同步）
+        private void SetWeaponSlot(int slot)
+        {
+            if (slot < 0 || slot >= WeaponMesh.SlotCount) slot = 0;
+            if (slot == _weaponSlotBuilt || _weaponFilter == null) return;
+            _weaponSlotBuilt = slot;
+            _weaponFilter.sharedMesh = WeaponMesh.Build(slot);
+        }
+
+        // 每帧：待机摆动 + 行走摆动 + 开火坐力（弹匣变小 = 真的打了一枪，不另开一条信号）
+        private void UpdateWeaponView(double dtMs)
+        {
+            if (_weaponObject == null) return;
+            _weaponSwayMs += dtMs;
+            var loop = _loop;
+            var mag = loop == null ? -1 : loop.Hud.Ammo.Mag;
+            if (_lastMagForKick >= 0 && mag >= 0 && mag < _lastMagForKick) _weaponKick01 = 1f;
+            _lastMagForKick = mag;
+            if (_weaponKick01 > 0f)
+            {
+                _weaponKick01 -= (float)(dtMs / 180.0);      // 180ms 衰减完
+                if (_weaponKick01 < 0f) _weaponKick01 = 0f;
+            }
+
+            // 行走摆动的幅度来自真实移动轴（GameLoop 把采样到的最后一条意图曝出来）
+            var moving = loop != null && (Mathf.Abs((float)loop.LastMoveX) > 0.01f || Mathf.Abs((float)loop.LastMoveY) > 0.01f);
+            _bobPhase += (float)(dtMs / 1000.0) * (moving ? 9.0f : 1.6f);
+            var bobAmp = moving ? 0.012f : 0.0025f;
+            var swayX = Mathf.Sin(_bobPhase) * bobAmp;
+            var swayY = Mathf.Sin(_bobPhase * 2f) * bobAmp * 0.6f;
+            var kickBack = _weaponKick01 * 0.035f;
+            var kickUp = _weaponKick01 * 0.012f;
+            var baseOffset = WeaponBasePosition();
+            _weaponObject.transform.localPosition = new Vector3(
+                baseOffset.x + swayX, baseOffset.y + swayY + kickUp, baseOffset.z - kickBack);
+            _weaponObject.transform.localRotation = Quaternion.Euler(
+                -_weaponKick01 * 9f, 2.5f + swayX * 40f, _weaponKick01 * 4f);
+            if (_muzzleFlash != null) _muzzleFlash.SetActive(_weaponKick01 > 0.55f);
+
+            // 武器槽位：从本地玩家那行 MatchState 读（同一条权威来源）
+            if (loop != null)
+            {
+                var players = loop.LastMatchState.Players;
+                if (players != null)
+                {
+                    for (var i = 0; i < players.Length; i++)
+                    {
+                        if (players[i].Pid != loop.LocalPlayerId) continue;
+                        SetWeaponSlot(players[i].Weapon);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 视图模型基座：锚点的横向偏移按 0.55 收进去（实测：直接用 0.17m 会把整枪顶到右缘外），
+        // 并把整枪沿 +Z 前推 WeaponForwardM（枪口落在 ViewModel.MuzzleOffset.z 附近）。
+        private static Vector3 WeaponBasePosition()
+        {
+            var anchor = ViewModel.BaseOffset;
+            return new Vector3(anchor.x * 0.55f, anchor.y * 0.80f, anchor.z + WeaponForwardM);
+        }
+
+        // 大厅/加载相位的固定机位（1 号出生点，眼高 1.6m，朝向场地中心）。
+        private void ApplyLobbyCameraPose()
+        {
+            // 大厅没有本地实体时用“转播机位”：抬到 5m、后退到场地边缘外，
+            // 俯视场地中心（原来站在出生点正对谷仓，画面就是一堵墙）。
+            const float heightM = 5.0f;
+            const float distanceM = 34.0f;
+            const float pitchRad = -0.22f;   // 约 -12.6°
+            var yaw = Mathf.PI;             // 面向 -Z（场地中心方向）
+            Fps.SetPose(0f, 0f, distanceM, yaw, pitchRad);
+            var pose = MainCamera.transform;
+            pose.position = new Vector3(0f, heightM, distanceM);
+        }
+
+        // URP Lit 的 “Cull Off”（只改材质实例，不动共享 shader）
+        private static void MaterialCullOff(Material material)
+        {
+            if (material == null) return;
+            material.SetFloat("_Cull", 0f);
         }
     }
 }

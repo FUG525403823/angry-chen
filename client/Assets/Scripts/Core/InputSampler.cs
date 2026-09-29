@@ -32,9 +32,12 @@ namespace Ac.Core
         public const byte ButtonSwitchWeapon = 64;
         public const byte ButtonReady = 128;
         public const double PitchLimitRad = 1.5707963267948966;   // π/2
-        public const double MouseRadPerPixel = 0.001;
+        // 2026-09-30 实跑修正：0.001 rad/px 在 1440p 下“鼠标灵敏度巨低、转不动”（玩家实测）。
+        // 现在 0.0035 rad/px × 默认 1.2 ≈ 0.24°/点：200 点快拉 ≈ 48°，接近常见 FPS 手感；
+        // 具体倍率仍然走设置里的灵敏度（C13），这里只把基数调到合理区间。
+        public const double MouseRadPerPixel = 0.0035;
         public const double MinSensitivity = 0.2;
-        public const double MaxSensitivity = 3.0;
+        public const double MaxSensitivity = 5.0;   // 上限一起抬：不然“最高灵敏度”也不够用
         public const int AngleUnitsPerTurn = 65536;               // 与 Quantize.AngleUnits 同值
         public const sbyte AxisFull = 127;                        // 与 Quantize.QuantizeAxis(±1) 同值
         // 待发队列就是 §5.1 的"未确认命令"，上限 MaxBacklog；FIFO，取走方向固定为 _pending[0]。
@@ -50,7 +53,7 @@ namespace Ac.Core
 
         public InputSampler()
         {
-            SensitivityValue = 1.0;
+            SensitivityValue = 1.2;
             ClientTick = 0;
             Focused = true;
             PitchRad = 0.0;

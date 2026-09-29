@@ -99,7 +99,7 @@ std::uint64_t counterOf(const ac::server::Runtime& runtime, ac::metrics::Counter
 }
 
 // 一次真实握手：返回会话号（0 = 失败）。`serverTick` 非空时带出 HelloAck 里的服务器 tick
-// （§5.3 的 clientTick 必须**恰好等于**服务器 tick，命令才不会被 kStaleTick/kFutureTick 丢掉）。
+// （§5.3 的 clientTick 必须落在 [serverTick - kClientTickSlackTicks, serverTick] 窗口内，命令才不会被 kStaleTick/kFutureTick 丢掉）。
 std::uint16_t handshake(ac::server::Runtime& runtime, ac::net::UdpSocket& client,
                         std::uint32_t nonce, std::uint64_t nowMs, std::uint32_t* serverTick = nullptr) {
   std::uint8_t frame[64] = {};
