@@ -36,6 +36,8 @@ namespace Ac.UI
         public Intermission Intermission;
         public Results Results;
         public DebugPanel Debug;
+        // 局内聊天：可见性由 GameLoop 按 MatchState 相位驱动（本层不推相位），这里只读它的行与输入缓冲
+        public Chat Chat;
         public MatchStatePlayer[] Players;
         public int SelfPid;
     }
@@ -61,6 +63,12 @@ namespace Ac.UI
         public const float DownedShadeAlpha = 0.35f;
         public const float PanelShadeAlpha = 0.72f;
         public const int PanelShadeRgb = 0x101014;
+        public const int ChatRowHeightPx = 18;
+        public const int ChatLineWidthPx = 520;
+        // 聊天行从下往上排，底边与血条/怒气条那一组错开（不挪动任何一个既有绘制项的位置）
+        public const int ChatBottomLiftPx = 96;
+        public const int ChatInputLiftPx = 16;
+        public const int ChatInputRowHeightPx = 20;
 
         // 常量行：不随帧变化，构造期就冻住（帧内拼接 = 每帧一次分配）
         public const string LobbyTitle = "ANGRY CHEN";
@@ -76,6 +84,8 @@ namespace Ac.UI
         public const string SkipDisabledText = "不可跳过（剩余时间 > 15s）";
         public const string ResultsTitle = "结算";
         public const string StaleBannerText = "榜单暂不可用（本地摘要）";
+        public const string ChatPromptPrefix = "说: ";
+        public static readonly string ChatPromptEmpty = ChatPromptPrefix + "_";   // 缓冲空时也看得见光标
 
         private readonly OverlayItem[] _items = new OverlayItem[ItemCapacity];
         private int _count;
@@ -125,6 +135,11 @@ namespace Ac.UI
         private readonly string[] _scoreLines = new string[ScoreRowLimit];
         private readonly string[] _scoreCache = new string[ScoreRowLimit];
         private readonly int[] _scoreKills = new int[ScoreRowLimit];
+        private readonly string[] _chatLines = new string[Chat.ChatMaxLines];
+        private string _chatPrevLast;
+        private int _chatLineCount = -1;
+        private string _chatInputLine = string.Empty;
+        private string _chatInputCache;
 
         public OverlayItem[] Items { get { return _items; } }
         public int Count { get { return _count; } }
@@ -342,6 +357,47 @@ namespace Ac.UI
             {
                 AddText(OverlayTextRole.Numeric, OverlayAlign.Center, w / 2, (int)(h * 0.35f), w, Hud.ColorHurt, 1f, ChargeText);
             }
+
+            BuildChat(sources, w, bottom, inset);
+        }
+
+        // 局内聊天：左下角、从下往上排（最新的在最下面），输入缓冲开着时在最下面加一行"说: xxx"。
+        // 只画最近 Chat.ChatMaxLines 行；行内容按"末行引用 + 行数"脏检查缓存，没有新消息就零分配
+        // （与击杀记录同一套缓存纪律）。
+        private void BuildChat(in OverlaySources sources, int w, int bottom, int inset)
+        {
+            var chat = sources.Chat;
+            if (chat == null || !chat.Visible) return;
+
+            var count = chat.LineCount;
+            if (count > Chat.ChatMaxLines) count = Chat.ChatMaxLines;
+            var lines = chat.Lines;
+            var last = count == 0 ? null : lines[count - 1];
+            if (count != _chatLineCount || !ReferenceEquals(last, _chatPrevLast))
+            {
+                _chatLineCount = count;
+                _chatPrevLast = last;
+                for (var i = 0; i < count; i++) _chatLines[i] = lines[i];
+            }
+            if (count > 0)
+            {
+                var top = bottom - ChatBottomLiftPx - count * ChatRowHeightPx;
+                for (var i = 0; i < count; i++)
+                {
+                    AddText(OverlayTextRole.Feed, OverlayAlign.Left, inset, top + i * ChatRowHeightPx,
+                        ChatLineWidthPx, Hud.ColorNormal, 1f, _chatLines[i]);
+                }
+            }
+
+            if (!chat.Focused) return;
+            var typed = chat.BufferingText;
+            if (!ReferenceEquals(typed, _chatInputCache))
+            {
+                _chatInputCache = typed;
+                _chatInputLine = typed.Length == 0 ? ChatPromptEmpty : ChatPromptPrefix + typed;
+            }
+            AddText(OverlayTextRole.Feed, OverlayAlign.Left, inset, bottom - ChatInputLiftPx,
+                ChatLineWidthPx, Hud.ColorTarget, 1f, _chatInputLine);
         }
 
         private void BuildIntermission(in OverlaySources sources, int w, int h, int inset)

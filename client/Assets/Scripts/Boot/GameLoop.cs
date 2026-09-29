@@ -244,6 +244,11 @@ namespace Ac.Boot
             }
         }
 
+        // 局内聊天（键位表 [ActionChat]）：显隐的唯一真相是相位，与 HUD 用同一条判据（本层不自己推相位）。
+        // 读 `_phase`（MatchState 的权威字节）而不是 `_sample.Phase`：后者由帧末的 FillSample 写，
+        // 在帧首问它会拿到上一帧的值。
+        public bool ChatVisible { get { return Hud.CombatUiVisible(_phase); } }
+
         public void Frame(double dtMs)
         {
             _profiler.Begin();

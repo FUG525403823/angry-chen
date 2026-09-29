@@ -31,6 +31,8 @@ namespace Ac.Tests
             RenderSuite.Register();
             ReleaseSuite.Register();
             AssetGateSuite.Register();
+            MaterialAssetSuite.Register();   // ADR-014：运行期材质的着色器必须来自资产引用（不是 Shader.Find）
+            ChatSuite.Register();            // C12 §5：局内聊天的输入缓冲与渲染接线
             Vec3Suite.Register();
             RngSuite.Register();
             PlanAliasSuite.Register();   // B6：必须最后注册（要核对前面所有用例前缀是否真的存在）

@@ -126,7 +126,8 @@ namespace Ac.Core
             Focused = focused;
             if (focused)
             {
-                _intentCleared = false;
+                // 聊天缓冲开着时重新获得焦点，意图仍然按 0 处理：恢复由 Resume() 负责，不由焦点负责
+                _intentCleared = Suspended;
                 return;
             }
             _intentCleared = true;
@@ -134,6 +135,28 @@ namespace Ac.Core
             ClearIntentInternal();
             Enqueue(ZeroIntent());   // §5.6：失焦这条命令必须"零意图"，不能再读引擎 Input
             _sinceLastSendMs = 0.0;
+        }
+
+        // 局内聊天（键位表第 11 条 `chat`）：打字期间意图一律按 0 处理，但**不改 Focused** —— 30Hz 上行
+        // 还要继续报零意图（服务端按"缺命令"处理会让玩家停在原地，按"零意图"处理语义更明确）。
+        // 与失焦的区别：Suspend 不动 PointerLocked，指针锁定由 Driver 按缓冲开关单独管。
+        public bool Suspended { get; private set; }
+
+        public void Suspend()
+        {
+            if (Suspended) return;
+            Suspended = true;
+            _intentCleared = true;
+            ClearIntentInternal();
+            Enqueue(ZeroIntent());   // 立刻把"别再动"报出去，与失焦同一条口径
+            _sinceLastSendMs = 0.0;
+        }
+
+        public void Resume()
+        {
+            if (!Suspended) return;
+            Suspended = false;
+            _intentCleared = false;
         }
 
         // §9/§5.6：绕过 30Hz 间隔立刻发一条（失焦时也照发，零意图命令就是"别再动"的唯一手段）。

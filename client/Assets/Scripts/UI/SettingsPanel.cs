@@ -38,10 +38,11 @@ namespace Ac.UI
             return ActionNames[action];
         }
 
+        // 逐条对应 SettingsDefaults.KeyBindings 的 15 格；顺序即下标，不许错位（KeyLabel(index) 直接索引）。
         public static readonly string[] ActionNames =
         {
             "前进", "后退", "左移", "右移", "疾跑", "跳跃", "开火",
-            "换弹", "互动", "狂暴", "换武器", "聊天", "设置", "调试面板",
+            "换弹", "互动", "狂暴", "换武器", "聊天", "设置", "调试面板", "准备",
         };
 
         // 一次改动 = 走 store 一次 + 立即应用 + 通知界面

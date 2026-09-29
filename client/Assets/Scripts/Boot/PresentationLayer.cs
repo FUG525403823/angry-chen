@@ -260,6 +260,7 @@ namespace Ac.Boot
             sources.Intermission = flow == null ? null : flow.Intermission;
             sources.Results = flow == null ? null : flow.Results;
             sources.Debug = DebugPanel;
+            sources.Chat = flow == null ? null : flow.Chat;      // 局内聊天（显隐由 GameLoop 按相位驱动）
             sources.Players = loop == null ? null : loop.LastMatchState.Players;
             sources.SelfPid = loop == null ? 0 : loop.LocalPlayerId;
             return sources;
@@ -552,17 +553,11 @@ namespace Ac.Boot
             renderer.sharedMaterial = material;
         }
 
+        // 实例化材质走 ArenaMaterials（唯一出口）：着色器来自对材质资产的引用，不再用 Shader.Find 按名字查
+        // —— 按名字查在出包时会被剥离，player 里一个材质都造不出来（ADR-014 §后果-1 的正式修法）。
         private static Material MakeInstancedMaterial(string name, Color32 color)
         {
-            var shader = Shader.Find("Universal Render Pipeline/Lit");
-            if (shader == null) shader = Shader.Find("Standard");
-            if (shader == null) return null;      // 无图形设备/着色器被剥离：不伪造材质，也不会因此打点
-            var material = new Material(shader);
-            material.name = name;
-            material.color = color;
-            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
-            material.enableInstancing = true;     // DrawMeshInstanced 要求着色器支持实例化
-            return material;
+            return ArenaMaterials.CreateInstanced(name, color);
         }
 
         private static void EnsureUniversalCameraData(GameObject cameraObject)

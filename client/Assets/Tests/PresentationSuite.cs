@@ -615,7 +615,7 @@ namespace Ac.Tests
                 SelfTest.Equal(30, (long)rig.Layer.SheepPool.CursorOf((int)SheepKind.Grunt));
                 SelfTest.Equal(0, (long)rig.Layer.SheepPool.CursorOf((int)SheepKind.King));
                 // 30 ≥ InstanceThreshold(25) ⇒ 走实例化；每形一次 body + 一次额标
-                SelfTest.True(rig.Layer.MaterialsReady, "羊材质必须建出来（Shader.Find 取不到 URP/Lit 就没法提交绘制）", "材质是 null");
+                SelfTest.True(rig.Layer.MaterialsReady, "羊材质必须建出来（着色器取自材质资产 ArenaUrpLit，取不到就没法提交绘制）", "材质是 null");
                 SelfTest.True(rig.Layer.LastDrawMode == DrawMode.Instanced, "30 只羊必须走实例化", rig.Layer.LastDrawMode.ToString());
                 SelfTest.Equal(30, (long)rig.Layer.DrawnSheepCount);
                 SelfTest.Equal(2, (long)rig.Layer.SubmittedDraws);
