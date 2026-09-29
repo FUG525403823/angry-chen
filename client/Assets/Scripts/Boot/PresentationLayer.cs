@@ -53,15 +53,29 @@ namespace Ac.Boot
         private readonly EntityView _scratch = new EntityView();
 
         private Texture2D[] _textures;
+        // 快照率窗口（最近 1 秒）
+        private const double SnapshotRateWindowMs = 1000.0;
+        private double _rateWindowMs;
+        private int _rateWindowSamples;
+        private int _rateWindowApplied;
+        private float _lastRateHz;
         private Material _sheepMaterial;
         // 视图模型（C09）：此前 ViewModel 只有锚点、没有网格，所以“手里没有枪”。
         // 锚点 ViewModelAnchor.OffsetZ 是 -0.02（几乎贴在眼位），而横向偏移是 0.17m：在 z≈0 的深度上
         // 这个横向偏移会被投影到屏幕右外侧（实测：枪完全看不见）。把整枪沿 +Z 前推，
         // 让枪口落在 ViewModel.MuzzleOffset.z 附近（0.30 + 0.30 ≈ 0.60）。
         private const float WeaponForwardM = 0.42f;
+        private const float WeaponModelScale = 1.55f;   // 视图模型标准做法：放大到能看清细节
         private GameObject _weaponObject;
         private MeshRenderer _weaponRenderer;
         private MeshFilter _weaponFilter;
+        private GameObject _weaponAccentObject;
+        private MeshFilter _weaponAccentFilter;
+        private MeshRenderer _weaponAccentRenderer;
+        private Light _muzzleLight;
+        private GameObject _shellObject;
+        private Vector3 _shellVelocity;
+        private double _shellLifeMs;
         private GameObject _muzzleFlash;
         private double _weaponSwayMs;
         private float _weaponKick01;          // 1 = 刚开火，随时间衰减到 0
@@ -69,7 +83,8 @@ namespace Ac.Boot
         private int _lastMagForKick = -1;
         private float _bobPhase;
 
-        private Material _emblemMaterial;
+        private Material _emblemMaterial;   // 保留：旧路径的单份引用（用于就绪判定）
+        private readonly Material[] _emblemMaterials = new Material[SheepMesh.FormCount];
         private GameLoop _loop;
         private double _nowMs;
         private double _elapsedMs;
@@ -205,7 +220,15 @@ namespace Ac.Boot
                 _emblemTriangles[form] = _emblemMeshes[form].triangles.Length / 3;
             }
             _sheepMaterial = MakeInstancedMaterial("Ac/Sheep", SheepMesh.ColorOf(SheepKind.Grunt));
-            _emblemMaterial = MakeInstancedMaterial("Ac/Emblem", SheepMesh.EmblemColorPure(SheepKind.Grunt));
+            // 额标按羊形一份：问界羊/羊王自发光（《§5(d) 配色），出包里“额标一亮就知道该打谁”。
+            for (var form = 0; form < SheepMesh.FormCount; form++)
+            {
+                var kind = (SheepKind)form;
+                var emblem = MakeInstancedMaterial("Ac/Emblem" + form, SheepMesh.EmblemColorPure(kind));
+                var glow = kind == SheepKind.Elite || kind == SheepKind.King;
+                if (glow) MakeEmissive(emblem, kind == SheepKind.King ? 1.6f : 1.1f);
+                _emblemMaterials[form] = emblem;
+            }
 
             // ⑤ 特效与视图模型：Effects 的池在构造期分配，帧内不再分配
             Effects = new Effects();
@@ -337,6 +360,21 @@ namespace Ac.Boot
             if (DebugPanel.Visible)
             {
                 _elapsedMs += dtMs;                       // 供快照速率用（面板自己的节拍在 RefreshDue 里）
+            // 快照率 = 最近 1 秒里真正应用了多少帧（原来是生命周期计数 ÷ 会话时长，
+            // 开局那几秒会算出 100~700/s 的虚高值）。
+            var loopForRate = _loop;
+            if (loopForRate != null)
+            {
+                _rateWindowMs += dtMs;
+                _rateWindowSamples += loopForRate.SnapshotsApplied - _rateWindowApplied;
+                _rateWindowApplied = loopForRate.SnapshotsApplied;
+                if (_rateWindowMs >= SnapshotRateWindowMs)
+                {
+                    _lastRateHz = (float)(_rateWindowSamples / (_rateWindowMs / 1000.0));
+                    _rateWindowMs = 0.0;
+                    _rateWindowSamples = 0;
+                }
+            }
                 var sample = DebugPanel.RefreshDue((float)dtMs) ? Sample() : default(DebugSample);
                 DebugPanel.Tick((float)dtMs, sample);
                 worked = true;
@@ -392,7 +430,7 @@ namespace Ac.Boot
                             if (n > Batching.MaxInstancesPerBatch) n = Batching.MaxInstancesPerBatch;
                             if (n <= 0) break;
                             Graphics.DrawMeshInstanced(_sheepMeshes[form], 0, _sheepMaterial, _bodyBatch, n);
-                            Graphics.DrawMeshInstanced(_emblemMeshes[form], 0, _emblemMaterial, _emblemBatch, n);
+                            Graphics.DrawMeshInstanced(_emblemMeshes[form], 0, EmblemMaterial(form), _emblemBatch, n);
                             submitted += 2;
                             triangles += n * (_sheepTriangles[form] + _emblemTriangles[form]);
                         }
@@ -402,7 +440,7 @@ namespace Ac.Boot
                         for (var i = 0; i < count; i++)
                         {
                             Graphics.DrawMesh(_sheepMeshes[form], _bodyBatch[i], _sheepMaterial, WorldLayer);
-                            Graphics.DrawMesh(_emblemMeshes[form], _emblemBatch[i], _emblemMaterial, WorldLayer);
+                            Graphics.DrawMesh(_emblemMeshes[form], _emblemBatch[i], EmblemMaterial(form), WorldLayer);
                         }
                         submitted += 2 * count;
                         triangles += count * (_sheepTriangles[form] + _emblemTriangles[form]);
@@ -437,6 +475,7 @@ namespace Ac.Boot
             Batching.SetQualityTier(_savedTier);
             Kill(_sheepMaterial);
             Kill(_emblemMaterial);
+            for (var form = 0; form < _emblemMaterials.Length; form++) Kill(_emblemMaterials[form]);
             if (_arenaMaterials != null) for (var i = 0; i < _arenaMaterials.Length; i++) Kill(_arenaMaterials[i]);
             if (_textures != null) for (var i = 0; i < _textures.Length; i++) Kill(_textures[i]);
             for (var i = 0; i < _arenaParts.Length; i++) Kill(_arenaParts[i]);
@@ -509,6 +548,14 @@ namespace Ac.Boot
                 _identityBoundLogged = true;
                 Debug.Log("Ac.Boot: 本地身份已绑定 pid=" + loop.LocalPlayerId +
                     "（大厅昵称=\"" + (loop.LocalName ?? string.Empty) + "\"）");
+            }
+            // 非对局相位一律用转播机位：服务端在局间保留上一局的实体（自己的“尸体”也在），
+            // 跟着它会把镜头放到一个趴在地上的旧位置（出包实测：大厅画面是一堵墙、
+            // 还有一次整幅上下翻转）。
+            if (!loop.CombatVisible)
+            {
+                ApplyLobbyCameraPose();
+                return;
             }
             EntityView local;
             if (!loop.Views.TryGet(loop.LocalPlayerId, out local) || local == null)
@@ -586,7 +633,8 @@ namespace Ac.Boot
             sample.EntityCount = loop.Views.ActiveCount;
             sample.PooledCount = SheepPool.Count;
             sample.HasSnapshotRate = _elapsedMs > 0.0 && loop.SnapshotsApplied > 0;
-            sample.SnapshotRateHz = _elapsedMs > 0.0 ? (float)(loop.SnapshotsApplied / (_elapsedMs / 1000.0)) : 0f;
+            // 快照率由 TickFx 的 1 秒窗口维护（这里只读）。
+            sample.SnapshotRateHz = _lastRateHz;
             return sample;
         }
 
@@ -652,9 +700,44 @@ namespace Ac.Boot
             _weaponObject = new GameObject("Ac.WeaponView");
             _weaponObject.transform.SetParent(MainCamera.transform, false);
             _weaponObject.transform.localPosition = WeaponBasePosition();
-            _weaponObject.transform.localRotation = Quaternion.Euler(0f, 2.5f, 0f);
+            _weaponObject.transform.localScale = new Vector3(WeaponModelScale, WeaponModelScale, WeaponModelScale);
+            _weaponObject.transform.localRotation = Quaternion.Euler(3f, -13f, 0f);   // 侧转：让枪身侧面轮廓（而不是枪口正对镜头）进画面
             _weaponFilter = _weaponObject.AddComponent<MeshFilter>();
             _weaponRenderer = _weaponObject.AddComponent<MeshRenderer>();
+            // 配件体：挂在枪体下的子对象，自动继承摆动/后坐
+            _weaponAccentObject = new GameObject("Ac.WeaponAccent");
+            _weaponAccentObject.transform.SetParent(_weaponObject.transform, false);
+            _weaponAccentFilter = _weaponAccentObject.AddComponent<MeshFilter>();
+            _weaponAccentRenderer = _weaponAccentObject.AddComponent<MeshRenderer>();
+            var accentMaterial = MakeInstancedMaterial("Ac/WeaponAccent", new Color32(0x9A, 0x9E, 0xA8, 255));
+            accentMaterial.color = new Color(0.60f, 0.62f, 0.66f, 1f);
+            MaterialCullOff(accentMaterial);
+            _weaponAccentRenderer.sharedMaterial = accentMaterial;
+            _weaponAccentRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            _weaponAccentRenderer.receiveShadows = false;
+            // 枪口动态光：开火那几帧亮起来（点光，距离短）
+            var lightObject = new GameObject("Ac.MuzzleLight");
+            lightObject.transform.SetParent(_weaponObject.transform, false);
+            lightObject.transform.localPosition = WeaponMesh.MuzzleLocal;
+            _muzzleLight = lightObject.AddComponent<Light>();
+            _muzzleLight.type = LightType.Point;
+            _muzzleLight.range = 7f;
+            _muzzleLight.color = new Color(1f, 0.82f, 0.45f);
+            _muzzleLight.intensity = 0f;
+            // 抛壳：一个小方块，开火时从抛壳口飞出去，自然落下
+            _shellObject = new GameObject("Ac.Shell");
+            _shellObject.transform.SetParent(_weaponObject.transform, false);
+            _shellObject.transform.localScale = new Vector3(0.018f, 0.018f, 0.028f);
+            var shellFilter = _shellObject.AddComponent<MeshFilter>();
+            var shellRenderer = _shellObject.AddComponent<MeshRenderer>();
+            shellFilter.sharedMesh = BuildFlashMesh();
+            var shellMaterial = MakeInstancedMaterial("Ac/Shell", new Color32(0xD8, 0xB0, 0x54, 255));
+            shellMaterial.color = new Color(0.85f, 0.69f, 0.33f, 1f);
+            MaterialCullOff(shellMaterial);
+            shellRenderer.sharedMaterial = shellMaterial;
+            shellRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            shellRenderer.receiveShadows = false;
+            _shellObject.SetActive(false);
             var material = MakeInstancedMaterial("Ac/Weapon", new Color32(0x55, 0x57, 0x5E, 255));
             material.color = new Color(0.42f, 0.43f, 0.47f, 1f);
             // 双面：手写长方体的绕序难免有个别面朝里，单面会看到“空心的枪”
@@ -701,13 +784,17 @@ namespace Ac.Boot
             if (slot < 0 || slot >= WeaponMesh.SlotCount) slot = 0;
             if (slot == _weaponSlotBuilt || _weaponFilter == null) return;
             _weaponSlotBuilt = slot;
-            _weaponFilter.sharedMesh = WeaponMesh.Build(slot);
+            _weaponFilter.sharedMesh = WeaponMesh.BuildBody(slot);
+            if (_weaponAccentFilter != null) _weaponAccentFilter.sharedMesh = WeaponMesh.BuildAccent(slot);
         }
 
         // 每帧：待机摆动 + 行走摆动 + 开火坐力（弹匣变小 = 真的打了一枪，不另开一条信号）
         private void UpdateWeaponView(double dtMs)
         {
             if (_weaponObject == null) return;
+            var inCombat = _loop != null && _loop.CombatVisible;
+            if (_weaponObject.activeSelf != inCombat) _weaponObject.SetActive(inCombat);
+            if (!inCombat) return;
             _weaponSwayMs += dtMs;
             var loop = _loop;
             var mag = loop == null ? -1 : loop.Hud.Ammo.Mag;
@@ -731,8 +818,11 @@ namespace Ac.Boot
             _weaponObject.transform.localPosition = new Vector3(
                 baseOffset.x + swayX, baseOffset.y + swayY + kickUp, baseOffset.z - kickBack);
             _weaponObject.transform.localRotation = Quaternion.Euler(
-                -_weaponKick01 * 9f, 2.5f + swayX * 40f, _weaponKick01 * 4f);
-            if (_muzzleFlash != null) _muzzleFlash.SetActive(_weaponKick01 > 0.55f);
+                3f - _weaponKick01 * 9f, -13f + swayX * 40f, _weaponKick01 * 4f);
+            var flashOn = _weaponKick01 > 0.55f;
+            if (_muzzleFlash != null) _muzzleFlash.SetActive(flashOn);
+            if (_muzzleLight != null) _muzzleLight.intensity = flashOn ? 3.2f : 0f;
+            UpdateShell(dtMs);
 
             // 武器槽位：从本地玩家那行 MatchState 读（同一条权威来源）
             if (loop != null)
@@ -755,21 +845,16 @@ namespace Ac.Boot
         private static Vector3 WeaponBasePosition()
         {
             var anchor = ViewModel.BaseOffset;
-            return new Vector3(anchor.x * 0.55f, anchor.y * 0.80f, anchor.z + WeaponForwardM);
+            return new Vector3(anchor.x * 0.60f, anchor.y * 0.62f, anchor.z + WeaponForwardM);
         }
 
         // 大厅/加载相位的固定机位（1 号出生点，眼高 1.6m，朝向场地中心）。
         private void ApplyLobbyCameraPose()
         {
-            // 大厅没有本地实体时用“转播机位”：抬到 5m、后退到场地边缘外，
-            // 俯视场地中心（原来站在出生点正对谷仓，画面就是一堵墙）。
-            const float heightM = 5.0f;
-            const float distanceM = 34.0f;
-            const float pitchRad = -0.22f;   // 约 -12.6°
-            var yaw = Mathf.PI;             // 面向 -Z（场地中心方向）
-            Fps.SetPose(0f, 0f, distanceM, yaw, pitchRad);
-            var pose = MainCamera.transform;
-            pose.position = new Vector3(0f, heightM, distanceM);
+            // 大厅没有本地实体时的“转播机位”：站在 -Z 侧、抬高 3m（SetPose 自己加眼高）、
+            // 俯视场地中心。这里不用 yaw=π：出包实测有一次整幅画面上下翻转（拉丁与俯仰的极点），
+            // 从 -Z 朝 +Z 看是同一个场地，不会撞上这个极点。
+            Fps.SetPose(0f, 3.0f, -30.0f, 0f, -0.18f);
         }
 
         // URP Lit 的 “Cull Off”（只改材质实例，不动共享 shader）
@@ -777,6 +862,42 @@ namespace Ac.Boot
         {
             if (material == null) return;
             material.SetFloat("_Cull", 0f);
+        }
+
+        private Material EmblemMaterial(int form)
+        {
+            var material = _emblemMaterials[form];
+            return material != null ? material : _emblemMaterial;
+        }
+
+        // URP Lit 的自发光（只动材质实例，不碰共享 shader）
+        private static void MakeEmissive(Material material, float intensity)
+        {
+            if (material == null || !material.HasProperty("_EmissionColor")) return;
+            var color = material.color;
+            material.EnableKeyword("_EMISSION");
+            material.SetColor("_EmissionColor", new Color(color.r * intensity, color.g * intensity, color.b * intensity, 1f));
+            material.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+        }
+
+        // 抛壳：开火时从抛壳口给一个初速度，之后受重力，0.9s 后收回池子。
+        private void UpdateShell(double dtMs)
+        {
+            if (_shellObject == null) return;
+            if (_weaponKick01 > 0.85f && !_shellObject.activeSelf)
+            {
+                _shellObject.SetActive(true);
+                _shellObject.transform.localPosition = new Vector3(0.03f, 0.02f, 0.06f);
+                _shellVelocity = new Vector3(0.55f, 0.75f, -0.15f);
+                _shellLifeMs = 900.0;
+            }
+            if (!_shellObject.activeSelf) return;
+            var dt = (float)(dtMs / 1000.0);
+            _shellLifeMs -= dtMs;
+            _shellVelocity += new Vector3(0f, -9.0f, 0f) * dt;
+            _shellObject.transform.localPosition += _shellVelocity * dt;
+            _shellObject.transform.localRotation *= Quaternion.Euler(220f * dt, 160f * dt, 90f * dt);
+            if (_shellLifeMs <= 0.0) _shellObject.SetActive(false);
         }
     }
 }

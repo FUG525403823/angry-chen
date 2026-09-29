@@ -604,6 +604,8 @@ namespace Ac.Tests
         private static void ChecksSheepPoolAndDraw()
         {
             var rig = new Rig(SettingsDefaults.Default());
+                // 相机只在战斗相位跟实体（大厅/加载相位用转播机位，避开上一局残留的尸体）：这里先推一条 playing 的 MatchState。
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 3, 0));
             try
             {
                 var pool = rig.Layer.SheepPool;

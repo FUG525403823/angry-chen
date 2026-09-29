@@ -78,6 +78,11 @@ namespace Ac.View
         {
             var form = Form(kind);
             var scale = (float)form.Scale;
+            // 按羊形分化体型（§5(a) 的四种羊在出包里不能只是“同一只羊放大缩小”）：
+            //   撞角羊：更壮、角更粗更长；冲撞羊：更高更瘦、腿更长；羊王：全面放大 + 皇冠三角。
+            var bulk = kind == SheepKind.Ram ? 1.10f : (kind == SheepKind.King ? 1.18f : (kind == SheepKind.Elite ? 0.88f : 1f));
+            var legLength = kind == SheepKind.Elite ? 1.35f : (kind == SheepKind.King ? 1.15f : 1f);
+            var hornScale = kind == SheepKind.Ram ? 1.35f : (kind == SheepKind.King ? 1.60f : 1f);
             var woolColor = ColorOf(kind);
             var darkColor = new Color32(58, 54, 52, 255);      // 头/腿/蹄的深色
             var hornColor = new Color32(206, 196, 176, 255);   // 角/蹄的骨色
@@ -90,10 +95,10 @@ namespace Ac.View
 
             // 躯干：三个球沿 Z 排成一个略偏长的蛋形（后/中/前），再加一个略高的背部球
             var bodyY = (float)BodyHeightM;
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, -0.20f * scale), 0.190f * scale, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.01f * scale, 0.00f), 0.215f * scale, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, 0.20f * scale), 0.190f * scale, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.13f * scale, 0.02f * scale), 0.155f * scale, woolColor);
+            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, -0.20f * scale), 0.190f * scale * bulk, woolColor);
+            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.01f * scale, 0.00f), 0.215f * scale * bulk, woolColor);
+            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, 0.20f * scale), 0.190f * scale * bulk, woolColor);
+            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.13f * scale, 0.02f * scale), 0.155f * scale * bulk, woolColor);
             // 额外羊毛团不再按 WoolClusters 无限堆：每个球 35 顶点，
             // 四个固定球 + 头/尾已经把轮廓做圆；再堆就会撞穿 §5(a) 的 512 顶点/三角形预算
             // （用例 sheep.geometry 会直接报越界）。字段仍在冻结表里，只是生成器不再逐个用它。
@@ -118,9 +123,31 @@ namespace Ac.View
                 for (var horn = 0; horn < 2; horn++)
                 {
                     var sign = horn == 0 ? -1f : 1f;
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * scale, headY + 0.075f * scale, headZ - 0.02f * scale),
-                        new Vector3(0.030f * scale, 0.030f * scale, 0.055f * scale), hornColor);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * scale * hornScale, headY + 0.075f * scale, headZ - 0.02f * scale),
+                        new Vector3(0.030f * scale * hornScale, 0.030f * scale * hornScale, 0.055f * scale * hornScale), hornColor);
                 }
+            }
+
+            if (kind == SheepKind.King)
+            {
+                // 羊王的皇冠：中间一根直角 + 两侧各一根小尖角
+                Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, headY + 0.10f * scale, headZ - 0.03f * scale),
+                    new Vector3(0.022f * scale, 0.050f * scale, 0.022f * scale), hornColor);
+                for (var spike = 0; spike < 2; spike++)
+                {
+                    var sign = spike == 0 ? -0.5f : 0.5f;
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * scale, headY + 0.105f * scale, headZ + 0.02f * scale),
+                        new Vector3(0.016f * scale, 0.036f * scale, 0.016f * scale), hornColor);
+                }
+            }
+
+            // 眼睛：两颗小黑球（远处也能看出“有脸”）
+            for (var eye = 0; eye < 2; eye++)
+            {
+                var sign = eye == 0 ? -1f : 1f;
+                Box(vertices, indices, colors, ref v, ref n,
+                    new Vector3(sign * 0.055f * scale, headY + 0.020f * scale, headZ + 0.085f * scale),
+                    new Vector3(0.016f * scale, 0.016f * scale, 0.010f * scale), new Color32(24, 20, 20, 255));
             }
 
             // 尾巴
@@ -137,8 +164,8 @@ namespace Ac.View
                 var z = signZ * (float)LegOffsetZ * 1.6f * scale;
                 Box(vertices, indices, colors, ref v, ref n, new Vector3(x, upperLegY, z),
                     new Vector3((float)LegHalfM * 0.75f * scale, 0.085f * scale, (float)LegHalfM * 0.75f * scale), darkColor);
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(x, lowerLegY, z),
-                    new Vector3((float)LegHalfM * 0.55f * scale, 0.11f * scale, (float)LegHalfM * 0.55f * scale), darkColor);
+                Box(vertices, indices, colors, ref v, ref n, new Vector3(x, lowerLegY * legLength, z),
+                    new Vector3((float)LegHalfM * 0.55f * scale, 0.11f * scale * legLength, (float)LegHalfM * 0.55f * scale), darkColor);
                 Box(vertices, indices, colors, ref v, ref n, new Vector3(x, 0.018f * scale, z + 0.012f * scale),
                     new Vector3((float)LegHalfM * 0.75f * scale, 0.018f * scale, (float)LegHalfM * 1.15f * scale), hornColor);
             }
@@ -183,7 +210,8 @@ namespace Ac.View
             Vector3 center, float radius, Color32 color)
         {
             const int segments = 6;
-            const int rings = 4;
+            const int rings = 3;   // §5(a) 预算：512 顶点/512 三角形要装下躯干+头+耳+角+皇冠+尾+四腿+眼睛
+
             var baseIndex = v;
             for (var ring = 0; ring <= rings; ring++)
             {

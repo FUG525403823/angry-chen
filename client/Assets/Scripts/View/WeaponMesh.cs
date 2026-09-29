@@ -17,7 +17,9 @@ namespace Ac.View
         private static readonly Color32 Wood = new Color32(96, 66, 42, 255);
         private static readonly Color32 Metal = new Color32(96, 99, 108, 255);
 
-        public static Mesh Build(int slot)
+        // 两套网格：枪体（深灰）与配件（钢/木）各一套，分别给不同材质，
+        // 出包里才有层次（单材质就是一块黑色轮廓）。
+        public static Mesh BuildAccent(int slot)
         {
             if (slot < 0 || slot >= SlotCount) slot = 0;
             var vertices = new Vector3[8 * 12];
@@ -26,32 +28,29 @@ namespace Ac.View
             var v = 0;
             var n = 0;
 
-            // 手位：整枪向右下偏移一点，枪口朝 +Z
+            // 手位：整枪向右下偏移一点，枪口朝 +Z。配件体：金属件与木件
             switch (slot)
             {
-                case 1:   // 步枪：长机匣 + 长枪管 + 枪托 + 弹匣 + 瞄具
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0f, 0.06f), new Vector3(0.028f, 0.040f, 0.150f), Body);
+                case 1:   // 步枪：枪管 + 弹匣 + 眨具 + 木托
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.006f, 0.20f), new Vector3(0.012f, 0.012f, 0.090f), Metal);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.004f, -0.10f), new Vector3(0.024f, 0.034f, 0.075f), Wood);
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.052f, -0.02f), new Vector3(0.020f, 0.048f, 0.030f), BodyDark);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.040f, 0.05f), new Vector3(0.017f, 0.038f, 0.026f), BodyDark);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.048f, 0.02f), new Vector3(0.010f, 0.010f, 0.055f), Metal);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.006f, 0.128f), new Vector3(0.016f, 0.016f, 0.020f), Metal);
                     break;
-                case 2:   // 霰弹枪：粗枪管 + 泵动护木 + 木托
+                case 2:   // 霰弹枪：抽动护木 + 双管 + 木托
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.014f, 0.10f), new Vector3(0.017f, 0.017f, 0.150f), Metal);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.014f, 0.06f), new Vector3(0.024f, 0.024f, 0.070f), Wood);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.010f, -0.09f), new Vector3(0.026f, 0.036f, 0.080f), Wood);
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.048f, -0.02f), new Vector3(0.020f, 0.044f, 0.028f), BodyDark);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.006f, 0.22f), new Vector3(0.010f, 0.010f, 0.030f), BodyDark);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.038f, 0.10f), new Vector3(0.020f, 0.020f, 0.055f), Wood);
                     break;
-                default:  // 手枪：短套筒 + 握把
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.012f, 0.07f), new Vector3(0.020f, 0.024f, 0.075f), Body);
+                default:  // 手枪：套筒 + 枪口 + 准星
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.004f, 0.145f), new Vector3(0.010f, 0.010f, 0.022f), Metal);
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.040f, 0.02f), new Vector3(0.018f, 0.048f, 0.026f), BodyDark);
                     Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.030f, 0.075f), new Vector3(0.006f, 0.006f, 0.014f), Metal);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.030f, 0.020f), new Vector3(0.006f, 0.006f, 0.010f), Metal);
                     break;
             }
-
             var mesh = new Mesh();
             mesh.name = "Weapon" + slot;
             mesh.vertices = Slice(vertices, v);
@@ -62,6 +61,39 @@ namespace Ac.View
             return mesh;
         }
 
+        // 枪体（深灰主体）
+        public static Mesh BuildBody(int slot)
+        {
+            if (slot < 0 || slot >= SlotCount) slot = 0;
+            var vertices = new Vector3[8 * 12];
+            var indices = new int[36 * 12];
+            var colors = new Color32[8 * 12];
+            var v = 0;
+            var n = 0;
+            switch (slot)
+            {
+                case 1:   // 步枪：机匣 + 握把
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0f, 0.06f), new Vector3(0.028f, 0.040f, 0.150f), Body);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.052f, -0.02f), new Vector3(0.020f, 0.048f, 0.030f), BodyDark);
+                    break;
+                case 2:   // 霰弹枪：机匣 + 握把
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0f, 0.02f), new Vector3(0.030f, 0.030f, 0.120f), Body);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.048f, -0.02f), new Vector3(0.020f, 0.044f, 0.028f), BodyDark);
+                    break;
+                default:  // 手枪：套筒 + 握把
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, 0.012f, 0.07f), new Vector3(0.020f, 0.024f, 0.075f), Body);
+                    Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, -0.040f, 0.02f), new Vector3(0.018f, 0.048f, 0.026f), BodyDark);
+                    break;
+            }
+            var mesh = new Mesh();
+            mesh.name = "WeaponBody" + slot;
+            mesh.vertices = Slice(vertices, v);
+            mesh.SetTriangles(Slice(indices, n), 0);
+            mesh.colors32 = Slice(colors, v);
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
         private static Vector3[] Slice(Vector3[] source, int count)
         {
             var result = new Vector3[count];
