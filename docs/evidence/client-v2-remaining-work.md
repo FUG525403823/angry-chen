@@ -304,6 +304,32 @@ FRAME-BENCH PASS p95=0.996999999999844ms alloc=0B mechanism=player emptyP95=0.66
 （ADR-014 裁决 4 只要求它回答"地板是否低于预算"），**仍要求真图形设备与 `P95 < 预算`**；
 被判定的三轮一项都不放宽。明细见 `docs/evidence/client-v2-frame-acceptance.md` §4。
 
+### A19. ✅ 真机试玩查出的三个阻断级缺陷（"完全玩不了"的根因）
+
+装包对着部署服务器（`43.143.120.65:8788`）实跑复现，三个缺陷串成一条链：
+
+| # | 缺陷 | 证据 | 修法 |
+|---|---|---|---|
+| 1 | **下行快照一条都没进镜像**：`GameLoop.OnPacket` 每包把复用帧重置成 `default(SnapshotFrame)`（数组 null），`TryToFrame` 要求非空 ⇒ 全被判失败丢弃 | 对局面板 `inboundBytesPerSec 19240`（快照在收）却 `serverTick=0`、`entityCount=0`、`snapshotRateHz=n/a`；世界里没有实体 ⇒ 相机无本地实体可跟（画面是几何体内壁，"视角整个倒转"）、HUD `HP 0` | 复用帧数组在构造期分配一次，`OnPacket` 只复用不重建（用例 `boot.snapshot_reaches_mirror`，变异打红） |
+| 2 | **HUD 口径错位 + 无分辨率缩放**：`OverlayItem.X` 对 Center 是中心线、对 Right 是右边缘，渲染侧却按左边缘起矩形 | 变异输出逐字复现用户症状：`align=Center text=ANGRY CHEN rect=640,28,1920,82`（1280 宽的视口里被推到屏外）；波次横幅同样越界、右对齐弹药行整条出屏；字号固定像素、1440p 下 16~32px "看不清" | `OverlayRenderer.ItemRect` 按对齐口径换算；`Hud.ScaleFor(视口高)` 统一缩放字号/条宽/行高并重建样式（用例 `render.overlay_in_bounds`：三档分辨率 × 四相位，每条绘制项必须在视口内） |
+| 3 | **断线后永不重连 + 失焦即停帧**：`SessionStateMachine.Tick` 没有 `Disconnected` 分支；`runInBackground: 0` | 实跑抓到僵尸客户端：服务端 `players 0`、10 秒 `ac_frames_in_total` 零增长，客户端面板 `0 B/s`、缓存着旧花名册、按键全无反应、界面无任何提示 | `Disconnected` 按 1s→2s→4s→8s 退避重连（新 nonce；成功后 `FlushJoin` 自动重发昵称并重新认领身份）、`runInBackground: 1`、断线时大厅/HUD 显示"与服务器断线，正在重连…"（用例 `net.auto_reconnect`） |
+
+**大厅 ready 的死因是 #1 的下游**：命令的 `clientTick` 取自最近一条**已应用**快照 ⇒ 恒 0，而服务端
+`validateClientTick` 是严格相等且在生产实例上已累积到 4.8 万（跑过 75 局）⇒ 每一条大厅命令被整条丢掉
+（Ready 位一起丢）。A/B 实证：生产实例按回车无反应；新起实例（tick=0）按回车立刻进对局。用例
+`boot.command_tick_from_snapshot` 钉住"大厅命令带活 tick + Ready 位"。
+
+顺带接上两处实跑可见的空缺：**弹药/怒气 HUD**（取自本地玩家那行 MatchState 的 mag/reserve/rage，
+此前 `sample` 没人填、HUD 恒 `0 / 0`；`WeaponTable` 补与服务端 `kWeapons[].mag` 同值的弹匣容量表）与
+**进对局自动锁定指针**（以前必须先点一下画面，玩家第一反应是"视角无法调整"；ESC 解锁后不会被自动锁回）。
+
+**修后装包复跑**（同一台机器、同一台服务器）：对局面板 `serverTick 46051 / entityCount 62 / ping 16ms /
+frameTimeP95 0.1ms`，`波次 1` 居中、`HP 90`、`怒气 0`、`12 / 120` 弹药全部在屏内且可读；
+WASD/鼠标/开火都有可观测响应。`SELFTEST OK cases=201`。
+
+**仍未做**（如实登记）：手里没有武器视图模型（C09 至今没有生成器，"空手射击"）；调试面板的
+`snapshotRateHz` 用生命周期计数除短窗口，数值偏大（表现为 100~700/s，实际 20Hz），是面板口径 bug；
+仓库内的遥测行与 `client/tools/playtest.ps1`（把"能玩"固化成机器判据）尚未落地 —— 本轮用的是临时诊断工具。
 ### A18. ✅ 真机连上公网部署（`43.143.120.65`）—— 产品侧入口 + 身份绑定 + 诊断纠错
 
 服务端部署在 `43.143.120.65`（详见 `docs/evidence/server-v2-acceptance.md` §14），部署方放行安全组
