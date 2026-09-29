@@ -200,3 +200,200 @@
 | A3 | 剔除距离 / 阴影距离 / 准星散布三处数值"对不上" | **以实现侧的档位表为唯一来源**，客户端散布值与 `server/src/config/weapons.hpp` 对齐 | 核对结果：三项**逐值已同源**（`Batching.SheepCullDistanceM=60`/`ArenaCullDistanceM=80`、`Batching.ShadowDistanceM={20,35,50}`、`BaseSpreadDeg={0.8,0.6,4.0}` + 生长 0.1/上限 0.25 与 `weapons.hpp:24-35` 相同）——是文档滞后，不是代码分歧。核对记录见 `docs/evidence/client-v2-remaining-work.md` A3 段 |
 
 三项都不动 wire 格式，故不新增 ADR（A10 属 §5.1 的**措辞澄清**，与 ADR-009 的包头定义不冲突）。
+
+## 14. 2026-09-29 生产部署与云端验收（43.143.120.65）
+
+**一句话结论**：v2 服务器已按 §18 的部署契约装到 `43.143.120.65` 并以 systemd 常驻运行，`HTTP` 面（nginx `:80`
+→ `127.0.0.1:8787`）**公网可达**、游戏面在其**本机**回环上收发正常、S14 两条门槛在部署机上重跑全绿；
+**`UDP 8788` 目前被云侧安全组挡在公网之外**（主机侧无拦截、抓包证明确实没到主机），这一条需要部署方在
+云控制台加一条入站规则 —— 详见 §14.6，它是本次唯一"需要人出手"的残余项。
+
+环境：腾讯云 `ins-jcc98nn1` / `ap-shanghai` / Ubuntu 22.04（kernel `5.15.0-181-generic`）/ 4 vCPU / 3.7 GiB /
+内网 `10.0.0.17`；`g++ 11.4.0`、`cmake 4.4.3`、`ninja 1.13.2`、`nginx`（发行版包）。
+
+### 14.1 先证明"跑的就是这份源码"（README §19.4 的纪律）
+
+远端源码由本机工作树打包同步（只带 `server/`、`deploy/`、`docs/evidence/fixtures`，HEAD = `0d2bc6f`），
+逐文件 SHA256 与本机**完全一致**：
+
+| 文件 | SHA256（两侧同一值） |
+|---|---|
+| `server/src/main.cpp` | `e9b8080962fc809e0fc08f2294d6fc11ed478710ca30ac20d116770cfd658710` |
+| `server/src/server/runtime.cpp` | `693e3c2dbe2363143fa05ebd9dfa1d97623104049acb5fe639d845d9cbc3b3bf` |
+| `server/src/core/log.cpp` | `7e0b37fe254c808e0007670b0361004bed13c3bdd7a70185a4ebaa8b26b4ac05` |
+| `server/src/net/reliability.cpp` | `fa84858069e4acb15f4e777fd49b859b5c81c081474f88806d46b3198c4f4c51` |
+| `server/CMakeLists.txt` | `6ae9efde9667f7712160ce294155fa5341323aaad03e7fdcc3f1218e9e87fcbd` |
+| `deploy/angry-chen-server.service` | `0028699eef04e78c9a98f6196d3dda87add1e88044bffef28f3e0b7ece0b521a` |
+| `deploy/nginx.conf` | `2476e51e07b459e11cc13b8fca2cdc65e6f4b79aa14c22983ab00083216a42ec` |
+
+本轮所依赖的改动也在远端逐个 `grep -cF` 自证在位（任一为 0 即中止）：`--auto-ready` 8、`kRoomUnavailable` 2、
+`flushHeartbeats` 3、`logFileOpenFailed` 2、`solo cpu phase` 2、`sendKeepAlive` 3、`ac_server_version` 3。
+**装上去的二进制与构建产物同哈希**：`sha256(/opt/angry-chen/bin/angry-chen-server)` = `sha256(server/build/ac_server)`
+= `d6f5f2f3ed37a458bf0209a167e384b5353e320e4237435cde8f9070cde53830`。
+
+### 14.2 构建与用例（Linux / GCC 11.4）
+
+```
+cmake -S server -B server/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAC_WERROR=ON -DAC_SERVER_VERSION=0.1.0
+cmake --build server/build -j 4
+```
+
+配置 + 编译（96 个目标）**零告警零错误**（`-Werror` 生效，§19.1 的 GCC 格式截断真红未复现），随后：
+
+| 检查 | 实测 |
+|---|---|
+| `ac_server --version` | `ac_server 0.1.0 protocol=1 tick=50ms`（退出码 0，与 §5 冻结串逐字一致） |
+| `ctest --test-dir server/build` | `1/1 Passed`（8.12 s） |
+| 全量 `ac_tests` | **`TESTS 514/514`**（与 §12 的 Windows 结果同数，零回归） |
+
+### 14.3 安装与启动
+
+1. 备份上一版二进制（Sep 28 的 `680072 B`）→ `/opt/angry-chen/bin/backup/angry-chen-server.20260929-222540`；
+2. `cmake --install server/build --prefix /opt/angry-chen` → `/opt/angry-chen/bin/angry-chen-server`（`686032 B`）；
+3. `/etc/angry-chen/server.env`（`root:angrychen` `0640`）含 `AC_UDP_PORT/AC_HTTP_PORT/AC_DATA_DIR/AC_LOG_LEVEL`
+   与 **`AC_LOG_FILE=/var/log/angry-chen/server.log`**（§18.7 前置条件 ①）；
+4. `chown -R angrychen:angrychen /var/lib/angry-chen /var/log/angry-chen`（服务用户 `angrychen` uid 998；§18.7 前置条件 ②）；
+5. 单元与反代都**按仓库文件重装**（`deploy/angry-chen-server.service` → `/etc/systemd/system/`，
+   `deploy/nginx.conf` → `/etc/nginx/conf.d/angry-chen.conf`，`rm -f /etc/nginx/sites-enabled/default`），`nginx -t` 通过
+   （§18.7 前置条件 ③）；
+6. `systemctl daemon-reload && systemctl enable --now angry-chen-server` → `active (running)`，`enabled`。
+
+启动后 `/var/log/angry-chen/server.log` 的结构化行（`server.err.log` **0 字节**，即无任何非 JSON 输出）：
+
+```json
+{"ts":"2026-09-29T14:25:40.906Z","level":"info","evt":"listening","room":0,"tick":0,"pid":0,"detail":{"udpPort":8788,"httpPort":8787,"dataDir":"/var/lib/angry-chen"}}
+```
+
+两条**只在 Linux 上才能跑**的静态校验（§18.8-6/§18.8-14 此前登记为"本机（Windows）无法执行"，本轮补上）：
+
+| 命令 | 实测 |
+|---|---|
+| `systemd-analyze verify /etc/systemd/system/angry-chen-server.service` | **对本报单元零输出**（只报了机器上另外两个无关单元：`tat_agent.service` 的 `PIDFile=` 遗留路径、`snapd.service` 的 `RestartMode`），即单元语法与字段均被 systemd 接受 |
+| `logrotate -d /etc/logrotate.d/angry-chen` | `rotating pattern: /var/log/angry-chen/*.log after 1 days (7 rotations)`，并逐个 `considering log server.err.log / server.log`（两份都被纳管；`copytruncate` + `compress` + 保留 7 份与 §18.4 一致） |
+| `nginx -t` | `syntax is ok` / `test is successful`（`deploy/nginx.conf` → `/etc/nginx/conf.d/angry-chen.conf`） |
+
+### 14.4 端点与监听（直连与经反代两条路径都验）
+
+| 请求 | 实测 |
+|---|---|
+| `http://127.0.0.1:8787/health` | **200** `{"status":"ok","protocolVersion":1,"rooms":1,"connections":0,"players":0,"graceActive":0,"recordsRetained":2,"uptimeSeconds":13,"ticks":0}` |
+| `http://127.0.0.1:8787/metrics` | **200**，`Content-Type: text/plain; version=0.0.4` |
+| `http://127.0.0.1:8787/nope` | **404** `{"error":"not-found","path":"/nope"}` |
+| `http://127.0.0.1/health`（经 nginx `:80`） | **200**（同一 JSON） |
+| `http://127.0.0.1/metrics`（经 nginx `:80`） | **200** |
+| `http://127.0.0.1/nope`（经 nginx `:80`） | **404**（nginx 兜底页） |
+| `http://127.0.0.1/api/matches/recent`（经 nginx `:80`） | **200**，`{"ok":true,"entries":[...]}` |
+| `ss -lunp` | `udp 0.0.0.0:8788 users:(("angry-chen-serv",pid=…))` |
+| `ss -ltnp` | `tcp 0.0.0.0:8787`（服务）与 `tcp 0.0.0.0:80`（nginx） |
+
+### 14.5 真实对局与持久化（4 人真 UDP，2 分钟）
+
+`ac_bot --players 4 --minutes 2 --host 127.0.0.1 --port 8788`：四个会话各
+`packetsIn=6410 packetsOut=3631 bytesIn=2681643 bytesOut=123440 snapshots=2399 matchStates=146 commands=3630 hasSession=1`。
+
+| 证据 | 前 | 后 |
+|---|---|---|
+| `/var/lib/angry-chen/matches.ndjson` 行数 | 2 | **5** |
+| `/var/lib/angry-chen/reports/*.json` 份数 | 2 | **5** |
+| `/api/matches/recent?limit=1`（经 nginx） | — | `{"matchId":"YM3Z-7072307098","durationMs":29900,"waveReached":1,"winnerTeam":1,"playerCount":4,…}` |
+| `/health` | — | `"connections":4,"players":4,"graceActive":0,"recordsRetained":5,"ticks":2440` |
+
+即 §18.6 退役清单 ① 里"战绩入库"这一半（`matches.ndjson` ≥1 行、`reports/` ≥1 份、`/api/matches/recent` 含该
+`matchId`）在生产部署形态下**已闭环**，"≥30 分钟"这一半见 §14.7。
+
+### 14.6 公网可达性：TCP 80 通，UDP 8788 被云安全组拦住（**需人工放行**）
+
+按 `deploy/nginx.conf` 的注释与 §18.7，反代只管 HTTP，游戏流量是**客户端直连 UDP 8788**。实测：
+
+| 视角 | 报文 | 结果 |
+|---|---|---|
+| 目标机回环（`python3 public_probe.py 127.0.0.1 8788`） | 20 字节 Hello（`01010000 00000000 34125a5a 30303030 30303030`，type=1/session=0/nonce=`0x5A5A1234`/token=`"00000000"`） | **收到 HelloAck**：28 字节 `0102 0100 0500 …`，`type=2`、`flags=0x01`（reliable）、`session=5` |
+| 开发机（Windows，公网） | 同一 20 字节 Hello | **5 s 无应答** |
+| 第二台云主机（`124.221.45.74`，独立网络） | 同一 20 字节 Hello | **5 s 无应答** |
+| 目标机 `tcpdump -ni any udp port 8788`（外部探测期间） | — | 只看到 `lo` 上的本机回环包，**没有任何来自公网的包** |
+| 目标机 `iptables -L -n` / `nft list ruleset` | — | `INPUT` 链 `policy ACCEPT`，`YJ-FIREWALL-INPUT` 只对若干源 IP 拒绝 `dport 22`，**没有 8788 相关规则** |
+| 公网 HTTP | `curl http://43.143.120.65/health` | **200**（同一台机、同一个进程，只是走 TCP 80） |
+
+⇒ 报文**根本没到主机**，拦截点在云安全组（`ufw` 本就是 `inactive`）。**动作**：在腾讯云控制台给
+`ins-jcc98nn1` 的安全组加一条入站规则 `UDP:8788`（来源按主办方策略，最小化可只放行客户端出口 IP 段），
+另建议保留 `TCP:80`、`TCP:22`。放行后**复验命令**（在任意公网机器上）：
+
+```bash
+python3 public_probe.py 43.143.120.65 8788     # 期望 "UDP_PROBE OK"，type=2/flags=0x01/session!=0
+```
+
+客户端侧怎么指向它：把 `client/server.txt.example` 复制成 `server.txt` 放在 `angry-chen.exe` **同级**，
+内容写成 `43.143.120.65:8788`（ADR-016）。真机已验：出包 player 的日志里会出现
+`Ac.Boot: 连接 43.143.120.65:8788（来源 server.txt）`（同一份日志里 0 条异常，见 `client-v2-remaining-work.md` A14–A15）。
+
+> 这条是 §18.7 原先**缺失的部署前置条件**（仓库只写了主机侧 `ufw allow 8788/udp`），已按本次实测回写为
+> 前置条件 ④（见 `server/README.md` §18.7）。
+
+### 14.7 S14 性能门槛（部署机上重跑，2026-09-29）
+
+生产单元常驻占用 `8788/8787`，而 `ac_gate` 是**自己承载运行时**的，因此本轮用 `--port-base 8898`
+（运行时 UDP 8898 / HTTP 8897、solo CPU 相 8908/8907）与生产进程并存；`AC_DATA_DIR=/tmp/ac-gate-data` 显式注入（§19.2）。
+**反例（值得记录）**：不带 `--port-base` 时进程内运行时绑不上 8788，打印
+`runtime start failed: udp bind failed on port 8788` 且 `--out` **不留文件** —— 同机跑门禁必须错开端口（§19.6）。
+
+| 场景 | 判定 | 关键量（原 JSON 字段） |
+|---|---|---|
+| `gate-4p2min` | **`verdict=pass` `exitCode=0`**（`durationSec` 120.000） | G1 **2.255 %**、G2 **24.154 KB/s**、G3 **1135 B**、G4 **1322 B**、G5 **0**、G6 **1 ms**、G8 **0**；`ticks=2480/2400`、`workP95=0 ms`、`simDriftMsMax=3.0`、`cpuP95Pct=2.988` |
+| `soak-4p5min` | **`verdict=pass` `exitCode=0`**（`durationSec` 300.001） | G1 **2.150 %**、G2 **24.315 KB/s**、G3 **1153 B**、G4 **1250 B**、G5 **0**、G6 **1 ms**、G7 **0.033 MB/分钟**、G8 **0**；`ticks=6079/6000`、`eventsDropped=0`、`tickSkips=0`、`uncaughtExceptions=0` |
+
+两点口径说明：① 两场景的 `G7` 在 2 分钟门禁里是 `not-measured`（设计如此，斜率只在浸泡场景判）；
+② 本轮数字比 §10.3 略高（G2 24.1 vs 22.1 KB/s、G3 1135 vs 1135 B 持平），与 §11 注明的"去重方向修好后机器人真的会动"
+是同一类口径差，**不与 §10.3 逐字比较**；限值余量充足（G2 限 40、G3 限 1228）。
+
+### 14.8 30 分钟长局（S13 §14.1 的"≥30 分钟云端复跑"待办）与 7 天窗口
+
+见 §14.8.1（本轮实测）。生产部署下"连续 7 天无未捕获异常、无战绩写失败"（退役清单 ⑤）的观察窗**自本次部署起算**，
+本轮只能给出起始基线与本节的中途证据。
+
+#### 14.8.1 30 分钟 4 人真局（同一生产进程，`2026-09-29T15:01:03Z → 15:31:03Z`）
+
+命令：`./server/build/ac_bot --players 4 --minutes 30 --host 127.0.0.1 --port 8788`（真 UDP 打生产单元，
+不经任何测试工装）。四个会话的收尾行（每会话各一行）：
+
+```
+bot session=6 packetsIn=96064 packetsOut=54433 bytesIn=39409125 bytesOut=1850708 snapshots=36000 matchStates=2155 commands=54432 hasSession=1
+bot session=7 packetsIn=96062 packetsOut=54433 bytesIn=39409085 bytesOut=1850708 snapshots=36000 matchStates=2155 commands=54432 hasSession=1
+bot session=8 packetsIn=96064 packetsOut=54433 bytesIn=39409125 bytesOut=1850708 snapshots=36000 matchStates=2155 commands=54432 hasSession=1
+bot session=9 packetsIn=96069 packetsOut=54433 bytesIn=39409225 bytesOut=1850708 snapshots=36000 matchStates=2155 commands=54432 hasSession=1
+```
+
+按 1800 s 折算：`snapshots=36000` = **20 Hz**（§18.2 的稳态快照率）、`commands=54432` = **30.2 Hz**
+（C05 §5.1 的 30 Hz 上行）、每会话入向 39.4 MB / 出向 1.85 MB。
+
+| 证据 | 前（15:01:03Z） | 后（15:49:04Z） |
+|---|---|---|
+| `matches.ndjson` 行数 | 7 | **75** |
+| `reports/*.json` 份数 | 7 | **75** |
+| 服务进程 RSS（`VmRSS`/`VmHWM`） | 5452 kB（15:07:50Z 的中途采样） | **5452 kB / 5452 kB** |
+| `/metrics` | `ac_tick_skips_total 0`、`ac_events_dropped_total 0`、`ac_records_retained 7` | `ac_tick_skips_total 0`、`ac_events_dropped_total 0`、`ac_records_retained 75`、`ticks=39719`、`uptimeSeconds=5003` |
+| 日志 | —— | `server.log` **2759 B**、`server.err.log` **0 B**、`error` 行 **0**、`warn` 行 **0**；事件只有 7×`listening` / 6×`shutdownRequested` / 6×`shutdownComplete`（都是本轮重启留下的） |
+
+- **内存斜率 0.000 MB/分钟**（41 分钟两次采样同值，且 `VmHWM == VmRSS` ⇒ 峰值也没涨），
+  与 S14 的浸泡（`G7 = 0.033 MB/分钟`）同量级。
+- 对局在 30 分钟里自然churn 了 68 局（4 个只会直冲的机器人打不过第一波，每局 15–26 s ⇒ 全流程
+  `lobby → playing → ended` 与战绩/报告落盘跑了 68 轮），最后一局的 `leftMidMatch:true` 就是机器人
+  到点退出造成的（服务端如实记录）。
+- **宽限期重连（退役清单 ① 的"断线重连"服务端半边）**在同一套部署上单独验过：`Hello` →（4 s 静默跨过
+  3 s 断线阈值 → 会话进宽限期）→ `Resume(token=salt^nonce)`，服务端**接受**并补发**全量快照**：
+  `snapshot tick=37602 serverTimeMs=1880100 lastAckedSeq=0 baselineTick=0 changedCount=2`（`baselineTick=0`
+  正是 §5.2 承诺的"补一次全量"），随后稳态 20 Hz 快照继续；探针自报 `RECONNECT_PROBE OK`。
+- 观察项（如实登记，未深挖）：整段会话累计 `ac_dropped_frames_total 1479`（同期 `ac_frames_in_total 232269`，
+  约 0.6%），集中在"对局结束释放会话后仍在路上的包"这一类（`validateSession` 失败路径）；
+  S14 的门禁场景里同一计数器为 **0**（`dropped=0`）。这条口径需要一次专门的长时间带断线演练才能定位，
+  不阻塞本次部署验收。
+
+### 14.9 退役判定清单状态变化（§5 表）
+
+| # | 条目 | 本次之后 |
+|---|---|---|
+| ① | ≥30 分钟联合对局（含断线重连、波间跳过） | **服务端半边已闭环**：30 分钟 4 人真局 + 68 轮战绩入库（§14.8.1）、宽限期 `Resume` 补全量快照（§14.8.1 末条）；"v2 客户端在场 + 波间跳过"仍待客户端侧联调（本文 §14.6 的公网 UDP 放行是前置） |
+| ② | 性能门槛 8 条全绿 | **满足**（新增部署机重跑，§14.7） |
+| ③ | 对拍向量逐位复现 | 未变（`--filter=fixture` 在本轮 514 例内全绿） |
+| ④ | `check-docs`/`check-assets` 全绿 | **满足** |
+| ⑤ | 生产连续 7 天无未捕获异常、无战绩写失败 | **观察窗自 2026-09-29 起算**（服务已常驻；本文 §14.8.1 的 48 分钟窗口内 `server.err.log` 0 B、`error` 行 0、内存零增长） |
+| ⑥ | 回滚演练 | 未做；本轮已把上一版二进制备份在 `/opt/angry-chen/bin/backup/angry-chen-server.20260929-222540`（回滚 = 覆盖回去 + `systemctl restart`） |

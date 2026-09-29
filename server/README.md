@@ -1662,7 +1662,11 @@ G5 0.000/5.000 pass | G6 0.000/2.000ms pass | G7 RSS 未测（同 §15.2 的环�
 ⑤ 生产部署连续 7 天无未捕获异常、无战绩写失败
 ⑥ 回滚演练：旧 Node 服务器 + 旧客户端可在 5 分钟内恢复服务
 
-状态：②④ 已满足；①③⑤⑥ **未满足**（① 等 v2 客户端批次，③ 见 §17 的对拍行，⑤ 需要真实 7 天运行，⑥ 需要一次演练）。
+状态（2026-09-29 更新）：②④ 已满足；①③⑤⑥ **未满足**（① 等 v2 客户端批次，③ 见 §17 的对拍行，⑤ 需要真实 7 天运行，⑥ 需要一次演练）。
+生产部署已落地（`43.143.120.65`，systemd 常驻、反代 `:80`、门槛在部署机重跑全绿、30 分钟真局 + 战绩入库），
+逐条证据见 `docs/evidence/server-v2-acceptance.md` §14 —— 其中 ⑤ 的 7 天观察窗**自 2026-09-29 起算**，
+① 的服务端侧已闭环、"客户端在场 + 断线重连 + 波间跳过"仍待客户端侧联调；⑥ 的回滚素材是本轮备份的上一版二进制
+（`/opt/angry-chen/bin/backup/`）。
 `packages/` 作为冻结对照保留，不删 —— 注：`packages/` **不在本仓库**，退役对照以 `D:\projects\tmp\angry-chen-bak` 为准（计划 §1/§2-5 的旧单元在其 `deploy/angry-chen.service`）。
 
 ### 18.7 部署步骤（Linux）
@@ -1716,6 +1720,23 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1/nope     # 期望 404
 ```
 
 为什么：Ubuntu 自带的 `/etc/nginx/sites-enabled/default` 里有 `listen 80 default_server;` + `server_name _;`，它才是 :80 的默认服务器 → 片段装好后现场实测 `/health` **全 404**（请求被默认 vhost 接走）；`rm` 掉它（或把片段 `server_name` 改成真实域名）之后再 `nginx -t` 才生效。实测对照：移除前 `/health` = **404** → 移除后 `/health` = **200**、`/nope` = **404**（与 §18.2 的端点表一致）。另一个坑：仓库片段是**裸 `server{}`**（没有外层 `events{}`/`http{}`），所以只能放进被主配置 `include` 的目录（Ubuntu 的 `conf.d/*.conf`，其次是 `sites-available` + `sites-enabled` 软链），**不要**用 `nginx -c deploy/nginx.conf` 或拿它覆盖 `/etc/nginx/nginx.conf`（`nginx -t` 会报 `no "events" section`）。
+
+**④ 云侧安全组的入站规则：`UDP 8788` 必须放行（F4，生产部署实测）**
+
+```bash
+# 主机侧（两台都要；ufw 不是唯一一层）
+sudo ufw allow 8788/udp && sudo ufw allow 80/tcp
+# 云控制台（这一步只能在控制台/云 API 做，主机上没有任何命令能替代）
+#   实例 ins-jcc98nn1（43.143.120.65）的安全组新增入站规则：UDP:8788（来源按最小化策略）
+```
+
+为什么：`ufw` 是**主机侧**的一层，云厂商还有**安全组**这一层，两者都要放行。生产部署（§14）实测：
+`TCP:80` 公网可达（`curl http://43.143.120.65/health` → **200**），而 `UDP:8788` 从两台不同的公网主机发同一份
+20 字节 Hello 都**无应答**，目标机 `tcpdump -ni any udp port 8788` 期间**一个来自公网的包都没抓到**，
+本机回环同一份 Hello 却立刻拿到 `HelloAck`（`type=2`/`flags=0x01`）—— 也就是说报文根本没到主机，
+拦截点在云安全组（主机侧 `INPUT` 策略是 `ACCEPT`，`YJ-FIREWALL-INPUT` 只拒绝若干源 IP 的 `dport 22`）。
+验收命令（任意公网机器）：`python3 public_probe.py 43.143.120.65 8788` 期望 `UDP_PROBE OK`。
+依据：`docs/evidence/server-v2-acceptance.md` §14.6（含四条视角的对照与 `tcpdump`/`iptables` 原文）。
 
 ### 18.8 计划文本纠正与已声明偏差（S15）
 
@@ -1884,3 +1905,15 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 一次 `soak-4p5min` 出现过 `udp bind failed on port 8798/8788`：当场查不到残留进程，单跑该场景与整轮重跑都 `verdict=pass`。原因是两个进程同时用同一组冻结端口（UDP 8788 / HTTP 8787，以及 `--port-base` 派生的 8798/8797）—— 这是**环境性端口冲突，不是回归**：端口是 §18.2 的冻结契约，`ac_gate` 的 `--port-base` 只做偏移。
 
 规避办法：并发跑门禁（同机多 job、多代理、CI 与本地同时跑）时给每个进程不同的 `--port-base`（或直接错开 `--udp-port`/`--http-port`），不要让两个 gate/soak 同时用默认端口组；判「环境冲突还是回归」的判据是「单跑与整轮重跑能否 pass + 当场有无残留进程」。
+
+**生产机上更硬的一条**（2026-09-29 部署实测，见 `docs/evidence/server-v2-acceptance.md` §14.7）：systemd 单元常驻占用
+`8788/8787`，而 `ac_gate` 是**自己承载运行时**的（`config.udpPort = portBase`、`config.httpPort = portBase - 1`），
+所以在部署机上跑任何 gate/soak **必须**显式错开，例如：
+
+```bash
+AC_DATA_DIR=/tmp/ac-gate-data ./server/build/ac_gate --scenario gate-4p2min --port-base 8898 --out /root/ac-src/cg.json
+```
+
+不带 `--port-base` 时的现象是 `runtime start failed: udp bind failed on port 8788`，且 `--out` **不留任何文件** ——
+看起来"跑完了"，其实一个判据都没算。**读门禁结果只认 JSON 里的 `verdict`/`exitCode`，不要看进程退出码**
+（管道尾部命令的退出码会把真退出码吃掉，本轮就踩过一次）。
