@@ -190,8 +190,11 @@ namespace Ac.Core
                 _mouseDy += Input.GetAxisRaw("Mouse Y");
             }
             var scale = MouseRadPerPixel * SensitivityValue;
-            YawRad -= _mouseDx * scale;
-            PitchRad -= _mouseDy * scale;
+            // ADR-015：本仓 pitch 以**抬头为正**（相机 Euler(-pitch)、服务端 yawPitchToDirection 的 +Y 分量），
+            // 而引擎的 Mouse X/Y 是 invert:0（右移为正、上移为正）⇒ 两轴取加号才是"鼠标方向 = 视角方向"。
+            // C05 §5.5 原来的 -= 抄自"pitch 以低头为正"的经典片段，在本仓语义下等于双重取反（视角两轴全反）。
+            YawRad += _mouseDx * scale;
+            PitchRad += _mouseDy * scale;
             _mouseDx = 0.0;
             _mouseDy = 0.0;
             if (PitchRad > PitchLimitRad) PitchRad = PitchLimitRad;

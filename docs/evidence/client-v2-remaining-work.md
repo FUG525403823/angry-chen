@@ -76,6 +76,25 @@
 两个都用默认名的客户端会撞名（`MatchPid` 取最小 pid，双方会认领到同一行）—— 键入自定义名可绕开，
 彻底方案仍是服务端在握手/加入回执里回 pid（`LocalIdentity` 类注释里记的过渡方案代价）。
 
+### A12. ✅ 实跑修复：鼠标视角两轴全反（ADR-015）
+
+用户实跑反馈"视角很奇怪、整个人倒过来、键鼠没反应"。除 A11（空昵称 ⇒ 相机停在装配原点）之外，还有第二处独立缺陷：
+C05 §5.5 冻结的 `yaw -= dx * scale; pitch -= dy * scale` 抄自"pitch 以低头为正"的经典 Unity 片段，而本仓
+pitch 以**抬头为正**（相机 `Euler(-pitch,…)` 给出 `forward.y = sin(pitch)`；服务端 `yawPitchToDirection` 的 +Y 分量同义；
+`InputManager.asset` 的 `Mouse X/Y` 均 `type:1, invert:0` ⇒ 右移为正、上移为正）⇒ `-=` 等于双重取反：
+鼠标右移视角左转、上移视角下压。裁决与落地见 ADR-015（`InputSampler.Sample()` 两行 + `camera.pitch_clamp` 用例
+注入方向反向 + 补水平轴断言 + C05 §5.5 式子更正）；**线上 yaw/pitch 语义与协议一字未动**。
+
+另一条独立结论，用来解释用户提供的 `tools/failed.png`：那张 2560×1600 图的下半屏是**逐像素均匀**的
+(155,195,227)、**非该色像素占比 0.00%**，边界陡峭且落在屏幕正中——与"相机停在装配原点 (0,0,0)、`SetPose` 的 1.6m
+眼高从未被加上"完全自洽：视线水平 ⇒ 地平线正好在屏幕正中；眼睛恰在 y=0 地面平面内 ⇒ 地面在视线里边缘朝向、
+看不见；`y>0` 的谷仓/围栏落在上半屏；下半屏只剩 `LightingRig` 写死的 `backgroundColor`。也就是说该图就是
+**A11 修掉的那个 bug 的现象**，且来自**未重新出包的旧二进制**（15:54 前后全机无任何 Unity/Tuanjie 日志写入；
+`AppData\LocalLow\AngryChen\angry-chen` 最后写入 2026-09-24 11:58 且目录为空）。
+
+未复核（本轮按要求不打开 Unity）：`InputCameraSuite` 的改动**未经执行**；出包版必须重新 `client/build.ps1`
+才带得上 A11/A12。
+
 ### A1. ✅ C14 收口（真实图形设备 + **计划场景基准** + 引擎自持帧循环）
 
 > **复核状态（2026-09-29）**：`frame-bench.ps1 -Runs 3` 完整跑到 `GATE-EXIT=0` 的是实现方那一次；我随后独立复跑时

@@ -179,7 +179,7 @@ namespace Ac.Tests
         private static void ChecksPitchClamp()
         {
             var sampler = new InputSampler();
-            sampler.AddMouse(0.0, -100000.0);   // 巨大的下移：pitch 往上撞上限
+            sampler.AddMouse(0.0, 100000.0);    // ADR-015：上移为正 ⇒ 巨大的上移，pitch 往上撞上限
             sampler.Update(40.0);
             InputIntent up;
             SelfTest.True(sampler.TryTakeCommand(out up), "采样出命令", "没发出");
@@ -189,12 +189,24 @@ namespace Ac.Tests
             SelfTest.True(sampler.Focused, "默认聚焦", "未聚焦");
 
             var down = new InputSampler();
-            down.AddMouse(0.0, 100000.0);
+            down.AddMouse(0.0, -100000.0);      // 巨大的下移：撞下限
             down.Update(40.0);
             InputIntent low;
             down.TryTakeCommand(out low);
             SelfTest.True(Math.Abs(Quantize.DequantizeAngle(low.Pitch) + InputSampler.PitchLimitRad) < 1e-3,
                 "俯仰钳到 -π/2", Quantize.DequantizeAngle(low.Pitch).ToString("R"));
+
+            // ADR-015：水平轴同向 —— 鼠标右移视角右转（yaw 增大），左移反向。
+            var turnedRight = new InputSampler();
+            turnedRight.AddMouse(1000.0, 0.0);
+            turnedRight.Update(40.0);
+            InputIntent turned;
+            SelfTest.True(turnedRight.TryTakeCommand(out turned), "右移也要出命令", "没发出");
+            SelfTest.True(turnedRight.YawRad > 0.0, "右移 ⇒ yaw 增大（视角右转）", turnedRight.YawRad.ToString("R"));
+            var turnedLeft = new InputSampler();
+            turnedLeft.AddMouse(-1000.0, 0.0);
+            turnedLeft.Update(40.0);
+            SelfTest.True(turnedLeft.YawRad < 0.0, "左移 ⇒ yaw 减小（视角左转）", turnedLeft.YawRad.ToString("R"));
             SelfTest.True(Math.Abs(FpsCamera.ClampPitch(3.0) - FpsCamera.PitchLimitRad) < 1e-12, "相机俯仰上限", FpsCamera.ClampPitch(3.0).ToString("R"));
             SelfTest.True(Math.Abs(FpsCamera.ClampPitch(-3.0) + FpsCamera.PitchLimitRad) < 1e-12, "相机俯仰下限", FpsCamera.ClampPitch(-3.0).ToString("R"));
 
