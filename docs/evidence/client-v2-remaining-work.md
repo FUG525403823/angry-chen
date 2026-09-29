@@ -56,6 +56,26 @@
 
 **裁决（用户 2026-XX-XX：按推荐来）＝①**：包头 `seq` 按**类型**独立，`msgId` 按**可靠通道**共享。已写进 [S03 §5.1](../plans-v2/server/S03-二进制协议与编解码.md) 的 `seq` 行与"序号口径"两条（含 `MatchState`/`KeepAlive` 共用控制通道、两者才是唯一回执载体），客户端侧在 [C02 §5.1](../plans-v2/client/C02-客户端数学量化与协议解码.md) 复述同一句。客户端统计不用改（本来就是按类型），服务端也不用改（上一轮已拆号）。
 
+### A11. ✅ 产品阻断级：空昵称把本地身份、相机与键鼠一起废掉
+
+用户实跑反馈："跑起来了，但视角很奇怪、整个人倒过来了、键鼠没反应"。静态定位到根子：`Lobby.Name` 的初值是**空串**
+（`Scripts/UI/Lobby.cs:28`），而 `LocalIdentity.MatchPid` 对空名字直接返回 `NoPid`（`Scripts/Net/LocalIdentity.cs:40`）
+⇒ 三件事同时发生：
+
+1. `LocalPlayerId` 恒为 0 ⇒ `PresentationLayer.SyncCamera()` 在 `Views.TryGet` 那步直接 return ⇒ 相机**停在装配原点**
+   `(0,0,0)`，既不是人头高度也不跟人 ⇒ 画面诡异（看到的是几何体内部/脚下的身体，即"人倒过来"）；
+2. `EntityViews` 里"本地玩家 + 有预测值"那条分支永不成立 ⇒ 键鼠采到的意图不驱动任何实体 ⇒ "键鼠没反应"；
+3. `Lobby.IsNameValid` 为假 ⇒ 大厅连"按准备开局"这条路径都走不通。
+
+修法（纯客户端、不改协议、不动预算）：`GameBootstrap.DefaultLocalName = "牧羊人"` 作兜底，在 `Presentation.Attach` 之后
+补进大厅（玩家一旦键入即被 `SetName` 覆盖并重发 `kJoin`，见 `GameLoop.LocalName`）；`PresentationLayer.Attach`
+不再用空名字覆盖帧回路；认领不到身份时 `SyncCamera` 打**一条**可见警告（"相机不跟人"在屏幕上看不出原因）。
+用例补在 `boot.server_config`：默认昵称必须合法且过 `SanitizeName` 不变形。
+
+未复核（本轮按用户要求不开 Unity）：真机复跑"进大厅 → 按 Enter 准备 → 开局 → 能转身能走"。另：默认名是**固定值**，
+两个都用默认名的客户端会撞名（`MatchPid` 取最小 pid，双方会认领到同一行）—— 键入自定义名可绕开，
+彻底方案仍是服务端在握手/加入回执里回 pid（`LocalIdentity` 类注释里记的过渡方案代价）。
+
 ### A1. ✅ C14 收口（真实图形设备 + **计划场景基准** + 引擎自持帧循环）
 
 > **复核状态（2026-09-29）**：`frame-bench.ps1 -Runs 3` 完整跑到 `GATE-EXIT=0` 的是实现方那一次；我随后独立复跑时

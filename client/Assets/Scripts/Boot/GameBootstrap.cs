@@ -21,6 +21,12 @@ namespace Ac.Boot
         public const string ServerArgument = "-server";
         public const string ServerEnvironment = "AC_SERVER";
 
+        // 默认昵称：**不输名字也必须能玩**。本地身份（过渡方案，见 Ac.Net.LocalIdentity）是按昵称严格相等
+        // 去 MatchState 玩家表里认领一行的，而 Lobby.Name 的初值是空串 ⇒ 空名字永远认领不到 ⇒
+        // LocalPlayerId 恒为 0，于是 ①相机停在装配原点（不是人头，画面诡异）②键鼠采到的意图不驱动任何实体
+        // ③大厅昵称非法（准备位那条开局路径也堵死）。玩家在大厅里键入的名字会覆盖它（SetName 走 OnNameChanged）。
+        public const string DefaultLocalName = "牧羊人";
+
         public static GameLoop Loop { get; private set; }
         // B1：呈现层（相机/场地/羊群/特效/屏幕流/调试面板）。此前它整个不存在，所以画面是空的。
         public static PresentationLayer Presentation { get; private set; }
@@ -65,6 +71,9 @@ namespace Ac.Boot
             // 呈现层：造出 Unity 对象，再把三条呈现缝与帧回路接起来（没接上的段就不打点）
             if (Presentation == null) Presentation = PresentationLayer.Create(settings);
             Presentation.Attach(Loop);
+            // 昵称兜底（见 DefaultLocalName）：必须在 Attach 之后 —— Attach 会把大厅昵称灌进帧回路，
+            // 这里把"空名字"补成一个合法默认值；玩家一在大厅键入，SetName 就把它换掉并重发 kJoin。
+            if (string.IsNullOrEmpty(Presentation.Flow.Lobby.Name)) Presentation.Flow.Lobby.SetName(DefaultLocalName);
             Presentation.ApplySettings(settings);
             Loop.Fx = Presentation.FxSink;
             Loop.Draw = Presentation.DrawSink;

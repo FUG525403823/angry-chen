@@ -61,6 +61,8 @@ namespace Ac.Boot
         private int _seenMatchStates;
         private int _savedTier;
         private bool _disposed;
+        // "本地身份没认领到"的警告只打一次（每帧打会把日志刷爆，反而不看见）
+        private bool _warnedNoIdentity;
         // 版本行是计算属性（含非常量 BuildCommit）：构造期拼一次就冻住。帧内再取一次就是一次字符串分配
         //（+ int 装箱），而帧预算的托管分配上限是 0 B。
         private readonly string _versionLine;
@@ -229,7 +231,8 @@ namespace Ac.Boot
             // 先减后加：Attach 可以重复调用（Start 不是一次性的），订阅只许留一条。
             Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
             Flow.Lobby.OnNameChanged += OnLobbyNameChanged;
-            loop.LocalName = Flow.Lobby.Name;
+            // 空名字不许覆盖：GameBootstrap 在 Attach 之后补默认昵称，而 Attach 会被重复调用（Start 不是一次性的）
+            if (!string.IsNullOrEmpty(Flow.Lobby.Name)) loop.LocalName = Flow.Lobby.Name;
             _seenMatchStates = loop.MatchStateCount;
             if (loop.MatchStateCount > 0) Flow.Apply(loop.LastMatchState, loop.LocalPlayerId);
         }
@@ -453,6 +456,18 @@ namespace Ac.Boot
         {
             var loop = _loop;
             if (loop == null || MainCamera == null) return;
+            // 认领不到本地身份时给一条可见诊断：相机不跟人 = 画面诡异 + 键鼠不驱动任何实体，
+            // 而屏幕上看不出原因（联调外的实测现象：大厅昵称为空 ⇒ 玩家表里没有这一行）。
+            if (loop.LocalPlayerId == 0)
+            {
+                if (!_warnedNoIdentity)
+                {
+                    _warnedNoIdentity = true;
+                    Debug.LogWarning("Ac.Boot: 本地身份未绑定（大厅昵称=\"" + (loop.LocalName ?? string.Empty) +
+                        "\" 未出现在 MatchState 玩家表里）⇒ 相机停在装配原点、键鼠不驱动任何实体");
+                }
+                return;
+            }
             EntityView local;
             if (!loop.Views.TryGet(loop.LocalPlayerId, out local) || local == null) return;
             Fps.SetPose(local.RenderX, local.RenderY, local.RenderZ, local.YawRad, local.PitchRad);

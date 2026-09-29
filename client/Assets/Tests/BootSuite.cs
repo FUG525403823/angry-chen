@@ -146,6 +146,11 @@ namespace Ac.Tests
             defaultSampler.SetSensitivity(0.0);
             SelfTest.True(Math.Abs(defaultSampler.SensitivityValue - InputSampler.MinSensitivity) < 1e-9,
                 "灵敏度超下限要钳到 MinSensitivity", defaultSampler.SensitivityValue.ToString("R"));
+            // 默认昵称（GameBootstrap.DefaultLocalName）：本地身份按昵称认领 MatchState 的行，所以它必须是**合法**昵称
+            //（非空、≤12 字节、过 SanitizeName 不变形）—— 否则空名字会让 LocalPlayerId 恒 0，相机与键鼠一起失效。
+            var defaultName = GameBootstrap.DefaultLocalName;
+            SelfTest.True(Ac.UI.Lobby.IsValidName(defaultName), "默认昵称必须合法（非空、1..12 字节）", defaultName);
+            SelfTest.True(Ac.UI.Lobby.SanitizeName(defaultName) == defaultName, "默认昵称不许被清洗改形", Ac.UI.Lobby.SanitizeName(defaultName));
         }
 
         private static GameLoop NewLoop(int entities, out SnapshotFrame frame)
