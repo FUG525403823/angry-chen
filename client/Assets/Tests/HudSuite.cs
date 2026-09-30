@@ -37,7 +37,7 @@ namespace Ac.Tests
             sample.Mag = 30;
             sample.MagSize = 30;
             sample.Reserve = 48;
-            sample.ReloadLeft10Ms = 14000;
+            sample.ReloadLeft10Ms = 140;
             sample.Rage = 60;
             sample.RageLeft100Ms = 25000;
             sample.ReviveRatio255 = 128;
@@ -148,6 +148,25 @@ namespace Ac.Tests
             cross.SetPalette(0x66E0FF, false);
             SelfTest.Equal(0x66E0FF, (long)cross.ColorRgb);
 
+            SelfTest.Equal(0x66E0FF, (long)cross.CurrentColor);
+            var settings = SettingsDefaults.Default();
+            settings.CrosshairScale = 2f;
+            settings.CrosshairThickness = 4f;
+            settings.CrosshairGap = 8f;
+            settings.CrosshairDynamic = false;
+            settings.CrosshairColor = 0xFF66CC;
+            cross.ApplySettings(in settings);
+            cross.SetSpread(5f);
+            SelfTest.True(cross.SizePx == Crosshair.MinSizePx * 2f && cross.ThicknessPx == 4f && cross.GapPx == 8f, "static crosshair settings", "wrong geometry");
+            SelfTest.Equal(0xFF66CC, (long)cross.CurrentColor);
+            settings.CrosshairDynamic = true;
+            cross.ApplySettings(in settings);
+            SelfTest.True(cross.SizePx == Crosshair.MaxSizePx * 2f, "dynamic size scaled", "wrong size");
+            cross.SetSpread(2.75f);
+            SelfTest.True(cross.SizePx == 26f, "dynamic midpoint scaled", "wrong size");
+            settings = SettingsDefaults.Default();
+            cross.ApplySettings(in settings);
+            SelfTest.True(cross.ThicknessPx == 2f && cross.GapPx == 2f && cross.SizePx == 13f, "defaults restore original geometry", "wrong defaults");
             cross.SetPalette(0x66E0FF, true);
             SelfTest.Equal(SettingsDefaults.MostContrastingCrosshairColor(), (long)cross.ColorRgb);
             SelfTest.True(cross.ColorRgb != 0x66E0FF, "色盲安全必须换一档颜色", "没换");
@@ -167,7 +186,7 @@ namespace Ac.Tests
             SelfTest.Equal(12000, hud.DisplayedIntermissionMs);
             SelfTest.Equal(30, (long)hud.Ammo.Mag);
             SelfTest.Equal(48, (long)hud.Ammo.Reserve);
-            SelfTest.True(hud.Ammo.ReloadRingMs == 1400f, "换弹环 = reloadLeft10Ms/10", hud.Ammo.ReloadRingMs.ToString("R"));
+            SelfTest.True(hud.Ammo.ReloadRingMs == 1400f, "换弹环 = reloadLeft10Ms*10", hud.Ammo.ReloadRingMs.ToString("R"));
             SelfTest.Equal(60, (long)hud.Rage.Rage);
             SelfTest.True(hud.Rage.RageLeftMs == 250f, "狂暴剩余 = rageLeft100Ms/100", hud.Rage.RageLeftMs.ToString("R"));
             SelfTest.Equal((long)CrosshairState.Target, (long)hud.Crosshair.State);   // 采样 → 准星可命中态
@@ -343,7 +362,7 @@ namespace Ac.Tests
             ammo.Set(-1, -1, -1, 12, false);
             SelfTest.True(ammo.Mag == 0 && ammo.Reserve == 0 && !ammo.Reloading, "负数钳到 0", ammo.Mag.ToString());
             ammo.Set(0, 12, 200, 12, false);
-            SelfTest.True(ammo.Reloading && ammo.ReloadRingMs == 20f, "换弹环 20ms", ammo.ReloadRingMs.ToString("R"));
+            SelfTest.True(ammo.Reloading && ammo.ReloadRingMs == 2000f, "换弹环 2000ms", ammo.ReloadRingMs.ToString("R"));
             ammo.Set(0, 12, 0, 12, true);
             SelfTest.True(ammo.Reloading, "单播 reloading 也点亮换弹环", ammo.Reloading.ToString());
             SelfTest.True(AmmoCounter.AmmoLowRatio == 0.3f, "低弹比 0.3", AmmoCounter.AmmoLowRatio.ToString("R"));

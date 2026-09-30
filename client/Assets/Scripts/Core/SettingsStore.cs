@@ -8,6 +8,7 @@ namespace Ac.Core
     {
         QualityTier = 0, MasterVolume = 1, SfxVolume = 2, MusicVolume = 3, Sensitivity = 4,
         Fov = 5, CrosshairColor = 6, ColorblindSafe = 7, ReduceMotion = 8, KeyBindings = 9,
+        CrosshairScale = 10, CrosshairThickness = 11, CrosshairGap = 12, CrosshairDynamic = 13,
     }
 
     // §5：只读快照。写一律走 SettingsStore.Set/Reset 并触发一次 Changed。
@@ -21,6 +22,10 @@ namespace Ac.Core
         public float Sensitivity;
         public float Fov;
         public int CrosshairColor;
+        public float CrosshairScale;
+        public float CrosshairThickness;
+        public float CrosshairGap;
+        public bool CrosshairDynamic;
         public bool ColorblindSafe;
         public bool ReduceMotion;
         public string[] KeyBindings;
@@ -28,7 +33,7 @@ namespace Ac.Core
 
     public static class SettingsDefaults
     {
-        public const int SchemaVersion = 2;
+        public const int SchemaVersion = 3;
         public const int QualityTier = 2;
         public const float MasterVolume = 0.80f;
         public const float SfxVolume = 0.80f;
@@ -36,6 +41,16 @@ namespace Ac.Core
         public const float Sensitivity = 1.00f;
         public const float Fov = 75f;
         public const int CrosshairColor = 0x00FF66;
+        public const float CrosshairScale = 1f;
+        public const float CrosshairScaleMin = .5f;
+        public const float CrosshairScaleMax = 3f;
+        public const float CrosshairThickness = 2f;
+        public const float CrosshairThicknessMin = 1f;
+        public const float CrosshairThicknessMax = 6f;
+        public const float CrosshairGap = 2f;
+        public const float CrosshairGapMin = 0f;
+        public const float CrosshairGapMax = 20f;
+        public const bool CrosshairDynamic = true;
         public const bool ColorblindSafe = false;
         public const bool ReduceMotion = false;
 
@@ -44,7 +59,7 @@ namespace Ac.Core
         public const float VolumeMin = 0.00f;
         public const float VolumeMax = 1.00f;
         public const float SensitivityMin = 0.20f;
-        public const float SensitivityMax = 3.00f;
+        public const float SensitivityMax = 5.00f;
         public const float FovMin = 60f;
         public const float FovMax = 100f;
 
@@ -95,6 +110,10 @@ namespace Ac.Core
             snapshot.Sensitivity = Sensitivity;
             snapshot.Fov = Fov;
             snapshot.CrosshairColor = CrosshairColor;
+            snapshot.CrosshairScale = CrosshairScale;
+            snapshot.CrosshairThickness = CrosshairThickness;
+            snapshot.CrosshairGap = CrosshairGap;
+            snapshot.CrosshairDynamic = CrosshairDynamic;
             snapshot.ColorblindSafe = ColorblindSafe;
             snapshot.ReduceMotion = ReduceMotion;
             snapshot.KeyBindings = (string[])KeyBindings.Clone();
@@ -106,6 +125,12 @@ namespace Ac.Core
         public static float ClampVolume(float value) { return float.IsNaN(value) ? MasterVolume : (value < VolumeMin ? VolumeMin : (value > VolumeMax ? VolumeMax : value)); }
         public static float ClampSensitivity(float value) { return float.IsNaN(value) ? Sensitivity : (value < SensitivityMin ? SensitivityMin : (value > SensitivityMax ? SensitivityMax : value)); }
         public static float ClampFov(float value) { return float.IsNaN(value) ? Fov : (value < FovMin ? FovMin : (value > FovMax ? FovMax : value)); }
+
+        public static float ClampCrosshairScale(float value) { return float.IsNaN(value) ? CrosshairScale : (value < CrosshairScaleMin ? CrosshairScaleMin : (value > CrosshairScaleMax ? CrosshairScaleMax : value)); }
+
+        public static float ClampCrosshairThickness(float value) { return float.IsNaN(value) ? CrosshairThickness : (value < CrosshairThicknessMin ? CrosshairThicknessMin : (value > CrosshairThicknessMax ? CrosshairThicknessMax : value)); }
+
+        public static float ClampCrosshairGap(float value) { return float.IsNaN(value) ? CrosshairGap : (value < CrosshairGapMin ? CrosshairGapMin : (value > CrosshairGapMax ? CrosshairGapMax : value)); }
 
         public static bool IsAllowedCrosshairColor(int color)
         {
@@ -148,7 +173,8 @@ namespace Ac.Core
         public int FlushCount { get; private set; }
         public int BadFileCount { get; private set; }
         public int LoadCount { get; private set; }
-        public bool ReadOnlyFile { get; private set; }      // schemaVersion > 2：只读不写
+        public bool ReadOnlyFile { get; private set; }      // Future schemas are never overwritten.
+        public string LastSaveError { get; private set; } = string.Empty;
         public int LastConflictAction { get { return _lastConflictAction; } }
 
         public event Action<SettingsKey> Changed;
@@ -183,6 +209,10 @@ namespace Ac.Core
         public bool SetSensitivity(float value) { return Apply(SettingsKey.Sensitivity, 0, SettingsDefaults.ClampSensitivity(value), false); }
         public bool SetFov(float value) { return Apply(SettingsKey.Fov, 0, SettingsDefaults.ClampFov(value), false); }
         public bool SetCrosshairColor(int value) { return Apply(SettingsKey.CrosshairColor, SettingsDefaults.NearestCrosshairColor(value), 0f, false); }
+        public bool SetCrosshairScale(float value) { return Apply(SettingsKey.CrosshairScale, 0, SettingsDefaults.ClampCrosshairScale(value), false); }
+        public bool SetCrosshairThickness(float value) { return Apply(SettingsKey.CrosshairThickness, 0, SettingsDefaults.ClampCrosshairThickness(value), false); }
+        public bool SetCrosshairGap(float value) { return Apply(SettingsKey.CrosshairGap, 0, SettingsDefaults.ClampCrosshairGap(value), false); }
+        public bool SetCrosshairDynamic(bool value) { return Apply(SettingsKey.CrosshairDynamic, 0, 0f, value); }
         public bool SetColorblindSafe(bool value) { return Apply(SettingsKey.ColorblindSafe, 0, 0f, value); }
         public bool SetReduceMotion(bool value) { return Apply(SettingsKey.ReduceMotion, 0, 0f, value); }
 
@@ -223,6 +253,10 @@ namespace Ac.Core
                 case SettingsKey.Sensitivity: _snapshot.Sensitivity = floatValue; break;
                 case SettingsKey.Fov: _snapshot.Fov = floatValue; break;
                 case SettingsKey.CrosshairColor: _snapshot.CrosshairColor = intValue; break;
+                case SettingsKey.CrosshairScale: _snapshot.CrosshairScale = floatValue; break;
+                case SettingsKey.CrosshairThickness: _snapshot.CrosshairThickness = floatValue; break;
+                case SettingsKey.CrosshairGap: _snapshot.CrosshairGap = floatValue; break;
+                case SettingsKey.CrosshairDynamic: _snapshot.CrosshairDynamic = boolValue; break;
                 case SettingsKey.ColorblindSafe: _snapshot.ColorblindSafe = boolValue; break;
                 case SettingsKey.ReduceMotion: _snapshot.ReduceMotion = boolValue; break;
                 case SettingsKey.KeyBindings: break;      // 数组已就地改过
@@ -246,6 +280,10 @@ namespace Ac.Core
                 case SettingsKey.Sensitivity: return a.Sensitivity == b.Sensitivity;
                 case SettingsKey.Fov: return a.Fov == b.Fov;
                 case SettingsKey.CrosshairColor: return a.CrosshairColor == b.CrosshairColor;
+                case SettingsKey.CrosshairScale: return a.CrosshairScale == b.CrosshairScale;
+                case SettingsKey.CrosshairThickness: return a.CrosshairThickness == b.CrosshairThickness;
+                case SettingsKey.CrosshairGap: return a.CrosshairGap == b.CrosshairGap;
+                case SettingsKey.CrosshairDynamic: return a.CrosshairDynamic == b.CrosshairDynamic;
                 case SettingsKey.ColorblindSafe: return a.ColorblindSafe == b.ColorblindSafe;
                 case SettingsKey.ReduceMotion: return a.ReduceMotion == b.ReduceMotion;
                 default:
@@ -285,38 +323,50 @@ namespace Ac.Core
 
         public void BeginFrame() { _flushedThisFrame = false; }
 
-        // 帧末 flush：每帧最多落盘一次；schemaVersion > 2 的文件只读，绝不覆盖
+        // 帧末 flush：每帧最多落盘一次；schemaVersion > 3 的文件只读，绝不覆盖
         public bool FlushIfDirty(string directory, bool force = false)
         {
             if (!_dirty) return false;
             if (!force && _flushedThisFrame) return false;
-            if (ReadOnlyFile) { _dirty = false; return false; }
-            Save(directory);
-            return true;
+            return TrySave(directory);
         }
 
-        public void Save(string directory)
+        public void Save(string directory) { TrySave(directory); }
+
+        private bool TrySave(string directory)
         {
-            var path = PathOf(directory);
-            var temp = TempPathOf(directory);
-            var json = Serialize(_snapshot);
+            if (ReadOnlyFile)
+            {
+                LastSaveError = "设置文件来自更高版本，当前仅在内存中应用，未保存";
+                return false;
+            }
             try
             {
+                var path = PathOf(directory);
+                var temp = TempPathOf(directory);
+                var json = Serialize(_snapshot);
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(temp, json, new UTF8Encoding(false));
                 if (File.Exists(path)) File.Replace(temp, path, null);
                 else File.Move(temp, path);
             }
-            catch (IOException) { return; }                 // 磁盘满/被占用：设置仍在内存里生效，不崩
-            catch (UnauthorizedAccessException) { return; }
+            catch (IOException ex) { LastSaveError = "保存设置失败：" + ex.Message; return false; }
+            catch (UnauthorizedAccessException ex) { LastSaveError = "保存设置失败：" + ex.Message; return false; }
+            catch (ArgumentException ex) { LastSaveError = "保存设置失败：" + ex.Message; return false; }
+            catch (NotSupportedException ex) { LastSaveError = "保存设置失败：" + ex.Message; return false; }
+            LastSaveError = string.Empty;
             _dirty = false;
             _flushedThisFrame = true;
             FlushCount += 1;
+            return true;
         }
 
         public void Load(string directory)
         {
             LoadCount += 1;
+            LastSaveError = string.Empty;
+            _dirty = false;
+            _flushedThisFrame = false;
             var path = PathOf(directory);
             if (!File.Exists(path))
             {
@@ -373,6 +423,10 @@ namespace Ac.Core
             builder.Append("  \"sensitivity\": ").Append(Float(snapshot.Sensitivity)).Append(",\n");
             builder.Append("  \"fov\": ").Append(Float(snapshot.Fov)).Append(",\n");
             builder.Append("  \"crosshairColor\": ").Append(snapshot.CrosshairColor).Append(",\n");
+            builder.Append("  \"crosshairScale\": ").Append(Float(snapshot.CrosshairScale)).Append(",\n");
+            builder.Append("  \"crosshairThickness\": ").Append(Float(snapshot.CrosshairThickness)).Append(",\n");
+            builder.Append("  \"crosshairGap\": ").Append(Float(snapshot.CrosshairGap)).Append(",\n");
+            builder.Append("  \"crosshairDynamic\": ").Append(snapshot.CrosshairDynamic ? "true" : "false").Append(",\n");
             builder.Append("  \"colorblindSafe\": ").Append(snapshot.ColorblindSafe ? "true" : "false").Append(",\n");
             builder.Append("  \"reduceMotion\": ").Append(snapshot.ReduceMotion ? "true" : "false").Append(",\n");
             builder.Append("  \"keyBindings\": [");
@@ -411,7 +465,7 @@ namespace Ac.Core
             return TryParse(json, out snapshot, out ignored);
         }
 
-        // sourceVersion 是文件里原本的版本号（迁移判定必须用它，不能用出口快照里的 2）
+        // sourceVersion 是文件里原本的版本号（迁移判定必须用它，不能用出口快照里的当前版本）
         public static bool TryParse(string json, out SettingsSnapshot snapshot, out int sourceVersion)
         {
             snapshot = SettingsDefaults.Default();
@@ -439,6 +493,10 @@ namespace Ac.Core
             snapshot.Sensitivity = SettingsDefaults.ClampSensitivity(ReadFloat(root, "sensitivity", SettingsDefaults.Sensitivity));
             snapshot.Fov = SettingsDefaults.ClampFov(ReadFloat(root, "fov", SettingsDefaults.Fov));
             snapshot.CrosshairColor = v1 ? SettingsDefaults.CrosshairColor : SettingsDefaults.NearestCrosshairColor(ReadInt(root, "crosshairColor", SettingsDefaults.CrosshairColor));
+            snapshot.CrosshairScale = version < 3 ? SettingsDefaults.CrosshairScale : SettingsDefaults.ClampCrosshairScale(ReadFloat(root, "crosshairScale", SettingsDefaults.CrosshairScale));
+            snapshot.CrosshairThickness = version < 3 ? SettingsDefaults.CrosshairThickness : SettingsDefaults.ClampCrosshairThickness(ReadFloat(root, "crosshairThickness", SettingsDefaults.CrosshairThickness));
+            snapshot.CrosshairGap = version < 3 ? SettingsDefaults.CrosshairGap : SettingsDefaults.ClampCrosshairGap(ReadFloat(root, "crosshairGap", SettingsDefaults.CrosshairGap));
+            snapshot.CrosshairDynamic = version < 3 ? SettingsDefaults.CrosshairDynamic : ReadBool(root, "crosshairDynamic", SettingsDefaults.CrosshairDynamic);
             snapshot.ColorblindSafe = ReadBool(root, "colorblindSafe", SettingsDefaults.ColorblindSafe);
             snapshot.ReduceMotion = ReadBool(root, "reduceMotion", SettingsDefaults.ReduceMotion);
             snapshot.KeyBindings = v1 ? (string[])SettingsDefaults.KeyBindings.Clone() : ReadKeys(root);

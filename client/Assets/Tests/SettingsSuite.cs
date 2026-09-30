@@ -27,6 +27,8 @@ namespace Ac.Tests
 
         public static void Register()
         {
+            SelfTest.Add("settings.crosshair_v3", ChecksCrosshairV3);
+            SelfTest.Add("settings.save_failure", ChecksSaveFailure);
             SelfTest.Add("settings.defaults", ChecksDefaults);
             SelfTest.Add("settings.clamp", ChecksClamp);
             SelfTest.Add("settings.serialize", ChecksSerialize);
@@ -88,15 +90,15 @@ namespace Ac.Tests
             SelfTest.Equal((long)SettingsDefaults.ActionCount, (long)SettingsDefaults.KeyBindings.Length);
         }
 
-        // 审计：Load 的提前返回不复位 ReadOnlyFile → 装过 v3 之后所有落盘被静默丢弃。
+        // 审计：Load 的提前返回不复位 ReadOnlyFile → 装过 v4 之后所有落盘被静默丢弃。
         private static void ChecksReadOnlyResetsAcrossLoads()
         {
             var dir = TempDir();
             Clean(dir);
-            File.WriteAllText(Path.Combine(dir, SettingsStore.FileName), "{\"schemaVersion\": 3}");
+            File.WriteAllText(Path.Combine(dir, SettingsStore.FileName), "{\"schemaVersion\": 4}");
             var store = new SettingsStore();
             store.Load(dir);
-            SelfTest.True(store.ReadOnlyFile, "v3 只读", "没标记");
+            SelfTest.True(store.ReadOnlyFile, "v4 只读", "没标记");
             var empty = Path.Combine(dir, "empty");
             Directory.CreateDirectory(empty);
             Clean(empty);
@@ -107,7 +109,7 @@ namespace Ac.Tests
             SelfTest.True(File.Exists(Path.Combine(empty, SettingsStore.FileName)), "文件真的写出来了", "没写");
             File.WriteAllText(Path.Combine(dir, "bad.json"), "x");
             var second = new SettingsStore();
-            second.Load(dir);                                      // v3 → 只读
+            second.Load(dir);                                      // v4 → 只读
             var badDir = Path.Combine(dir, "bad");
             Directory.CreateDirectory(badDir);
             Clean(badDir);
@@ -117,10 +119,88 @@ namespace Ac.Tests
             Clean(dir);
         }
 
+        private static void ChecksCrosshairV3()
+        {
+            var defaults = SettingsDefaults.Default();
+            SelfTest.True(defaults.CrosshairScale == 1f && defaults.CrosshairThickness == 2f && defaults.CrosshairGap == 2f && defaults.CrosshairDynamic, "crosshair defaults", "wrong defaults");
+            var store = new SettingsStore();
+            var panel = new SettingsPanel(store);
+            var changes = 0;
+            panel.OnChanged += key => { changes++; };
+            panel.SetCrosshairScale(99f);
+            panel.SetCrosshairThickness(99f);
+            panel.SetCrosshairGap(99f);
+            panel.SetCrosshairDynamic(false);
+            SelfTest.Equal(4, changes);
+            SelfTest.True(!panel.SetCrosshairDynamic(false), "same value is unchanged", "changed");
+            var snapshot = store.Get();
+            SelfTest.True(snapshot.CrosshairScale == 3f && snapshot.CrosshairThickness == 6f && snapshot.CrosshairGap == 20f && !snapshot.CrosshairDynamic, "upper clamps", "wrong clamp");
+            SettingsSnapshot parsed;
+            SelfTest.True(SettingsStore.TryParse(SettingsStore.Serialize(snapshot), out parsed), "v3 roundtrip", "parse failed");
+            SelfTest.True(parsed.CrosshairScale == 3f && parsed.CrosshairThickness == 6f && parsed.CrosshairGap == 20f && !parsed.CrosshairDynamic, "v3 fields roundtrip", "fields lost");
+            panel.SetCrosshairScale(-1f);
+            panel.SetCrosshairThickness(-1f);
+            panel.SetCrosshairGap(-1f);
+            snapshot = store.Get();
+            SelfTest.True(snapshot.CrosshairScale == .5f && snapshot.CrosshairThickness == 1f && snapshot.CrosshairGap == 0f, "lower clamps", "wrong clamp");
+            panel.SetCrosshairScale(float.NaN);
+            panel.SetCrosshairThickness(float.NaN);
+            panel.SetCrosshairGap(float.NaN);
+            snapshot = store.Get();
+            SelfTest.True(snapshot.CrosshairScale == 1f && snapshot.CrosshairThickness == 2f && snapshot.CrosshairGap == 2f, "NaN defaults", "NaN leaked");
+            SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\":3,\"crosshairScale\":99,\"crosshairThickness\":-1,\"crosshairGap\":\"NaN\",\"crosshairDynamic\":17}", out parsed), "clamped JSON", "parse failed");
+            SelfTest.True(parsed.CrosshairScale == 3f && parsed.CrosshairThickness == 1f && parsed.CrosshairGap == 2f && parsed.CrosshairDynamic, "read clamps and bad types", "wrong parsed values");
+            var dir = TempDir();
+            Clean(dir);
+            File.WriteAllText(SettingsStore.PathOf(dir), "{\"schemaVersion\":2,\"sensitivity\":4.5,\"crosshairColor\":6742271}");
+            store.Load(dir);
+            snapshot = store.Get();
+            SelfTest.True(store.Dirty && !store.ReadOnlyFile && snapshot.SchemaVersion == 3, "v2 migrates", "not migrated");
+            SelfTest.True(snapshot.Sensitivity == 4.5f && snapshot.CrosshairColor == 0x66E0FF && snapshot.CrosshairScale == 1f && snapshot.CrosshairThickness == 2f && snapshot.CrosshairGap == 2f && snapshot.CrosshairDynamic, "v2 preserved with new defaults", "migration lost values");
+            SelfTest.True(store.FlushIfDirty(dir, true), "migration writes v3", "save failed");
+            store.Load(dir);
+            SelfTest.True(!store.Dirty && store.Get().SchemaVersion == 3, "v3 reload is clean", "dirty");
+            var input = new InputSampler();
+            SelfTest.True(input.SensitivityValue == SettingsDefaults.Sensitivity, "input default shared", "wrong default");
+            input.SetSensitivity(double.NaN);
+            SelfTest.True(input.SensitivityValue == 1d, "input NaN fallback", "NaN leaked");
+            input.SetSensitivity(double.PositiveInfinity);
+            SelfTest.True(input.SensitivityValue == SettingsDefaults.SensitivityMax, "input upper clamp shared", "wrong max");
+            input.SetSensitivity(double.NegativeInfinity);
+            SelfTest.True(input.SensitivityValue == SettingsDefaults.SensitivityMin, "input lower clamp shared", "wrong min");
+            Clean(dir);
+        }
+
+        private static void ChecksSaveFailure()
+        {
+            var dir = TempDir();
+            Clean(dir);
+            var store = new SettingsStore();
+            var panel = new SettingsPanel(store);
+            store.SetFov(80f);
+            var blocked = Path.Combine(dir, "blocked-" + Guid.NewGuid().ToString("N"));
+            File.WriteAllText(blocked, "file blocks directory");
+            try
+            {
+                SelfTest.True(!store.FlushIfDirty(blocked, true), "failed flush returns false", "reported success");
+                SelfTest.True(store.Dirty && store.FlushCount == 0 && store.LastSaveError.Length > 0, "failure retains dirty and error", "failure hidden");
+                SelfTest.True(panel.Hint == store.LastSaveError, "panel shows save failure", "hint missing");
+                SelfTest.True(store.FlushIfDirty(dir, true), "retry succeeds", "retry failed");
+                SelfTest.True(!store.Dirty && store.LastSaveError.Length == 0, "success clears error", "stale error");
+                const string future = "{\"schemaVersion\":4,\"futureField\":42}";
+                File.WriteAllText(SettingsStore.PathOf(dir), future);
+                store.Load(dir);
+                store.Reset();
+                store.Save(dir);
+                SelfTest.True(File.ReadAllText(SettingsStore.PathOf(dir)) == future && store.LastSaveError.Length > 0, "direct Save protects future file", "future overwritten");
+            }
+            finally { File.Delete(blocked); Clean(dir); }
+        }
+
         private static void ChecksDefaults()
         {
             var snapshot = SettingsDefaults.Default();
-            SelfTest.Equal(2, (long)snapshot.SchemaVersion);
+            SelfTest.Equal(3, (long)snapshot.SchemaVersion);
             SelfTest.Equal(2, (long)snapshot.QualityTier);
             SelfTest.True(snapshot.MasterVolume == 0.80f, "masterVolume 默认 0.80", snapshot.MasterVolume.ToString("R"));
             SelfTest.True(snapshot.SfxVolume == 0.80f, "sfxVolume 默认 0.80", snapshot.SfxVolume.ToString("R"));
@@ -148,8 +228,8 @@ namespace Ac.Tests
             var store = new SettingsStore();
             store.SetSensitivity(0.19f);
             SelfTest.True(store.Get().Sensitivity == 0.20f, "0.19 → 0.20", store.Get().Sensitivity.ToString("R"));
-            store.SetSensitivity(3.01f);
-            SelfTest.True(store.Get().Sensitivity == 3.00f, "3.01 → 3.00", store.Get().Sensitivity.ToString("R"));
+            store.SetSensitivity(5.01f);
+            SelfTest.True(store.Get().Sensitivity == 5.00f, "5.01 → 5.00", store.Get().Sensitivity.ToString("R"));
             store.SetSensitivity(1.5f);
             SelfTest.True(store.Get().Sensitivity == 1.5f, "范围内原样", store.Get().Sensitivity.ToString("R"));
             store.SetFov(59f);
@@ -182,7 +262,7 @@ namespace Ac.Tests
             var text = SettingsStore.Serialize(SettingsDefaults.Default());
             var lines = text.Split('\n');
             SelfTest.True(lines[0].Trim() == "{", "首行是左花括号", lines[0]);
-            SelfTest.True(lines[1] == "  \"schemaVersion\": 2,", "缩进 2 空格且 schemaVersion 在最前", lines[1]);
+            SelfTest.True(lines[1] == "  \"schemaVersion\": 3,", "缩进 2 空格且 schemaVersion 在最前", lines[1]);
             SelfTest.True(text.IndexOf("\"qualityTier\": 2") > 0, "camelCase 键名", "缺 qualityTier");
             SelfTest.True(text.IndexOf("\"masterVolume\": 0.80") > 0, "浮点两位小数", "格式不符");
             SelfTest.True(text.IndexOf("\"colorblindSafe\": false") > 0, "布尔字面量", "格式不符");
@@ -217,7 +297,7 @@ namespace Ac.Tests
             var v1 = "{\n  \"schemaVersion\": 1,\n  \"sensitivity\": 2.5,\n  \"fov\": 95,\n  \"masterVolume\": 0.4,\n  \"sfxVolume\": 0.6,\n  \"colorblindSafe\": true,\n  \"reduceMotion\": true\n}\n";
             SettingsSnapshot parsed;
             SelfTest.True(SettingsStore.TryParse(v1, out parsed), "v1 能读", "读失败");
-            SelfTest.Equal(2, (long)parsed.SchemaVersion);                 // 迁移到 v2
+            SelfTest.Equal(3, (long)parsed.SchemaVersion);                 // 迁移到 v3
             SelfTest.True(parsed.Sensitivity == 2.5f && parsed.Fov == 95f, "v1 的灵敏度/视野原样搬运", parsed.Sensitivity.ToString("R"));
             SelfTest.True(parsed.MasterVolume == 0.4f && parsed.SfxVolume == 0.6f, "v1 的两个音量原样搬运", parsed.MasterVolume.ToString("R"));
             SelfTest.True(parsed.ColorblindSafe && parsed.ReduceMotion, "v1 的两个开关原样搬运", "丢了");
@@ -228,7 +308,7 @@ namespace Ac.Tests
             // 完全没有 schemaVersion 也按 v1 迁移
             SettingsSnapshot bare;
             SelfTest.True(SettingsStore.TryParse("{\"sensitivity\": 0.5}", out bare), "缺版本号也能读", "读失败");
-            SelfTest.Equal(2, (long)bare.SchemaVersion);
+            SelfTest.Equal(3, (long)bare.SchemaVersion);
             SelfTest.True(bare.Sensitivity == 0.5f, "缺版本号时字段照读", bare.Sensitivity.ToString("R"));
         }
 
@@ -237,15 +317,15 @@ namespace Ac.Tests
             var dir = TempDir();
             Clean(dir);
             var path = Path.Combine(dir, SettingsStore.FileName);
-            File.WriteAllText(path, "{\"schemaVersion\": 3, \"qualityTier\": 0, \"sfxVolume\": 0.1}");
+            File.WriteAllText(path, "{\"schemaVersion\": 4, \"qualityTier\": 0, \"sfxVolume\": 0.1}");
             var store = new SettingsStore();
             store.Load(dir);
-            SelfTest.True(store.ReadOnlyFile, "schemaVersion > 2 标记只读", "没标记");
+            SelfTest.True(store.ReadOnlyFile, "schemaVersion > 3 标记只读", "没标记");
             SelfTest.Equal(2, (long)store.Get().QualityTier);        // 内存用默认值
             SelfTest.True(store.Get().SfxVolume == 0.80f, "高版本文件不改内存取值方式（用默认）", store.Get().SfxVolume.ToString("R"));
             store.SetQualityTier(0);
             SelfTest.True(!store.FlushIfDirty(dir, true), "只读模式不写盘", "写了");
-            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 3") >= 0, "高版本文件原样保留", "被覆盖");
+            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 4") >= 0, "高版本文件原样保留", "被覆盖");
             Clean(dir);
         }
 
@@ -295,7 +375,7 @@ namespace Ac.Tests
             var path = Path.Combine(dir, SettingsStore.FileName);
             SelfTest.True(File.Exists(path), "settings.json 已生成", "没生成");
             SelfTest.True(!File.Exists(path + ".tmp"), "没有 .tmp 残留", "有残留");
-            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 2") > 0, "落盘内容是 v2", "版本不对");
+            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 3") > 0, "落盘内容是 v3", "版本不对");
             SelfTest.Equal(1, (long)store.FlushCount);
             var snapshot = default(SettingsSnapshot);
             SelfTest.True(SettingsStore.TryParse(File.ReadAllText(path), out snapshot) && snapshot.Fov == 85f, "落盘可回读", "回读失败");
@@ -311,7 +391,7 @@ namespace Ac.Tests
             var reloaded = new SettingsStore();
             reloaded.Load(dir);
             SelfTest.True(reloaded.Get().Fov == 87f, "重启后设置还在", reloaded.Get().Fov.ToString("R"));
-            SelfTest.True(!reloaded.Dirty, "读 v2 文件不算脏", "标脏了");
+            SelfTest.True(!reloaded.Dirty, "读 v3 文件不算脏", "标脏了");
             SelfTest.True(SettingsStore.PathOf(dir).EndsWith(SettingsStore.FileName), "路径拼接", SettingsStore.PathOf(dir));
             Clean(dir);
         }
@@ -391,7 +471,7 @@ namespace Ac.Tests
             SettingsSnapshot v1Form;
             SelfTest.True(SettingsStore.TryParse("{\"schemaVersion\": 1, \"fov\": 90}", out v1Form, out source), "v1 能读", "读失败");
             SelfTest.Equal(1, (long)source);
-            SelfTest.Equal(2, (long)v1Form.SchemaVersion);
+            SelfTest.Equal(3, (long)v1Form.SchemaVersion);
         }
 
         private static void ChecksEscapedKeyNames()
@@ -431,15 +511,15 @@ namespace Ac.Tests
             var dir = TempDir();
             Clean(dir);
             var path = Path.Combine(dir, SettingsStore.FileName);
-            File.WriteAllText(path, "{\"schemaVersion\": 3, \"fov\": 90}");
+            File.WriteAllText(path, "{\"schemaVersion\": 4, \"fov\": 90}");
             var store = new SettingsStore();
             store.Load(dir);
-            SelfTest.True(store.ReadOnlyFile, "v3 标记只读", "没标记");
+            SelfTest.True(store.ReadOnlyFile, "v4 标记只读", "没标记");
             store.Reset();                                    // Reset 不许解除只读
             SelfTest.True(store.ReadOnlyFile, "Reset 之后仍然只读", "只读被解除");
             store.SetFov(80f);
             SelfTest.True(!store.FlushIfDirty(dir, true), "只读文件不落盘", "落盘了");
-            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 3") >= 0, "v3 文件原样保留", "被覆盖");
+            SelfTest.True(File.ReadAllText(path).IndexOf("\"schemaVersion\": 4") >= 0, "v3 文件原样保留", "被覆盖");
             Clean(dir);
         }
 

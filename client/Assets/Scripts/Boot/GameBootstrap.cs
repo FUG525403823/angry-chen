@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using Ac.Core;
 using Ac.Net;
@@ -58,6 +58,7 @@ namespace Ac.Boot
         // 局内聊天键（键位表 [ActionChat]，默认表那条是 Return；与 ReadyKey 同键是刻意的，相位互斥）。
         // 此前这条绑定没有任何消费方（Ac.UI.Chat 只有规则、没有输入通路）——v2 收尾把它接上。
         public static KeyCode ChatKey { get; private set; }
+        public static KeyCode SettingsKeyCode { get; private set; }
 
         private static bool _settingsSubscribed;
 
@@ -98,6 +99,7 @@ namespace Ac.Boot
             DebugPanelKey = DebugPanelKeyFor(settings.KeyBindings);
             ReadyKey = ReadyKeyFor(settings.KeyBindings);
             ChatKey = ChatKeyFor(settings.KeyBindings);
+            SettingsKeyCode = KeyBindingFor(settings.KeyBindings, 12);
             if (Loop == null) Loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
             // 传输/会话（C03）：接上之后 Transport.Poll 才会真的收包，type=10 的相位与 type=5 的快照
             // 才有入口进 GameLoop（否则屏幕流恒为 lobby、draw 恒不打点——"装配了但没驱动"）。
@@ -111,6 +113,7 @@ namespace Ac.Boot
             // 呈现层：造出 Unity 对象，再把三条呈现缝与帧回路接起来（没接上的段就不打点）
             if (Presentation == null) Presentation = PresentationLayer.Create(settings);
             Presentation.Attach(Loop);
+            Presentation.BindSettings(Settings);
             // 昵称兜底（见 DefaultLocalName）：必须在 Attach 之后 —— Attach 会把大厅昵称灌进帧回路，
             // 这里把"空名字"补成一个合法默认值；玩家一在大厅键入，SetName 就把它换掉并重发 kJoin。
             if (string.IsNullOrEmpty(Presentation.Flow.Lobby.Name)) Presentation.Flow.Lobby.SetName(DefaultLocalName);
@@ -140,20 +143,17 @@ namespace Ac.Boot
 
         private static void OnSettingsChanged(SettingsKey key)
         {
-            // 键位表改了要重新解析两个热键；灵敏度改了要立刻进采样器 ——
-            // 否则"设置面板里改了没反应"，存盘的值与实际行为两张皮。
-            if (key == SettingsKey.KeyBindings)
+            var settings = Settings.Get();
+            DebugPanelKey = DebugPanelKeyFor(settings.KeyBindings);
+            ReadyKey = ReadyKeyFor(settings.KeyBindings);
+            ChatKey = ChatKeyFor(settings.KeyBindings);
+            SettingsKeyCode = KeyBindingFor(settings.KeyBindings, 12);
+            if (Loop != null && Loop.Sampler != null)
             {
-                var keyBindings = Settings.Get().KeyBindings;
-                DebugPanelKey = DebugPanelKeyFor(keyBindings);
-                ReadyKey = ReadyKeyFor(keyBindings);
-                ChatKey = ChatKeyFor(keyBindings);
-                if (Loop != null && Loop.Sampler != null) Loop.Sampler.ConfirmKey = ReadyKey;
+                Loop.Sampler.ConfirmKey = ReadyKey;
+                Loop.Sampler.SetSensitivity(settings.Sensitivity);
             }
-            else if (key == SettingsKey.Sensitivity)
-            {
-                if (Loop != null && Loop.Sampler != null) Loop.Sampler.SetSensitivity(Settings.Get().Sensitivity);
-            }
+            if (Presentation != null) Presentation.ApplySettings(settings);
         }
 
         // 键位表 → KeyCode。表里只有这 15 个名字（C13 §5）；没见过的名字一律 KeyCode.None，
@@ -412,6 +412,7 @@ namespace Ac.Boot
     {
         // 玩家按 ESC 主动解锁指针后，不要在同一场对局里自动锁回去（进对局/点击画面会复位它）。
         private bool _pointerUnlockRequested;
+        private float _nextSettingsSaveTime;
 
         // 本帧是否按下了"聊天"键（键位表 [ActionChat] 解析出来的 KeyCode，设置面板改了它跟着改）。
         // 表的默认值是 Return —— 与大厅准备键同键，两者相位互斥（ADR-013 / ActionChat 的注释）。
@@ -419,6 +420,12 @@ namespace Ac.Boot
         {
             var key = GameBootstrap.ChatKey;
             return key != KeyCode.None && Input.GetKeyDown(key);
+        }
+
+        private void OnApplicationQuit()
+        {
+            var settings = GameBootstrap.Settings;
+            if (settings != null && !settings.ReadOnlyFile) settings.FlushIfDirty(Application.persistentDataPath, true);
         }
 
         private void Update()
@@ -429,26 +436,33 @@ namespace Ac.Boot
             // 面板默认关着，不要每帧刷屏。
             var presentation = GameBootstrap.Presentation;
             var chat = presentation == null ? null : presentation.Flow.Chat;
+            var settings = GameBootstrap.Settings;
+            if (settings != null) settings.BeginFrame();
             if (presentation != null)
             {
-                if (Input.GetKeyDown(GameBootstrap.DebugPanelKey)) presentation.ToggleDebugPanel();
-                // 大厅昵称（C12 §4）：唯一的输入源是 Input.inputString。只在大厅相位读它 ——
-                // 对局里的按键属于 InputSampler，且这样非大厅相位连这个属性都不碰。
-                if (presentation.Flow.LobbyVisible) presentation.Flow.CaptureName(Input.inputString);
-
-                // 局内聊天（C12 §5）：字符来源与昵称同一条（Input.inputString），但只在 playing 相位接。
-                // 时序是硬要求：先 Apply（喂字符 —— 回车在里面就是"发送并关闭"），再问 chat 键的按下沿；
-                // 反过来的话同一次回车会先被当打字喂进去、又被当"开关"把缓冲关掉。
+                presentation.UpdateSettingsRelease(Input.GetMouseButton(0));
+                var settingsKey = GameBootstrap.SettingsKeyCode;
+                if (presentation.SettingsPanel != null && !presentation.SettingsPanel.Visible && Cursor.lockState != CursorLockMode.Locked
+                    && Input.GetMouseButtonDown(0) && OverlayRenderer.SettingsButtonContains(Input.mousePosition, Screen.width, Screen.height))
+                    presentation.ToggleSettings();
+                if (Input.GetKeyDown(settingsKey) && (chat == null || !chat.Focused)) presentation.ToggleSettings();
+                else if (presentation.SettingsPanel != null && presentation.SettingsPanel.Visible && Input.GetKeyDown(KeyCode.Escape)) presentation.ToggleSettings();
+                if (!presentation.SettingsInputBlocked)
+                {
+                    if (Input.GetKeyDown(GameBootstrap.DebugPanelKey)) presentation.ToggleDebugPanel();
+                    if (presentation.Flow.LobbyVisible) presentation.Flow.CaptureName(Input.inputString);
+                }
                 chat.SetVisible(loop.ChatVisible);
-                var typing = chat.Apply(Input.inputString, Input.GetKeyDown(KeyCode.Escape), Time.unscaledDeltaTime * 1000.0);
-                if (!typing && loop.ChatVisible && ChatKeyDown()) chat.Focus(true);   // 回车开关
+                chat.ApplyInputFrame(presentation.SettingsInputBlocked ? string.Empty : Input.inputString,
+                    !presentation.SettingsInputBlocked && Input.GetKeyDown(KeyCode.Escape),
+                    !presentation.SettingsInputBlocked && ChatKeyDown(), Time.unscaledDeltaTime * 1000.0);
             }
             // C05 §5.6：点画面锁定指针（锁定期间才计鼠标增量），Escape 解锁；焦点变化只在**跳变**那一帧
             // 清理意图（每帧都调会在未聚焦时反复塞零意图命令，把 30Hz 上行塞满噪声）。
             var sampler = loop.Sampler;
             if (sampler != null)
             {
-                var typing = chat != null && chat.Focused;
+                var typing = (chat != null && chat.Focused) || (presentation != null && presentation.SettingsInputBlocked);
                 if (typing)
                 {
                     // 打字期间不抢指针：既解锁（锁定下鼠标增量会继续转视角），也不让"点一下画面"再锁上
@@ -463,7 +477,7 @@ namespace Ac.Boot
                     Cursor.lockState = CursorLockMode.None;
                     Cursor.visible = true;
                 }
-                else if (Input.GetMouseButtonDown(0) && !sampler.PointerLocked)
+                else if (loop.CombatVisible && Input.GetMouseButtonDown(0) && !sampler.PointerLocked && !OverlayRenderer.SettingsButtonContains(Input.mousePosition, Screen.width, Screen.height))
                 {
                     sampler.SetPointerLocked(true);
                     _pointerUnlockRequested = false;
@@ -485,6 +499,11 @@ namespace Ac.Boot
                 else sampler.Resume();
             }
             loop.Frame(Time.unscaledDeltaTime * 1000.0);
+            if (settings != null && !settings.ReadOnlyFile && !Input.GetMouseButton(0) && Time.unscaledTime >= _nextSettingsSaveTime)
+            {
+                settings.FlushIfDirty(Application.persistentDataPath);
+                _nextSettingsSaveTime = Time.unscaledTime + 1f;
+            }
         }
     }
 }

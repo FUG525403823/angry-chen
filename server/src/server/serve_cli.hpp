@@ -24,6 +24,10 @@ struct ServeOptions {
   bool isHelp = false;  // `--help`/`-h`：调用方打印 usage 并按成功退出
 };
 
+// 解析 AC_HTTP_BIND / AC_TRUST_LOOPBACK_PROXY；未设置时保留原值，非法值返回 false。
+// 在 parseServeArgs 之前调用，使 CLI 优先，且非法环境配置无法被 CLI 掩盖。
+bool parseServeEnvironment(ServeOptions& options, std::string* error);
+
 // 解析完整 argv（含 argv[0]）。`--serve` 必须出现且只能出现一次。
 // 失败返回 false：isHelp 为真时是 usage 请求，否则 *error 写明原因。
 bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* error);

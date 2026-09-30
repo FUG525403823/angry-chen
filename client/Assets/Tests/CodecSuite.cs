@@ -17,7 +17,7 @@ namespace Ac.Tests
         private static readonly string[] _sharedFixtures =
         {
             "command", "event_hit", "fragment", "hello", "hello_ack", "keepalive", "resume",
-            "snapshot_diff", "snapshot_full", "truncated_command",
+            "snapshot_diff", "snapshot_full", "truncated_command", "matchstate_local_pid",
         };
 
         public static void Register()
@@ -87,6 +87,36 @@ namespace Ac.Tests
                     CheckField(expect, "switchto", command.SwitchTo);
                     CheckField(expect, "cmdseq", command.Seq);
                     CheckField(expect, "clienttick", command.ClientTick);
+                    break;
+                }
+                case PacketType.MatchState:
+                {
+                    MatchStatePayload state;
+                    SelfTest.Equal((long)DecodeFailure.Ok, (long)MatchStateCodec.Decode(payload, out state));
+                    CheckField(expect, "phase", state.Phase);
+                    CheckField(expect, "wave", state.Wave);
+                    CheckField(expect, "intermissionms", state.IntermissionMs);
+                    CheckField(expect, "count", state.Players.Length);
+                    CheckField(expect, "localpid", state.LocalPid);
+                    SelfTest.Equal(2, state.Players.Length);
+                    SelfTest.Equal(1, state.Players[0].Pid);
+                    SelfTest.Equal(2, state.Players[1].Pid);
+                    SelfTest.Equal("same", state.Players[0].Name);
+                    SelfTest.Equal("same", state.Players[1].Name);
+                    SelfTest.Equal(2, state.LocalPid);
+                    foreach (var player in state.Players)
+                    {
+                        SelfTest.True(!player.Ready && !player.Downed, "fixture 标记为零", player.Pid.ToString());
+                        SelfTest.Equal(0, player.Weapon);
+                        SelfTest.Equal(0, player.HpRatio);
+                        SelfTest.Equal(0, player.Kills);
+                        SelfTest.Equal(0, player.Mag);
+                        SelfTest.Equal(0, player.Reserve);
+                        SelfTest.Equal(0, player.ReloadLeft10Ms);
+                        SelfTest.Equal(0, player.Rage);
+                        SelfTest.Equal(0, player.RageLeft100Ms);
+                        SelfTest.Equal(0, player.ReviveRatio255);
+                    }
                     break;
                 }
                 case PacketType.Snapshot:
@@ -187,24 +217,24 @@ namespace Ac.Tests
 
             PacketHeader header;
             SelfTest.Equal((long)DecodeFailure.BadVersion,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 2, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
             // 12 = 尚未分配的类型码（11 自 ADR-009「握手时序」起是 Join）。
             SelfTest.Equal((long)DecodeFailure.BadType,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, 12, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, 12, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.Truncated,  // flags 合法但包头的 seq 不完整
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Command, 1, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Command, 1, 0, 0, 0 }), out header));
 
             // §5.1 通道与类型映射：flags 与 type 不符即 BadValue（与 decodePacket 的 isFlagsValidForType 同表）。
             SelfTest.Equal((long)DecodeFailure.BadValue,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Snapshot, 1, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Snapshot, 1, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 1, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 1, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.KeepAlive, 1, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.KeepAlive, 1, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.Truncated,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.KeepAlive, 5, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.KeepAlive, 5, 0, 0, 0, 0, 0 }), out header));
 
             // 包头完整（20B）而命令载荷只有 13B：本端判 Truncated，而服务端 codec.cpp 的
             // `payloadBytes != 14 → BadLength` 判 BadLength——这是两侧唯一没有共享 fixture 覆盖的分歧点
@@ -220,7 +250,7 @@ namespace Ac.Tests
 
             // 分片包（type 9）的例外规则与 §5.1 的类型表：reliable 由被分片通道决定，多余位一律 BadValue。
             SelfTest.Equal((long)DecodeFailure.Ok,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1 }), out header));
             SelfTest.Equal(1, header.FragCount);
             SelfTest.Equal(0, header.FragIndex);
             SelfTest.Equal((long)DecodeFailure.Ok,
@@ -233,17 +263,17 @@ namespace Ac.Tests
             SelfTest.Equal(2, header.FragCount);
             SelfTest.Equal(1, header.FragIndex);
             SelfTest.Equal((long)DecodeFailure.BadValue,  // 分片包带了多余位（ackOnly）
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 6, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 6, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,  // fragCount = 0
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,  // fragCount = 9 > 8
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 9 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 0, 9 }), out header));
             SelfTest.Equal((long)DecodeFailure.BadValue,  // fragIndex >= fragCount
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 1, 1 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 2, 0, 0, 0, 0, 0, 0, 0, 1, 1 }), out header));
             SelfTest.Equal((long)DecodeFailure.Ok,  // type 8 / type 10 的包头正例
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Disconnect, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Disconnect, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.Ok,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.MatchState, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.MatchState, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }), out header));
 
             SelfTest.Equal((long)DecodeFailure.Truncated, (long)CommandCodec.Decode(null, out command));  // null 载荷不抛异常
             SelfTest.Equal((long)DecodeFailure.Truncated, (long)CommandCodec.Decode(new byte[13], out command));
@@ -386,8 +416,22 @@ namespace Ac.Tests
                     BuildRawPlayer(1, new byte[] { 0xFF, 0xFF }, 2, 0, 0)), out state));
             SelfTest.Equal((long)DecodeFailure.BadLength,
                 (long)MatchStateCodec.Decode(Concat(matchState, new byte[] { 0 }), out state));
+            var missingTail = new byte[matchState.Length - 2];
+            Array.Copy(matchState, missingTail, missingTail.Length);
             SelfTest.Equal((long)DecodeFailure.Truncated,
-                (long)MatchStateCodec.Decode(Slice(matchState, matchState.Length - 1), out state));
+                (long)MatchStateCodec.Decode(missingTail, out state));
+            SelfTest.Equal((long)DecodeFailure.Truncated,
+                (long)MatchStateCodec.Decode(Concat(missingTail, new byte[] { 3 }), out state));
+            SelfTest.Equal((long)DecodeFailure.Ok,
+                (long)MatchStateCodec.Decode(Concat(missingTail, new byte[] { 17, 0 }), out state));
+            SelfTest.Equal(17, state.LocalPid);
+            SelfTest.Equal((long)DecodeFailure.BadValue,
+                (long)MatchStateCodec.Decode(Concat(missingTail, new byte[] { 99, 0 }), out state));
+            var duplicatePid = BuildMatchState(0, 0, 0,
+                BuildPlayer(3, "same", 0, 0), BuildPlayer(3, "same", 0, 0));
+            duplicatePid[duplicatePid.Length - 2] = 3;
+            SelfTest.Equal((long)DecodeFailure.BadValue,
+                (long)MatchStateCodec.Decode(duplicatePid, out state));
         }
 
         // ---- 命令编码回环 -------------------------------------------------------------------
@@ -610,6 +654,7 @@ namespace Ac.Tests
             writer.U16(intermissionMs);
             writer.U8((byte)players.Length);
             foreach (var player in players) writer.Bytes(player);
+            writer.U16(0); // localPid：默认尚未绑定
             return writer.ToArray();
         }
 

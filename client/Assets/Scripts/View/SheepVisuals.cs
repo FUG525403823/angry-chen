@@ -127,8 +127,9 @@ namespace Ac.View
             var instance = _pool.Instances[index];
             instance.Transform = Matrix4x4.TRS(position, rotation, new Vector3(scale, scale, scale));
             instance.Darken = darken;
-            var head = new Vector3(0f, (float)(SheepMesh.HeadOffsetY * form.Scale), (float)(SheepMesh.HeadOffsetZ * form.Scale));
-            instance.EmblemTransform = Matrix4x4.TRS(position + rotation * head, rotation, Vector3.one);
+            var head = SheepMesh.EmblemAnchor(kind) * scale;
+            instance.EmblemTransform = Matrix4x4.TRS(position + rotation * head,
+                rotation * Quaternion.Euler(-55f, 0f, 0f), new Vector3(scale, scale, scale));
             instance.HpRatio = (float)view.HpRatio;
             instance.Kind = (byte)kind;
             instance.State = (byte)anim;

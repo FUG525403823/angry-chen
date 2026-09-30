@@ -405,6 +405,7 @@ FixtureDecode decodeFixture(const Fixture& fixture) {
       addField(out.fields, "wave", state.value.wave);
       addField(out.fields, "intermissionms", state.value.intermissionMs);
       addField(out.fields, "count", state.value.players.size());
+      addField(out.fields, "localpid", state.value.localPid);
       keepEncoded(net::encodeMatchState(packet.value.header, packet.value.reliableExt, state.value,
                                         buffer.data(), buffer.size()),
                   buffer, out.reencoded);
@@ -576,7 +577,7 @@ AC_TEST(codec_command_roundtrip) {
 
 AC_TEST(codec_command_layout_bytes) {
   // 与 fixture 独立的第二份字节真相：字段顺序/端序改错时这里先红。
-  const uint8_t expected[34] = {0x01u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
+  const uint8_t expected[34] = {0x02u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
                                 0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
                                 0x00u, 0x00u, 0x00u, 0x00u, 0x7Fu, 0x00u, 0x00u, 0x40u,
                                 0x00u, 0x00u, 0x09u, 0x01u, 0x07u, 0x00u, 0x39u, 0x30u,
@@ -597,7 +598,7 @@ AC_TEST(codec_command_layout_bytes) {
 }
 
 AC_TEST(codec_command_truncated) {
-  const uint8_t full[34] = {0x01u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
+  const uint8_t full[34] = {0x02u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
                             0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
                             0x00u, 0x00u, 0x00u, 0x00u, 0x7Fu, 0x00u, 0x00u, 0x40u,
                             0x00u, 0x00u, 0x09u, 0x01u, 0x07u, 0x00u, 0x39u, 0x30u,
@@ -615,12 +616,12 @@ AC_TEST(codec_command_truncated) {
 }
 
 AC_TEST(codec_command_bad_version) {
-  uint8_t buffer[34] = {0x01u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
+  uint8_t buffer[34] = {0x02u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
                         0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
                         0x00u, 0x00u, 0x00u, 0x00u, 0x7Fu, 0x00u, 0x00u, 0x40u,
                         0x00u, 0x00u, 0x09u, 0x01u, 0x07u, 0x00u, 0x39u, 0x30u,
                         0x00u, 0x00u};
-  buffer[0] = 2u;
+  buffer[0] = 1u;
   const auto decoded = net::decodeCommand(buffer, sizeof buffer);
   AC_CHECK(!decoded.isOk);
   AC_CHECK(decoded.failure == DecodeFailure::kBadVersion);
@@ -630,7 +631,7 @@ AC_TEST(codec_command_bad_version) {
 }
 
 AC_TEST(codec_command_bad_type) {
-  uint8_t buffer[34] = {0x01u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
+  uint8_t buffer[34] = {0x02u, 0x04u, 0x01u, 0x00u, 0x23u, 0x01u, 0x02u, 0x00u,
                         0x01u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
                         0x00u, 0x00u, 0x00u, 0x00u, 0x7Fu, 0x00u, 0x00u, 0x40u,
                         0x00u, 0x00u, 0x09u, 0x01u, 0x07u, 0x00u, 0x39u, 0x30u,
@@ -1284,12 +1285,100 @@ MatchStatePlayer makePlayer(uint16_t pid, const char* name, uint8_t weapon) {
 }
 
 std::size_t matchStateFrameBytes(const net::MatchState& state) {
-  std::size_t total = 8u + 12u + 5u;
+  std::size_t total = 8u + 12u + 7u;
   for (const MatchStatePlayer& player : state.players) total += net::matchStatePlayerBytes(player);
   return total;
 }
 
 }  // namespace
+
+AC_TEST(match_local_pid_shared_fixture_roundtrip) {
+  AC_CHECK(runHexFixture("matchstate_local_pid"));
+  Fixture fixture;
+  AC_CHECK(loadFixture("matchstate_local_pid", fixture));
+  const auto decoded = net::decodeMatchState(fixture.bytes.data(), fixture.bytes.size());
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.localPid, 2u);
+  AC_CHECK_EQ(decoded.value.players.size(), 2u);
+  AC_CHECK_EQ(decoded.value.players[0].pid, 1u);
+  AC_CHECK_EQ(decoded.value.players[1].pid, 2u);
+  AC_CHECK(decoded.value.players[0].name == "same");
+  AC_CHECK(decoded.value.players[1].name == "same");
+}
+
+AC_TEST(match_local_pid_tail_boundaries_and_membership) {
+  Fixture fixture;
+  AC_CHECK(loadFixture("matchstate_local_pid", fixture));
+  const auto& bytes = fixture.bytes;
+  AC_CHECK_EQ(bytes.size(), 67u);
+  for (std::size_t missing = 1u; missing <= 2u; ++missing) {
+    const auto decoded = net::decodeMatchState(bytes.data(), bytes.size() - missing);
+    AC_CHECK(!decoded.isOk);
+    AC_CHECK(decoded.failure == DecodeFailure::kTruncated);
+  }
+  auto bad = bytes;
+  bad.push_back(0u);
+  auto decoded = net::decodeMatchState(bad.data(), bad.size());
+  AC_CHECK(!decoded.isOk);
+  AC_CHECK(decoded.failure == DecodeFailure::kBadLength);
+  bad = bytes;
+  bad[65] = 3u;
+  decoded = net::decodeMatchState(bad.data(), bad.size());
+  AC_CHECK(!decoded.isOk);
+  AC_CHECK(decoded.failure == DecodeFailure::kBadValue);
+  bad = bytes;
+  bad[25] = 2u;
+  decoded = net::decodeMatchState(bad.data(), bad.size());
+  AC_CHECK(!decoded.isOk);
+  AC_CHECK(decoded.failure == DecodeFailure::kBadValue);
+  const auto valid = net::decodeMatchState(bytes.data(), bytes.size());
+  AC_CHECK(valid.isOk);
+  auto state = valid.value;
+  uint8_t out[128] = {};
+  const auto header = makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 0u);
+  state.localPid = 3u;
+  AC_CHECK(!net::encodeMatchState(header, makeExt(1u, 0u, 0u), state, out, sizeof(out)).isOk);
+  state.localPid = 2u;
+  state.players[0].pid = 2u;
+  AC_CHECK(!net::encodeMatchState(header, makeExt(1u, 0u, 0u), state, out, sizeof(out)).isOk);
+  state = valid.value;
+  state.localPid = 0u;
+  const auto encoded = net::encodeMatchState(header, makeExt(1u, 0u, 0u), state, out, sizeof(out));
+  AC_CHECK(encoded.isOk);
+  decoded = net::decodeMatchState(out, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.localPid, 0u);
+}
+
+AC_TEST(match_local_pid_tail_contract) {
+  uint8_t buffer[128] = {};
+  net::ByteWriter writer(buffer, sizeof(buffer));
+  net::writeHeader(writer, makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 0u));
+  net::writeReliableExt(writer, makeExt(1u, 0u, 0u));
+  writer.writeU8(0u);
+  writer.writeU8(0u);
+  writer.writeU16(0u);
+  writer.writeU8(2u);
+  for (uint16_t pid = 1u; pid <= 2u; ++pid) {
+    writer.writeU16(pid);
+    writer.writeU8(4u);
+    writer.writeBytes("same", 4u);
+    for (int i = 0; i < 13; ++i) writer.writeU8(0u);
+  }
+  writer.writeU16(2u);
+  AC_CHECK_EQ(writer.size(), 67u);
+  const auto decoded = net::decodeMatchState(buffer, writer.size());
+  AC_CHECK(decoded.isOk);
+  uint8_t encodedBytes[128] = {};
+  const auto encoded = net::encodeMatchState(
+      makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 0u),
+      makeExt(1u, 0u, 0u), decoded.value, encodedBytes, sizeof(encodedBytes));
+  AC_CHECK(encoded.isOk);
+  AC_CHECK_EQ(encoded.bytes, 67u);
+  AC_CHECK_EQ(encodedBytes[65], 2u);
+  AC_CHECK_EQ(encodedBytes[66], 0u);
+  AC_CHECK(std::memcmp(buffer, encodedBytes, encoded.bytes) == 0);
+}
 
 AC_TEST(match_roundtrip_two_players) {
   net::MatchState state{2u, 3u, 4500u, {}};
@@ -1300,7 +1389,7 @@ AC_TEST(match_roundtrip_two_players) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 4u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 5u + (16u + 5u) + (16u + 3u));
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (16u + 5u) + (16u + 3u));
   AC_CHECK_EQ(encoded.bytes, matchStateFrameBytes(state));
   // `kMatchStateMaxBytes` 是**载荷**预算：包头那 20 字节不算在里面（拿整帧去比它会平白砍掉 20 字节，
   // 满员 4 行必然被判超限 —— 那正是联调里"服务端 4 个人、客户端只有 1 行"的根因）。
@@ -1357,7 +1446,7 @@ AC_TEST(match_name_one_byte_boundary) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 1u, 1u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 5u + 16u + 1u);
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + 16u + 1u);
   const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
   AC_CHECK(decoded.isOk);
   AC_CHECK(decoded.value == state);
@@ -1392,7 +1481,7 @@ AC_TEST(match_name_twelve_byte_boundary) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 1u, 1u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 5u + (16u + 12u) + (16u + 12u));
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (16u + 12u) + (16u + 12u));
   const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
   AC_CHECK(decoded.isOk);
   AC_CHECK(decoded.value == state);

@@ -1,5 +1,5 @@
 #pragma once
-// S14 §2-3：阻塞式 TCP 监听的最小实现（WinSock2 / POSIX 双实现）。
+// S14 §2-3：非阻塞 TCP 监听（WinSock2 / POSIX 双实现）。
 // 只服务 HTTP 面：接受一条连接、读一次请求、写一次响应、随即关闭（connection: close）。
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +24,10 @@ class TcpConnection {
 
   // 返回读到的字节数；0 = 对端关闭；-1 = 未就绪/出错（timeoutMs >= 0 时最多等这么久）。
   int recv(std::span<std::uint8_t> buffer, int timeoutMs);
+  // 非阻塞单次 I/O：正数=进度，0=EOF，-1=错误，kWouldBlock=稍后重试。
+  static constexpr int kWouldBlock = -2;
+  int recvSome(std::span<std::uint8_t> buffer) noexcept;
+  int sendSome(std::span<const std::uint8_t> bytes) noexcept;
   bool sendAll(std::span<const std::uint8_t> bytes) noexcept;
   bool sendAll(const char* text, std::size_t size) noexcept;
 
@@ -48,7 +52,7 @@ class TcpListener {
   TcpListener(TcpListener&& other) noexcept;
   TcpListener& operator=(TcpListener&& other) noexcept;
 
-  bool bind(std::uint16_t port) noexcept;  // 0 = 由系统分配，用 boundPort() 取回
+  bool bind(std::uint16_t port, std::uint32_t ipv4 = 0u) noexcept;  // 主机字节序；端口0=自动分配
   bool listen(int backlog = 32) noexcept;
   bool poll(int timeoutMs) const noexcept;  // 有可接受的连接
   TcpConnection accept() noexcept;          // 失败返回未打开的连接

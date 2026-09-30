@@ -45,9 +45,11 @@ namespace Ac.Boot
         private uint _lastReconciledTick;
         private bool _reconciledOnce;
         private readonly Interpolation.RenderClock _clock = new Interpolation.RenderClock();
-        // 本地身份 = pid（= 玩家实体 id）。服务端不回 pid，只能按昵称从 MatchState 认领：
-        // 过渡方案与代价写在 Ac.Net.LocalIdentity 的类注释里。
+        // 本地身份只接受 MatchState 的权威 localPid；昵称单独用于 Join。
         private readonly LocalIdentity _identity = new LocalIdentity();
+        private string _localName = string.Empty;
+        private UdpTransport _transport;
+        private ushort _identitySession;
         private SnapshotFrame _scratchFrame;
         private int _mirrorReconnectCount;   // 镜像对应的重连次数（重连一次就复位镜像与 tick 原点）
         private ushort _localPlayerId;
@@ -59,6 +61,7 @@ namespace Ac.Boot
         // C06 §5(c)：本地武器镜像（射速/换弹/弹匣/散布）+ 弹药本地账（未确认开火）。
         private readonly LocalWeapon _weapon = new LocalWeapon();
         private readonly AmmoLedger _ammo = new AmmoLedger();
+        private bool _ammoDataReady;
         private byte _phase = Hud.PhaseLobby;
         private int _wave;
         private int _intermissionMs;
@@ -83,7 +86,54 @@ namespace Ac.Boot
             _scratchFrame.RemovedIds = new ushort[SnapshotView.MaxRecordsPerFrame];
         }
 
-        public UdpTransport Transport { get; set; }      // 离线（单机/帧基准）时为 null
+        public UdpTransport Transport
+        {
+            get { return _transport; }
+            set
+            {
+                if (ReferenceEquals(_transport, value)) return;
+                if (_transport != null) _transport.StateChanged -= OnConnectionChanged;
+                _transport = value;
+                ClearIdentity();
+                _identitySession = 0;
+                _joinDirty = true;
+                _joinSessionSent = 0;
+                if (_transport != null)
+                {
+                    _transport.StateChanged += OnConnectionChanged;
+                    _identitySession = _transport.Session;
+                }
+            }
+        }
+
+        private void OnConnectionChanged(ConnectionState previous, ConnectionState next)
+        {
+            if (next == ConnectionState.Disconnected || next == ConnectionState.Connecting)
+            {
+                ClearIdentity();
+                _identitySession = 0;
+                _joinDirty = true;
+                _joinSessionSent = 0;
+            }
+            else if (next == ConnectionState.Connected)
+            {
+                if (_identitySession != 0 && _identitySession != _transport.Session) ClearIdentity();
+                _identitySession = _transport.Session;
+            }
+        }
+
+        private void ClearIdentity()
+        {
+            LastMatchState = default(MatchStatePayload);
+            MatchStateCount = 0;
+            _ammoDataReady = false;
+            _weapon.Reset();
+            _ammo.Reset();
+            if (_identity.Resolve(0)) IdentityChanges += 1;
+            LocalPlayerId = 0;
+            _hasPending = false;
+            _pending = default(StepCommand);
+        }
         // 输入采样器（C05 §5.1）：**产品侧唯一的键鼠来源**。接上之后本帧的命令会①从传输发出去
         // ②进本地预测；为 null 时（帧基准/无头）一帧都不采样。此前它连 `new` 都没有生产调用者：
         // 采样器、编解码、传输三者都在，却没有任何东西把它们接起来（联调只能靠测试桩手搓命令）。
@@ -115,27 +165,24 @@ namespace Ac.Boot
             }
         }
 
-        // 玩家在大厅输入的昵称（已清洗）。身份解析的输入；变化时若手里已有 MatchState 就立刻重解析。
+        // 玩家在大厅输入的昵称（已清洗），只用于 Join，不参与身份解析。
         public string LocalName
         {
-            get { return _identity.Name; }
+            get { return _localName; }
             set
             {
-                _identity.SetName(value);
-                // 昵称变了就得再上报一次（type 11）；已连上时会由本帧的 FlushJoin 发出去。
+                _localName = value ?? string.Empty;
                 _joinDirty = true;
-                if (MatchStateCount > 0) ResolveLocalPlayer();
             }
         }
 
         public LocalIdentity Identity { get { return _identity; } }
         public int IdentityChanges { get; private set; }
 
-        // 身份重解析的唯一入口：MatchState 到达、昵称变化、换房/重连/自己中途进出对局都走这里。
-        // 返回解析出的 pid（0 = 玩家表里没有本地昵称 ⇒ 没有本地实体）。
+        // 应用已校验 MatchState 的权威身份；0 表示未绑定。
         public ushort ResolveLocalPlayer()
         {
-            if (!_identity.Resolve(LastMatchState.Players)) return LocalPlayerId;
+            if (!_identity.Resolve(LastMatchState.LocalPid)) return LocalPlayerId;
             LocalPlayerId = _identity.Pid;
             IdentityChanges += 1;
             return LocalPlayerId;
@@ -218,7 +265,22 @@ namespace Ac.Boot
                     LastMatchState = state;
                     MatchStateCount += 1;
                     // 相位/成员变化都在这一拍里：本地身份也在这里重解析（换房、重连、中途进出对局）。
+                    var previousPid = LocalPlayerId;
                     ResolveLocalPlayer();
+                    if (previousPid != LocalPlayerId) { _weapon.Reset(); _ammo.Reset(); }
+                    _ammoDataReady = false;
+                    if (state.Players != null && LocalPlayerId != 0)
+                    {
+                        for (var i = 0; i < state.Players.Length; i++)
+                        {
+                            var player = state.Players[i];
+                            if (player.Pid != LocalPlayerId) continue;
+                            _weapon.SyncAuthority(player.Mag, player.Reserve, player.Weapon, player.ReloadLeft10Ms, _nowMs);
+                            _ammo.Reconcile(player.Mag, player.Reserve, player.Weapon, (int)_nowMs);
+                            _ammoDataReady = true;
+                            break;
+                        }
+                    }
                     return;
                 }
                 case PacketType.Event:
@@ -297,11 +359,11 @@ namespace Ac.Boot
         private void PumpWeapon(double dtMs)
         {
             var sampler = Sampler;
-            if (sampler == null) return;
             var nowMs = _nowMs;
             // rage 倍率（kRageFireRateMultiplier = 1.25）暂不镜像：本地只按 1.0 计时，狂暴窗口里本地
             // 射速比服务端慢 1/5，多出来的那点在弹药账里被权威拉回（见 A21 的残余记录）。
             _weapon.Update(nowMs, dtMs, LocalFireRateMultiplier);
+            if (sampler == null) return;
             var buttons = sampler.CurrentButtons;
             if ((buttons & InputSampler.ButtonSwitchWeapon) != 0) _weapon.SwitchSlot(sampler.CurrentSwitchTo, nowMs);
             if ((buttons & InputSampler.ButtonReload) != 0) _weapon.TryStartReload(nowMs);
@@ -385,9 +447,9 @@ namespace Ac.Boot
                 // 命令缓冲里存的必须是「每个 50ms 子步进的输入」：C06 §5(b) 的重放是逐条
                 // `localStep(50ms)`，条数即步数。此前每帧只入队一条（≈30Hz，取决于帧率）而预测按
                 // 20Hz 出步，重放出来的时间片比真实经过时间多约 1.5× ⇒ 预测位置被持续拽偏。
-                var steps = _predictor.Advance((int)dtMs, _pending);
+                // 上行只发30Hz，预测必须每渲染帧推进；没有新命令时继续持有最近输入。
+                var steps = _predictor.Advance(dtMs, _pending);
                 for (var i = 0; i < steps; i++) _commands.Push(_pending);
-                _hasPending = false;
             }
             _profiler.Mark(FrameStage.Input);
 
@@ -408,6 +470,8 @@ namespace Ac.Boot
                     // 重连换了会话：未确认开火与本地武器镜像一并复位（旧会话的 seq 在新会话里毫无意义，
                     // 留着会让弹药账把新会话的前 20 条命令都当成"已确认"而丢弃）。
                     _weapon.Reset();
+                    _ammo.Reset();
+                    _ammoDataReady = false;
                 }
                 Transport.Poll(MaxInboundPerPoll);
                 FlushJoin();
@@ -447,7 +511,7 @@ namespace Ac.Boot
 
             // ④ 视图：渲染时钟推进 + 镜像同步
             _nowMs += dtMs;
-            _clock.Advance(_nowMs);
+            _clock.Advance(dtMs);
             PublishLocalPrediction();   // 必须早于 SyncFrame：SyncFrame 读 Predicted*，有预测值就不吸附镜像
             _views.SyncFrame(_view, _clock, dtMs);
             _profiler.Mark(FrameStage.Sync);   // 镜像同步算 sync 段；draw 段在没有渲染器时不打点（见 FrameBench）
@@ -482,7 +546,7 @@ namespace Ac.Boot
             if (transport == null || transport.State != ConnectionState.Connected) return;
             var session = transport.Session;
             if (!_joinDirty && session == _joinSessionSent) return;
-            if (!transport.SendJoin(_identity.Name)) return;
+            if (!transport.SendJoin(_localName)) return;
             _joinSessionSent = session;
             _joinDirty = false;
         }
@@ -502,28 +566,37 @@ namespace Ac.Boot
             _sample.Wave = _wave;
             _sample.IntermissionMs = _intermissionMs;
 
-            // 弹药/怒气取自**本地玩家那行 MatchState**（mag u8 / reserve u16 / reloadLeft10Ms u8 / rage u8 /
-            // rageLeft100Ms u8，见 codec.hpp 的 MatchStatePlayer）。此前这两项在客户端没有任何权威来源
-            // （AmmoLedger 只有用例在用、sample 也没人填），出包 HUD 恒显示 "0 / 0"、怒气恒 0 —— 实跑可见。
+            _sample.AmmoDataReady = _ammoDataReady;
+            _sample.Rage = 0;
+            _sample.RageLeft100Ms = 0;
+            if (_ammoDataReady)
+            {
+                Ammo = new AmmoView { Mag = _weapon.ActiveMag, Reserve = _weapon.Reserve, Slot = _weapon.Slot, GateMag = _weapon.ActiveMag };
+                _sample.Mag = Ammo.Mag;
+                _sample.Reserve = Ammo.Reserve;
+                _sample.MagSize = WeaponTable.MagSizeOf(Ammo.Slot);
+                _sample.Reloading = _weapon.IsReloading;
+                var remaining = _weapon.ReloadRemainingMs(_nowMs);
+                _sample.ReloadLeft10Ms = (int)System.Math.Ceiling(remaining / 10.0);
+                _sample.ReloadProgress = _weapon.IsReloading ? 1f - (float)(remaining / WeaponTable.ReloadMs[_weapon.Slot]) : 0f;
+                _sample.SpreadDeg = WeaponTable.CrosshairSpreadDeg(Ammo.Slot, (float)_weapon.SpreadDeg);
+            }
+            else
+            {
+                Ammo = default(AmmoView);
+                _sample.Mag = 0;
+                _sample.Reserve = 0;
+                _sample.Reloading = false;
+                _sample.ReloadLeft10Ms = 0;
+                _sample.ReloadProgress = 0f;
+            }
             var players = LastMatchState.Players;
             if (players == null || LocalPlayerId == 0) return;
             for (var i = 0; i < players.Length; i++)
             {
                 if (players[i].Pid != LocalPlayerId) continue;
-                // C06 §5(c) 的弹药账：显示值 = 权威弹匣 − 未确认开火数。直接把 MatchState 铺上去的话，
-                // "打完一发"要等最多 1 秒（MatchState 是 1Hz）才在 HUD 上动 —— 触发反馈只能靠本地账。
-                var ammo = _ammo.Reconcile(players[i].Mag, players[i].Reserve, players[i].Weapon, (int)_nowMs);
-                Ammo = ammo;
-                _sample.Mag = ammo.Mag;
-                _sample.Reserve = ammo.Reserve;
-                _sample.ReloadLeft10Ms = players[i].ReloadLeft10Ms;
-                _sample.MagSize = Ac.Sim.WeaponTable.MagSizeOf(ammo.Slot);
-                // 准星散布 = 该槽位基线 + 本地镜像的射击累计（与服务端射线用的 spreadDeg 同一个量）。
-                _sample.SpreadDeg = Ac.Sim.WeaponTable.CrosshairSpreadDeg(ammo.Slot, (float)_weapon.SpreadDeg);
                 _sample.Rage = players[i].Rage;
                 _sample.RageLeft100Ms = players[i].RageLeft100Ms;
-                // 本地镜像只被权威**拉低**（漏算的开火在这里被纠正；永不把一个 1Hz 的旧值当补弹）。
-                _weapon.SyncAuthority(players[i].Mag, players[i].Reserve, players[i].Weapon);
                 return;
             }
         }

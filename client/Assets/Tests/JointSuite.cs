@@ -17,7 +17,7 @@ namespace Ac.Tests
     // 设了却连不上/对不上 ⇒ 一律 FAIL，不允许静默降级。
     //
     // 环境变量（client/tools/joint-acceptance.ps1 注入）：
-    //  AC_JOINT_UDP=host:port   AC_JOINT_SERVER_LINE=ac_server 0.1.0 protocol=1 tick=50ms
+    //  AC_JOINT_UDP=host:port   AC_JOINT_SERVER_LINE=ac_server 0.1.0 protocol=2 tick=50ms
     //  AC_JOINT_NAME（默认 12 字节"牧羊人阿"）  AC_JOINT_BOTS（房间里已有的队友数）
     //  AC_JOINT_BOX_MS（对局观察时间盒，默认 90000）
     public static class JointSuite
@@ -61,7 +61,11 @@ namespace Ac.Tests
             // 第 2 步：大厅。kJoin 上昵称（type=11），MatchState 必须出现该昵称的玩家行且 ready=false。
             var name = Name();
             SelfTest.True(link.Transport.SendJoin(name), "第 2 步：kJoin 必须被受理（昵称 1..12 字节）", name);
-            SelfTest.True(link.PumpUntil(delegate { return LocalRow(link, name).HasValue; }, 5000.0),
+            SelfTest.True(link.PumpUntil(delegate
+            {
+                var local = LocalRow(link, name);
+                return local.HasValue && local.Value.Name == name;
+            }, 5000.0),
                 "第 2 步：5s 内 MatchState 出现本地昵称的玩家行", link.MatchStateSummary());
             var row = LocalRow(link, name);
             SelfTest.True(!row.Value.Ready, "第 2 步：新进大厅 ready=false", row.Value.Ready.ToString());
@@ -265,18 +269,14 @@ namespace Ac.Tests
             return string.IsNullOrEmpty(name) ? "牧羊人阿" : name;   // 12 字节：昵称上限的边界值
         }
 
-        // LocalIdentity 的口径：昵称严格相等取最小 pid（服务端不保证唯一，验收只按昵称取行）。
+        // 身份只由权威 LocalPid 确定；昵称另行用于确认 Join 已生效。
         private static MatchStatePlayer? LocalRow(Link link, string name)
         {
-            var players = link.MatchState.Players;
-            if (players == null) return null;
-            MatchStatePlayer? found = null;
-            for (var i = 0; i < players.Length; i++)
-            {
-                if (!string.Equals(players[i].Name, name, StringComparison.Ordinal)) continue;
-                if (!found.HasValue || players[i].Pid < found.Value.Pid) found = players[i];
-            }
-            return found;
+            var state = link.MatchState;
+            if (state.Players == null || state.LocalPid == 0) return null;
+            for (var i = 0; i < state.Players.Length; i++)
+                if (state.Players[i].Pid == state.LocalPid) return state.Players[i];
+            return null;
         }
 
         // 联调诊断用的套接字壳：在传输层解析**之前**数原始数据报，并按 type 字节分流。

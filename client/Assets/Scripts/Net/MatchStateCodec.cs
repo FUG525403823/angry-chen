@@ -26,6 +26,7 @@ namespace Ac.Net
         public byte Wave;
         public ushort IntermissionMs;
         public MatchStatePlayer[] Players;
+        public ushort LocalPid;
     }
 
     // C02 §5.2 / S03 §5.7 MatchState（type=10，可靠单播）。
@@ -96,7 +97,15 @@ namespace Ac.Net
                 players[i] = player;
             }
 
+            if (!reader.TryReadU16(out state.LocalPid)) return DecodeFailure.Truncated;
             if (reader.Remaining != 0) return DecodeFailure.BadLength;
+            if (state.LocalPid != 0)
+            {
+                var matches = 0;
+                for (var i = 0; i < players.Length; i++)
+                    if (players[i].Pid == state.LocalPid) matches += 1;
+                if (matches != 1) return DecodeFailure.BadValue;
+            }
             state.Players = players;
             return DecodeFailure.Ok;
         }

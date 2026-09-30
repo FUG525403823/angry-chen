@@ -164,10 +164,10 @@ namespace Ac.Tests
                 SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
                 SelfTest.Equal(1, (long)rig.Loop.AmmoPendingShots);
 
-                // 再来一条**仍是 12** 的 MatchState（服务端还没处理这一枪）：显示值不回弹
+                // A fresh authority may correct upward; cached frames never restore spent rounds.
                 rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
                 StepDt(rig, 1, 3, 1000.0 / 60.0);
-                SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
+                SelfTest.Equal(12, (long)rig.Loop.Sample.Mag);
                 SelfTest.Equal(1, (long)rig.Loop.AmmoPendingShots);
 
                 // 权威降到 11（服务端认了这一枪）：账清了，显示值保持 11，且没有"被拒收"的记录
@@ -177,7 +177,7 @@ namespace Ac.Tests
                 SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
                 SelfTest.Equal(0, (long)rig.Loop.AmmoRejectedTotal);
 
-                // 本地镜像也被权威拉低（只降不升）：装弹量与显示值同步
+                // Weapon gate and HUD share the same corrected magazine.
                 SelfTest.Equal(11, (long)rig.Loop.Weapon.ActiveMag);
             }
             finally { rig.Dispose(); }
@@ -865,6 +865,7 @@ namespace Ac.Tests
             bytes.Add(2);                                     // 2 名玩家
             WritePlayer(bytes, 1, "a", true, localMag, localWeapon);
             WritePlayer(bytes, 2, "b", false, 0, 0);
+            PutU16(bytes, 1); // 权威 localPid：此测试客户端对应玩家 1。
             return bytes.ToArray();
         }
 

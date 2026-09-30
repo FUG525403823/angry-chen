@@ -62,13 +62,18 @@ namespace Ac.UI
 
         public void ToggleFocus() { Focus(!Focused); }
 
-        // 喂本帧键入的字符（`Input.inputString`，含 '\b'）。与其他键位的**时序**一致：'chat' 键按下的
-        // 那一帧，`inputString` 已经带上了 '\n'，所以"回车开关"必须排在"喂字符"之后，否则同一次回车
-        // 会先把缓冲关掉、再把 '\n' 漏出去。开户那一帧残留的换行只吃**那一帧**（见 _pendingOpen）。
+        // 驱动的同帧入口：只在处理字符前决定打开，发送关闭后不再消费同一次按键。
+        public void ApplyInputFrame(string typedThisFrame, bool escapePressed, bool chatKeyPressed, double dtMs)
+        {
+            if (!Focused && Visible && chatKeyPressed && !escapePressed) Focus(true);
+            Apply(typedThisFrame, escapePressed, dtMs);
+        }
+
+        // 喂本帧键入的字符（`Input.inputString`，含 '\b'）。打开时的换行由 _pendingOpen 吃掉。
         //
         // 热路径纪律（ManagedAllocBudgetBytes = 0）：输入缓冲没开 ⇒ 不碰字符串、立刻返回；开着但本帧没有
         // 输入 ⇒ 退格/换行那些分支不分配；只有真的改了才重建一次 Text —— 不是每帧拼串。
-        // 返回"本帧的输入是不是该按打字处理"（驱动据此决定要不要把同一个键当开关）。
+        // 返回处理字符后的焦点状态；同帧开关判定由 ApplyInputFrame 负责。
         public bool Apply(string typedThisFrame, bool escapePressed, double dtMs)
         {
             ClockMs += (float)dtMs;

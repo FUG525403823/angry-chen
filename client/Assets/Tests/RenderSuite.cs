@@ -19,6 +19,7 @@ namespace Ac.Tests
     {
         public static void Register()
         {
+            SelfTest.Add("render.settings_modal", ChecksSettingsModal);
             SelfTest.Add("render.renderer_attached", ChecksRendererAttached);
             SelfTest.Add("render.lobby_items", ChecksLobbyItems);
             SelfTest.Add("render.combat_hud_items", ChecksCombatHudItems);
@@ -30,6 +31,34 @@ namespace Ac.Tests
             SelfTest.Add("render.no_viewport_no_items", ChecksNoViewportNoItems);
             SelfTest.Add("render.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("render.overlay_in_bounds", ChecksOverlayInBounds);
+        }
+
+        private static void ChecksSettingsModal()
+        {
+            using (var rig = new Rig())
+            {
+                var store = new SettingsStore();
+                rig.Layer.BindSettings(store);
+                rig.Loop.Sampler = new InputSampler();
+                rig.Layer.ToggleSettings();
+                SelfTest.True(rig.Layer.SettingsPanel.Visible && rig.Layer.SettingsInputBlocked, "设置模态输入屏蔽", "未屏蔽");
+                SelfTest.True(rig.Loop.Sampler.Suspended, "打开立即停止游戏输入", "未暂停");
+                rig.Layer.ToggleSettings();
+                SelfTest.True(!rig.Layer.SettingsPanel.Visible && rig.Layer.SettingsInputBlocked, "关闭同帧防点击穿透", "未屏蔽");
+                var settings = store.Get();
+                settings.CrosshairScale = 2f;
+                settings.CrosshairThickness = 4f;
+                settings.CrosshairGap = 9f;
+                settings.CrosshairDynamic = false;
+                rig.Layer.ApplySettings(settings);
+                var crosshair = rig.Loop.Hud.Crosshair;
+                crosshair.SetSpread(5f);
+                SelfTest.Equal(4, (long)crosshair.SizePx);
+                SelfTest.Equal(4, (long)crosshair.ThicknessPx);
+                SelfTest.Equal(9, (long)crosshair.GapPx);
+                SelfTest.True(OverlayRenderer.SettingsButtonContains(new Vector3(20, 700, 0), 1280, 720), "按钮命中按屏幕坐标翻转", "不命中");
+                SelfTest.True(!OverlayRenderer.SettingsButtonContains(new Vector3(640, 360, 0), 1280, 720), "画面中央不是设置按钮", "误命中");
+            }
         }
 
         // 分辨率 × 相位：**每一条绘制项**都必须完全落在视口内。这条缝此前整体错位 ——
@@ -55,7 +84,7 @@ namespace Ac.Tests
                 {
                     var wave = phase == Hud.PhasePlaying || phase == Hud.PhaseIntermission || phase == Hud.PhaseEnded ? 3 : 0;
                     rig.Loop.OnPacket(MatchStateHeader(),
-                        MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 1, 2 }, new[] { "牧羊人", "b" }, new[] { true, true }));
+                        MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 1, 2 }, new[] { "牧羊人", "b" }, new[] { true, true }, 1));
                     rig.Loop.Frame(1000.0 / 60.0);
                     foreach (var vp in viewports)
                     {
@@ -137,7 +166,7 @@ namespace Ac.Tests
             // pid <= 0 的行整行不渲染：需要一条"表里有玩家、但都不可见"的载荷。
             internal void PushStateZeroPid(byte phase, byte wave)
             {
-                Loop.OnPacket(MatchStateHeader(), MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 0 }, new[] { "ghost" }, new[] { false }));
+                Loop.OnPacket(MatchStateHeader(), MatchStateBytes(phase, (byte)wave, 0, new ushort[] { 0 }, new[] { "ghost" }, new[] { false }, 0));
                 Loop.Frame(1000.0 / 60.0);
             }
 
@@ -301,7 +330,7 @@ namespace Ac.Tests
                 SelfTest.Equal(0, (long)layer.OverlayRenderer.DrawnFrames);        // 无头下 OnGUI 一帧都没画
 
                 // 绘制项的输入来自既有对象（帧回路 / 屏幕流），不是自己另造一份
-                rig.Loop.OnPacket(MatchStateHeader(), MatchStateBytes(Hud.PhasePlaying, 3, 0, new ushort[] { 1, 2 }, new[] { "a", "b" }, new[] { true, false }));
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStateBytes(Hud.PhasePlaying, 3, 0, new ushort[] { 1, 2 }, new[] { "a", "b" }, new[] { true, false }, 1));
                 rig.Loop.Frame(1000.0 / 60.0);                                     // overlay 段把相位推给屏幕流
                 var sources = layer.Sources();
                 SelfTest.True(ReferenceEquals(sources.Hud, rig.Loop.Hud), "Sources 的 HUD 就是帧回路的 HUD", "不是");
@@ -393,6 +422,7 @@ namespace Ac.Tests
                 var sample = default(HudSample);
                 sample.Phase = Hud.PhasePlaying;
                 sample.HpRatio255 = 128;         // → 显示 50%
+                sample.AmmoDataReady = true;
                 sample.Mag = 7;
                 sample.MagSize = 30;
                 sample.Reserve = 60;
@@ -404,7 +434,8 @@ namespace Ac.Tests
 
                 var model = Build(rig);
                 SelfTest.True(HasText(model, "HP 50"), "血量按 1% 精度显示", "没有");
-                SelfTest.True(HasText(model, "7 / 60"), "弹药 / 备弹", "没有");
+                SelfTest.True(HasText(model, "弹匣 7 / 30"), "弹药 / 备弹", "没有");
+                SelfTest.True(HasText(model, "备弹 60"), "备弹独立标注", "没有");
                 SelfTest.True(HasText(model, "怒气 100"), "怒气值", "没有");
                 SelfTest.True(HasText(model, "波次 3"), "波次", "没有");
                 SelfTest.True(HasBarWithFill(model, 0.5f), "血条填充 = 血量", "没有");
@@ -414,7 +445,7 @@ namespace Ac.Tests
 
                 // 低弹比按**该武器的**弹匣容量算：7/30 → 低弹色
                 OverlayItem ammo;
-                SelfTest.True(TryFindText(model, "7 / 60", out ammo), "弹药行必须存在", "没有");
+                SelfTest.True(TryFindText(model, "弹匣 7 / 30", out ammo), "弹药行必须存在", "没有");
                 SelfTest.Equal((long)Hud.ColorLowAmmo, (long)ammo.ColorRgb);
 
                 // 准星：中心 + 扩散尺寸 + 压在目标上的档
@@ -705,7 +736,7 @@ namespace Ac.Tests
 
         // type=10 的载荷（phase u8 | wave u8 | intermissionMs u16 | count u8 | 玩家块，见 MatchStateCodec.Decode）。
         // 生产侧没有 match state 编码器（该包只有服务端→客户端一个方向），所以用例自带一个小写入器。
-        private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names, bool[] ready)
+        private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names, bool[] ready, ushort localPid)
         {
             var bytes = new List<byte>(40);
             bytes.Add(phase);
@@ -713,13 +744,14 @@ namespace Ac.Tests
             PutU16(bytes, intermissionMs);
             bytes.Add((byte)pids.Length);
             for (var i = 0; i < pids.Length; i++) WritePlayer(bytes, pids[i], names[i], ready[i]);
+            PutU16(bytes, localPid);
             return bytes.ToArray();
         }
 
         // 标准两名玩家（pid 1 = 已准备，pid 2 = 未准备，都用步枪）：绝大部分用例要的就是这一份。
         private static byte[] TwoPlayersBytes(byte phase, byte wave, ushort intermissionMs)
         {
-            return MatchStateBytes(phase, wave, intermissionMs, new ushort[] { 1, 2 }, new[] { "a", "b" }, new[] { true, false });
+            return MatchStateBytes(phase, wave, intermissionMs, new ushort[] { 1, 2 }, new[] { "a", "b" }, new[] { true, false }, 1);
         }
 
         private static void WritePlayer(List<byte> bytes, ushort pid, string name, bool ready)

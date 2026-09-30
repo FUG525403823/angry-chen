@@ -21,23 +21,8 @@ namespace Ac.View
         public const int FormCount = 4;
         public const int VertexBudgetPerForm = 512;
         public const int TriangleBudgetPerForm = 512;
-        public const double BodyHeightM = 0.62;
-        public const double WoolClusterRadiusM = 0.21;
-        public const double ClusterSpreadX = 0.62;
-        public const double ClusterSpreadZ = 0.42;
-        public const double ClusterSpreadY = 0.20;
-        public const double ClusterScaleMin = 0.86;
-        public const double ClusterScaleMax = 1.14;
-        public const double HeadOffsetY = 0.90;
-        public const double HeadOffsetZ = 0.92;
-        public const float HeadHalfM = 0.16f;
-        public const float HornHalfM = 0.07f;
-        public const float HornOffsetM = 0.10f;
-        public const float HornSpreadM = 0.14f;
-        public const float LegHalfM = 0.07f;
-        public const float LegOffsetX = 0.18f;
-        public const float LegOffsetY = 0.12f;
-        public const float LegOffsetZ = 0.20f;
+        public const double ClusterScaleMin = 0.94;
+        public const double ClusterScaleMax = 1.06;
 
         // §5(d) 额标配色：主色 + 问界羊自发光 + 羊王自发光
         public const int EmblemColorBase = 0xE8E8F0;
@@ -71,207 +56,233 @@ namespace Ac.View
             return (float)(ClusterScaleMin + (ClusterScaleMax - ClusterScaleMin) * unit);
         }
 
-        // 羊体（C08 §5(a)，2026-09-30 重做）：现在是“圆的”—— 羊毛团用 UV 球
-        // （原来是 8 面体，出包里就是一堆白方块，玩家反馈“根本不像羊”），加上头/嘴/耳/尾，
-        // 四条腿保持方块但拉长到地面。顶点/三角形仍在 512 预算内。
+        // 连续蛋形躯干 + 少量轮廓羊毛；所有坐标是局部空间，体型缩放只由 SheepVisuals 施加。
         public static Mesh Build(SheepKind kind)
         {
-            var form = Form(kind);
-            var scale = (float)form.Scale;
-            // 按羊形分化体型（§5(a) 的四种羊在出包里不能只是“同一只羊放大缩小”）：
-            //   撞角羊：更壮、角更粗更长；冲撞羊：更高更瘦、腿更长；羊王：全面放大 + 皇冠三角。
-            var bulk = kind == SheepKind.Ram ? 1.10f : (kind == SheepKind.King ? 1.18f : (kind == SheepKind.Elite ? 0.88f : 1f));
-            var legLength = kind == SheepKind.Elite ? 1.35f : (kind == SheepKind.King ? 1.15f : 1f);
-            var hornScale = kind == SheepKind.Ram ? 1.35f : (kind == SheepKind.King ? 1.60f : 1f);
-            var woolColor = ColorOf(kind);
-            var darkColor = new Color32(58, 54, 52, 255);      // 头/腿/蹄的深色
-            var hornColor = new Color32(206, 196, 176, 255);   // 角/蹄的骨色
+            var mesh = new Builder();
+            var wool = ColorOf(kind);
+            var fleece = Shade(wool, 12);
+            var face = new Color32(72, 61, 58, 255);
+            var muzzle = new Color32(111, 88, 79, 255);
+            var hoof = new Color32(42, 37, 39, 255);
+            var bone = new Color32(226, 201, 157, 255);
+            var cheek = new Color32(183, 120, 109, 255);
+            var width = kind == SheepKind.Ram ? 1.12f : kind == SheepKind.Elite ? 0.92f : kind == SheepKind.King ? 1.18f : 1f;
 
-            var vertices = new Vector3[MaxVerts];
-            var indices = new int[MaxIndices];
-            var colors = new Color32[MaxVerts];
-            var v = 0;
-            var n = 0;
+            mesh.Ellipsoid(new Vector3(0f, 0.55f, -0.055f), new Vector3(0.31f * width, 0.255f, 0.415f), wool, 8, 3);
+            mesh.Ellipsoid(new Vector3(0f, 0.64f, -0.30f), new Vector3(0.225f * width, 0.165f, 0.23f), fleece, 6, 2);
+            mesh.Ellipsoid(new Vector3(0f, 0.70f, -0.015f), new Vector3(0.235f * width, 0.13f, 0.26f), fleece, 6, 2);
+            // 颈部同时深入肩部和头部，不能悬在躯干前面。
+            mesh.Ellipsoid(new Vector3(0f, 0.635f, 0.305f), new Vector3(0.17f, 0.18f, 0.21f), wool, 8, 1);
+            mesh.Ellipsoid(new Vector3(0f, 0.72f, 0.425f), new Vector3(0.195f, 0.165f, 0.215f), face, 8, 2);
+            mesh.Ellipsoid(new Vector3(0f, 0.663f, 0.595f), new Vector3(0.14f, 0.085f, 0.115f), muzzle, 8, 2);
+            mesh.Ellipsoid(new Vector3(0f, 0.842f, 0.385f), new Vector3(0.16f, 0.058f, 0.135f), fleece, 6, 2);
+            mesh.Ellipsoid(new Vector3(0f, 0.56f, -0.46f), new Vector3(0.075f, 0.09f, 0.14f), fleece, 6, 2);
 
-            // 躯干：三个球沿 Z 排成一个略偏长的蛋形（后/中/前），再加一个略高的背部球
-            var bodyY = (float)BodyHeightM;
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, -0.20f * scale), 0.190f * scale * bulk, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.01f * scale, 0.00f), 0.215f * scale * bulk, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY, 0.20f * scale), 0.190f * scale * bulk, woolColor);
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.13f * scale, 0.02f * scale), 0.155f * scale * bulk, woolColor);
-            // 额外羊毛团不再按 WoolClusters 无限堆：每个球 35 顶点，
-            // 四个固定球 + 头/尾已经把轮廓做圆；再堆就会撞穿 §5(a) 的 512 顶点/三角形预算
-            // （用例 sheep.geometry 会直接报越界）。字段仍在冻结表里，只是生成器不再逐个用它。
-            _ = form.WoolClusters;
-
-            // 头：球 + 嘴巴（方块拉长）+ 两只耳朵
-            var headY = (float)HeadOffsetY * scale;
-            var headZ = (float)HeadOffsetZ * 0.62f * scale;
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, headY, headZ), (float)HeadHalfM * 0.95f * scale, darkColor);
-            Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, headY - 0.035f * scale, headZ + (float)HeadHalfM * 1.15f * scale),
-                new Vector3(0.062f * scale, 0.048f * scale, 0.055f * scale), darkColor);
-            for (var ear = 0; ear < 2; ear++)
+            for (var side = -1; side <= 1; side += 2)
             {
-                var sign = ear == 0 ? -1f : 1f;
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * 0.62f * scale, headY + 0.045f * scale, headZ - 0.01f * scale),
-                    new Vector3(0.045f * scale, 0.016f * scale, 0.032f * scale), woolColor);
+                // 扁长耳朵从头部侧面伸出；彩色内耳是独立薄片，不增加材质或 draw call。
+                mesh.Ellipsoid(new Vector3(side * 0.205f, 0.765f, 0.41f), new Vector3(0.145f, 0.05f, 0.075f), face, 6, 1);
+                mesh.Diamond(new Vector3(side * 0.25f, 0.775f, 0.462f), new Vector3(0.075f, 0f, 0f), new Vector3(0f, 0.024f, 0f), cheek);
+                var eye = new Vector3(side * 0.112f, 0.755f, 0.566f);
+                mesh.Ellipsoid(eye, new Vector3(0.047f, 0.057f, 0.070f), new Color32(255, 247, 228, 255), 6, 2);
+                mesh.Diamond(eye + new Vector3(-side * 0.008f, -0.001f, 0.053f), new Vector3(0.022f, 0f, 0f), new Vector3(0f, 0.031f, 0f), hoof);
+                mesh.Diamond(eye + new Vector3(-side * 0.009f, 0.013f, 0.054f), new Vector3(0.007f, 0f, 0f), new Vector3(0f, 0.009f, 0f), new Color32(255, 255, 255, 255));
+                mesh.Diamond(new Vector3(side * 0.047f, 0.678f, 0.684f), new Vector3(0.013f, 0f, 0f), new Vector3(0f, 0.009f, 0f), hoof);
             }
+            mesh.Diamond(new Vector3(0f, 0.646f, 0.695f), new Vector3(0.047f, 0f, 0f), new Vector3(0f, 0.006f, 0f), hoof);
 
-            // 角：羊王与冲撞羊才有（grunt/elite 不长角）
-            if (kind == SheepKind.Ram || kind == SheepKind.King)
-            {
-                for (var horn = 0; horn < 2; horn++)
-                {
-                    var sign = horn == 0 ? -1f : 1f;
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * scale * hornScale, headY + 0.075f * scale, headZ - 0.02f * scale),
-                        new Vector3(0.030f * scale * hornScale, 0.030f * scale * hornScale, 0.055f * scale * hornScale), hornColor);
-                }
-            }
-
-            if (kind == SheepKind.King)
-            {
-                // 羊王的皇冠：中间一根直角 + 两侧各一根小尖角
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(0f, headY + 0.10f * scale, headZ - 0.03f * scale),
-                    new Vector3(0.022f * scale, 0.050f * scale, 0.022f * scale), hornColor);
-                for (var spike = 0; spike < 2; spike++)
-                {
-                    var sign = spike == 0 ? -0.5f : 0.5f;
-                    Box(vertices, indices, colors, ref v, ref n, new Vector3(sign * (float)HornSpreadM * scale, headY + 0.105f * scale, headZ + 0.02f * scale),
-                        new Vector3(0.016f * scale, 0.036f * scale, 0.016f * scale), hornColor);
-                }
-            }
-
-            // 眼睛：两颗小黑球（远处也能看出“有脸”）
-            for (var eye = 0; eye < 2; eye++)
-            {
-                var sign = eye == 0 ? -1f : 1f;
-                Box(vertices, indices, colors, ref v, ref n,
-                    new Vector3(sign * 0.055f * scale, headY + 0.020f * scale, headZ + 0.085f * scale),
-                    new Vector3(0.016f * scale, 0.016f * scale, 0.010f * scale), new Color32(24, 20, 20, 255));
-            }
-
-            // 尾巴
-            Sphere(vertices, indices, colors, ref v, ref n, new Vector3(0f, bodyY + 0.02f * scale, -0.40f * scale), 0.070f * scale, woolColor);
-
-            // 四条腿：从躯干下沿到地面（原来只是悬空的小方块）
-            var upperLegY = bodyY - 0.10f * scale;
-            var lowerLegY = 0.11f * scale;
             for (var leg = 0; leg < 4; leg++)
             {
-                var signX = (leg & 1) == 0 ? -1f : 1f;
-                var signZ = leg < 2 ? -1f : 1f;
-                var x = signX * (float)LegOffsetX * scale;
-                var z = signZ * (float)LegOffsetZ * 1.6f * scale;
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(x, upperLegY, z),
-                    new Vector3((float)LegHalfM * 0.75f * scale, 0.085f * scale, (float)LegHalfM * 0.75f * scale), darkColor);
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(x, lowerLegY * legLength, z),
-                    new Vector3((float)LegHalfM * 0.55f * scale, 0.11f * scale * legLength, (float)LegHalfM * 0.55f * scale), darkColor);
-                Box(vertices, indices, colors, ref v, ref n, new Vector3(x, 0.018f * scale, z + 0.012f * scale),
-                    new Vector3((float)LegHalfM * 0.75f * scale, 0.018f * scale, (float)LegHalfM * 1.15f * scale), hornColor);
+                var x = ((leg & 1) == 0 ? -1f : 1f) * 0.178f * width;
+                var z = leg < 2 ? -0.245f : 0.20f;
+                mesh.Box(new Vector3(x, 0.255f, z), new Vector3(0.050f, 0.195f, 0.054f), face);
+                mesh.Box(new Vector3(x, 0.045f, z + 0.014f), new Vector3(0.064f, 0.045f, 0.085f), hoof);
+            }
+            if (kind == SheepKind.Ram || kind == SheepKind.King)
+            {
+                mesh.Horn(-1, bone);
+                mesh.Horn(1, bone);
+            }
+            if (kind == SheepKind.King)
+            {
+                for (var spike = -1; spike <= 1; spike++)
+                    mesh.Ellipsoid(new Vector3(spike * 0.105f, 0.86f, 0.355f),
+                        new Vector3(0.04f, spike == 0 ? 0.115f : 0.09f, 0.045f), bone, 4, 1);
+            }
+            // 用局部高度契约统一王羊/精英的实际高度，避免 BodyHeight 与头部使用两种缩放。
+            return mesh.Finish("Sheep" + kind, (float)(Form(kind).HeightM / Form(kind).Scale));
+        }
+
+        public static Vector3 EmblemAnchor(SheepKind kind)
+        {
+            var factor = LocalHeightFactor(kind);
+            return new Vector3(0f, 0.811f * factor, 0.602f * factor);
+        }
+
+        private static float LocalHeightFactor(SheepKind kind)
+        {
+            var designHeight = kind == SheepKind.King ? 0.975f : 0.9f;
+            return (float)(Form(kind).HeightM / Form(kind).Scale) / designHeight;
+        }
+
+        private static Color32 Shade(Color32 color, int amount)
+        {
+            return new Color32((byte)System.Math.Min(255, color.r + amount),
+                (byte)System.Math.Min(255, color.g + amount), (byte)System.Math.Min(255, color.b + amount), 255);
+        }
+
+        private sealed class Builder
+        {
+            private readonly Vector3[] vertices = new Vector3[VertexBudgetPerForm];
+            private readonly Vector3[] normals = new Vector3[VertexBudgetPerForm];
+            private readonly Color32[] colors = new Color32[VertexBudgetPerForm];
+            private readonly int[] indices = new int[TriangleBudgetPerForm * 3];
+            private int vertexCount;
+            private int indexCount;
+
+            private int Vertex(Vector3 position, Vector3 normal, Color32 color)
+            {
+                if (vertexCount == vertices.Length) throw new System.InvalidOperationException("Sheep vertex budget exceeded");
+                var index = vertexCount++;
+                vertices[index] = position;
+                normals[index] = normal.normalized;
+                colors[index] = color;
+                return index;
             }
 
-            var mesh = new Mesh();
-            mesh.name = "Sheep" + kind;
-            mesh.vertices = Slice(vertices, v);
-            mesh.SetTriangles(Slice(indices, n), 0);
-            mesh.colors32 = Slice(colors, v);
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        // 预算（§5(a)：每形 ≤ 512 顶点 / 512 三角形）。球 = 8×5 段 = 54 顶点 / 80 三角形；方块 = 8/12。
-        private const int MaxVerts = 512;
-        private const int MaxIndices = 512 * 3;
-
-        private static Vector3[] Slice(Vector3[] source, int count)
-        {
-            var result = new Vector3[count];
-            System.Array.Copy(source, result, count);
-            return result;
-        }
-
-        private static int[] Slice(int[] source, int count)
-        {
-            var result = new int[count];
-            System.Array.Copy(source, result, count);
-            return result;
-        }
-
-        private static Color32[] Slice(Color32[] source, int count)
-        {
-            var result = new Color32[count];
-            System.Array.Copy(source, result, count);
-            return result;
-        }
-
-        // UV 球（纬线分段，固定低分辨率：远处羊群不需要更多面）
-        private static void Sphere(Vector3[] vertices, int[] indices, Color32[] colors, ref int v, ref int n,
-            Vector3 center, float radius, Color32 color)
-        {
-            const int segments = 6;
-            const int rings = 3;   // §5(a) 预算：512 顶点/512 三角形要装下躯干+头+耳+角+皇冠+尾+四腿+眼睛
-
-            var baseIndex = v;
-            for (var ring = 0; ring <= rings; ring++)
+            private void Face(int a, int b, int c)
             {
-                var phi = Mathf.PI * ring / rings;
-                var y = Mathf.Cos(phi);
-                var r = Mathf.Sin(phi);
-                for (var seg = 0; seg <= segments; seg++)
+                if (indexCount + 3 > indices.Length) throw new System.InvalidOperationException("Sheep triangle budget exceeded");
+                var cross = Vector3.Cross(vertices[b] - vertices[a], vertices[c] - vertices[a]);
+                if (Vector3.Dot(cross, normals[a] + normals[b] + normals[c]) < 0f)
+                { var swap = b; b = c; c = swap; }
+                indices[indexCount++] = a; indices[indexCount++] = b; indices[indexCount++] = c;
+            }
+
+            public void Ellipsoid(Vector3 center, Vector3 radii, Color32 color, int segments, int rings)
+            {
+                var top = Vertex(center + new Vector3(0f, radii.y, 0f), Vector3.up, color);
+                var first = vertexCount;
+                for (var ring = 1; ring <= rings; ring++)
                 {
-                    var theta = 2f * Mathf.PI * seg / segments;
-                    vertices[v] = center + new Vector3(Mathf.Cos(theta) * r, y, Mathf.Sin(theta) * r) * radius;
-                    colors[v] = color;
-                    v += 1;
+                    var phi = Mathf.PI * ring / (rings + 1);
+                    for (var segment = 0; segment < segments; segment++)
+                    {
+                        var theta = 2f * Mathf.PI * segment / segments;
+                        var unit = new Vector3(Mathf.Cos(theta) * Mathf.Sin(phi), Mathf.Cos(phi), Mathf.Sin(theta) * Mathf.Sin(phi));
+                        Vertex(center + Vector3.Scale(unit, radii), new Vector3(unit.x / radii.x, unit.y / radii.y, unit.z / radii.z), color);
+                    }
+                }
+                var bottom = Vertex(center - new Vector3(0f, radii.y, 0f), -Vector3.up, color);
+                for (var segment = 0; segment < segments; segment++)
+                {
+                    var next = (segment + 1) % segments;
+                    Face(top, first + segment, first + next);
+                    for (var ring = 0; ring < rings - 1; ring++)
+                    {
+                        var a = first + ring * segments + segment;
+                        var b = first + ring * segments + next;
+                        Face(a, a + segments, b);
+                        Face(b, a + segments, b + segments);
+                    }
+                    Face(bottom, first + (rings - 1) * segments + next, first + (rings - 1) * segments + segment);
                 }
             }
-            for (var ring = 0; ring < rings; ring++)
+
+            public void Diamond(Vector3 center, Vector3 across, Vector3 up, Color32 color)
             {
-                for (var seg = 0; seg < segments; seg++)
+                var normal = Vector3.Cross(across, up).normalized;
+                var a = Vertex(center - across, normal, color);
+                var b = Vertex(center + up, normal, color);
+                var c = Vertex(center + across, normal, color);
+                var d = Vertex(center - up, normal, color);
+                Face(a, b, c); Face(a, c, d);
+            }
+
+            private void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Color32 color)
+            {
+                var normal = Vector3.Cross(b - a, c - a).normalized;
+                var start = Vertex(a, normal, color);
+                Vertex(b, normal, color); Vertex(c, normal, color); Vertex(d, normal, color);
+                Face(start, start + 1, start + 2); Face(start, start + 2, start + 3);
+            }
+
+            public void Box(Vector3 center, Vector3 half, Color32 color)
+            {
+                var a = center - half;
+                var b = center + half;
+                Quad(new Vector3(a.x, a.y, a.z), new Vector3(a.x, b.y, a.z), new Vector3(b.x, b.y, a.z), new Vector3(b.x, a.y, a.z), color);
+                Quad(new Vector3(a.x, a.y, b.z), new Vector3(b.x, a.y, b.z), new Vector3(b.x, b.y, b.z), new Vector3(a.x, b.y, b.z), color);
+                Quad(new Vector3(a.x, a.y, a.z), new Vector3(b.x, a.y, a.z), new Vector3(b.x, a.y, b.z), new Vector3(a.x, a.y, b.z), color);
+                Quad(new Vector3(a.x, b.y, a.z), new Vector3(a.x, b.y, b.z), new Vector3(b.x, b.y, b.z), new Vector3(b.x, b.y, a.z), color);
+                Quad(new Vector3(a.x, a.y, a.z), new Vector3(a.x, a.y, b.z), new Vector3(a.x, b.y, b.z), new Vector3(a.x, b.y, a.z), color);
+                Quad(new Vector3(b.x, a.y, a.z), new Vector3(b.x, b.y, a.z), new Vector3(b.x, b.y, b.z), new Vector3(b.x, a.y, b.z), color);
+            }
+
+            public void Horn(int side, Color32 color)
+            {
+                const int steps = 4;
+                const int segments = 4;
+                var first = vertexCount;
+                for (var step = 0; step <= steps; step++)
                 {
-                    var a = baseIndex + ring * (segments + 1) + seg;
-                    var b = a + segments + 1;
-                    indices[n++] = a; indices[n++] = b; indices[n++] = a + 1;
-                    indices[n++] = a + 1; indices[n++] = b; indices[n++] = b + 1;
+                    var angle = (-55f + step * 285f / steps) * Mathf.PI / 180f;
+                    var radius = 0.115f - step * 0.006f;
+                    var center = new Vector3(side * (0.19f + 0.07f * step / steps),
+                        0.735f + Mathf.Cos(angle) * radius, 0.405f + Mathf.Sin(angle) * radius);
+                    var radial = new Vector3(0f, Mathf.Cos(angle), Mathf.Sin(angle));
+                    var thickness = 0.055f * (1f - 0.80f * step / steps);
+                    for (var segment = 0; segment < segments; segment++)
+                    {
+                        var around = 2f * Mathf.PI * segment / segments;
+                        var normal = new Vector3(side * Mathf.Cos(around), 0f, 0f) + radial * Mathf.Sin(around);
+                        Vertex(center + normal * thickness, normal, color);
+                    }
                 }
+                for (var step = 0; step < steps; step++)
+                {
+                    for (var segment = 0; segment < segments; segment++)
+                    {
+                        var a = first + step * segments + segment;
+                        var b = first + step * segments + (segment + 1) % segments;
+                        Face(a, b, a + segments); Face(b, b + segments, a + segments);
+                    }
+                }
+                var end = first + steps * segments;
+                Quad(vertices[end], vertices[end + 1], vertices[end + 2], vertices[end + 3], color);
+            }
+
+            public Mesh Finish(string name, float targetHeight)
+            {
+                var minY = float.MaxValue; var maxY = float.MinValue;
+                for (var i = 0; i < vertexCount; i++)
+                { minY = System.Math.Min(minY, vertices[i].y); maxY = System.Math.Max(maxY, vertices[i].y); }
+                var factor = targetHeight / (maxY - minY);
+                for (var i = 0; i < vertexCount; i++) vertices[i] = (vertices[i] - new Vector3(0f, minY, 0f)) * factor;
+                var mesh = new Mesh();
+                mesh.name = name;
+                mesh.vertices = Copy(vertices, vertexCount);
+                mesh.normals = Copy(normals, vertexCount);
+                mesh.colors32 = Copy(colors, vertexCount);
+                mesh.SetTriangles(Copy(indices, indexCount), 0);
+                mesh.RecalculateBounds();
+                return mesh;
+            }
+
+            private static T[] Copy<T>(T[] source, int count)
+            {
+                var result = new T[count];
+                System.Array.Copy(source, result, count);
+                return result;
             }
         }
 
-        // 轴对齐方块（8 顶点 / 12 三角形）
-        private static void Box(Vector3[] vertices, int[] indices, Color32[] colors, ref int v, ref int n,
-            Vector3 center, Vector3 half, Color32 color)
-        {
-            var x0 = center.x - half.x; var x1 = center.x + half.x;
-            var y0 = center.y - half.y; var y1 = center.y + half.y;
-            var z0 = center.z - half.z; var z1 = center.z + half.z;
-            var baseIndex = v;
-            vertices[v] = new Vector3(x0, y0, z0); colors[v] = color; v++;
-            vertices[v] = new Vector3(x1, y0, z0); colors[v] = color; v++;
-            vertices[v] = new Vector3(x1, y1, z0); colors[v] = color; v++;
-            vertices[v] = new Vector3(x0, y1, z0); colors[v] = color; v++;
-            vertices[v] = new Vector3(x0, y0, z1); colors[v] = color; v++;
-            vertices[v] = new Vector3(x1, y0, z1); colors[v] = color; v++;
-            vertices[v] = new Vector3(x1, y1, z1); colors[v] = color; v++;
-            vertices[v] = new Vector3(x0, y1, z1); colors[v] = color; v++;
-            Quad(indices, ref n, baseIndex + 0, baseIndex + 1, baseIndex + 2, baseIndex + 3);
-            Quad(indices, ref n, baseIndex + 4, baseIndex + 5, baseIndex + 6, baseIndex + 7);
-            Quad(indices, ref n, baseIndex + 0, baseIndex + 4, baseIndex + 5, baseIndex + 1);
-            Quad(indices, ref n, baseIndex + 3, baseIndex + 7, baseIndex + 6, baseIndex + 2);
-            Quad(indices, ref n, baseIndex + 0, baseIndex + 3, baseIndex + 7, baseIndex + 4);
-            Quad(indices, ref n, baseIndex + 1, baseIndex + 2, baseIndex + 6, baseIndex + 5);
-        }
-
-        private static void Quad(int[] indices, ref int n, int a, int b, int c, int d)
-        {
-            indices[n++] = a; indices[n++] = b; indices[n++] = c;
-            indices[n++] = a; indices[n++] = c; indices[n++] = d;
-        }
         // §5(d)：额标是程序化网格 + 顶点色，不引用任何贴图
         public static Mesh BuildEmblem(SheepKind kind)
         {
             var form = Form(kind);
-            var size = (float)form.EmblemSizeM;
+            var size = (float)(form.EmblemSizeM / form.Scale) * 0.55f;
             var color = EmblemColorPure(kind);
             // 实心菱形（4 三角形）+ 菱形描边（4 片，8 三角形）+ 外圈方框（4 片，8 三角形）
             var vertices = new Vector3[5 + 8 * 4];
@@ -282,7 +293,7 @@ namespace Ac.View
             vertices[4] = new Vector3(0f, -size * 0.5f, 0f);
             var indices = new int[(4 + 16) * 3];
             var cursor = 0;
-            var faces = new[] { 0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1 };
+            var faces = new[] { 0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 1, 4 };
             for (var i = 0; i < faces.Length; i++) indices[cursor++] = faces[i];
             var v = 5;
             cursor = AddQuad(vertices, indices, cursor, ref v, new Vector3(-size * 0.5f, 0f, 0f), new Vector3(0f, size * 0.5f, 0f), 0.06f * size);
@@ -312,11 +323,11 @@ namespace Ac.View
             vertices[v + 2] = to + normal;
             vertices[v + 3] = to - normal;
             indices[cursor] = v;
-            indices[cursor + 1] = v + 1;
-            indices[cursor + 2] = v + 2;
+            indices[cursor + 1] = v + 2;
+            indices[cursor + 2] = v + 1;
             indices[cursor + 3] = v;
-            indices[cursor + 4] = v + 2;
-            indices[cursor + 5] = v + 3;
+            indices[cursor + 4] = v + 3;
+            indices[cursor + 5] = v + 2;
             v += 4;
             return cursor + 6;
         }
@@ -331,7 +342,10 @@ namespace Ac.View
 
         public static Color32 ColorOf(SheepKind kind)
         {
-            return kind == SheepKind.King ? ArtPalette.Hex(EmblemColorKing) : ArtPalette.Hex(EmblemColorBase);
+            if (kind == SheepKind.Ram) return ArtPalette.Hex(0xD7BC92);
+            if (kind == SheepKind.Elite) return ArtPalette.Hex(0xC5E2ED);
+            if (kind == SheepKind.King) return ArtPalette.Hex(0xEDD4AA);
+            return ArtPalette.Hex(0xF3E8D2);
         }
 
         public static Color32 EmblemColorPure(SheepKind kind)
@@ -346,37 +360,6 @@ namespace Ac.View
             return colors;
         }
 
-        private static void Octahedron(Vector3[] vertices, int[] indices, ref int v, ref int n, Vector3 center, float radius)
-        {
-            var baseIndex = v;
-            vertices[v] = center + new Vector3(radius, 0f, 0f);
-            vertices[v + 1] = center + new Vector3(0f, radius, 0f);
-            vertices[v + 2] = center + new Vector3(-radius, 0f, 0f);
-            vertices[v + 3] = center + new Vector3(0f, -radius, 0f);
-            vertices[v + 4] = center + new Vector3(0f, 0f, radius);
-            vertices[v + 5] = center + new Vector3(0f, 0f, -radius);
-            v += 6;
-            var faces = new[] { 0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4, 1, 0, 5, 2, 1, 5, 3, 2, 5, 0, 3, 5 };
-            for (var i = 0; i < faces.Length; i++) indices[n + i] = baseIndex + faces[i];
-            n += faces.Length;
-        }
-
-        private static void Box(Vector3[] vertices, int[] indices, ref int v, ref int n, Vector3 center, float half)
-        {
-            var baseIndex = v;
-            for (var i = 0; i < 8; i++)
-            {
-                vertices[v + i] = center + new Vector3(((i & 1) == 0 ? -half : half), ((i & 2) == 0 ? -half : half), ((i & 4) == 0 ? -half : half));
-            }
-            v += 8;
-            var faces = new[]
-            {
-                0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
-                3, 7, 6, 3, 6, 2, 1, 2, 6, 1, 6, 5, 0, 4, 7, 0, 7, 3,
-            };
-            for (var i = 0; i < faces.Length; i++) indices[n + i] = baseIndex + faces[i];
-            n += faces.Length;
-        }
 
     }
 }

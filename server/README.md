@@ -1621,6 +1621,8 @@ G5 0.000/5.000 pass | G6 0.000/2.000ms pass | G7 RSS 未测（同 §15.2 的环�
 |---|---|---|
 | `AC_UDP_PORT` | `8788` | UDP 游戏面端口（`--udp-port=` 可覆盖） |
 | `AC_HTTP_PORT` | `8787` | HTTP 端点端口（`--http-port=` 可覆盖） |
+| `AC_HTTP_BIND` | `127.0.0.1` | HTTP 监听 IPv4 字面量（`--http-bind=` 可覆盖），默认不对公网直接监听 |
+| `AC_TRUST_LOOPBACK_PROXY` | `0` | 仅接受 `0`/`1`（`--trust-loopback-proxy=` 可覆盖）；启用时仅信任回环代理的单值 `X-Real-IP` |
 | `AC_DATA_DIR` | `/var/lib/angry-chen`（Windows 上 `data`） | 战绩与报告落盘根目录（平台差异见 §18.8-1） |
 | `AC_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error`，按数值过滤 |
 | `AC_LOG_FILE` | 未设 | 设了就把日志改写到该文件（S13 的出口） |
@@ -1628,6 +1630,16 @@ G5 0.000/5.000 pass | G6 0.000/2.000ms pass | G7 RSS 未测（同 §15.2 的环�
 `/etc/angry-chen/server.env` 示例：`AC_UDP_PORT=8788` / `AC_HTTP_PORT=8787` / `AC_DATA_DIR=/var/lib/angry-chen` / `AC_LOG_LEVEL=info`。
 
 > 收口（F2）：示例里**必须再补一行 `AC_LOG_FILE=/var/log/angry-chen/server.log`** —— 不设它，日志走默认 sink = stderr，§18.1 承诺的 `server.log` 就恒 0 字节（所有 JSON 行都进 `server.err.log`）；而且该文件与其目录必须属服务用户，否则 `fopen(ab)` EACCES 打不开（旧实现静默退回，本批起会落 `logFileOpenFailed`）。安装步骤见 §18.7 前置条件 ①。依据：`server/README.md` §18.8-13、`server/src/core/log.cpp:285-307`、`deploy/angry-chen-server.service:20-26`。
+
+### 18.3.1 HTTP 非阻塞与代理信任边界（缺陷修复批次）
+
+- HTTP 使用 32 个连接槽、每轮最多接受 8 个连接，每槽有界非阻塞 I/O；读取和写出阶段各有独立的 2 秒绝对截止时间，零散进度不续期。`HttpListener::serveOnce` 现在是 pump，不等待请求完成；仍为一次请求一条连接。
+- `/api/*` 按客户端 IP 计 30 次/分钟业务额度，`/health`、`/metrics` 不消耗该额度。部署样例只允许回环来源经反代访问监控端点，其他运维来源须显式配置；不要直接开放后台 HTTP 端口。
+- 启用 `AC_TRUST_LOOPBACK_PROXY=1` 后，仅 TCP 来源为 `127.0.0.0/8` 才解析 `X-Real-IP`。缺头回落 socket 来源；重复、空、多值或无效地址拒绝为现有的 500；非可信来源忽略转发头。IPv4/IPv6 规范化计数，IPv4-mapped IPv6 与对应 IPv4 共用额度。
+- Nginx/Caddy 必须覆盖 `X-Real-IP`，不能透传调用方自报身份。直接本机健康检查无须该头。只有实际部署反代时才启用信任开关；回环信任不是本机进程之间的安全隔离。
+- systemd 单元仅传 `--serve`，端口以 `server.env` 为准，不再被硬编码 CLI 覆盖。Nginx upstream 端口须与 `AC_HTTP_PORT` 同步；Caddy 使用该进程环境中的同名端口，缺省 8787。
+- 新增环境变量先校验，再应用 CLI 覆盖；非法环境值安全失败，不被 CLI 掩盖。历史验收段中“环境与 CLI 端口双写”的描述不再是当前部署行为。
+- Windows 服务端回归与未验证项见 [本次修复记录](../docs/evidence/obvious-defects-repair.md)；Linux 与反代语法尚未在本轮运行验证。
 
 ### 18.4 日志轮转
 

@@ -7,8 +7,9 @@ namespace Ac.Sim
         public const int MaxSubstepsPerFrame = 5;
         public const int MaxAccumulatorMs = 50;
 
+        private const double TimeEpsilonMs = 1e-9;
         private MoveConfig _config;
-        private int _accumulatorMs;
+        private double _accumulatorMs;
 
         public Predictor()
         {
@@ -17,7 +18,7 @@ namespace Ac.Sim
         }
 
         public MoveState State { get; private set; }
-        public int AccumulatorMs { get { return _accumulatorMs; } }
+        public int AccumulatorMs { get { return (int)_accumulatorMs; } }
         public int Steps { get; private set; }
         public int DroppedSubsteps { get; private set; }
 
@@ -35,21 +36,23 @@ namespace Ac.Sim
 
         // §5.4：累加 dt，按 50ms 出步；一帧最多 5 步，超出丢弃余量并计 droppedSubsteps；
         // 余量上限 50ms（只保留一个子步），避免追帧雪崩。
-        public int Advance(int dtMs, in StepCommand command)
+        public int Advance(double dtMs, in StepCommand command)
         {
-            if (dtMs <= 0) return 0;
+            if (dtMs <= 0.0 || double.IsNaN(dtMs) || double.IsInfinity(dtMs)) return 0;
             _accumulatorMs += dtMs;
             var stepped = 0;
-            while (_accumulatorMs >= SubstepMs && stepped < MaxSubstepsPerFrame)
+            while (_accumulatorMs + TimeEpsilonMs >= SubstepMs && stepped < MaxSubstepsPerFrame)
             {
                 _accumulatorMs -= SubstepMs;
+                if (_accumulatorMs < 0.0) _accumulatorMs = 0.0;
                 StepWith(command);
                 stepped += 1;
             }
-            if (_accumulatorMs >= SubstepMs)
+            if (_accumulatorMs + TimeEpsilonMs >= SubstepMs)
             {
-                var dropped = _accumulatorMs / SubstepMs;
-                DroppedSubsteps += dropped;
+                var dropped = System.Math.Floor((_accumulatorMs + TimeEpsilonMs) / SubstepMs);
+                var remainingCount = int.MaxValue - DroppedSubsteps;
+                DroppedSubsteps += (int)System.Math.Min(dropped, remainingCount);
                 _accumulatorMs = MaxAccumulatorMs;
             }
             return stepped;

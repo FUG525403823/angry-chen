@@ -1,0 +1,7 @@
+# protocol 2 MatchState: same names, authoritative localPid=2
+# expect: version=0x2,type=0xA,flags=0x1,session=0x123,seq=0x0,msgid=0x1,ackbase=0x0,ackbits=0x0,phase=0x0,wave=0x0,intermissionms=0x0,count=0x2,localpid=0x2,bytes=0x43
+02 0A 01 00 23 01 00 00 01 00 00 00 00 00 00 00
+00 00 00 00 00 00 00 00 02 01 00 04 73 61 6D 65
+00 00 00 00 00 00 00 00 00 00 00 00 00 02 00 04
+73 61 6D 65 00 00 00 00 00 00 00 00 00 00 00 00
+00 02 00

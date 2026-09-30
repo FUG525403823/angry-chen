@@ -14,10 +14,10 @@ namespace ac::version {
 
 inline constexpr std::string_view kName = "ac_server";
 inline constexpr std::string_view kVersion = AC_SERVER_VERSION;
-inline constexpr std::uint32_t kProtocol = 1u;
+inline constexpr std::uint32_t kProtocol = 2u;
 inline constexpr std::uint32_t kTickMs = 50u;
 
-// "ac_server 0.1.0 protocol=1 tick=50ms"（--version 行的唯一产出点）
+// "ac_server 0.1.0 protocol=2 tick=50ms"（--version 行的唯一产出点）
 std::string versionLine();
 
 }  // namespace ac::version

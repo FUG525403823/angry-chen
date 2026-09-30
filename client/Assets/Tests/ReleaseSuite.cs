@@ -16,24 +16,20 @@ namespace Ac.Tests
         private static void ChecksVersionLine()
         {
             SelfTest.True(VersionInfo.SemanticVersion == "0.1.0", "semver 首发 0.1.0", VersionInfo.SemanticVersion);
-            SelfTest.Equal(1, (long)VersionInfo.ProtocolVersion);
+            SelfTest.Equal(2, (long)VersionInfo.ProtocolVersion);
+            SelfTest.Equal(2, (long)Ac.Net.PacketHeader.ProtocolVersion);
             var line = VersionInfo.VersionLine;
             SelfTest.True(line.StartsWith("ac-client 0.1.0+", StringComparison.Ordinal), "版本行前缀冻结", line);
-            SelfTest.True(line.EndsWith(" proto=1", StringComparison.Ordinal), "版本行 proto 后缀冻结", line);
-            SelfTest.True(line == "ac-client 0.1.0+" + VersionInfo.BuildCommit + " proto=1", "版本行由常量拼出", line);
+            SelfTest.True(line.EndsWith(" proto=2", StringComparison.Ordinal), "版本行 proto 后缀冻结", line);
+            SelfTest.True(line == "ac-client 0.1.0+" + VersionInfo.BuildCommit + " proto=2", "版本行由常量拼出", line);
 
-            // 服务器唯一版本行口径（S01/S15 冻结）
             string reason;
-            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.0 protocol=1 tick=50ms", out reason), "与服务器首发版本行相容", reason);
-            // +<sha7> 与 tick 不参与判定：服务器带 sha 也要认
-            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.0+abcdef0 protocol=1 tick=50ms", out reason), "sha7 不参与判定", reason);
-            // 协议不等必须拒绝（ADR-009 的 versionMismatch）
-            SelfTest.True(!VersionInfo.CompatibleWith("ac_server 0.1.0 protocol=2 tick=50ms", out reason), "protocol 不等必须拒绝", reason);
+            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.0 protocol=2 tick=50ms", out reason), "与服务器协议2相容", reason);
+            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.0+abcdef0 protocol=2 tick=50ms", out reason), "sha7 不参与判定", reason);
+            SelfTest.True(!VersionInfo.CompatibleWith("ac_server 0.1.0 protocol=1 tick=50ms", out reason), "旧协议1必须拒绝", reason);
             SelfTest.True(reason != null && reason.IndexOf("protocol", StringComparison.Ordinal) >= 0, "拒绝原因要指明 protocol", reason);
-            // MAJOR.MINOR 不等必须拒绝
-            SelfTest.True(!VersionInfo.CompatibleWith("ac_server 0.2.0 protocol=1 tick=50ms", out reason), "MAJOR.MINOR 不等必须拒绝", reason);
-            // PATCH 递增不算不兼容
-            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.7 protocol=1 tick=50ms", out reason), "PATCH 递增仍相容", reason);
+            SelfTest.True(!VersionInfo.CompatibleWith("ac_server 0.2.0 protocol=2 tick=50ms", out reason), "MAJOR.MINOR 不等必须拒绝", reason);
+            SelfTest.True(VersionInfo.CompatibleWith("ac_server 0.1.7 protocol=2 tick=50ms", out reason), "PATCH 递增仍相容", reason);
             SelfTest.True(!VersionInfo.CompatibleWith("", out reason), "空版本行必须拒绝", reason);
             SelfTest.True(!VersionInfo.CompatibleWith("ac_server 0.1.0 tick=50ms", out reason), "缺 protocol= 必须拒绝", reason);
         }

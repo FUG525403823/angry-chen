@@ -15,7 +15,7 @@ namespace Ac.Tests
     // 从 type=10 的 MatchState 载荷里认领本地 pid → GameLoop.LocalPlayerId / SnapshotView →
     // 相机与 HUD 真的绑到那个实体上（走 PresentationLayer 的既有路径，不绕过）。
     //
-    // 身份来源是**过渡方案**（见 Ac.Net.LocalIdentity 的类注释）：服务端不回 pid，只能按昵称认领。
+    // 协议 2 身份只来自服务端权威 LocalPid；昵称仅作为 Join 输入。
     // 每个用例结束时 Dispose 掉呈现层与帧回路（DestroyImmediate）并复位 RenderSettings。
     internal static class IdentitySuite
     {
@@ -24,11 +24,12 @@ namespace Ac.Tests
             SelfTest.Add("identity.name_input", ChecksNameInput);
             SelfTest.Add("identity.name_wire_limits", ChecksNameWireLimits);
             SelfTest.Add("identity.resolve_from_match_state", ChecksResolveFromMatchState);
-            SelfTest.Add("identity.name_mismatch_unbinds", ChecksNameMismatchUnbinds);
+            SelfTest.Add("identity.zero_local_pid_unbinds", ChecksZeroLocalPidUnbinds);
             SelfTest.Add("identity.rebinds_on_room_change", ChecksRebindsOnRoomChange);
             SelfTest.Add("identity.lobby_typing_drives_loop", ChecksLobbyTypingDrivesLoop);
             SelfTest.Add("identity.camera_hud_follow_local", ChecksCameraHudFollowLocal);
             SelfTest.Add("identity.not_resolved_per_frame", ChecksNotResolvedPerFrame);
+            SelfTest.Add("identity.session_lifecycle", ChecksSessionLifecycle);
         }
         // 呈现层 + 帧回路的最小组合。相机/HUD 用例必须走真实的 PresentationLayer，不能绕过。
         private sealed class Rig : IDisposable
@@ -241,7 +242,7 @@ namespace Ac.Tests
             SelfTest.Equal(2, changes);
         }
 
-        // ---- 从 MatchState 载荷认领 pid ----
+        // ---- 由 MatchState 的权威 localPid 绑定身份 ----
 
         private static void ChecksResolveFromMatchState()
         {
@@ -252,52 +253,56 @@ namespace Ac.Tests
                 SelfTest.Equal(0, (long)rig.Loop.View.LocalPlayerId);
 
                 rig.Loop.LocalName = "bob";
-                // 名字还没进表：不许凭空给一个 pid。
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhaseLobby, 0, 0, new ushort[] { 7 }, new string[] { "牧羊人" }));
+                // localPid=0，即使昵称相同也不能绑定。
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhaseLobby, 0, 0, new ushort[] { 7 }, new string[] { "bob" }, 0));
                 SelfTest.Equal(0, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(1, (long)rig.Loop.Identity.ResolveCount);
                 SelfTest.Equal(0, (long)rig.Loop.Identity.MatchedCount);
 
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 3));
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(3, (long)rig.Loop.View.LocalPlayerId);          // 镜像的本地指针同步
                 SelfTest.Equal(3, (long)rig.Loop.Views.LocalPlayerId);         // 视图池的本地指针同一处同步（此前零调用者）
                 SelfTest.Equal(1, (long)rig.Loop.IdentityChanges);
                 SelfTest.Equal(1, (long)rig.Loop.Identity.MatchedCount);
-                SelfTest.Equal(0, (long)rig.Loop.Identity.AmbiguousCount);
 
                 // 同一条 MatchState 再来一遍：pid 没变 ⇒ 不算一次身份变化（1Hz 周期下发不刷计数）。
                 var before = rig.Loop.IdentityChanges;
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 3));
                 SelfTest.Equal(before, (long)rig.Loop.IdentityChanges);
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
 
-                // 纯函数面：名字为 null/空、玩家表为 null 都不认领。
-                SelfTest.Equal(0, (long)LocalIdentity.MatchPid(null, "bob"));
-                SelfTest.Equal(0, (long)LocalIdentity.MatchPid(new MatchStatePlayer[0], "bob"));
-                SelfTest.Equal(0, (long)LocalIdentity.MatchPid(new[] { Row(3, "bob") }, ""));
-                SelfTest.Equal(0, (long)LocalIdentity.MatchPid(new[] { Row(0, "bob") }, "bob"));
-                SelfTest.Equal(2, (long)LocalIdentity.CountNameMatches(new[] { Row(2, "bob"), Row(5, "bob"), Row(3, "x") }, "bob"));
-                // 同名多行：取最小 pid（确定性），并把歧义记账。
-                SelfTest.Equal(2, (long)LocalIdentity.MatchPid(new[] { Row(9, "bob"), Row(2, "bob") }, "bob"));
-                var identity = new LocalIdentity();
-                identity.SetName("bob");
-                SelfTest.True(identity.Resolve(new[] { Row(9, "bob"), Row(2, "bob") }), "同名多行也要给一个 pid", "没给");
-                SelfTest.Equal(2, (long)identity.Pid);
-                SelfTest.Equal(1, (long)identity.AmbiguousCount);
+                // 同名的两个会话收到相同玩家表，但各自绑定服务端指定的不同 pid。
+                var other = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+                other.LocalName = "same";
+                rig.Loop.LocalName = "same";
+                var pids = new ushort[] { 2, 9 };
+                var names = new string[] { "same", "same" };
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(0, 0, 0, pids, names, 9));
+                other.OnPacket(MatchStateHeader(), Payload(0, 0, 0, pids, names, 2));
+                SelfTest.Equal(9, rig.Loop.LocalPlayerId);
+                SelfTest.Equal(2, other.LocalPlayerId);
+                var resolves = rig.Loop.Identity.ResolveCount;
+                rig.Loop.LocalName = "renamed";
+                SelfTest.Equal(9, rig.Loop.LocalPlayerId);
+                SelfTest.Equal(resolves, rig.Loop.Identity.ResolveCount);
+                var failures = rig.Loop.DecodeFailures;
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(0, 0, 0, pids, names, 99));
+                SelfTest.Equal(failures + 1, rig.Loop.DecodeFailures);
+                SelfTest.Equal(9, rig.Loop.LocalPlayerId);
             }
             finally { rig.Dispose(); }
         }
 
-        // 判别力：昵称与表里任何一行都不等 ⇒ 不许有本地实体（去掉身份接线 / 名称不匹配都要红）。
-        private static void ChecksNameMismatchUnbinds()
+        // localPid=0 时不得从名字推断身份，HUD 和相机保持未绑定。
+        private static void ChecksZeroLocalPidUnbinds()
         {
             var rig = new Rig(SettingsDefaults.Default());
             try
             {
                 rig.WireSeams();
                 rig.Loop.LocalName = "nobody";
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 1, 3 }, new string[] { "a", "bob" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 1, 3 }, new string[] { "a", "bob" }, 0));
                 SelfTest.Equal(0, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(0, (long)rig.Loop.View.LocalPlayerId);
                 SelfTest.Equal(0, (long)rig.Loop.Identity.MatchedCount);
@@ -324,24 +329,24 @@ namespace Ac.Tests
             try
             {
                 rig.Loop.LocalName = "bob";
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0, new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 3));
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
 
                 // 换房/重连后 pid 不同：必须重新解析，而不是继续用 3。
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhaseLobby, 0, 0, new ushort[] { 1, 5 }, new string[] { "bob", "x" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhaseLobby, 0, 0, new ushort[] { 1, 5 }, new string[] { "bob", "x" }, 1));
                 SelfTest.Equal(1, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(1, (long)rig.Loop.View.LocalPlayerId);
                 SelfTest.Equal(2, (long)rig.Loop.IdentityChanges);
                 SelfTest.Equal(2, (long)rig.Loop.Identity.MatchedCount);
 
                 // 自己离开对局（表里没这一行了）：退回 0，实体 id 会被回收，不能留旧值指到别人。
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 2, 0, new ushort[] { 5 }, new string[] { "x" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 2, 0, new ushort[] { 5 }, new string[] { "x" }, 0));
                 SelfTest.Equal(0, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(0, (long)rig.Loop.View.LocalPlayerId);
                 SelfTest.Equal(3, (long)rig.Loop.IdentityChanges);
 
                 // 再回来（同名同 pid）：又要能认领上。
-                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 3, 0, new ushort[] { 5, 1 }, new string[] { "x", "bob" }));
+                rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 3, 0, new ushort[] { 5, 1 }, new string[] { "x", "bob" }, 1));
                 SelfTest.Equal(1, (long)rig.Loop.LocalPlayerId);
                 SelfTest.Equal(4, (long)rig.Loop.IdentityChanges);
             }
@@ -364,7 +369,7 @@ namespace Ac.Tests
                 SelfTest.True(flow.CaptureName("o"), "继续键入", "没接收");
                 SelfTest.True(flow.CaptureName("b"), "继续键入", "没接收");
                 SelfTest.True(flow.Lobby.Name == "bob", "键入进大厅昵称", flow.Lobby.Name);
-                SelfTest.True(rig.Loop.LocalName == "bob", "昵称必须同步到帧回路（身份解析的输入）", rig.Loop.LocalName);
+                SelfTest.True(rig.Loop.LocalName == "bob", "昵称必须同步到帧回路（Join 的输入）", rig.Loop.LocalName);
                 SelfTest.True(!flow.CaptureName(""), "没有输入的那一帧不算变化", "算成变化了");
 
                 // 清洗与 wire 上限在这条路上真的生效：超 12 字节被截到 12。
@@ -375,17 +380,18 @@ namespace Ac.Tests
 
                 // 敲进去的名字真的能把身份认领出来（不靠测试直接写 LocalName）。
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0,
-                    new ushort[] { 7, 4 }, new string[] { "牧羊人", flow.Lobby.Name }));
+                    new ushort[] { 7, 4 }, new string[] { "牧羊人", flow.Lobby.Name }, 4));
                 SelfTest.Equal(4, (long)rig.Loop.LocalPlayerId);
 
-                // 改名：下一次 MatchState 要按新昵称认领（旧昵称那一行不再算自己）。
+                // 改名只更新 Join 昵称；不会认领另一条恰好同名的记录。
                 flow.NameInput.Clear();
                 SelfTest.True(flow.CaptureName("cat"), "清空后重新键入", "没收");
                 SelfTest.True(flow.Lobby.Name == "cat", "改名进了大厅", flow.Lobby.Name);
+                SelfTest.Equal(4, (long)rig.Loop.LocalPlayerId);
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 2, 0,
-                    new ushort[] { 4, 9 }, new string[] { "bob", "cat" }));
-                SelfTest.Equal(9, (long)rig.Loop.LocalPlayerId);
-                SelfTest.Equal(9, (long)rig.Loop.View.LocalPlayerId);
+                    new ushort[] { 4, 9 }, new string[] { "bob", "cat" }, 4));
+                SelfTest.Equal(4, (long)rig.Loop.LocalPlayerId);
+                SelfTest.Equal(4, (long)rig.Loop.View.LocalPlayerId);
 
                 // 相位由服务器下发：跑一帧让 overlay 段把 playing 推给屏幕流，再验"非大厅不收昵称"。
                 FeedSnapshot(rig, 1, new ushort[] { 9, 4 }, new double[] { 1.0, 2.0 }, new double[] { 0.0, 0.0 }, new byte[] { 255, 255 });
@@ -414,7 +420,7 @@ namespace Ac.Tests
                 // 玩家自己在大厅敲的昵称 → 身份从 type=10 的载荷里认领（pid 3）。
                 flow.CaptureName("bob");
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0,
-                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 3));
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
 
                 // 快照：3 号在 (4,-2)，7 号在 (-9,0) —— 相机只能跟 3 号走。
@@ -439,14 +445,13 @@ namespace Ac.Tests
                 SelfTest.True(flow.Lobby.IsHost, "3 是最小 pid ⇒ 自己是主机", flow.Lobby.HostPid.ToString());
                 SelfTest.Equal(2, (long)flow.PlayerCount);
 
-                // 认领失败（名字与表里任何一行都不等）：相机立刻不再被任何实体带走。
-                // 这里直接写 LocalName：大厅之外的相位本来就不收键入（那一档在 identity.lobby_typing_drives_loop 里验）。
+                // 改名不会解绑；只有权威 localPid=0 才停止跟随。
                 var updates = layer.CameraPoseUpdates;
                 rig.Loop.LocalName = new string('z', 12);
-                SelfTest.Equal(0, (long)rig.Loop.LocalPlayerId);
-                SelfTest.Equal(0, (long)rig.Loop.View.LocalPlayerId);
+                SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
+                SelfTest.Equal(3, (long)rig.Loop.View.LocalPlayerId);
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 2, 0,
-                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 0));
                 SelfTest.Equal(0, (long)rig.Loop.LocalPlayerId);
                 for (uint tick = 4; tick <= 6; tick++)
                 {
@@ -458,7 +463,7 @@ namespace Ac.Tests
             finally { rig.Dispose(); }
         }
 
-        // 身份解析只发生在"包/昵称变化"上，不发生在每帧：帧路径既不许重解析，也不许多分配。
+        // 身份解析只发生在权威包或会话切换时，不发生在每帧或改名时。
         private static void ChecksNotResolvedPerFrame()
         {
             var rig = new Rig(SettingsDefaults.Default());
@@ -467,7 +472,7 @@ namespace Ac.Tests
                 rig.WireSeams();
                 rig.Layer.Flow.CaptureName("bob");
                 rig.Loop.OnPacket(MatchStateHeader(), Payload(Hud.PhasePlaying, 1, 0,
-                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }));
+                    new ushort[] { 7, 3 }, new string[] { "牧羊人", "bob" }, 3));
                 SelfTest.Equal(3, (long)rig.Loop.LocalPlayerId);
 
                 uint tick = 1;
@@ -498,6 +503,50 @@ namespace Ac.Tests
             finally { rig.Dispose(); }
         }
 
+        private sealed class QuietSocket : IDatagramSocket
+        {
+            public bool IsBound { get { return true; } }
+            public int Port { get { return 0; } }
+            public bool HasDatagram { get { return false; } }
+            public bool Bind(int port) { return true; }
+            public void Connect(string host, int port) { }
+            public int Receive(byte[] buffer) { return 0; }
+            public bool Send(byte[] datagram, int length) { return true; }
+            public void Close() { }
+        }
+
+        private static void ChecksSessionLifecycle()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            var transport = new UdpTransport(new QuietSocket(), () => 0.0);
+            loop.Transport = transport;
+            var machine = transport.Machine;
+            machine.StartConnect("mem:0", 1u, 0.0);
+            SelfTest.True(machine.OnHelloAck(7, 1u, 2u, 0.0), "建立会话", "失败");
+            loop.OnPacket(MatchStateHeader(), Payload(0, 0, 0, new ushort[] { 3 }, new string[] { "same" }, 3));
+            machine.OnRetransmitExhausted(1.0);
+            machine.Tick(2.0);
+            SelfTest.Equal((long)ConnectionState.Reconnecting, (long)machine.State);
+            SelfTest.Equal(3, loop.LocalPlayerId);
+            machine.OnPacket(7, 3.0);
+            SelfTest.Equal((long)ConnectionState.Connected, (long)machine.State);
+            SelfTest.Equal(3, loop.LocalPlayerId);
+            machine.OnDisconnect(DisconnectReason.ServerShutdown, 4.0);
+            SelfTest.Equal(0, loop.LocalPlayerId);
+            SelfTest.Equal(0, loop.View.LocalPlayerId);
+            SelfTest.Equal(0, loop.Views.LocalPlayerId);
+            SelfTest.Equal(0, loop.ResolveLocalPlayer());
+            machine.StartConnect("mem:0", 2u, 5.0);
+            SelfTest.True(machine.OnHelloAck(8, 1u, 3u, 5.0), "建立新会话", "失败");
+            SelfTest.Equal(0, loop.LocalPlayerId);
+            loop.OnPacket(MatchStateHeader(), Payload(0, 0, 0, new ushort[] { 9 }, new string[] { "same" }, 9));
+            SelfTest.Equal(9, loop.LocalPlayerId);
+            machine.StartConnect("mem:1", 3u, 6.0);
+            SelfTest.Equal(0, loop.LocalPlayerId);
+            loop.Transport = null;
+            transport.Close();
+        }
+
         // ---- 合成载荷 ----
 
         private static MatchStatePlayer Row(ushort pid, string name)
@@ -511,7 +560,7 @@ namespace Ac.Tests
 
         // type=10 的载荷：phase u8 | wave u8 | intermissionMs u16 | count u8 | 玩家块。
         // 生产侧没有匹配的编码器（这个包只有服务端 → 客户端一个方向），所以用例自带一个小写入器。
-        private static byte[] Payload(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names)
+        private static byte[] Payload(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names, ushort localPid)
         {
             var bytes = new List<byte>(64);
             bytes.Add(phase);
@@ -536,6 +585,7 @@ namespace Ac.Tests
                 bytes.Add(0);        // downed
                 bytes.Add(0);        // reviveRatio255
             }
+            PutU16(bytes, localPid);
             return bytes.ToArray();
         }
 

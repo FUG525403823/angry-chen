@@ -18,6 +18,7 @@ namespace Ac.Tests
         {
             SelfTest.Add("chat.input_buffer", ChecksInputBuffer);
             SelfTest.Add("chat.open_and_submit", ChecksOpenAndSubmit);
+            SelfTest.Add("chat.frame_input_consumed_once", ChecksFrameInputConsumedOnce);
             SelfTest.Add("chat.escape_closes", ChecksEscapeCloses);
             SelfTest.Add("chat.overlay_lines", ChecksOverlayLines);
         }
@@ -89,6 +90,32 @@ namespace Ac.Tests
             SelfTest.True(chat.TrySend(big, out hint), "超长文本要照发（出口截断）", "被拒了");
             SelfTest.True(hint == Chat.HintTruncated, "超长要有截断提示", hint);
             SelfTest.True(Chat.Utf8Bytes(chat.Lines[chat.LineCount - 1]) <= Chat.ChatMaxBytes, "行内容不许超过 64 字节", "超了");
+        }
+
+        private static void ChecksFrameInputConsumedOnce()
+        {
+            var chat = new Chat();
+            chat.SetVisible(true);
+            chat.ApplyInputFrame("\n", false, true, 16.0);
+            SelfTest.True(chat.Focused, "聊天键打开输入态", "未打开");
+            SelfTest.Equal(0, (long)chat.SentCount);
+            SelfTest.Equal(0, (long)chat.DroppedCount);
+
+            chat.ApplyInputFrame("hi", false, false, 16.0);
+            chat.ApplyInputFrame("\n", false, true, 16.0);
+            SelfTest.True(!chat.Focused, "发送键只消费一次，关闭输入态供驱动恢复游戏输入", "同帧重新打开");
+            SelfTest.Equal(1, (long)chat.SentCount);
+            SelfTest.True(chat.Lines[0] == "hi", "只发送键入的内容", chat.Lines[0]);
+            chat.ApplyInputFrame("", false, false, 16.0);
+            SelfTest.True(!chat.Focused, "下一帧保持关闭", "重新打开");
+            SelfTest.Equal(1, (long)chat.SentCount);
+
+            chat.ApplyInputFrame("\n", false, true, 16.0);
+            chat.ApplyInputFrame("draft", false, false, 16.0);
+            chat.ApplyInputFrame("", true, false, 16.0);
+            SelfTest.True(!chat.Focused, "Esc 关闭聊天", "未关闭");
+            SelfTest.Equal(1, (long)chat.SentCount);
+            SelfTest.Equal(0, (long)chat.BufferLength);
         }
 
         private static void ChecksEscapeCloses()

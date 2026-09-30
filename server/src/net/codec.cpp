@@ -762,9 +762,19 @@ bool isValidMatchStatePlayer(const MatchStatePlayer& player) noexcept {
 EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext,
                               const MatchState& state, uint8_t* out,
                               std::size_t capacity) noexcept {
+  return encodeMatchState(header, ext, state, out, capacity, state.localPid);
+}
+
+EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext,
+                              const MatchState& state, uint8_t* out,
+                              std::size_t capacity, uint16_t localPid) noexcept {
   if (out == nullptr || !isEncodeHeaderValid(header, PacketType::kMatchState)) return encodeFail();
   if (state.players.size() > kMatchStateMaxPlayers) return encodeFail();
-  std::size_t payloadBytes = 5u;
+  if (localPid != 0u && std::count_if(state.players.begin(), state.players.end(),
+      [&](const MatchStatePlayer& player) { return player.pid == localPid; }) != 1) {
+    return encodeFail();
+  }
+  std::size_t payloadBytes = 7u;
   for (const MatchStatePlayer& player : state.players) {
     if (!isValidMatchStatePlayer(player)) return encodeFail();
     payloadBytes += matchStatePlayerBytes(player);
@@ -797,6 +807,7 @@ EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext
     writer.writeU8(player.downed);
     writer.writeU8(player.reviveRatio255);
   }
+  writer.writeU16(localPid);
   if (writer.isOverflow || writer.size() != total) return encodeFail();
   return encodeOk(writer.size());
 }
@@ -844,7 +855,13 @@ DecodeResult<MatchState> decodeMatchState(const uint8_t* bytes, std::size_t size
     if (player.weapon > 2u) return decodedFail<MatchState>(DecodeFailure::kBadValue);
     state.players.push_back(std::move(player));
   }
+  state.localPid = reader.readU16();
+  if (reader.isTruncated) return decodedFail<MatchState>(DecodeFailure::kTruncated);
   if (reader.remaining() != 0u) return decodedFail<MatchState>(DecodeFailure::kBadLength);
+  if (state.localPid != 0u && std::count_if(state.players.begin(), state.players.end(),
+      [&](const MatchStatePlayer& player) { return player.pid == state.localPid; }) != 1) {
+    return decodedFail<MatchState>(DecodeFailure::kBadValue);
+  }
   return decodedOk(state);
 }
 

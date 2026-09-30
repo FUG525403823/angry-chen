@@ -1,3 +1,5 @@
+using Ac.Core;
+
 namespace Ac.UI
 {
     public enum CrosshairState : byte { Normal = 0, Target = 1, Hurt = 2, Hidden = 3 }
@@ -10,6 +12,20 @@ namespace Ac.UI
         public const float MaxSpreadDeg = 5.0f;
         public const float MinSizePx = 2f;
         public const float MaxSizePx = 24f;
+
+        public float Scale { get; private set; } = SettingsDefaults.CrosshairScale;
+        public float ThicknessPx { get; private set; } = SettingsDefaults.CrosshairThickness;
+        public float GapPx { get; private set; } = SettingsDefaults.CrosshairGap;
+        public bool Dynamic { get; private set; } = SettingsDefaults.CrosshairDynamic;
+
+        public void ApplySettings(in SettingsSnapshot settings)
+        {
+            Scale = SettingsDefaults.ClampCrosshairScale(settings.CrosshairScale);
+            ThicknessPx = SettingsDefaults.ClampCrosshairThickness(settings.CrosshairThickness);
+            GapPx = SettingsDefaults.ClampCrosshairGap(settings.CrosshairGap);
+            Dynamic = settings.CrosshairDynamic;
+            SetPalette(settings.CrosshairColor, settings.ColorblindSafe);
+        }
 
         public float SpreadDeg { get; private set; }
         public int ColorRgb { get; private set; }
@@ -34,6 +50,7 @@ namespace Ac.UI
 
         public void SetSpread(float spreadDeg)
         {
+            if (float.IsNaN(spreadDeg)) spreadDeg = MinSpreadDeg;
             SpreadDeg = spreadDeg < MinSpreadDeg ? MinSpreadDeg : (spreadDeg > MaxSpreadDeg ? MaxSpreadDeg : spreadDeg);
         }
 
@@ -55,8 +72,9 @@ namespace Ac.UI
         {
             get
             {
+                if (!Dynamic) return MinSizePx * Scale;
                 var t = (SpreadDeg - MinSpreadDeg) / (MaxSpreadDeg - MinSpreadDeg);
-                return MinSizePx + (MaxSizePx - MinSizePx) * t;
+                return (MinSizePx + (MaxSizePx - MinSizePx) * t) * Scale;
             }
         }
 
@@ -75,7 +93,7 @@ namespace Ac.UI
             {
                 if (State == CrosshairState.Target) return Hud.ColorTarget;
                 if (State == CrosshairState.Hurt) return Hud.ColorHurt;
-                return Hud.ColorNormal;
+                return ColorRgb;
             }
         }
     }

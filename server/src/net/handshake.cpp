@@ -49,9 +49,10 @@ bool SessionTable::releaseOldestGrace() noexcept {
   return true;
 }
 
-SessionRecord* SessionTable::findByNonce(uint32_t clientNonce, uint32_t nowMs) noexcept {
+SessionRecord* SessionTable::findByNonce(uint32_t clientNonce, uint32_t nowMs,
+                                       uint64_t peerKey) noexcept {
   for (SessionRecord& record : sessions_) {
-    if (record.clientNonce != clientNonce) continue;
+    if (record.clientNonce != clientNonce || record.helloPeerKey != peerKey) continue;
     if (record.phase == SessionPhase::kReleased) continue;
     if (nowMs - record.createdMs > kHelloDedupMs) continue;
     return &record;
@@ -131,13 +132,13 @@ void SessionTable::clear() {
 }
 
 HandshakeOutcome HandshakeServer::onHello(uint32_t clientNonce, uint32_t reconnectToken,
-                                          uint32_t nowMs) {
+                                          uint32_t nowMs, uint64_t peerKey) {
   // §5.5：Hello 的 reconnectToken 只在"首次连接填 0"时有意义，重连走 Resume；这里记账不使用。
   (void)reconnectToken;
   HandshakeOutcome outcome{};
 
   // §5.5：客户端会按 1s × 5 重发 Hello；同一 nonce 在 kHelloDedupMs 内复用已建会话（幂等 HelloAck）。
-  if (SessionRecord* existing = sessions_.findByNonce(clientNonce, nowMs)) {
+  if (SessionRecord* existing = sessions_.findByNonce(clientNonce, nowMs, peerKey)) {
     if (existing->phase == SessionPhase::kAllocated) existing->phase = SessionPhase::kConnected;
     existing->keepAlive.onAnyPacket(nowMs);
     outcome.isAccepted = true;
@@ -157,6 +158,7 @@ HandshakeOutcome HandshakeServer::onHello(uint32_t clientNonce, uint32_t reconne
   }
   SessionRecord* record = sessions_.find(session);
   record->clientNonce = clientNonce;
+  record->helloPeerKey = peerKey;
   record->salt = sessions_.nextSalt();
   record->token = reconnectTokenFor(clientNonce, record->salt);
   record->phase = SessionPhase::kConnected;  // 握手成立：Alloc → Connected
@@ -173,16 +175,19 @@ HandshakeOutcome HandshakeServer::onResume(uint16_t session, uint32_t reconnectT
   HandshakeOutcome outcome{};
   outcome.session = session;
   SessionRecord* record = sessions_.find(session);
+  if (record != nullptr && record->isConnected() && record->hasResumed &&
+      record->token == reconnectToken) {
+    record->keepAlive.onAnyPacket(nowMs);
+    outcome.isAccepted = true;
+    return outcome;
+  }
   if (record == nullptr || !record->isResumable() || record->token != reconnectToken) {
     outcome.isDisconnectDue = true;
     outcome.reason = DisconnectReason::kTokenInvalid;  // 令牌不符 / 已释放 / 宽限期已过
-    if (record != nullptr) {
-      record->phase = SessionPhase::kReleased;
-      sessions_.release(session);
-    }
     return outcome;
   }
   record->phase = SessionPhase::kConnected;
+  record->hasResumed = true;
   record->grace.clear();
   record->keepAlive.onAnyPacket(nowMs);
   outcome.isAccepted = true;

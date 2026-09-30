@@ -5,14 +5,19 @@ namespace Ac.UI
     {
         public const float AmmoLowRatio = 0.3f;
 
+        public bool DataReady { get; private set; }
+        public float ReloadProgress { get; private set; }
         public int Mag { get; private set; }
         public int MagSize { get; private set; }
         public int Reserve { get; private set; }
         public int ReloadLeft10Ms { get; private set; }
         public bool Reloading { get; private set; }
 
-        public void Set(int mag, int reserve, int reloadLeft10Ms, int magSize, bool reloading)
+        public void Set(int mag, int reserve, int reloadLeft10Ms, int magSize, bool reloading,
+            bool dataReady = true, float reloadProgress = 0f)
         {
+            DataReady = dataReady;
+            ReloadProgress = reloadProgress < 0f ? 0f : (reloadProgress > 1f ? 1f : reloadProgress);
             Mag = mag < 0 ? 0 : mag;
             MagSize = magSize < 1 ? 1 : magSize;
             Reserve = reserve < 0 ? 0 : reserve;
@@ -23,6 +28,6 @@ namespace Ac.UI
         // 用整数比较：0.3f 是 0.30000001192，30 × 0.3f = 9.000000357，会让 9/30 被判成低弹
         public bool IsLow { get { return Mag * 10 < MagSize * 3; } }
         public int Color { get { return IsLow ? Hud.ColorLowAmmo : Hud.ColorNormal; } }
-        public float ReloadRingMs { get { return ReloadLeft10Ms / 10f; } }   // 1/10 ms → ms
+        public float ReloadRingMs { get { return ReloadLeft10Ms * 10f; } }   // 10 ms units → ms
     }
 }

@@ -110,15 +110,16 @@ namespace Ac.Sim
             return true;
         }
 
-        // 权威对齐（客户端独有）：MatchState 的弹匣/备弹/槽位是**只降不升**的纠正面——
-        // 本地镜像漏算的开火（丢包、被服务端拒收）在这里被拉回，避免"客户端还能打、服务端已经空仓"。
-        // 补弹（权威值更大）不采用：那会让一个 1Hz 的旧值把刚打掉的子弹还回来。
-        public void SyncAuthority(int mag, int reserve, int slot)
+        // Apply each newly received authority once, never the cached HUD sample.
+        // MatchState has no command ack: this is a coarse correction, not command replay.
+        public void SyncAuthority(int mag, int reserve, int slot, int reloadLeft10Ms = 0, double nowMs = 0.0)
         {
             var clamped = WeaponTable.ClampSlot(slot);
-            if (clamped != _activeSlot) SwitchSlot((byte)clamped, 0.0);
-            if (mag >= 0 && mag < _magInSlot[_activeSlot]) _magInSlot[_activeSlot] = mag;
-            if (reserve >= 0 && reserve < _reserveAmmo) _reserveAmmo = reserve;
+            if (clamped != _activeSlot) SwitchSlot((byte)clamped, nowMs);
+            var capacity = WeaponTable.MagSizeOf(_activeSlot);
+            _magInSlot[_activeSlot] = mag < 0 ? 0 : (mag > capacity ? capacity : mag);
+            _reserveAmmo = reserve < 0 ? 0 : reserve;
+            _reloadEndsAtMs = reloadLeft10Ms > 0 ? nowMs + reloadLeft10Ms * 10.0 : 0.0;
         }
     }
 }

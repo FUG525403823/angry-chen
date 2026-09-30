@@ -207,7 +207,7 @@ namespace Ac.Boot
         public const int PlayerCount = 4;
         public const int SheepCount = 60;
         public const int EventPayloadBytes = 33;
-        // 本地身份：靠 MatchState 里的昵称表认领 pid（Ac.Net.LocalIdentity 的运行期路径）。
+        // 昵称用于 Join；本地身份由合成 MatchState 的 localPid=1 指定。
         public const string BenchLocalName = "bench";
 
         private readonly FrameBenchPlanOptions _options;
@@ -862,6 +862,7 @@ namespace Ac.Boot
                 encoder.U8(0);                      // downed
                 encoder.U8(0);                      // reviveRatio
             }
+            encoder.U16(1);                          // localPid
             encoder.End();
             header.Type = PacketType.MatchState;
             _loop.OnPacket(header, payload);
@@ -873,11 +874,11 @@ namespace Ac.Boot
             return index == 0 ? BenchLocalName : "bot" + (index + 1).ToString(CultureInfo.InvariantCulture);
         }
 
-        // MatchState 载荷：u8 phase + u8 wave + u16 intermission + u8 count + 4 × (16 定长 + 昵称字节)。
+        // MatchState 载荷：u8 phase + u8 wave + u16 intermission + u8 count + 4 × (16 定长 + 昵称字节) + u16 localPid。
         // 解码器要求 Remaining == 0（多余字节 = BadLength），所以缓冲必须**恰好**这么长。
         private static byte[] BuildMatchStatePayload()
         {
-            var bytes = 5;
+            var bytes = 7; // 5 字节前缀 + 2 字节 localPid 尾部
             for (var i = 0; i < PlayerCount; i++) bytes += MatchStateCodec.FixedRecordBytes + PlayerName(i).Length;
             return new byte[bytes];
         }

@@ -36,8 +36,8 @@ namespace Ac.Core
         // 现在 0.0035 rad/px × 默认 1.2 ≈ 0.24°/点：200 点快拉 ≈ 48°，接近常见 FPS 手感；
         // 具体倍率仍然走设置里的灵敏度（C13），这里只把基数调到合理区间。
         public const double MouseRadPerPixel = 0.0035;
-        public const double MinSensitivity = 0.2;
-        public const double MaxSensitivity = 5.0;   // 上限一起抬：不然“最高灵敏度”也不够用
+        public const double MinSensitivity = SettingsDefaults.SensitivityMin;
+        public const double MaxSensitivity = SettingsDefaults.SensitivityMax;   // 上限一起抬：不然“最高灵敏度”也不够用
         public const int AngleUnitsPerTurn = 65536;               // 与 Quantize.AngleUnits 同值
         public const sbyte AxisFull = 127;                        // 与 Quantize.QuantizeAxis(±1) 同值
         // 待发队列就是 §5.1 的"未确认命令"，上限 MaxBacklog；FIFO，取走方向固定为 _pending[0]。
@@ -53,7 +53,7 @@ namespace Ac.Core
 
         public InputSampler()
         {
-            SensitivityValue = 1.2;
+            SensitivityValue = SettingsDefaults.Sensitivity;
             ClientTick = 0;
             Focused = true;
             PitchRad = 0.0;
@@ -126,6 +126,7 @@ namespace Ac.Core
 
         public void SetSensitivity(double value)
         {
+            if (double.IsNaN(value)) value = SettingsDefaults.Sensitivity;
             if (value < MinSensitivity) value = MinSensitivity;
             if (value > MaxSensitivity) value = MaxSensitivity;
             SensitivityValue = value;

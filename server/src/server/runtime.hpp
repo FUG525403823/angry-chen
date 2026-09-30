@@ -38,6 +38,8 @@ inline constexpr std::size_t kSnapshotRingSize = 4096u;  // G3 的最近 4096 �
 struct RuntimeConfig {
   std::uint16_t udpPort = 8788u;
   std::uint16_t httpPort = 8787u;
+  std::uint32_t httpBindIpv4 = 0x7F000001u;
+  bool trustLoopbackProxy = false;
   std::uint32_t seed = 20260101u;
   std::int32_t sheepTarget = 60;  // 合成负载：常驻羊数（0 = 不补）
   bool isHttpEnabled = true;

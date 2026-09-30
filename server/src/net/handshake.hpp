@@ -43,10 +43,12 @@ enum class SessionPhase : uint8_t {
 struct SessionRecord {
   uint16_t id = 0u;
   uint32_t clientNonce = 0u;
+  uint64_t helloPeerKey = 0u;
   uint32_t salt = 0u;
   uint32_t token = 0u;
   uint32_t createdMs = 0u;
   SessionPhase phase = SessionPhase::kReleased;
+  bool hasResumed = false;
   KeepAliveTimer keepAlive{};
   GraceTimer grace{};
 
@@ -82,7 +84,8 @@ class SessionTable {
   bool release(uint16_t id);
 
   // §5.5：Hello 重发去重——同一 clientNonce 在 kHelloDedupMs 内命中已建会话。
-  SessionRecord* findByNonce(uint32_t clientNonce, uint32_t nowMs) noexcept;
+  SessionRecord* findByNonce(uint32_t clientNonce, uint32_t nowMs,
+                             uint64_t peerKey = 0u) noexcept;
 
   // 每 tick：刷新断线判定与宽限期到期（到期即释放名额）。
   SessionTick tick(uint32_t nowMs);
@@ -129,7 +132,8 @@ class HandshakeServer {
  public:
   // Hello：session 必须为 0，合法即分配会话、记录 nonce、派生 salt 并回 HelloAck。
   // 同一 clientNonce 在 kHelloDedupMs 内重发（§5.5 的客户端重试）复用同一会话，不占新名额。
-  HandshakeOutcome onHello(uint32_t clientNonce, uint32_t reconnectToken, uint32_t nowMs);
+  HandshakeOutcome onHello(uint32_t clientNonce, uint32_t reconnectToken, uint32_t nowMs,
+                           uint64_t peerKey = 0u);
 
   // Resume：仅宽限期会话可恢复；令牌不符或已释放/超期一律 Disconnect(reason = 2)。
   HandshakeOutcome onResume(uint16_t session, uint32_t reconnectToken, uint32_t nowMs);

@@ -17,9 +17,12 @@ namespace Ac.Tests
             SelfTest.Add("reconcile.error_boundary", ChecksErrorBoundary);
             SelfTest.Add("reconcile.smoothing_decay", ChecksSmoothingDecay);
             SelfTest.Add("reconcile.ammo_ledger", ChecksAmmoLedger);
+            SelfTest.Add("reconcile.ammo_slot_isolation", ChecksAmmoSlotIsolation);
             SelfTest.Add("weapon.mirror_values", ChecksWeaponMirrorValues);
             SelfTest.Add("weapon.local_fire_interval", ChecksLocalFireInterval);
             SelfTest.Add("weapon.ammo_gate", ChecksLocalWeaponGate);
+            SelfTest.Add("weapon.three_reload_cycles", ChecksThreeReloads);
+            SelfTest.Add("weapon.reload_authority", ChecksReloadAuthority);
         }
 
         // server/src/config/weapons.hpp 的**逐值镜像**。这张表是跨语言冻结值：任何一项漂了，
@@ -148,13 +151,82 @@ namespace Ac.Tests
             spread.Update(750.0, 10.0, 1f);   // 距最后一发 350ms：衰减 6°/s × 10ms = 0.06°
             Near(0.19, spread.SpreadDeg, "到点按 6°/s 衰减", 1e-5);
 
-            // 权威对齐只降不升：MatchState 更高的弹匣值不采用（那会把刚打掉的子弹还回来）
+            // Fresh authority corrects both rejected shots and replenishment.
             weapon.SyncAuthority(9, 20, 1);
             SelfTest.Equal(9, (long)weapon.ActiveMag);
             SelfTest.Equal(20, (long)weapon.Reserve);
             weapon.SyncAuthority(28, 99, 1);
-            SelfTest.Equal(9, (long)weapon.ActiveMag);
-            SelfTest.Equal(20, (long)weapon.Reserve);
+            SelfTest.Equal(28, (long)weapon.ActiveMag);
+            SelfTest.Equal(99, (long)weapon.Reserve);
+        }
+
+        private static void ChecksAmmoSlotIsolation()
+        {
+            var ledger = new AmmoLedger();
+            ledger.Reconcile(30, 100, 1, 0);
+            ledger.NoteLocalShot(1, 1, 10);
+            var shotgun = ledger.Reconcile(6, 100, 2, 20);
+            SelfTest.Equal(6, shotgun.Mag);
+            SelfTest.Equal(1, ledger.PendingShots);
+            ledger.NoteLocalShot(2, 2, 30);
+            ledger.Reconcile(5, 100, 2, 40);
+            SelfTest.Equal(1, ledger.PendingShots);
+            var rifle = ledger.Reconcile(30, 100, 1, 50);
+            SelfTest.Equal(29, rifle.Mag);
+            ledger.Reconcile(29, 100, 1, 60);
+            SelfTest.Equal(0, ledger.PendingShots);
+        }
+
+        private static void ChecksThreeReloads()
+        {
+            var weapon = new LocalWeapon();
+            var now = 0.0;
+            for (var round = 0; round < 3; round++)
+            {
+                for (var shot = 0; shot < 12; shot++)
+                {
+                    SelfTest.True(weapon.TryFire(now, 1f), "three magazines must fire", round + ":" + shot);
+                    now += 200.0;
+                }
+                SelfTest.True(!weapon.TryFire(now, 1f), "empty blocks fire", "fired");
+                SelfTest.True(weapon.TryStartReload(now), "reload starts", round.ToString());
+                SelfTest.True(!weapon.Update(now + 1399.0, 0.0, 1f), "reload waits", "early");
+                now += 1400.0;
+                SelfTest.True(weapon.Update(now, 1.0, 1f), "reload completes", round.ToString());
+                SelfTest.Equal(12, weapon.ActiveMag);
+                SelfTest.Equal(120 - (round + 1) * 12, weapon.Reserve);
+                weapon.Update(now + 1.0, 1.0, 1f);
+                SelfTest.Equal(120 - (round + 1) * 12, weapon.Reserve);
+            }
+        }
+
+        private static void ChecksReloadAuthority()
+        {
+            var weapon = new LocalWeapon();
+            weapon.SyncAuthority(0, 0, 0);
+            SelfTest.True(!weapon.TryStartReload(10.0), "no reserve blocks reload", "started");
+            SelfTest.True(!weapon.TryFire(10.0, 1f), "no ammo blocks fire", "fired");
+            weapon.SyncAuthority(4, 3, 0);
+            SelfTest.True(weapon.TryStartReload(100.0), "partial reload starts", "blocked");
+            weapon.Update(1500.0, 1400.0, 1f);
+            SelfTest.Equal(7, weapon.ActiveMag);
+            SelfTest.Equal(0, weapon.Reserve);
+            weapon.SyncAuthority(7, 20, 0, 70, 2000.0);
+            Near(700.0, weapon.ReloadRemainingMs(2000.0), "wire unit is ten milliseconds");
+            SelfTest.True(!weapon.Update(2699.0, 699.0, 1f), "authority countdown waits", "early");
+            weapon.Update(2700.0, 1.0, 1f);
+            SelfTest.Equal(12, weapon.ActiveMag);
+            SelfTest.Equal(15, weapon.Reserve);
+            weapon.SyncAuthority(12, 15, 0, 0, 2800.0);
+            SelfTest.True(!weapon.IsReloading, "completed authority cannot consume twice", "reloading");
+            weapon.Update(5000.0, 2200.0, 1f);
+            SelfTest.Equal(15, weapon.Reserve);
+            weapon.SyncAuthority(1, 8, 1, 20, 6000.0);
+            SelfTest.Equal(1, weapon.Slot);
+            weapon.SwitchSlot(2, 6001.0);
+            SelfTest.True(!weapon.IsReloading, "switch cancels reload", "reloading");
+            weapon.Update(7000.0, 999.0, 1f);
+            SelfTest.Equal(8, weapon.Reserve);
         }
 
         // §5(a)：ushort 回绕比较与 ack 裁剪

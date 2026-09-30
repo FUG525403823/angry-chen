@@ -222,7 +222,7 @@ namespace Ac.Boot
                 _sheepTriangles[form] = _sheepMeshes[form].triangles.Length / 3;
                 _emblemTriangles[form] = _emblemMeshes[form].triangles.Length / 3;
             }
-            _sheepMaterial = MakeInstancedMaterial("Ac/Sheep", SheepMesh.ColorOf(SheepKind.Grunt));
+            _sheepMaterial = ArenaMaterials.CreateSheep("Ac/Sheep");
             // 额标按羊形一份：问界羊/羊王自发光（《§5(d) 配色），出包里“额标一亮就知道该打谁”。
             for (var form = 0; form < SheepMesh.FormCount; form++)
             {
@@ -274,7 +274,7 @@ namespace Ac.Boot
             _attachedAtSeconds = Time.realtimeSinceStartup;
             if (loop == null) return;
             loop.EventApplied = OnEventApplied;
-            // 昵称 → 本地身份：大厅里键入的昵称进 Lobby（清洗），清洗后的值转给帧回路去认领 MatchState 的行。
+            // 大厅昵称经 Lobby 清洗后交给帧回路上报 Join；本地身份独立来自 MatchState.localPid。
             // 先减后加：Attach 可以重复调用（Start 不是一次性的），订阅只许留一条。
             Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
             Flow.Lobby.OnNameChanged += OnLobbyNameChanged;
@@ -291,7 +291,41 @@ namespace Ac.Boot
             Batching.SetQualityTier(settings.QualityTier);
             Effects.SetReducedMotion(settings.ReduceMotion);
             // H5：crosshairColor / colorblindSafe 此前只被序列化、没有任何行为读者，准星的颜色就写在这里
-            if (_loop != null && _loop.Hud != null) _loop.Hud.Crosshair.SetPalette(settings.CrosshairColor, settings.ColorblindSafe);
+            if (_loop != null && _loop.Hud != null) _loop.Hud.Crosshair.ApplySettings(settings);
+        }
+
+        public SettingsPanel SettingsPanel { get; private set; }
+        private int _settingsClosedFrame = -1;
+        private bool _settingsReleasePending;
+        public bool SettingsInputBlocked
+        {
+            get { return (SettingsPanel != null && SettingsPanel.Visible) || _settingsClosedFrame == Time.frameCount || _settingsReleasePending; }
+        }
+
+        public void BindSettings(SettingsStore store)
+        {
+            if (SettingsPanel == null || !ReferenceEquals(SettingsPanel.Store, store)) SettingsPanel = new SettingsPanel(store);
+        }
+
+        public void ToggleSettings()
+        {
+            if (SettingsPanel == null) return;
+            SettingsPanel.Toggle();
+            if (SettingsPanel.Visible)
+            {
+                Flow.Chat.Focus(false);
+                if (_loop != null && _loop.Sampler != null) _loop.Sampler.Suspend();
+            }
+            else
+            {
+                _settingsClosedFrame = Time.frameCount;
+                _settingsReleasePending = true;
+            }
+        }
+
+        public void UpdateSettingsRelease(bool mouseHeld)
+        {
+            if (!mouseHeld && Time.frameCount != _settingsClosedFrame) _settingsReleasePending = false;
         }
 
         public void ToggleDebugPanel() { DebugPanel.Toggle(); }

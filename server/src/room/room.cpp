@@ -260,22 +260,24 @@ bool roomReconnect(Room& room, Session& existing, Session& incoming) noexcept {
   }
   if (index < 0) return false;
   // §5.5：只按令牌匹配（调用方已完成），昵称不参与身份判定：沿用旧会话的昵称与令牌。
-  incoming.pid = existing.pid;
-  std::memcpy(incoming.name, existing.name, kNameBufferBytes);
-  incoming.nameBytes = existing.nameBytes;
-  incoming.token = existing.token;
-  incoming.ready = existing.ready;
-  incoming.weapon = existing.weapon;
-  incoming.weaponApplied = existing.weaponApplied;
-  incoming.kills = existing.kills;
+  if (&incoming != &existing) {
+    incoming.pid = existing.pid;
+    std::memcpy(incoming.name, existing.name, kNameBufferBytes);
+    incoming.nameBytes = existing.nameBytes;
+    incoming.token = existing.token;
+    incoming.ready = existing.ready;
+    incoming.weapon = existing.weapon;
+    incoming.weaponApplied = existing.weaponApplied;
+    incoming.kills = existing.kills;
+    incoming.joinedAtMs = existing.joinedAtMs;
+    existing.pid = 0u;
+    existing.roomCode[0] = '\0';
+    existing.disconnectedAtMs = -1;
+  }
   std::memcpy(incoming.roomCode, room.code, sizeof(incoming.roomCode));
   incoming.disconnectedAtMs = -1;
-  incoming.joinedAtMs = existing.joinedAtMs;
   incoming.command = ac::sim::Command{};
   room.sessions[index] = &incoming;
-  existing.pid = 0u;
-  existing.roomCode[0] = '\0';
-  existing.disconnectedAtMs = -1;
   // §5.5 重连补偿：解除 idle、水平速度清零、倒地解除、生命下限 maxHp * 0.5。
   ac::sim::Entity* const entity = playerEntityAt(room, incoming.pid);
   if (entity != nullptr) {

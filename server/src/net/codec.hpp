@@ -351,7 +351,7 @@ DecodeResult<JoinPayload> decodeJoin(const uint8_t* bytes, std::size_t size) noe
 // ---- §5.7 MatchState（type 10，reliable，单播）----
 inline constexpr std::size_t kMatchStateMaxPlayers = 4u;
 inline constexpr std::size_t kMatchStatePlayerFixedBytes = 16u;  // 3 + nameLen + 13，不含名称
-inline constexpr std::size_t kMatchStateMaxBytes = 117u;         // **载荷**上限：5 + 4 * (16 + 12)
+inline constexpr std::size_t kMatchStateMaxBytes = 119u;         // 5 + 4 * (16 + 12) + localPid:u16
 
 struct MatchStatePlayer {
   uint16_t pid;
@@ -376,6 +376,7 @@ struct MatchState {
   uint8_t wave;
   uint16_t intermissionMs;
   std::vector<MatchStatePlayer> players;
+  uint16_t localPid = 0u;  // 0 = 未绑定模板，否则必须唯一命中 players。
 
   bool operator==(const MatchState& other) const noexcept = default;
 };
@@ -383,6 +384,9 @@ struct MatchState {
 EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext,
                               const MatchState& state, uint8_t* out,
                               std::size_t capacity) noexcept;
+EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext,
+                               const MatchState& state, uint8_t* out,
+                               std::size_t capacity, uint16_t localPid) noexcept;
 DecodeResult<MatchState> decodeMatchState(const uint8_t* bytes, std::size_t size) noexcept;
 
 // 单个玩家记录的线上字节数（不含名称：16 + nameLen）。

@@ -14,6 +14,8 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("boot.frame_loop", ChecksFrameLoop);
+            SelfTest.Add("boot.remote_motion_render_cadence", ChecksRemoteMotionRenderCadence);
+            SelfTest.Add("boot.local_motion_independent_of_send_rate", ChecksLocalMotionIndependentOfSendRate);
             SelfTest.Add("boot.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("boot.stage_sinks", ChecksStageSinks);
             SelfTest.Add("boot.server_config", ChecksServerConfig);
@@ -23,8 +25,73 @@ namespace Ac.Tests
             SelfTest.Add("boot.snapshot_reaches_mirror", ChecksSnapshotReachesMirror);
             SelfTest.Add("boot.command_tick_from_snapshot", ChecksCommandTickFromSnapshot);
             SelfTest.Add("boot.hud_ammo_rage_from_match_state", ChecksHudAmmoRage);
+            SelfTest.Add("boot.cached_authority_three_reloads", ChecksCachedAuthorityReloads);
             SelfTest.Add("boot.local_pose_from_prediction", ChecksLocalPoseFromPrediction);
             SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
+        }
+
+        private static void ChecksLocalMotionIndependentOfSendRate()
+        {
+            foreach (var fps in new[] { 60, 120, 144, 240 })
+            {
+                SnapshotFrame frame;
+                var loop = NewLoop(1, out frame);
+                var sampler = new InputSampler();
+                sampler.SetKey(UnityEngine.KeyCode.W, true);
+                loop.Sampler = sampler;
+                // 唯一初始权威姿态，随后隔离网络，测30Hz意图与渲染推进是否错误耦合。
+                SelfTest.True(FeedWalking(loop, ref frame, 1, 0), "初始权威姿态", fps.ToString());
+                EntityView local = null;
+                var previousZ = 0.0;
+                for (var i = 0; i < fps * 3; i++)
+                {
+                    loop.Frame(1000.0 / fps);
+                    SelfTest.True(loop.Views.TryGet(1, out local), "本地玩家可见", fps.ToString());
+                    if (i > fps / 2)
+                    {
+                        var distance = local.RenderZ - previousZ;
+                        SelfTest.True(Math.Abs(distance - 4.5 / fps) < 0.00001,
+                            "30Hz命令间隙也要平滑推进本地玩家", fps + "fps: " + distance.ToString("R"));
+                    }
+                    previousZ = local.RenderZ;
+                }
+                SelfTest.True(loop.LocalSteps >= 59 && loop.LocalSteps <= 60,
+                    "三秒预测应推进约60个50ms子步，与帧率无关", fps + "fps: " + loop.LocalSteps);
+                sampler.SetKey(UnityEngine.KeyCode.W, false);
+                for (var i = 0; i < fps / 4; i++) loop.Frame(1000.0 / fps);
+                var stoppedZ = local.RenderZ;
+                for (var i = 0; i < fps / 4; i++) loop.Frame(1000.0 / fps);
+                SelfTest.True(Math.Abs(local.RenderZ - stoppedZ) < 0.00001, "松开后停止，不持续使用旧移动输入", fps.ToString());
+            }
+        }
+
+        private static void ChecksRemoteMotionRenderCadence()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            var frame = new SnapshotFrame { Entities = new FrameEntity[1], RemovedIds = new ushort[0], EntityCount = 1 };
+            var previous = 0.0;
+            for (var renderFrame = 0; renderFrame < 240; renderFrame++)
+            {
+                if (renderFrame % 3 == 0)
+                {
+                    var tick = (uint)(renderFrame / 3 + 1);
+                    frame.Tick = tick;
+                    frame.ServerTimeMs = 1000u + (tick - 1u) * 50u;
+                    frame.BaselineTick = tick == 1 ? 0u : tick - 1;
+                    frame.Entities[0] = new FrameEntity { Id = 7, XCm = (short)((tick - 1) * 15), HpRatioUnits = 255 };
+                    SelfTest.True(loop.ApplySnapshot(frame), "恒速远端快照应用", tick.ToString());
+                }
+                loop.Frame(1000.0 / 60.0);
+                EntityView sheep;
+                SelfTest.True(loop.Views.TryGet(7, out sheep), "远端羊可见", renderFrame.ToString());
+                if (renderFrame > 30)
+                {
+                    var distance = sheep.X - previous;
+                    SelfTest.True(Math.Abs(distance - 0.05) < 0.002,
+                        "3m/s远端实体每60Hz帧移动5cm，不能退化为20Hz吸附", distance.ToString("R"));
+                }
+                previous = sheep.X;
+            }
         }
 
         // 本地玩家的姿态必须来自**预测**，不是权威快照吸附（C05 §5.4）。
@@ -114,8 +181,7 @@ namespace Ac.Tests
 
         // C05 §5.4 的 W 速度：4.5 m/s × 50ms 子步 = 0.225m/tick。权威轨迹按这个值线性前进，
         // 于是"重放条数不对""偏移符号不对""没走预测"三类缺陷都会在数值上直接暴露。
-        // 帧长取 25ms（`Predictor.Advance` 的入参是 int，50/3 这种非整数帧长会被截断成 16ms，
-        // 客户端时钟因此比权威慢 4%，那是另一个课题，不该混进这条用例的数值）。
+        // 此旧用例保留25ms帧长来隔离和解；分数帧长与30Hz发送间隙由独立帧率用例覆盖。
         private const double WalkTickMeters = 4.5 * 0.05;
         private const double WalkFrameMs = 25.0;
         private const int WalkFramesPerTick = 2;
@@ -136,8 +202,7 @@ namespace Ac.Tests
         }
 
         // 一直按 W + 20Hz 权威快照（每 2 帧一条，40fps）+ 逐帧记录渲染位置。
-        // 权威延迟按真实的 2 个 tick（ack 取两个 tick 之前那一条命令的 seq），与被测代码的
-        // "重放自权威以来经过的 tick"口径一致。
+        // 合成ack保留两个未确认预测子步，用来隔离和解误差；不是完整网络RTT模拟。
         private static WalkRun RunWalk(int ticks)
         {
             SnapshotFrame frame;
@@ -160,10 +225,9 @@ namespace Ac.Tests
             var seqs = new ushort[16];
             for (uint tick = 1; tick <= (uint)ticks; tick++)
             {
-                // ack 取"两个 tick 之前那条命令"的 seq（100ms 的真实往返）：`seqs[]` 记的是每个 tick
-                // **末尾**采样器的新序号，而入缓冲的那条是 tick 内的最新采样，所以 T-3 的读数才对得上
-                // T-2 那次入缓冲 ⇒ 缓冲里剩 T-1 与 T 两条，重放两步正好补上两个 tick 的权威延迟。
-                var acked = tick > 3 ? seqs[(tick - 3) % 16] : (ushort)0;
+                // seqs保存每个50ms周期末的采样序号。每渲染帧都推进预测后，用T-2的水位
+                // 保留两个未确认子步；旧T-3水位在稳定阶段留下三步，曾被漏推进的预测掩盖。
+                var acked = tick > 2 ? seqs[(tick - 2) % 16] : (ushort)0;
                 if (!FeedWalking(loop, ref frame, tick, acked)) run.ApplyFailures += 1;
                 for (var f = 0; f < WalkFramesPerTick; f++)
                 {
@@ -223,15 +287,81 @@ namespace Ac.Tests
 
         // 弹药/怒气 HUD 的权威来源：**本地玩家那行 MatchState**。此前客户端没有任何地方把 MatchState 的
         // mag/reserve/rage 填进 HudSample（AmmoLedger 只有用例在用），出包 HUD 恒显示 "0 / 0"、怒气恒 0。
+        private static void ChecksCachedAuthorityReloads()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            SelfTest.True(!loop.Hud.Ammo.DataReady, "initial ammo is unknown", "ready");
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 1, 0,
+                new ushort[] { 3 }, new[] { "p" }, new[] { true },
+                new byte[] { 0 }, new byte[] { 0 }, new ushort[] { 36 }, new byte[] { 0 }, 3));
+            loop.Frame(0.0);
+            var now = 0.0;
+            for (var round = 0; round < 3; round++)
+            {
+                SelfTest.True(loop.Weapon.TryStartReload(now), "reload starts", round.ToString());
+                for (var frame = 0; frame < 28; frame++)
+                {
+                    loop.Frame(50.0);
+                    now += 50.0;
+                    if (frame == 9)
+                    {
+                        SelfTest.True(loop.Hud.Ammo.Reloading, "predicted reload visible", "hidden");
+                        SelfTest.True(loop.Hud.Ammo.ReloadProgress > 0f, "reload progresses", "zero");
+                    }
+                }
+                loop.Frame(0.0); // PumpWeapon runs before the frame clock advances.
+                SelfTest.Equal(12, loop.Weapon.ActiveMag);
+                SelfTest.Equal(24 - round * 12, loop.Weapon.Reserve);
+                SelfTest.Equal(loop.Weapon.ActiveMag, loop.Hud.Ammo.Mag);
+                SelfTest.Equal(loop.Weapon.Reserve, loop.Hud.Ammo.Reserve);
+                for (var shot = 0; shot < 12; shot++)
+                {
+                    SelfTest.True(loop.Weapon.TryFire(now, 1f), "loaded magazine fires", round + ":" + shot);
+                    loop.Frame(200.0);
+                    now += 200.0;
+                }
+                SelfTest.Equal(0, loop.Hud.Ammo.Mag);
+                SelfTest.True(!loop.Weapon.TryFire(now, 1f), "empty magazine blocks", "fired");
+            }
+            SelfTest.True(!loop.Weapon.TryStartReload(now), "finite reserve exhausted", "started");
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 1, 0,
+                new ushort[] { 3 }, new[] { "p" }, new[] { true },
+                new byte[] { 0 }, new byte[] { 4 }, new ushort[] { 3 }, new byte[] { 0 }, 3));
+            loop.Frame(0.0);
+            SelfTest.Equal(4, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(3, loop.Hud.Ammo.Reserve);
+            SelfTest.True(loop.Hud.Ammo.DataReady, "fresh local authority known", "unknown");
+            SelfTest.True(loop.Weapon.TryStartReload(now), "partial reload starts", "blocked");
+            for (var frame = 0; frame < 28; frame++) loop.Frame(50.0);
+            loop.Frame(0.0);
+            SelfTest.Equal(7, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(0, loop.Hud.Ammo.Reserve);
+            loop.Frame(50.0);
+            SelfTest.Equal(7, loop.Hud.Ammo.Mag);
+
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 1, 0,
+                new ushort[] { 3 }, new[] { "p" }, new[] { true },
+                new byte[] { 0 }, new byte[] { 7 }, new ushort[] { 20 }, new byte[] { 0 }, 3, 70));
+            loop.Frame(0.0);
+            SelfTest.True(loop.Hud.Ammo.ReloadRingMs == 700f, "authority reload uses 10ms units", "wrong duration");
+            loop.Frame(350.0);
+            SelfTest.True(loop.Hud.Ammo.ReloadRingMs == 350f, "cached authority counts down", "reset");
+            loop.Frame(350.0);
+            loop.Frame(0.0);
+            SelfTest.Equal(12, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(15, loop.Hud.Ammo.Reserve);
+            SelfTest.True(!loop.Hud.Ammo.Reloading, "authority reload completed", "stuck");
+        }
+
         private static void ChecksHudAmmoRage()
         {
             var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
-            loop.LocalPlayerId = 3;      // 身份已认领（由 MatchState 行按昵称认领，见 IdentitySuite）
+            loop.LocalPlayerId = 3;      // 下方权威 MatchState 的 localPid 同为 3
             SelfTest.Equal(0, loop.Hud.Ammo.Mag);
 
             loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
                 new ushort[] { 3 }, new[] { "牧羊人" }, new[] { true },
-                new byte[] { 1 }, new byte[] { 7 }, new ushort[] { 90 }, new byte[] { 42 }));
+                new byte[] { 1 }, new byte[] { 7 }, new ushort[] { 90 }, new byte[] { 42 }, 3));
             loop.Frame(1000.0 / 60.0);
 
             SelfTest.Equal(7, loop.Hud.Ammo.Mag);
@@ -242,7 +372,7 @@ namespace Ac.Tests
             // 不是本地玩家那一行就不许串到 HUD 上
             loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
                 new ushort[] { 9 }, new[] { "b" }, new[] { true },
-                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 1 }, new byte[] { 99 }));
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 1 }, new byte[] { 99 }, 0));
             loop.Frame(1000.0 / 60.0);
             SelfTest.Equal(7, loop.Hud.Ammo.Mag);
             SelfTest.Equal(42, loop.Hud.Rage.Rage);
@@ -425,9 +555,10 @@ namespace Ac.Tests
         // count u8 | 逐行（pid u16 | nameLen u8 | name | ready u8 | weapon u8 | hp u8 | kills u16 |
         // mag u8 | reserve u16 | reloadLeft u8 | rage u8 | rageLeft u8 | downed u8 | revive u8）。
         private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids,
-            string[] names, bool[] ready, byte[] weapons, byte[] mags, ushort[] reserves, byte[] rages)
+            string[] names, bool[] ready, byte[] weapons, byte[] mags, ushort[] reserves, byte[] rages, ushort localPid,
+            byte reloadLeft10Ms = 0)
         {
-            var size = 5;
+            var size = 7;
             for (var i = 0; i < pids.Length; i++) size += 16 + System.Text.Encoding.UTF8.GetByteCount(names[i]);
             var bytes = new byte[size];
             var offset = 0;
@@ -448,12 +579,13 @@ namespace Ac.Tests
                 WriteU16(bytes, ref offset, 0);        // kills
                 bytes[offset++] = mags[i];
                 WriteU16(bytes, ref offset, reserves[i]);
-                bytes[offset++] = 0;                   // reloadLeft10Ms
+                bytes[offset++] = reloadLeft10Ms;
                 bytes[offset++] = rages[i];
                 bytes[offset++] = 0;                   // rageLeft100Ms
                 bytes[offset++] = 0;                   // downed
                 bytes[offset++] = 0;                   // reviveRatio255
             }
+            WriteU16(bytes, ref offset, localPid);
             SelfTest.Equal(size, offset);
             return bytes;
         }
@@ -655,7 +787,7 @@ namespace Ac.Tests
             defaultSampler.SetSensitivity(0.0);
             SelfTest.True(Math.Abs(defaultSampler.SensitivityValue - InputSampler.MinSensitivity) < 1e-9,
                 "灵敏度超下限要钳到 MinSensitivity", defaultSampler.SensitivityValue.ToString("R"));
-            // 默认昵称（GameBootstrap.DefaultLocalName）：本地身份按昵称认领 MatchState 的行，所以它必须是**合法**昵称
+            // 默认昵称（GameBootstrap.DefaultLocalName）作为 Join 输入，必须是合法昵称。
             //（非空、≤12 字节、过 SanitizeName 不变形）—— 否则空名字会让 LocalPlayerId 恒 0，相机与键鼠一起失效。
             var defaultName = GameBootstrap.DefaultLocalName;
             SelfTest.True(Ac.UI.Lobby.IsValidName(defaultName), "默认昵称必须合法（非空、1..12 字节）", defaultName);

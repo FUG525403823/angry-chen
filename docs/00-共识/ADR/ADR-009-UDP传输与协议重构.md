@@ -32,7 +32,7 @@
 
 | 偏移 | 字段 | 类型 | 说明 |
 |---|---|---|---|
-| 0 | `version` | u8 | 协议版本，v2 = `1`；不匹配即拒绝并回 `Disconnect(reason=1 versionMismatch)` |
+| 0 | `version` | u8 | 协议版本，v2 当前 = `2`（原协议 1 不兼容，双端同步发布）；不匹配即拒绝并回 `Disconnect(reason=1 versionMismatch)` |
 | 1 | `type` | u8 | 1 Hello / 2 HelloAck / 3 Resume / 4 Command / 5 Snapshot / 6 Event / 7 KeepAlive / 8 Disconnect / 9 Fragment / 10 MatchState（reliable，单播）/ 11 Join（reliable，C→S） |
 | 2 | `flags` | u16 | bit0=reliable，bit1=moreFragments，bit2=ackOnly |
 | 4 | `session` | u16 | 会话短 ID（服务器分配，握手前的包为 0） |
@@ -131,7 +131,7 @@
 
 逐字段的载荷布局（各类型的字段次序与字节）以 S03 §5.4 为准。
 
-**MatchState 载荷（type 10，reliable，单播，v1 `OPCODE.matchState` 的 v2 对应物）**：v2 的通用包头取代 v1 的 opcode 字节，其余逐字段与 v1 `encodeMatchState` 一致。
+**MatchState 载荷（type 10，reliable，单播，v1 `OPCODE.matchState` 的 v2 对应物）**：v2 的通用包头取代 v1 的 opcode 字节；协议 2 在完整玩家记录块后追加 `localPid:u16`，既有记录字段不变。
 
 | 偏移 | 字段 | 类型 | 说明 |
 |---|---|---|---|
@@ -140,14 +140,17 @@
 | 2 | `intermissionMs` | u16 | 波间剩余毫秒（非波间为 0） |
 | 4 | `count` | u8 | 玩家记录数，≤ 4（`maxPlayersPerRoom`） |
 | 5 | 记录块 | 变长 | `count` 条记录，见下 |
+| 记录块末尾 | `localPid` | u16 | 本单播接收者的权威玩家 ID，小端；0 表示未绑定模板 |
 
 **记录（v1 同序，每条 = 3 + nameLen + 13 字节）**：`pid` u16@0、`nameLen` u8@2、`name` UTF-8@3（**1–12 字节**，即 `minNameBytes`/`maxNameBytes`）、`ready` u8（0/1）、`weapon` u8（0/1/2）、`hpRatio` u8（量化比）、`kills` u16、`mag` u8、`reserve` u16、`reloadLeft10Ms` u8（10ms 单位）、`rage` u8、`rageLeft100Ms` u8（100ms 单位）、`downed` u8（0/1）、`reviveRatio255` u8（0–255）。
 
 > **`kills` 字段来源（已裁决，本批落地）**：线上 `kills` u16 = 该 `pid` 的**真实击杀数** `PlayerStats::kills`（`noteKill` 累加：`server/src/room/stats.cpp:25-26`，调用点 `server/src/room/match_controller.cpp:335-341`）。房间侧组装 MatchState 时按 `pid` 读战绩记录（`buildMatchState` → `playerRecordFor(room, pid)->stats.kills`，`server/src/room/room.cpp:352-356`），**不再**读 v1 遗留、永不累加的 `Session::kills`（只在加入时置 0、重连时照抄）。载荷布局与 13 字节位宽不变。依据：用户裁定 + `server/tests/match_flow_test.cpp`（`matchstate_kills_follow_real_kill_stats`）。
 
-- **单播且可靠**（type 10）：每个客户端各收到一份内容相同的帧；节拍与触发见 S10 §5.8。
+- **单播且可靠**（type 10）：玩家记录块相同，尾部 `localPid` 按接收者会话的 `pid` 单独编码；节拍与触发见 S10 §5.8。
 - **`hostId` 不上线**（v1 同）：客户端把 `pid` 最小者视为主机。
-- 帧长上界：`5 + 4 × (16 + 12) = 117` 字节，远小于 1200 字节单包上限，不分片。
+- 载荷上界：`5 + 4 × (16 + 12) + 2 = 119` 字节；含通用头和可靠扩展头的整包上界为 `139` 字节，不分片。
+- `localPid = 0` 允许未绑定模板；非零值必须在 `players` 中恰好出现一次，未知或重复匹配均拒绝（解码为 `BadValue`）。缺尾或半尾拒绝为 `Truncated`，多余尾字节拒绝为 `BadLength`，不得把缺尾当作 0。
+- 客户端只按权威 `localPid` 绑定身份，不按昵称认领、不回退最小 pid。共享向量 `server/tests/fixtures/matchstate_local_pid.hex` 包含两名同名 `same` 玩家与尾部 `localPid=2`，整包 67 字节。
 - 名称为空或超过 12 字节、`count > 4`、`weapon > 2` 一律按 `DecodeFailure` 拒收该帧（不得截断后使用）。
 
 ### 握手时序（冻结）
@@ -160,6 +163,14 @@ C→S  Join{nameLen u8, name[nameLen]}                        (type=11, reliable
 S→C  Disconnect{reason u8}                                  (type=8, reliable)
 ```
 
+**服务端身份与生命周期边界（协议 1 修复，协议 2 继续有效）**：
+
+- `Hello` 只接受 `session = 0`，独立于已建立会话的心跳与 ACK 处理；重发去重键是 `(来源 IPv4, 来源端口, clientNonce)`，不同端点的相同 nonce 不得复用身份。
+- 普通包（含分片）必须来自该 session 绑定的端点且会话仍为 Connected；先检查来源和状态，再更新心跳、ACK 或业务状态。宽限期普通包不复活身份，必须走 `Resume`。
+- `Resume` 在宽限期内验证令牌成功后才允许迁移端点并恢复原 pid；错误令牌不得删除、续活或确认原会话。曾成功恢复的会话收到相同令牌、当前绑定端点的重复 `Resume` 时只确认并续活，不重复计重连、不重复执行生命补偿；Connected 状态不得借 `Resume` 从别的端点迁移。
+- 连续 3 秒失联必须同步到房间：清空旧命令、置 idle、停止水平移动；30 秒宽限期保留身份和名额。同一运行时 Client 重连也必须解除 idle 并保留原 pid；宽限期到期统一释放网络与房间名额。
+- 以上防护不提供加密身份认证；不修改既有令牌格式。真实 UDP 回环回归位于 `server/tests/runtime_test.cpp`，纯握手幂等与错误令牌回归位于 `server/tests/transport_test.cpp`。
+
 > **已裁决（联调轮，2026-09-28 补）：`type = 11 Join` 是「昵称上报」通道。**
 >
 > **原问题**：客户端侧把身份做成了「按昵称在大厅玩家表里认领 pid」（`client/Assets/Scripts/Net/LocalIdentity.cs`），但**线上没有任何报文能把本地昵称送到服务端**——服务端 `room.cpp` 的 `roomJoin` 在 `session.nameBytes < kNameMinBytes` 时兜底填 `"player"`，而 `setSessionName` 在全仓只有这一处调用点。于是真连时所有玩家在 MatchState 里都叫 `player`，按名认领永远认不出自己（只有恰好输入 `player` 才点亮），相机/HUD 的本地绑定整体落不下来。
@@ -168,11 +179,11 @@ S→C  Disconnect{reason u8}                                  (type=8, reliable)
 >
 > **载荷（冻结）**：`nameLen u8` + `name[nameLen]`，合计 `2..13` 字节；`name` 是 UTF-8，`1..12` **字节**（与 MatchState 的 `kNameMinBytes/kNameMaxBytes` 同源），由既有 `setSessionName`（`server/src/room/session.cpp`）净化后写入会话。`nameLen` 越界、字节数不足、非 UTF-8 一律 `DecodeFailure`（不得截断使用）。
 >
-> **时序与幂等**：`Join` 可在 `HelloAck` 之后的任意时刻发送；**重发同一昵称是幂等的**（写同一个会话字段）。客户端在「昵称变化」与「进入 Connected」两个时机各发一次（后者覆盖「先连上、后打字」的顺序）。服务端**不回复**：`pid` 仍由 MatchState（type 10）逐玩家行带出的 `pid` + `name` 认领——这是**沿用既有口径**，不新增回显报文。
+> **时序与幂等**：`Join` 可在 `HelloAck` 之后的任意时刻发送；**重发同一昵称是幂等的**（写同一个会话字段）。客户端在「昵称变化」与「进入 Connected」两个时机各发一次（后者覆盖「先连上、后打字」的顺序）。服务端不新增 Join 专用回复；后续 MatchState（type 10）用单播尾部 `localPid` 明确接收者身份，`name` 仅用于显示。
 >
 > **重连不许改身份**：`Join` 不参与身份判定。`Resume` 路径照旧「只按令牌匹配、昵称不参与」（§5.5），且服务端沿用旧会话的昵称与令牌；与此同名的纪律见 `room.cpp` 的 `roomReconnect`。
 >
-> **不做的事（如实登记，非待办）**：服务端**不强制昵称唯一**，同名多行的歧义由客户端 `LocalIdentity.AmbiguousCount` 如实计数（取最小 `pid`，确定性但不保证正确）。若要消除歧义，需要额外的唯一性裁决或 pid 回显，属后续计划。
+> **同名规则（协议 2）**：服务端不强制昵称唯一；权威 `localPid` 消除身份歧义，重名不得导致错误绑定或昵称启发式回退。
 >
 > **实现口径**：`server/src/net/wire.hpp`（`kJoin = 11`、`kMaxPacketType = 11`）、`server/src/net/codec.hpp/.cpp`（`encodeJoin`/`decodeJoin`）、`server/src/security/validate.cpp`（`isClientToServerType` 增分支）、`server/src/server/runtime.cpp`（`case kJoin` → `setSessionName`，开局后同步战绩记录）、客户端 `Assets/Scripts/Net/JoinCodec.cs` 与 `UdpTransport.SendJoin`。用例：`server/tests/codec_test.cpp`、`server/tests/match_flow_test.cpp`、客户端 `Assets/Tests/ContractSuite.cs`/`IdentitySuite.cs`。
 

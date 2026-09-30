@@ -450,6 +450,20 @@ AC_TEST(grace_resume_within_window_succeeds) {
   AC_CHECK_EQ(server.sessions().graceCount(), 0u);
 }
 
+AC_TEST(grace_resume_duplicate_is_idempotent) {
+  net::HandshakeServer server{};
+  const auto hello = server.onHello(0x0BADF00Du, 0u, 0u);
+  AC_CHECK(hello.isAccepted);
+  AC_CHECK_EQ(server.sessions().tick(3000u).wentOffline, 1u);
+  AC_CHECK(server.onResume(hello.session, hello.token, 3100u).isResumed);
+  const auto duplicate = server.onResume(hello.session, hello.token, 3300u);
+  AC_CHECK(duplicate.isAccepted);
+  AC_CHECK(!duplicate.isDisconnectDue);
+  AC_CHECK(!duplicate.isResumed);
+  AC_CHECK(!duplicate.isFullSnapshotDue);
+  AC_CHECK_EQ(server.sessions().connectedCount(), 1u);
+}
+
 AC_TEST(grace_release_after_thirty_seconds) {
   net::HandshakeServer server{};
   const net::HandshakeOutcome hello = server.onHello(0x22334455u, 0u, 0u);
@@ -514,9 +528,12 @@ AC_TEST(grace_wrong_token_rejected) {
   AC_CHECK(!wrong.isAccepted);
   AC_CHECK(wrong.isDisconnectDue);
   AC_CHECK(wrong.reason == net::DisconnectReason::kTokenInvalid);
-  // 令牌错误即释放名额（§5.5：失败回 reason=2）
-  AC_CHECK(server.sessions().find(hello.session) == nullptr);
-  AC_CHECK_EQ(server.sessions().size(), 0u);
+  // 拒绝错误令牌不得销毁原身份：合法客户端仍能在宽限期内恢复。
+  AC_CHECK(server.sessions().find(hello.session) != nullptr);
+  AC_CHECK_EQ(server.sessions().size(), 1u);
+  const net::HandshakeOutcome recovered = server.onResume(hello.session, hello.token, 3600u);
+  AC_CHECK(recovered.isResumed);
+  AC_CHECK(server.validateSession(hello.session).isAccepted);
 
   // 已连接的会话不接受 Resume
   const net::HandshakeOutcome live = server.onHello(0x1234u, 0u, 0u);
@@ -639,7 +656,7 @@ AC_TEST(memory_reliable_delivery_in_order) {
 
 AC_TEST(transport_handshake_assigns_session) {
   AC_CHECK(net::isVersionAccepted(net::kProtocolVersion));
-  AC_CHECK(!net::isVersionAccepted(2u));
+  AC_CHECK(!net::isVersionAccepted(1u));
 
   net::MemoryTransport bus{1u};
   net::HandshakeServer server{};
@@ -964,7 +981,7 @@ AC_TEST(transport_stale_token_rejected) {
   AC_CHECK_EQ(static_cast<uint8_t>(net::DisconnectReason::kMalformedPacket), 5u);
   AC_CHECK_EQ(static_cast<uint8_t>(net::DisconnectReason::kRateLimited), 6u);
   AC_CHECK_EQ(static_cast<uint8_t>(net::DisconnectReason::kSlowConsumer), 7u);
-  AC_CHECK(server.sessions().find(hello.session) == nullptr);  // 令牌错误即释放名额
+  AC_CHECK(server.sessions().find(hello.session) != nullptr);  // 拒绝错误令牌，保留原身份
 }
 
 // ---------- 套接字缝（不在 §6 五组内，单独一条）----------

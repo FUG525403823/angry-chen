@@ -13,7 +13,8 @@ namespace Ac.UI
         public bool Visible { get; private set; }
         public int ApplyCount { get; private set; }
         public int ConflictHintAction { get; private set; }
-        public string Hint { get; private set; }
+        private string _hint = string.Empty;
+        public string Hint { get { return string.IsNullOrEmpty(_store.LastSaveError) ? _hint : _store.LastSaveError; } private set { _hint = value; } }
 
         public event Action<SettingsKey> OnChanged;
 
@@ -58,6 +59,10 @@ namespace Ac.UI
             for (var i = 0; i < colors.Length; i++) if (colors[i] == current) next = colors[(i + 1) % colors.Length];
             return Notify(SettingsKey.CrosshairColor, _store.SetCrosshairColor(next));
         }
+        public bool SetCrosshairScale(float value) { return Notify(SettingsKey.CrosshairScale, _store.SetCrosshairScale(value)); }
+        public bool SetCrosshairThickness(float value) { return Notify(SettingsKey.CrosshairThickness, _store.SetCrosshairThickness(value)); }
+        public bool SetCrosshairGap(float value) { return Notify(SettingsKey.CrosshairGap, _store.SetCrosshairGap(value)); }
+        public bool SetCrosshairDynamic(bool value) { return Notify(SettingsKey.CrosshairDynamic, _store.SetCrosshairDynamic(value)); }
         public bool SetColorblindSafe(bool value) { return Notify(SettingsKey.ColorblindSafe, _store.SetColorblindSafe(value)); }
         public bool SetReduceMotion(bool value) { return Notify(SettingsKey.ReduceMotion, _store.SetReduceMotion(value)); }
 

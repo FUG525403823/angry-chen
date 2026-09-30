@@ -121,7 +121,7 @@ std::size_t parseLimit(std::string_view query, std::size_t fallback) noexcept {
 
 Response handleRequest(HttpState& state, const HttpDeps& deps, const Request& request,
                        std::uint32_t nowMs) {
-  if (!allowRequest(state, request.clientId, nowMs)) {
+  if (request.path.starts_with("/api/") && !allowRequest(state, request.clientId, nowMs)) {
     ac::metrics::bumpCounter(deps.counters, ac::metrics::CounterId::kHttpRateLimited);
     Response response = makeError(429, "rate-limited");
     response.extraHeaderName = kRetryAfterHeader;

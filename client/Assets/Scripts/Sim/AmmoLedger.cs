@@ -17,6 +17,7 @@ namespace Ac.Sim
         private const int MaxPending = 64;
 
         private readonly ushort[] _pendingSeq = new ushort[MaxPending];
+        private readonly int[] _pendingSlot = new int[MaxPending];
         private int _pendingCount;
 
         private bool _hasServer;
@@ -34,6 +35,7 @@ namespace Ac.Sim
         {
             if (_pendingCount == MaxPending) DropOldest();
             _pendingSeq[_pendingCount] = seq;
+            _pendingSlot[_pendingCount] = slot;
             _pendingCount += 1;
             _lastLocalShotMs = nowMs;
             _hasShotMs = true;
@@ -45,9 +47,12 @@ namespace Ac.Sim
             if (CommandBuffer.SeqDiff(ackedSeq, _ackedSeq) > 0) _ackedSeq = ackedSeq;
         }
 
-        private int Optimistic(int serverMag)
+        private int Optimistic(int serverMag, int slot)
         {
-            var value = serverMag - _pendingCount;
+            var pending = 0;
+            for (var i = 0; i < _pendingCount; i++)
+                if (_pendingSlot[i] == slot) pending += 1;
+            var value = serverMag - pending;
             return value < 0 ? 0 : value;
         }
 
@@ -57,20 +62,20 @@ namespace Ac.Sim
             if (!_hasServer)
             {
                 _hasServer = true;
-                _shown = Optimistic(serverMag);
+                _shown = Optimistic(serverMag, slot);
             }
             else
             {
                 // 消账：权威每下降 1 发消掉最早的一条未确认开火（FIFO）
-                if (serverMag < _serverMag) ConsumeOldest(_serverMag - serverMag);
+                if (slot == _slot && serverMag < _serverMag) ConsumeOldest(_serverMag - serverMag, slot);
                 ExpireStale();
                 if (serverMag > _serverMag || slot != _slot)
                 {
-                    _shown = Optimistic(serverMag);   // 周期重置：换弹/补弹或换槽回到乐观值
+                    _shown = Optimistic(serverMag, slot);   // 周期重置：换弹/补弹或换槽回到乐观值
                 }
                 else
                 {
-                    var lower = Optimistic(serverMag);
+                    var lower = Optimistic(serverMag, slot);
                     if (lower < _shown) _shown = lower;   // 只降不升
                     if (_pendingCount == 0 && _hasShotMs && nowMs - _lastLocalShotMs >= AmmoIdleHealMs) _shown = serverMag;
                 }
@@ -80,7 +85,7 @@ namespace Ac.Sim
             _slot = slot;
 
             // §5(c)：乐观值按消账/过期之后的未确认条数算（消账会立刻改变它）
-            var optimistic = Optimistic(serverMag);
+            var optimistic = Optimistic(serverMag, slot);
 
             var view = default(AmmoView);
             view.Mag = _shown;
@@ -118,9 +123,15 @@ namespace Ac.Sim
             }
         }
 
-        private void ConsumeOldest(int count)
+        private void ConsumeOldest(int count, int slot)
         {
-            for (var i = 0; i < count && _pendingCount > 0; i++) DropOldest();
+            var index = 0;
+            while (count > 0 && index < _pendingCount)
+            {
+                if (_pendingSlot[index] != slot) { index += 1; continue; }
+                RemoveAt(index);
+                count -= 1;
+            }
         }
 
         private void DropOldest()
@@ -130,7 +141,11 @@ namespace Ac.Sim
 
         private void RemoveAt(int index)
         {
-            for (var i = index; i < _pendingCount - 1; i++) _pendingSeq[i] = _pendingSeq[i + 1];
+            for (var i = index; i < _pendingCount - 1; i++)
+            {
+                _pendingSeq[i] = _pendingSeq[i + 1];
+                _pendingSlot[i] = _pendingSlot[i + 1];
+            }
             _pendingCount -= 1;
         }
     }

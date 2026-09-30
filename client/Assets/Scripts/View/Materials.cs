@@ -176,6 +176,8 @@ namespace Ac.View
         public const string InstancedResourcePath = "ArenaUrpLitInstanced";
         public const string UrpLitShaderName = "Universal Render Pipeline/Lit";
         public const string StandardShaderName = "Standard";
+        public const string SheepResourcePath = "SheepVertexLit";
+        public const string SheepShaderName = "Ac/SheepVertexLit";
 
         private static bool _resolved;
         private static Shader _shader;
@@ -238,6 +240,18 @@ namespace Ac.View
             var material = Base(name, color);
             if (material == null) return null;
             material.enableInstancing = true;
+            return material;
+        }
+
+        // 羊体独享顶点色材质；Resources 的硬引用防止 shader 被剥离，不回退到忽略顶点色的 Lit。
+        public static Material CreateSheep(string name)
+        {
+            var holder = Resources.Load<Material>(SheepResourcePath);
+            if (holder == null || holder.shader == null || holder.shader.name != SheepShaderName) return null;
+            var material = new Material(holder);
+            material.name = name;
+            material.enableInstancing = true;
+            material.SetColor("_BaseColor", Color.white);
             return material;
         }
 

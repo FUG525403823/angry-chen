@@ -22,6 +22,8 @@ namespace Ac.Tests
         {
             SelfTest.Add("assets.material_shader_reference", ChecksShaderReferences);
             SelfTest.Add("assets.material_shader_runtime", ChecksRuntimeResolution);
+            SelfTest.Add("assets.sheep_vertex_material_reference", ChecksSheepReference);
+            SelfTest.Add("assets.sheep_vertex_material_runtime", ChecksSheepRuntime);
         }
 
         // 盘上引用链对了，还要真的**解析得出来**：出包剥离的原始症状就是"盘上有资产、运行期取不到"。
@@ -69,6 +71,54 @@ namespace Ac.Tests
             {
                 SelfTest.True(ShaderGuid(benchPath) == UrpLitShaderGuid,
                     "FrameBenchUrpLit 也必须引用同一个 URP Lit", ShaderGuid(benchPath) ?? "(未找到 m_Shader)");
+            }
+        }
+
+        private static void ChecksSheepReference()
+        {
+            var resources = ResourcesDir();
+            SelfTest.True(resources != null, "羊材质 Resources 目录必须存在", "目录不存在");
+            if (resources == null) return;
+            var materialPath = Path.Combine(resources, "SheepVertexLit.mat");
+            var shaderPath = Path.Combine(resources, "..", "Shaders", "SheepVertexLit.shader");
+            SelfTest.True(File.Exists(materialPath), "羊材质资产必须存在", materialPath);
+            SelfTest.True(File.Exists(shaderPath), "羊顶点色 shader 必须存在", shaderPath);
+            if (!File.Exists(materialPath) || !File.Exists(shaderPath)) return;
+            var shaderGuid = MetaGuid(shaderPath + ".meta");
+            SelfTest.True(shaderGuid != null, "shader 必须有合法 guid", shaderGuid ?? "null");
+            SelfTest.True(MetaGuid(materialPath + ".meta") != null, "材质必须有合法 guid", materialPath);
+            SelfTest.True(ShaderGuid(materialPath) == shaderGuid, "Resources 材质必须硬引用羊 shader", ShaderGuid(materialPath) ?? "null");
+            SelfTest.True(InstancingEnabled(materialPath), "羊材质保留 GPU instancing 变体", "未启用");
+            var shaderText = File.ReadAllText(shaderPath);
+            SelfTest.True(shaderText.Contains(": COLOR"), "羊 shader 必须接收顶点色语义", "缺少 COLOR");
+            SelfTest.True(shaderText.Contains("input.color.rgb * _BaseColor.rgb"), "主体颜色必须来自顶点色", "缺少顶点色乘积");
+        }
+
+        private static void ChecksSheepRuntime()
+        {
+            var holder = UnityEngine.Resources.Load<UnityEngine.Material>(Ac.View.ArenaMaterials.SheepResourcePath);
+            SelfTest.True(holder != null, "羊资源材质必须能加载", "null");
+            if (holder == null) return;
+            SelfTest.True(holder.shader != null && holder.shader.name == Ac.View.ArenaMaterials.SheepShaderName,
+                "羊材质必须引用专用 shader", holder.shader == null ? "null" : holder.shader.name);
+            SelfTest.True(holder.enableInstancing, "资源保留 instancing", "未启用");
+            SelfTest.True(holder.GetColor("_BaseColor") == UnityEngine.Color.white, "默认白色 tint 不应二次染色", "非白色");
+            var material = Ac.View.ArenaMaterials.CreateSheep("Ac/TestSheep");
+            SelfTest.True(material != null, "羊运行期材质必须能创建", "null");
+            if (material == null) return;
+            try
+            {
+                SelfTest.True(material != holder && material.shader == holder.shader, "独立实例复用资产 shader", "实例或 shader 错误");
+                SelfTest.True(material.enableInstancing, "运行期羊材质保留 instancing", "未启用");
+                SelfTest.True(material.GetColor("_BaseColor") == UnityEngine.Color.white, "运行期 tint 保持白色", "非白色");
+                SelfTest.True(material.FindPass("ForwardLit") >= 0, "羊有 forward pass", "缺少");
+                SelfTest.True(material.FindPass("ShadowCaster") >= 0, "羊可投射阴影", "缺少");
+                SelfTest.True(material.FindPass("DepthOnly") >= 0, "羊可写深度", "缺少");
+            }
+            finally
+            {
+                if (UnityEngine.Application.isPlaying) UnityEngine.Object.Destroy(material);
+                else UnityEngine.Object.DestroyImmediate(material);
             }
         }
 

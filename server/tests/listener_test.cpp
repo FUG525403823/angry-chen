@@ -4,6 +4,17 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#undef near
+#else
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#endif
 
 #include "http/listener.hpp"
 #include "http/server.hpp"
@@ -21,10 +32,10 @@ namespace {
 constexpr std::uint32_t kLoopback = 0x7F000001u;
 
 struct Server {
-  explicit Server(const char* tag) : dir(tag) {
+  explicit Server(const char* tag, const ac::http::HttpListenerOptions& options = {}) : dir(tag) {
     std::string error;
     store = ac::persist::openMatchStore(dir.file("data"), &error);
-    process.protocol = 1u;
+    process.protocol = 2u;
     process.rooms = 1u;
     process.connections = 1u;
     process.players = 1u;
@@ -33,7 +44,7 @@ struct Server {
     deps.user = this;
     deps.fill = &Server::fill;
     std::string startError;
-    isStarted = listener.start(0u, &state, deps, &startError);
+    isStarted = listener.start(0u, &state, deps, &startError, options);
   }
 
   static void fill(void* user, ac::http::HttpDeps& out) {
@@ -57,11 +68,29 @@ struct Server {
     return connection;
   }
 
-  std::size_t serveOnce(std::uint32_t nowMs) { return listener.serveOnce(nowMs, 500); }
+  std::size_t serveOnce(std::uint32_t nowMs) {
+    for (int i = 0; i < 100; ++i) {
+      const auto completed = listener.serveOnce(nowMs, 0);
+      if (completed != 0u || !listener.isOpen()) return completed;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return 0u;
+  }
 
   std::string roundTrip(std::string_view target, std::uint32_t nowMs) {
     ac::net::TcpConnection connection = connect(target);
     if (!connection.isOpen()) return std::string();
+    serveOnce(nowMs);
+    return readAll(connection);
+  }
+
+  std::string forwardedRequest(std::string_view headers, std::uint32_t nowMs = 1000u) {
+    auto connection = ac::net::connectTcp(kLoopback, listener.boundPort(), 500);
+    if (!connection.isOpen()) return {};
+    std::string request = "GET /api/leaderboard HTTP/1.1\r\nhost: localhost\r\n";
+    request += headers;
+    request += "\r\n";
+    if (!connection.sendAll(request.data(), request.size())) return {};
     serveOnce(nowMs);
     return readAll(connection);
   }
@@ -91,6 +120,185 @@ struct Server {
 
 }  // namespace
 
+AC_TEST(listener_partial_request_does_not_block_poll) {
+  Server server("listen");
+  AC_CHECK(server.isStarted);
+  auto slow = ac::net::connectTcp(kLoopback, server.listener.boundPort(), 500);
+  AC_CHECK(slow.isOpen());
+  const std::string partial = "GET /health HTTP/1.1\r\nhost: localhost\r\n";
+  AC_CHECK(slow.sendAll(partial.data(), partial.size()));
+  const auto started = std::chrono::steady_clock::now();
+  const auto completed = server.listener.serveOnce(1000u, 0);
+  const auto elapsed = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - started).count();
+  std::printf("partialRequestPoll elapsed=%.1fms completed=%zu\n", elapsed, completed);
+  AC_CHECK(elapsed < 100.0);
+  AC_CHECK_EQ(completed, static_cast<std::size_t>(0));
+}
+
+AC_TEST(listener_response_has_its_own_absolute_deadline) {
+  Server server("listen");
+  server.metricsBody.assign(60000u, 'm');
+  auto connection = ac::net::connectTcp(kLoopback, server.listener.boundPort(), 500);
+  AC_CHECK(connection.isOpen());
+  const std::string partial = "GET /metrics HTTP/1.1\r\nhost: localhost\r\n";
+  AC_CHECK(connection.sendAll(partial.data(), partial.size()));
+  AC_CHECK_EQ(server.listener.serveOnce(1000u), static_cast<std::size_t>(0));
+  AC_CHECK(connection.sendAll("\r\n", 2u));
+  AC_CHECK_EQ(server.listener.serveOnce(2999u), static_cast<std::size_t>(0));
+  AC_CHECK_EQ(server.serveOnce(3001u), static_cast<std::size_t>(1));
+  const auto response = Server::readAll(connection);
+  const auto bodyAt = response.find("\r\n\r\n");
+  AC_CHECK(bodyAt != std::string::npos);
+  AC_CHECK_EQ(response.substr(bodyAt + 4u), server.metricsBody);
+  AC_CHECK_EQ(server.listener.lastStatus(), 200);
+}
+
+AC_TEST(listener_trusted_proxy_has_independent_client_quotas) {
+  Server server("listen", {kLoopback, true});
+  for (std::uint32_t i = 0u; i < 30u; ++i) {
+    AC_CHECK(server.forwardedRequest("X-Real-IP: 198.51.100.1\r\n", 1000u + i)
+                 .starts_with("HTTP/1.1 200"));
+  }
+  AC_CHECK(server.forwardedRequest("X-Real-IP: 198.51.100.1\r\n", 1030u)
+               .starts_with("HTTP/1.1 429"));
+  AC_CHECK(server.forwardedRequest("x-real-ip: 198.51.100.2\r\n", 1031u)
+               .starts_with("HTTP/1.1 200"));
+  AC_CHECK_EQ(server.listener.lastClientId(), std::string_view("198.51.100.2"));
+}
+
+AC_TEST(listener_proxy_disabled_ignores_forged_headers) {
+  Server server("listen");
+  for (std::uint32_t i = 0u; i < 30u; ++i) {
+    AC_CHECK(server.forwardedRequest("X-Real-IP: 198.51.100." + std::to_string(i + 1u) +
+                                        "\r\n", 1000u + i).starts_with("HTTP/1.1 200"));
+  }
+  AC_CHECK(server.forwardedRequest("X-Real-IP: invalid, spoofed\r\n", 1030u)
+               .starts_with("HTTP/1.1 429"));
+  AC_CHECK_EQ(server.listener.lastClientId(), std::string_view("127.0.0.1"));
+}
+
+AC_TEST(listener_nonloopback_peer_cannot_spoof_proxy_identity) {
+  Server server("listen", {0u, true});
+  char hostname[256]{};
+  AC_CHECK(::gethostname(hostname, sizeof(hostname)) == 0);
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo* addresses = nullptr;
+  AC_CHECK(::getaddrinfo(hostname, nullptr, &hints, &addresses) == 0);
+  std::uint32_t localIp = 0u;
+  for (const auto* address = addresses; address != nullptr; address = address->ai_next) {
+    const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->ai_addr);
+    const auto candidate = ntohl(ipv4->sin_addr.s_addr);
+    if (candidate != 0u && (candidate >> 24) != 127u) { localIp = candidate; break; }
+  }
+  if (addresses != nullptr) ::freeaddrinfo(addresses);
+  if (localIp == 0u) {
+    std::printf("nonloopbackProxyIdentity not verified: no local nonloopback IPv4\n");
+    return;
+  }
+  auto connection = ac::net::connectTcp(localIp, server.listener.boundPort(), 500);
+  AC_CHECK(connection.isOpen());
+  const std::string request = "GET /api/leaderboard HTTP/1.1\r\nhost: localhost\r\n"
+                              "X-Real-IP: forged, invalid\r\n\r\n";
+  AC_CHECK(connection.sendAll(request.data(), request.size()));
+  AC_CHECK_EQ(server.serveOnce(1000u), static_cast<std::size_t>(1));
+  AC_CHECK(Server::readAll(connection).starts_with("HTTP/1.1 200"));
+  char expected[INET_ADDRSTRLEN]{};
+  in_addr address{};
+  address.s_addr = htonl(localIp);
+  AC_CHECK(::inet_ntop(AF_INET, &address, expected, sizeof(expected)) != nullptr);
+  AC_CHECK_EQ(server.listener.lastClientId(), std::string_view(expected));
+  std::printf("nonloopbackProxyIdentity verified peer=%s\n", expected);
+}
+
+AC_TEST(listener_proxy_mode_allows_direct_local_monitoring_without_header) {
+  Server server("listen", {kLoopback, true});
+  AC_CHECK(server.roundTrip("/health", 1000u).starts_with("HTTP/1.1 200"));
+  AC_CHECK(server.roundTrip("/metrics", 1001u).starts_with("HTTP/1.1 200"));
+  AC_CHECK_EQ(server.listener.lastClientId(), std::string_view("127.0.0.1"));
+}
+
+AC_TEST(listener_trusted_proxy_rejects_ambiguous_or_invalid_identity) {
+  Server server("listen", {kLoopback, true});
+  const std::string_view invalid[] = {
+      "X-Real-IP: 198.51.100.1\r\nx-real-ip: 198.51.100.2\r\n",
+      "X-Real-IP: 198.51.100.1, 198.51.100.2\r\n",
+      "X-Real-IP: \r\n", "X-Real-IP: hostname\r\n", "X-Real-IP: 256.0.0.1\r\n",
+      "X-Real-IP: 198.51.100.1:80\r\n", "X-Real-IP: [::1]\r\n",
+      "X-Real-IP: fe80::1%eth0\r\n", "X-Real-IP: 198.51.100.1\r\n 198.51.100.2\r\n",
+      "X-Real-IP : 198.51.100.1\r\n"};
+  for (const auto header : invalid)
+    AC_CHECK(server.forwardedRequest(header).starts_with("HTTP/1.1 500"));
+}
+
+AC_TEST(listener_proxy_normalizes_ipv6_and_ipv4_mapped_identity) {
+  Server server("listen", {kLoopback, true});
+  AC_CHECK(server.forwardedRequest("X-Real-IP: 2001:0DB8:0000:0000:0000:0000:0000:0001\r\n")
+               .starts_with("HTTP/1.1 200"));
+  AC_CHECK_EQ(server.listener.lastClientId(), std::string_view("2001:db8::1"));
+  for (std::uint32_t i = 0u; i < 30u; ++i)
+    AC_CHECK(server.forwardedRequest("X-Real-IP: 198.51.100.1\r\n", 1000u + i)
+                 .starts_with("HTTP/1.1 200"));
+  AC_CHECK(server.forwardedRequest("X-Real-IP: ::ffff:198.51.100.1\r\n", 1030u)
+               .starts_with("HTTP/1.1 429"));
+}
+
+AC_TEST(listener_fragmented_request_survives_eagain_while_other_client_completes) {
+  Server server("listen");
+  auto slow = ac::net::connectTcp(kLoopback, server.listener.boundPort(), 500);
+  AC_CHECK(slow.isOpen());
+  AC_CHECK(slow.sendAll("GET /health HTTP/1.1\r\n", 22u));
+  AC_CHECK_EQ(server.listener.serveOnce(1000u), static_cast<std::size_t>(0));
+  AC_CHECK_EQ(server.listener.serveOnce(1001u), static_cast<std::size_t>(0));
+  AC_CHECK(server.roundTrip("/health", 1002u).starts_with("HTTP/1.1 200"));
+  AC_CHECK(slow.sendAll("\r\n", 2u));
+  AC_CHECK_EQ(server.serveOnce(1003u), static_cast<std::size_t>(1));
+  AC_CHECK(Server::readAll(slow).starts_with("HTTP/1.1 200"));
+}
+
+AC_TEST(listener_read_deadline_is_absolute_despite_progress) {
+  Server server("listen");
+  auto slow = ac::net::connectTcp(kLoopback, server.listener.boundPort(), 500);
+  AC_CHECK(slow.isOpen());
+  AC_CHECK(slow.sendAll("G", 1u));
+  AC_CHECK_EQ(server.listener.serveOnce(1000u), static_cast<std::size_t>(0));
+  AC_CHECK(slow.sendAll("E", 1u));
+  AC_CHECK_EQ(server.listener.serveOnce(2999u), static_cast<std::size_t>(0));
+  AC_CHECK_EQ(server.listener.serveOnce(3000u), static_cast<std::size_t>(1));
+  std::uint8_t buffer[1];
+  AC_CHECK_EQ(slow.recv(buffer, 100), 0);
+  AC_CHECK_EQ(server.listener.lastStatus(), 500);
+}
+
+AC_TEST(listener_early_eof_is_not_treated_as_would_block) {
+  Server server("listen");
+  auto client = ac::net::connectTcp(kLoopback, server.listener.boundPort(), 500);
+  AC_CHECK(client.isOpen());
+  AC_CHECK(client.sendAll("G", 1u));
+  AC_CHECK_EQ(server.listener.serveOnce(1000u), static_cast<std::size_t>(0));
+  client.close();
+  AC_CHECK_EQ(server.serveOnce(1001u), static_cast<std::size_t>(1));
+  AC_CHECK_EQ(server.listener.lastStatus(), 500);
+  AC_CHECK(server.roundTrip("/health", 1002u).starts_with("HTTP/1.1 200"));
+}
+
+AC_TEST(listener_response_deadline_does_not_extend_on_write_progress) {
+  Server server("listen");
+  server.metricsBody.assign(60000u, 'm');
+  auto client = server.connect("/metrics");
+  AC_CHECK(client.isOpen());
+  AC_CHECK_EQ(server.listener.serveOnce(1000u), static_cast<std::size_t>(0));
+  AC_CHECK_EQ(server.listener.serveOnce(2999u), static_cast<std::size_t>(0));
+  AC_CHECK_EQ(server.listener.serveOnce(3000u), static_cast<std::size_t>(1));
+  const auto response = Server::readAll(client);
+  const auto bodyAt = response.find("\r\n\r\n");
+  AC_CHECK(bodyAt != std::string::npos);
+  AC_CHECK(response.size() - bodyAt - 4u < server.metricsBody.size());
+  AC_CHECK_EQ(server.listener.lastStatus(), 500);
+}
+
 AC_TEST(listener_serves_health_over_real_socket) {
   Server server("listen");
   AC_CHECK(server.isStarted);
@@ -100,7 +308,7 @@ AC_TEST(listener_serves_health_over_real_socket) {
   AC_CHECK(text.find("content-type: application/json") != std::string::npos);
   AC_CHECK(text.find("content-length: ") != std::string::npos);
   AC_CHECK(text.find("connection: close") != std::string::npos);
-  AC_CHECK(text.find("\"protocolVersion\":1") != std::string::npos);
+  AC_CHECK(text.find("\"protocolVersion\":2") != std::string::npos);
   AC_CHECK(text.find("\"rooms\":1") != std::string::npos);
   AC_CHECK(text.find("\"ticks\":1200") != std::string::npos);
   AC_CHECK_EQ(server.listener.lastStatus(), 200);

@@ -12,6 +12,8 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("sheep.geometry", ChecksGeometry);
+            SelfTest.Add("sheep.surface_quality", ChecksSurfaceQuality);
+            SelfTest.Add("sheep.scale_and_emblem_attachment", ChecksScaleAndEmblemAttachment);
             SelfTest.Add("sheep.pool", ChecksPool);
             SelfTest.Add("sheep.zero_alloc", ChecksZeroAlloc);
             SelfTest.Add("sheep.emblem", ChecksEmblem);
@@ -107,6 +109,71 @@ namespace Ac.Tests
             SelfTest.True(SheepMesh.KindOf(9) == SheepKind.King, "越界 kind 收敛到羊王", SheepMesh.KindOf(9).ToString());
         }
 
+        private static void ChecksSurfaceQuality()
+        {
+            for (var k = 0; k < SheepMesh.FormCount; k++)
+            {
+                var kind = (SheepKind)k;
+                var mesh = SheepMesh.Build(kind);
+                try
+                {
+                    var vertices = mesh.vertices;
+                    var normals = mesh.normals;
+                    var triangles = mesh.triangles;
+                    SelfTest.Equal(vertices.Length, normals.Length);
+                    SelfTest.True(Math.Abs(mesh.bounds.min.y) < 0.0001f, "四蹄接地", mesh.bounds.min.y.ToString("R"));
+                    var expectedHeight = SheepMesh.Form(kind).HeightM / SheepMesh.Form(kind).Scale;
+                    SelfTest.True(Math.Abs(mesh.bounds.size.y - expectedHeight) < 0.001, "网格只含局部尺寸，实例缩放一次", mesh.bounds.size.y.ToString("R"));
+                    for (var i = 0; i < vertices.Length; i++)
+                    {
+                        SelfTest.True(!float.IsNaN(vertices[i].x) && !float.IsInfinity(vertices[i].x) &&
+                            !float.IsNaN(vertices[i].y) && !float.IsInfinity(vertices[i].y) &&
+                            !float.IsNaN(vertices[i].z) && !float.IsInfinity(vertices[i].z), "坐标有限", i.ToString());
+                        SelfTest.True(Math.Abs(normals[i].magnitude - 1f) < 0.001f, "顶点法线归一", i.ToString());
+                    }
+                    for (var i = 0; i < triangles.Length; i += 3)
+                    {
+                        var a = triangles[i]; var b = triangles[i + 1]; var c = triangles[i + 2];
+                        var face = Vector3.Cross(vertices[b] - vertices[a], vertices[c] - vertices[a]);
+                        SelfTest.True(face.sqrMagnitude > 1e-12f, "没有极点退化三角形", i.ToString());
+                        SelfTest.True(Vector3.Dot(face, normals[a] + normals[b] + normals[c]) > 0f,
+                            "三角绕序与外向法线一致", i.ToString());
+                    }
+                }
+                finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            }
+        }
+
+        private static void ChecksScaleAndEmblemAttachment()
+        {
+            var pool = new SheepInstancePool();
+            var visuals = new SheepVisuals(pool);
+            for (var k = 0; k < SheepMesh.FormCount; k++)
+            {
+                var kind = (SheepKind)k;
+                var view = new EntityView { Id = (ushort)(k + 1), Kind = (byte)k, Visible = true,
+                    X = 3.0, Y = 0.0, Z = -2.0, YawRad = 0.7, HpRatio = 1.0 };
+                visuals.BeginFrame();
+                var index = visuals.Write(view, 0.0);
+                var instance = pool.Instances[index];
+                var expectedScale = SheepMesh.FormScale(kind) * SheepMesh.WoolJitter(kind, view.Id);
+                SelfTest.True(Math.Abs(instance.Transform.MultiplyVector(Vector3.up).magnitude - expectedScale) < 0.0001f,
+                    "体型缩放只在实例施加一次", kind.ToString());
+                var forehead = instance.Transform.MultiplyPoint3x4(SheepMesh.EmblemAnchor(kind));
+                var emblem = instance.EmblemTransform.MultiplyPoint3x4(Vector3.zero);
+                SelfTest.True((forehead - emblem).magnitude < 0.0001f, "额标随身体缩放和旋转贴合", kind.ToString());
+                SelfTest.True(Math.Abs(instance.EmblemTransform.MultiplyVector(Vector3.up).magnitude - expectedScale) < 0.0001f,
+                    "额标同步实例抖动", kind.ToString());
+                view.State = SheepVisuals.StateDead;
+                visuals.BeginFrame(); visuals.Write(view, 100.0);
+                visuals.BeginFrame(); index = visuals.Write(view, 850.0);
+                instance = pool.Instances[index];
+                forehead = instance.Transform.MultiplyPoint3x4(SheepMesh.EmblemAnchor(kind));
+                emblem = instance.EmblemTransform.MultiplyPoint3x4(Vector3.zero);
+                SelfTest.True((forehead - emblem).magnitude < 0.0001f, "尸体收缩时额标不漂移", kind.ToString());
+            }
+        }
+
         private static void ChecksPool()
         {
             SelfTest.Equal(1024, (long)SheepInstancePool.EntityCapacity);
@@ -192,16 +259,18 @@ namespace Ac.Tests
             SelfTest.True(SheepVisuals.EmblemSmoothingPerTick == 0.153518, "平滑步长常量", SheepVisuals.EmblemSmoothingPerTick.ToString("R"));
             SelfTest.True(Math.Abs(SheepVisuals.SmoothEmblem(0.2, 1.0) - (0.2 + 0.8 * 0.153518)) < 1e-12, "一步平滑", SheepVisuals.SmoothEmblem(0.2, 1.0).ToString("R"));
 
-            SelfTest.Equal(0xE8E8F0, Channel(SheepMesh.ColorOf(SheepKind.Elite)));
+            SelfTest.Equal(0xC5E2ED, Channel(SheepMesh.ColorOf(SheepKind.Elite)));
             SelfTest.Equal(0x7AD1FF, Channel(SheepMesh.EmblemColorPure(SheepKind.Elite)));
             SelfTest.Equal(0xFF8A4C, Channel(SheepMesh.EmblemColorPure(SheepKind.King)));
-            SelfTest.Equal(0xFF8A4C, Channel(SheepMesh.ColorOf(SheepKind.King)));
+            SelfTest.Equal(0xEDD4AA, Channel(SheepMesh.ColorOf(SheepKind.King)));
 
             var emblem = SheepMesh.BuildEmblem(SheepKind.King);
             SelfTest.True(emblem.vertexCount >= 5 + 8 * 4, "额标含描边与外圈顶点", emblem.vertexCount.ToString());
             SelfTest.True(emblem.triangles.Length / 3 >= 4 + 16, "额标含描边与外圈三角形", (emblem.triangles.Length / 3).ToString());
             SelfTest.Equal(emblem.vertexCount, emblem.colors32.Length);
             SelfTest.Equal(0xFF8A4C, Channel(emblem.colors32[0]));
+            foreach (var normal in emblem.normals)
+                SelfTest.True(normal.z > 0.99f, "额标面朝羊脸前方", normal.ToString());
 
             // §5(d)/§7：shader 必须是纯文本、不声明 sampler2D、不引用贴图、ZWrite Off
             var path = Path.Combine(Application.dataPath, "Shaders", "Emblem.shader");

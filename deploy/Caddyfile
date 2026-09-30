@@ -1,19 +1,29 @@
-# S15 §3/§5：只转发 HTTP 面（/health、/metrics、/api/*）。
-# 客户端是原生进程：本文件只做转发，不含任何静态资源托管指令（§6-4 的字符串校验点为 0）。
+# 仅反代 HTTP；游戏 UDP 8788 仍由客户端直连。
+# 后端设置 AC_HTTP_BIND=127.0.0.1、AC_TRUST_LOOPBACK_PROXY=1。
+# 修改默认后端端口时，也须向 Caddy 进程注入 AC_HTTP_PORT。
 {
 	admin off
 }
 
 :80 {
+	@operations {
+		path /health /metrics
+		remote_ip 127.0.0.1 ::1
+	}
+	handle @operations {
+		reverse_proxy 127.0.0.1:{$AC_HTTP_PORT:8787} {
+			header_up X-Real-IP {remote_host}
+			header_up -X-Forwarded-For
+			header_up -Forwarded
+		}
+	}
 	@api path /api/*
 	handle @api {
-		reverse_proxy 127.0.0.1:8787
-	}
-	handle /health {
-		reverse_proxy 127.0.0.1:8787
-	}
-	handle /metrics {
-		reverse_proxy 127.0.0.1:8787
+		reverse_proxy 127.0.0.1:{$AC_HTTP_PORT:8787} {
+			header_up X-Real-IP {remote_host}
+			header_up -X-Forwarded-For
+			header_up -Forwarded
+		}
 	}
 	handle {
 		respond 404

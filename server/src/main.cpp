@@ -29,8 +29,10 @@ void printUsage(const char* argv0) {
   std::printf("  --selftest-store  打开 AC_DATA_DIR 下的战绩存储并打印常驻/坏行计数与两条存储指标后退出\n");
   std::printf("  --serve           启动服务器运行时（UDP 游戏面 + HTTP 诊断面），直到 --minutes 到时或 SIGINT/SIGTERM\n");
   std::printf("                    选项 --minutes= --udp-port= --http-port= --data-dir= --seed= --log-level=（顺序无关，--k=v 与 --k v 等价）\n");
+  std::printf("                    选项 --http-bind=IPv4（默认 127.0.0.1） --trust-loopback-proxy=0|1（默认 0）\n");
   std::printf("                    开关 --auto-ready：连上即 ready 并开局（装载/门禁/压测用；ADR-013）\n");
   std::printf("                    环境变量 AC_UDP_PORT / AC_HTTP_PORT / AC_DATA_DIR / AC_LOG_LEVEL；同名的 CLI 选项优先\n");
+  std::printf("                    环境变量 AC_HTTP_BIND / AC_TRUST_LOOPBACK_PROXY 与上述选项同规则；CLI 优先，非法环境值拒绝启动\n");
   std::printf("  无参数            向 stderr 写一条结构化启动日志后退出\n");
 }
 
@@ -101,7 +103,8 @@ int runServe(int argc, char** argv) {
   options.config.udpPort = portFromEnv("AC_UDP_PORT", options.config.udpPort);
   options.config.httpPort = portFromEnv("AC_HTTP_PORT", options.config.httpPort);
   std::string parseError;
-  if (!ac::server::parseServeArgs(argc, argv, options, &parseError)) {
+  if (!ac::server::parseServeEnvironment(options, &parseError) ||
+      !ac::server::parseServeArgs(argc, argv, options, &parseError)) {
     if (options.isHelp) {
       printUsage(argv[0]);
       return 0;

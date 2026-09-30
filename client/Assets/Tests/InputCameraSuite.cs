@@ -20,6 +20,7 @@ namespace Ac.Tests
             SelfTest.Add("camera.pitch_clamp", ChecksPitchClamp);
             SelfTest.Add("camera.recoil_punch", ChecksRecoilPunch);
             SelfTest.Add("sim.local_step", ChecksLocalStep);
+            SelfTest.Add("sim.predictor_fractional_time", ChecksPredictorFractionalTime);
         }
 
         // C09 §5 的后坐注入面：开火当帧顶视角（0.35° 俯仰 + ±0.2° 偏航交替），按 7.5°/s 回正。
@@ -354,6 +355,34 @@ namespace Ac.Tests
             SelfTest.True(predictor.Steps > 0, "步进次数被记录", predictor.Steps.ToString());
             predictor.SetAuthoritative(1.0, 0.0, 2.0, 0, 0);
             SelfTest.True(Math.Abs(predictor.State.X - 1.0) < 1e-12, "权威姿态写入", predictor.State.X.ToString("R"));
+        }
+
+        private static void ChecksPredictorFractionalTime()
+        {
+            var command = Command(1, 0, 0.0, 0);
+            foreach (var fps in new[] { 30, 60, 120, 144, 240 })
+            {
+                var predictor = new Predictor();
+                predictor.SetAuthoritative(0.0, 0.0, 10.0, 0, 0);
+                for (var frame = 0; frame < fps; frame++) predictor.Advance(1000.0 / fps, command);
+                SelfTest.Equal(20, predictor.Steps);
+                SelfTest.Equal(0, predictor.AccumulatorMs);
+                SelfTest.Equal(0, predictor.DroppedSubsteps);
+                SelfTest.True(Math.Abs(predictor.State.Z - 14.5) < 1e-9,
+                    "一秒预测不随帧率丢时间", fps + ":" + predictor.State.Z.ToString("R"));
+                double x, y, z;
+                predictor.RenderPosition(out x, out y, out z);
+                SelfTest.True(Math.Abs(z - 14.5) < 1e-9, "一秒整无残留外推", z.ToString("R"));
+                predictor.Advance(0.5, command);
+                SelfTest.Equal(0, predictor.AccumulatorMs);
+                predictor.RenderPosition(out x, out y, out z);
+                SelfTest.True(Math.Abs(z - 14.50225) < 1e-9, "半毫秒余量保留用于渲染", z.ToString("R"));
+                foreach (var invalid in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity, -1.0, 0.0 })
+                    SelfTest.Equal(0, predictor.Advance(invalid, command));
+                predictor.RenderPosition(out x, out y, out z);
+                SelfTest.True(Math.Abs(z - 14.50225) < 1e-9, "非法时间不污染预测余量", z.ToString("R"));
+                SelfTest.Equal(20, predictor.Steps);
+            }
         }
 
         private static MoveState At(double x, double z)

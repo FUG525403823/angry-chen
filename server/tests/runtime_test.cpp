@@ -101,7 +101,8 @@ std::uint64_t counterOf(const ac::server::Runtime& runtime, ac::metrics::Counter
 // 一次真实握手：返回会话号（0 = 失败）。`serverTick` 非空时带出 HelloAck 里的服务器 tick
 // （§5.3 的 clientTick 必须落在 [serverTick - kClientTickSlackTicks, serverTick] 窗口内，命令才不会被 kStaleTick/kFutureTick 丢掉）。
 std::uint16_t handshake(ac::server::Runtime& runtime, ac::net::UdpSocket& client,
-                        std::uint32_t nonce, std::uint64_t nowMs, std::uint32_t* serverTick = nullptr) {
+                        std::uint32_t nonce, std::uint64_t nowMs, std::uint32_t* serverTick = nullptr,
+                        std::uint32_t* token = nullptr) {
   std::uint8_t frame[64] = {};
   const std::size_t bytes = encodeHelloFrame(frame, sizeof(frame), nonce);
   if (bytes == 0u) return 0u;
@@ -118,10 +119,11 @@ std::uint16_t handshake(ac::server::Runtime& runtime, ac::net::UdpSocket& client
       ac::net::decodeHelloAck(reply, static_cast<std::size_t>(got));
   if (!ack.isOk) return 0u;
   if (serverTick != nullptr) *serverTick = ack.value.serverTick;
+  if (token != nullptr) *token = ac::net::reconnectTokenFor(nonce, ack.value.salt);
   return static_cast<std::uint16_t>(reply[4] | (reply[5] << 8));
 }
 
-std::string httpGet(ac::server::Runtime& runtime, const char* target, std::uint64_t nowMs) {
+std::string httpGet(ac::server::Runtime& runtime, const char* target, std::uint64_t& nowMs) {
   ac::net::TcpConnection connection = ac::net::connectTcp(kLoopback, runtime.httpPort(), 500);
   if (!connection.isOpen()) return std::string();
   std::string request = "GET ";
@@ -131,7 +133,8 @@ std::string httpGet(ac::server::Runtime& runtime, const char* target, std::uint6
   std::string response{};
   std::uint8_t buffer[512] = {};
   for (int i = 0; i < 20; ++i) {
-    runtime.pollOnce(nowMs + static_cast<std::uint64_t>(i) * 10u);
+    if (i > 0) nowMs += 10u;
+    runtime.pollOnce(nowMs);
     const int got = connection.recv(buffer, 20);
     if (got > 0) response.append(reinterpret_cast<const char*>(buffer),
                                  static_cast<std::size_t>(got));
@@ -172,11 +175,23 @@ AC_TEST(runtime_advances_round_and_replicates_snapshots) {
   AC_CHECK(runtime.start(testConfig(), &error));
   ac::net::UdpSocket client{};
   AC_CHECK(client.bind(0u));
-  AC_CHECK(handshake(runtime, client, 0x22334455u, 10000u) != 0u);
+  const auto session = handshake(runtime, client, 0x22334455u, 10000u);
+  AC_CHECK(session != 0u);
 
   std::uint64_t now = 10100u;
   for (int i = 0; i < 200; ++i) {
     now += 25u;
+    if (i % 20 == 0) {
+      ac::net::PacketHeader header{};
+      header.version = ac::net::kProtocolVersion;
+      header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+      header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+      header.session = session;
+      std::uint8_t frame[32] = {};
+      const auto encoded = ac::net::encodeKeepAlive(header, {}, frame, sizeof(frame));
+      AC_CHECK(encoded.isOk);
+      AC_CHECK(client.sendTo({kLoopback, runtime.udpPort()}, {frame, encoded.bytes}) > 0);
+    }
     runtime.pollOnce(now);
     // 收包：不清空会在内核缓冲里堆积，但用例只关心服务端副本仍在推进。
     std::uint8_t scratch[1200] = {};
@@ -275,10 +290,12 @@ AC_TEST(runtime_serves_health_and_metrics_over_http) {
   // process_ 只在 Runtime::publishMetrics 里写（运行循环每次 pollOnce 调它），所以先推一次
   // 时钟，两个端点的数字才都来自「已经填过的快照」而不是默认值。
   runtime.pollOnce(19990u);
-  const std::string health = httpGet(runtime, "/health", 20000u);
+  std::uint64_t now = 20000u;
+  const std::string health = httpGet(runtime, "/health", now);
   AC_CHECK(health.rfind("HTTP/1.1 200 OK", 0u) == 0u);
-  AC_CHECK(health.find("\"protocolVersion\":1") != std::string::npos);
-  const std::string metrics = httpGet(runtime, "/metrics", 21000u);
+  AC_CHECK(health.find("\"protocolVersion\":2") != std::string::npos);
+  now = 21000u;
+  const std::string metrics = httpGet(runtime, "/metrics", now);
   AC_CHECK(metrics.rfind("HTTP/1.1 200 OK", 0u) == 0u);
   AC_CHECK(metrics.find("ac_frames_in_total") != std::string::npos);
   AC_CHECK(metrics.find("ac_rooms 1") != std::string::npos);
@@ -437,10 +454,12 @@ AC_TEST(runtime_persists_match_record_and_report_on_match_end) {
            numberAfter(report, "\"peak\":{\"players\":"));
 
   // ③ HTTP 层能查到该条（同一进程的 store 出 /api/matches/recent），且 /metrics 的常驻条数跟上
-  const std::string recent = httpGet(runtime, "/api/matches/recent?limit=5", now += 100u);
+  now += 100u;
+  const std::string recent = httpGet(runtime, "/api/matches/recent?limit=5", now);
   AC_CHECK(recent.rfind("HTTP/1.1 200 OK", 0u) == 0u);
   AC_CHECK(recent.find("\"" + matchId + "\"") != std::string::npos);
-  const std::string metrics = httpGet(runtime, "/metrics", now += 100u);
+  now += 100u;
+  const std::string metrics = httpGet(runtime, "/metrics", now);
   AC_CHECK(metrics.find("ac_records_retained 1") != std::string::npos);
   std::printf("matchId=%s records=%zu reportPath=%s\n", matchId.c_str(), store->recordCount(),
               reportPath.c_str());
@@ -454,7 +473,8 @@ AC_TEST(runtime_persists_match_record_and_report_on_match_end) {
   if (restarted.store() != nullptr) {
     AC_CHECK(restarted.store()->recordCount() >= static_cast<std::size_t>(1));
   }
-  const std::string afterRestart = httpGet(restarted, "/api/matches/recent?limit=5", now += 100u);
+  now += 100u;
+  const std::string afterRestart = httpGet(restarted, "/api/matches/recent?limit=5", now);
   AC_CHECK(afterRestart.rfind("HTTP/1.1 200 OK", 0u) == 0u);
   AC_CHECK(afterRestart.find("\"" + matchId + "\"") != std::string::npos);
   restarted.stop();
@@ -462,7 +482,7 @@ AC_TEST(runtime_persists_match_record_and_report_on_match_end) {
 
 // S13 云端复验观察项：报告里的 tick 时序曾取到「进程首个 tick → 本 tick」的墙钟（实测 jitterMsP50/P95
 // ≈ 2055 ms、scheduleErrorMsP95 ≈ 2056 ms），`workMsP95` 又被整毫秒截断成恒 0。本用例在**同一进程**里
-// 连打两局长短不同的对局：每局的时序量必须只反映本局 —— ②`ticks.total × 50` 落在本局 `durationMs` 上
+// 连打两局长短不同的对局：每局的时序量必须只反映本局 —— ②`ticks.total × 50` 对应本局非暂停时长
 // （不随进程存活时间增长）、①抖动/调度误差远小于本局时长、③工作量是亚毫秒分辨率下的真实测量。
 AC_TEST(runtime_report_tick_timing_is_match_scoped) {
   ac::test::TempDir dir("runtime-tick-timing");
@@ -481,13 +501,14 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
 
   std::uint64_t now = 10000u;
   std::uint32_t seq = 0u;
+  std::uint16_t activeSession = 0u;
   // 会话靠包续命：3s 不发包就掉进宽限期，房间停摆（见 runtime_tick_clock_tracks_wall_clock_while_playing）。
   // 命令本身不推着走（moveX = 0）：本用例量的是**每 tick 的时序**，不是移动；朝 +x 一路冲锋会在
   // 1 秒内撞进羊群被扑倒（allDowned → 开局即结束），把测量窗口一起带走（去重方向修正后实测 18 tick）。
   const auto keepAlive = [&](int index) {
     if (index % 4 != 0) return;
     std::uint8_t frame[64] = {};
-    const std::size_t bytes = encodeCommandFrame(frame, sizeof(frame), botSession(runtime),
+    const std::size_t bytes = encodeCommandFrame(frame, sizeof(frame), activeSession,
                                                 static_cast<std::uint16_t>(++seq),
                                                 static_cast<std::uint32_t>(index), 0u, 0);
     if (bytes > 0u) {
@@ -522,6 +543,7 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
   for (int round = 0; round < 2; ++round) {
     const int drained = drainClient();
     const std::uint16_t session = handshake(runtime, client, 0x55667788u + static_cast<std::uint32_t>(round), now);
+    activeSession = session;
     std::printf("round=%d drained=%d session=%u clients=%zu\n", round, drained, session,
                 runtime.clientCount());
     AC_CHECK(session != 0u);
@@ -546,10 +568,20 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
     AC_CHECK(gaugeDriftAbsMax <= 50.0);
     // 掉线 → 房间清空 → endMatch。40/50ms 步进：每拍至多执行 1 个 tick（迟到量 ≤ 一步），
     // 不会触发追帧上限（不产生跳过），也不会把一堆 tick 挤进同一拍。
+    std::uint64_t pausedAt = 0u;
+    std::uint64_t pausedTicks = 0u;
     for (int i = 0; i < 1000 && runtime.clientCount() > 0u; ++i) {
       runtime.pollOnce(now += (i % 2 == 0 ? 40u : 50u));
+      if (pausedAt == 0u && runtime.metrics().graceActive > 0u) {
+        pausedAt = now;
+        pausedTicks = runtime.metrics().ticks;
+      }
+      if (pausedAt != 0u) AC_CHECK_EQ(runtime.metrics().ticks, pausedTicks);
     }
     AC_CHECK_EQ(runtime.clientCount(), static_cast<std::size_t>(0));
+    AC_CHECK(pausedAt != 0u);
+    const std::uint64_t pausedMs = now - pausedAt;
+    AC_CHECK(pausedMs >= 29000u && pausedMs <= 31000u);
     runtime.pollOnce(now += 25u);  // 上一拍已 endMatch：这一拍 ensureMatchRunning 落盘
 
     const ac::persist::MatchStore* store = runtime.store();
@@ -589,9 +621,10 @@ AC_TEST(runtime_report_tick_timing_is_match_scoped) {
     AC_CHECK(jitterP95 <= 60.0);
     AC_CHECK(scheduleP95 > 0.0);
     AC_CHECK(scheduleP95 <= 60.0);
-    // ② ticks.total 是本局自己的账（含波间 tick、不含 loading 倒计时）：× 50 落在本局 durationMs 上。
-    //   旧行为把「进程首个 tick 起的全部 tick」写进来，这一项会随进程存活时间线性增长。
-    AC_CHECK(std::fabs(ticksTotal * 50.0 - durationMs) <= 500.0);
+    // ② 全员宽限期间不执行 tick；报告 durationMs 仍保留从开球到结束的墙钟时长。
+    AC_CHECK(durationMs > static_cast<double>(pausedMs) + 1000.0);
+    AC_CHECK(std::fabs(ticksTotal * 50.0 -
+                       (durationMs - static_cast<double>(pausedMs))) <= 500.0);
     // ③ 工作量有真实测量点（房间更新 <1ms 时旧行为四舍五入成 0）。
     AC_CHECK(workP95 > 0.0);
     AC_CHECK_EQ(workP95 <= workP99, true);
@@ -642,7 +675,8 @@ AC_TEST(runtime_room_full_answers_disconnect_reason_eight) {
   const std::size_t requestBytes = encodeHelloFrame(request, sizeof(request), 0x5A5A5A5Au);
   AC_CHECK(requestBytes > 0u);
   AC_CHECK(extra.sendTo(server, std::span<const std::uint8_t>(request, requestBytes)) > 0);
-  for (int i = 0; i < 4; ++i) runtime.pollOnce(now + 30u + static_cast<std::uint64_t>(i));
+  now += 30u;
+  for (int i = 0; i < 4; ++i) runtime.pollOnce(now += 1u);
   std::uint8_t reply[512] = {};
   ac::net::Endpoint from{};
   // 心跳（§5.6 的 KeepAlive）会插进这条流里，所以按**类型**取帧，不能假设相邻。取到就返回 true。
@@ -671,12 +705,14 @@ AC_TEST(runtime_room_full_answers_disconnect_reason_eight) {
   AC_CHECK_EQ(static_cast<int>(first.value.reason),
               static_cast<int>(ac::net::DisconnectReason::kRoomUnavailable));
   AC_CHECK_EQ(runtime.metrics().players, 4u);
-  AC_CHECK(httpGet(runtime, "/health", now + 20u).find("\"players\":4") != std::string::npos);
+  now += 20u;
+  AC_CHECK(httpGet(runtime, "/health", now).find("\"players\":4") != std::string::npos);
 
   // 同一次握手的重发：§5.5 去重会把 HelloAck 幂等再发一遍（准入也被重走一遍），因此这一轮同样要
   // 再补一帧 Disconnect —— 一帧 UDP 丢掉就等于把玩家挂回黑洞，这条断言钉住的就是那件事。
   AC_CHECK(extra.sendTo(server, std::span<const std::uint8_t>(request, requestBytes)) > 0);
-  for (int i = 0; i < 4; ++i) runtime.pollOnce(now + 30u + static_cast<std::uint64_t>(i));
+  now += 30u;
+  for (int i = 0; i < 4; ++i) runtime.pollOnce(now += 1u);
   got = takeFrame(extra, ac::net::PacketType::kHelloAck, reply, sizeof(reply), from);
   AC_CHECK(got > 0);
   AC_CHECK(ac::net::decodeHelloAck(reply, static_cast<std::size_t>(got)).isOk);  // 重发的 HelloAck
@@ -878,6 +914,295 @@ AC_TEST(runtime_match_state_carries_command_acks) {
 // ADR-013：产品默认（`isAutoReady == false`）下，"进大厅 → 看到 ready=false → 按准备 → 全房就绪后开局"
 // 必须真的成立。改之前服务端只按无条件 true 调 roomSetReady（客户端命令里的 Ready 位根本没人读），
 // 于是"大厅"在真连时不存在：首个会话被自动就绪、立刻单开一局，其余连接全部撞 kMatchInProgress。
+AC_TEST(runtime_grace_stops_old_movement_and_fire) {
+  auto config = testConfig();
+  config.isHttpEnabled = false;
+  config.sheepTarget = 0;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket owner{}, observer{};
+  AC_CHECK(owner.bind(0u));
+  AC_CHECK(observer.bind(0u));
+  const auto session = handshake(runtime, owner, 0x87650001u, 5000u);
+  const auto observerSession = handshake(runtime, observer, 0x87650002u, 5004u);
+  AC_CHECK(session != 0u && observerSession != 0u);
+  const ac::net::Endpoint server{kLoopback, runtime.udpPort()};
+  std::uint8_t frame[2048] = {};
+  ac::net::Endpoint from{};
+  std::uint32_t tick = 0u;
+  std::int16_t x = 0;
+  std::int16_t z = 0;
+  bool sawPlayer = false;
+  bool idle = false;
+  std::uint8_t mag = 255u;
+  const auto drain = [&]() {
+    for (int i = 0; i < 128; ++i) {
+      const int got = observer.recvFrom(from, frame);
+      if (got <= 0) break;
+      const auto snapshot = ac::net::decodeSnapshot(frame, static_cast<std::size_t>(got));
+      if (snapshot.isOk) {
+        tick = snapshot.value.tick;
+        for (const auto& entity : snapshot.value.records) {
+          if (entity.id != 1u) continue;
+          x = entity.xCm;
+          z = entity.zCm;
+          idle = (entity.flags() & 32u) != 0u;
+          sawPlayer = true;
+        }
+      }
+      const auto state = ac::net::decodeMatchState(frame, static_cast<std::size_t>(got));
+      if (state.isOk) {
+        for (const auto& player : state.value.players) {
+          if (player.pid == 1u) mag = player.mag;
+        }
+      }
+    }
+    while (owner.recvFrom(from, frame) > 0) {}
+  };
+  const auto pollWithObserver = [&](std::uint64_t now) {
+    ac::net::PacketHeader heartbeat{};
+    heartbeat.version = ac::net::kProtocolVersion;
+    heartbeat.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+    heartbeat.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+    heartbeat.session = observerSession;
+    const auto encoded = ac::net::encodeKeepAlive(heartbeat, {}, frame, sizeof(frame));
+    if (!encoded.isOk || observer.sendTo(server, {frame, encoded.bytes}) <= 0) return false;
+    runtime.pollOnce(now);
+    drain();
+    return true;
+  };
+  for (std::uint64_t now = 5050u; now <= 7000u; now += 50u) AC_CHECK(pollWithObserver(now));
+  AC_CHECK(sawPlayer && tick > 0u);
+  const auto initialX = x;
+  const auto initialZ = z;
+  const auto bytes = encodeCommandFrame(frame, sizeof(frame), session, 1u, tick,
+                                         ac::config::kButtonFire, 127);
+  AC_CHECK(owner.sendTo(server, {frame, bytes}) > 0);
+  AC_CHECK(pollWithObserver(7050u));
+  for (std::uint64_t now = 7100u; now <= 10050u; now += 50u) AC_CHECK(pollWithObserver(now));
+  AC_CHECK(x != initialX || z != initialZ);
+  AC_CHECK(idle);
+  AC_CHECK_EQ(runtime.metrics().graceActive, 1u);
+  const auto stoppedX = x;
+  const auto stoppedZ = z;
+  // MatchState 在下一个广播节拍确认弹匣，此后既不移动也不继续消耗弹药。
+  for (std::uint64_t now = 10100u; now <= 11050u; now += 50u) AC_CHECK(pollWithObserver(now));
+  const auto stoppedMag = mag;
+  for (std::uint64_t now = 11100u; now <= 12050u; now += 50u) AC_CHECK(pollWithObserver(now));
+  AC_CHECK_EQ(x, stoppedX);
+  AC_CHECK_EQ(z, stoppedZ);
+  AC_CHECK_EQ(mag, stoppedMag);
+  AC_CHECK(idle);
+}
+
+AC_TEST(runtime_grace_disconnect_and_same_client_resume) {
+  auto config = testConfig();
+  config.isAutoReady = false;
+  config.isHttpEnabled = false;
+  config.sheepTarget = 0;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket owner{}, resumed{}, intruder{};
+  AC_CHECK(owner.bind(0u));
+  AC_CHECK(resumed.bind(0u));
+  AC_CHECK(intruder.bind(0u));
+  std::uint32_t token = 0u;
+  const auto session = handshake(runtime, owner, 0x87654321u, 5000u, nullptr, &token);
+  AC_CHECK(session != 0u);
+  AC_CHECK_EQ(runtime.metrics().players, 1u);
+  runtime.pollOnce(8000u);
+  AC_CHECK_EQ(runtime.metrics().graceActive, 1u);
+  AC_CHECK_EQ(runtime.metrics().players, 0u);
+  AC_CHECK_EQ(runtime.clientCount(), 1u);
+  std::uint8_t frame[2048] = {};
+  ac::net::PacketHeader header{};
+  header.version = ac::net::kProtocolVersion;
+  header.type = static_cast<std::uint8_t>(ac::net::PacketType::kResume);
+  header.flags = ac::net::requiredFlags(ac::net::PacketType::kResume);
+  header.session = session;
+  const ac::net::Endpoint server{kLoopback, runtime.udpPort()};
+  const auto wrong = ac::net::encodeResume(header, {100u, 0u, 0u}, {token ^ 1u}, frame, sizeof(frame));
+  AC_CHECK(wrong.isOk);
+  AC_CHECK(intruder.sendTo(server, {frame, wrong.bytes}) > 0);
+  runtime.pollOnce(8050u);
+  AC_CHECK_EQ(runtime.metrics().graceActive, 1u);
+  AC_CHECK_EQ(runtime.clientCount(), 1u);
+  const auto encoded = ac::net::encodeResume(header, {1u, 0u, 0u}, {token}, frame, sizeof(frame));
+  AC_CHECK(encoded.isOk);
+  AC_CHECK(resumed.sendTo(server, {frame, encoded.bytes}) > 0);
+  runtime.pollOnce(8100u);
+  AC_CHECK_EQ(runtime.metrics().graceActive, 0u);
+  AC_CHECK_EQ(runtime.metrics().players, 1u);
+  AC_CHECK_EQ(runtime.clientCount(), 1u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kGraceReconnects), 1u);
+  AC_CHECK(resumed.sendTo(server, {frame, encoded.bytes}) > 0);
+  runtime.pollOnce(8200u);
+  AC_CHECK_EQ(runtime.metrics().players, 1u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kGraceReconnects), 1u);
+  const auto dropped = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
+  AC_CHECK(intruder.sendTo(server, {frame, encoded.bytes}) > 0);
+  runtime.pollOnce(8300u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames), dropped + 1u);
+  auto bytes = encodeJoinFrame(frame, sizeof(frame), session, 2u, "resumed");
+  AC_CHECK(resumed.sendTo(server, {frame, bytes}) > 0);
+  for (std::uint64_t now = 8350u; now <= 9450u; now += 50u) runtime.pollOnce(now);
+  ac::net::Endpoint from{};
+  bool sawIdentity = false;
+  bool sawAck = false;
+  for (int i = 0; i < 64; ++i) {
+    const int got = resumed.recvFrom(from, frame);
+    if (got <= 0) break;
+    const auto packet = ac::net::decodePacket(frame, static_cast<std::size_t>(got));
+    if (packet.isOk && packet.value.hasReliableExt) {
+      sawAck = sawAck || packet.value.reliableExt.ackBase >= 1u;
+    }
+    const auto state = ac::net::decodeMatchState(frame, static_cast<std::size_t>(got));
+    if (state.isOk && state.value.players.size() == 1u) {
+      sawIdentity = sawIdentity || (state.value.players[0].pid == 1u &&
+                                    state.value.players[0].name == "resumed");
+    }
+  }
+  AC_CHECK(sawAck);
+  AC_CHECK(sawIdentity);
+  runtime.pollOnce(12300u);
+  AC_CHECK_EQ(runtime.metrics().players, 0u);
+  AC_CHECK_EQ(runtime.clientCount(), 1u);
+  runtime.pollOnce(42300u);
+  AC_CHECK_EQ(runtime.clientCount(), 0u);
+}
+
+AC_TEST(runtime_same_name_players_receive_authoritative_local_pid) {
+  auto config = testConfig();
+  config.isAutoReady = false;
+  config.isHttpEnabled = false;
+  config.sheepTarget = 0;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket first{}, second{};
+  AC_CHECK(first.bind(0u) && second.bind(0u));
+  const auto firstSession = handshake(runtime, first, 0x11111111u, 5000u);
+  const auto secondSession = handshake(runtime, second, 0x22222222u, 5004u);
+  AC_CHECK(firstSession != 0u && secondSession != 0u);
+  const ac::net::Endpoint server{kLoopback, runtime.udpPort()};
+  std::uint8_t frame[2048] = {};
+  auto bytes = encodeJoinFrame(frame, sizeof(frame), firstSession, 1u, "same");
+  AC_CHECK(first.sendTo(server, {frame, bytes}) > 0);
+  bytes = encodeJoinFrame(frame, sizeof(frame), secondSession, 1u, "same");
+  AC_CHECK(second.sendTo(server, {frame, bytes}) > 0);
+  for (std::uint64_t now = 5050u; now <= 6150u; now += 50u) runtime.pollOnce(now);
+  const auto latest = [&](ac::net::UdpSocket& socket, ac::net::MatchState& state) {
+    bool seen = false;
+    ac::net::Endpoint from{};
+    for (int i = 0; i < 128; ++i) {
+      const int got = socket.recvFrom(from, frame);
+      if (got <= 0) break;
+      const auto decoded = ac::net::decodeMatchState(frame, static_cast<std::size_t>(got));
+      if (decoded.isOk) { state = decoded.value; seen = true; }
+    }
+    return seen;
+  };
+  ac::net::MatchState firstState{}, secondState{};
+  AC_CHECK(latest(first, firstState) && latest(second, secondState));
+  AC_CHECK(firstState.players == secondState.players);
+  AC_CHECK_EQ(firstState.players.size(), 2u);
+  AC_CHECK(firstState.players[0].name == "same" && firstState.players[1].name == "same");
+  AC_CHECK(firstState.localPid != 0u && secondState.localPid != 0u);
+  AC_CHECK(firstState.localPid != secondState.localPid);
+  bytes = encodeCommandFrame(frame, sizeof(frame), firstSession, 2u, 0u,
+                             ac::config::kButtonReady, 0);
+  AC_CHECK(first.sendTo(server, {frame, bytes}) > 0);
+  runtime.pollOnce(6200u);
+  AC_CHECK(latest(first, firstState) && latest(second, secondState));
+  for (const auto& player : firstState.players) {
+    if (player.pid == firstState.localPid) AC_CHECK_EQ(player.ready, 1u);
+    if (player.pid == secondState.localPid) AC_CHECK_EQ(player.ready, 0u);
+  }
+}
+
+AC_TEST(runtime_hello_nonce_is_bound_to_endpoint) {
+  auto config = testConfig();
+  config.isAutoReady = false;
+  config.isHttpEnabled = false;
+  config.sheepTarget = 0;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket owner{}, other{};
+  AC_CHECK(owner.bind(0u));
+  AC_CHECK(other.bind(0u));
+  const auto original = handshake(runtime, owner, 0xABCDu, 5000u);
+  AC_CHECK(original != 0u);
+  const auto second = handshake(runtime, other, 0xABCDu, 5004u);
+  AC_CHECK(second != 0u);
+  AC_CHECK(second != original);
+  AC_CHECK_EQ(runtime.clientCount(), 2u);
+  std::uint8_t scratch[2048] = {};
+  ac::net::Endpoint from{};
+  while (owner.recvFrom(from, scratch) > 0) {}
+  AC_CHECK_EQ(handshake(runtime, owner, 0xABCDu, 5008u), original);
+  AC_CHECK_EQ(runtime.clientCount(), 2u);
+}
+
+AC_TEST(runtime_session_rejects_other_endpoint_before_ack_and_liveness) {
+  auto config = testConfig();
+  config.isAutoReady = false;
+  config.isHttpEnabled = false;
+  config.sheepTarget = 0;
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(config, &error));
+  ac::net::UdpSocket owner{}, other{};
+  AC_CHECK(owner.bind(0u));
+  AC_CHECK(other.bind(0u));
+  constexpr std::uint64_t now = 5000u;
+  std::uint32_t tick = 0u;
+  const auto session = handshake(runtime, owner, 0x12121212u, now, &tick);
+  AC_CHECK(session != 0u);
+  std::uint8_t scratch[2048] = {};
+  ac::net::Endpoint from{};
+  while (owner.recvFrom(from, scratch) > 0) {}
+  const ac::net::Endpoint server{kLoopback, runtime.udpPort()};
+  const auto dropped = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
+  auto bytes = encodeJoinFrame(scratch, sizeof(scratch), session, 100u, "intruder");
+  AC_CHECK(other.sendTo(server, {scratch, bytes}) > 0);
+  bytes = encodeCommandFrame(scratch, sizeof(scratch), session, 101u, tick,
+                             ac::config::kButtonReady, 127);
+  AC_CHECK(other.sendTo(server, {scratch, bytes}) > 0);
+  ac::net::PacketHeader header{};
+  header.version = ac::net::kProtocolVersion;
+  header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+  header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+  header.session = session;
+  const auto keepAlive = ac::net::encodeKeepAlive(header, {102u, 0u, 0u}, scratch, sizeof(scratch));
+  AC_CHECK(keepAlive.isOk);
+  AC_CHECK(other.sendTo(server, {scratch, keepAlive.bytes}) > 0);
+  bytes = encodeHelloFrame(scratch, sizeof(scratch), 0x99999999u);
+  scratch[4] = static_cast<std::uint8_t>(session);
+  scratch[5] = static_cast<std::uint8_t>(session >> 8u);
+  AC_CHECK(other.sendTo(server, {scratch, bytes}) > 0);
+  runtime.pollOnce(now + 2000u);
+  AC_CHECK_EQ(counterOf(runtime, ac::metrics::CounterId::kDroppedFrames), dropped + 4u);
+  for (int i = 0; i < 64; ++i) {
+    const int got = owner.recvFrom(from, scratch);
+    if (got <= 0) break;
+    const auto info = ac::net::decodePacket(scratch, static_cast<std::size_t>(got));
+    AC_CHECK(info.isOk);
+    if (info.value.hasReliableExt) AC_CHECK_EQ(info.value.reliableExt.ackBase, 0u);
+    const auto state = ac::net::decodeMatchState(scratch, static_cast<std::size_t>(got));
+    if (state.isOk) {
+      AC_CHECK_EQ(state.value.phase, static_cast<std::uint8_t>(ac::room::MatchPhase::kLobby));
+      AC_CHECK_EQ(state.value.players.size(), 1u);
+      AC_CHECK(state.value.players[0].name == "player");
+      AC_CHECK_EQ(state.value.players[0].ready, 0u);
+    }
+  }
+  runtime.pollOnce(now + 3000u);
+  AC_CHECK_EQ(runtime.metrics().graceActive, 1u);
+}
+
 AC_TEST(runtime_lobby_ready_bit_starts_match) {
   ac::server::RuntimeConfig config = testConfig();
   config.isAutoReady = false;  // 产品默认：服务端不替玩家按准备
@@ -965,7 +1290,22 @@ AC_TEST(runtime_lobby_ready_bit_starts_match) {
   }
   // 静置 6 秒（> 200 拍）：自动准备一旦回归，这里就会变成 loading/playing。
   // 昵称在 kJoin（type 11）那一帧才改，MatchState 是变化驱动 + 1s 节拍广播 —— 到这一刻两行都该是昵称。
-  for (int i = 0; i < 200; ++i) runtime.pollOnce(now += 30u);
+  for (int i = 0; i < 200; ++i) {
+    if (i % 16 == 0) {
+      ac::net::PacketHeader heartbeat{};
+      heartbeat.version = ac::net::kProtocolVersion;
+      heartbeat.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+      heartbeat.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+      std::uint8_t frame[32] = {};
+      heartbeat.session = hostSession;
+      auto encoded = ac::net::encodeKeepAlive(heartbeat, {}, frame, sizeof(frame));
+      AC_CHECK(encoded.isOk && send(host, frame, encoded.bytes));
+      heartbeat.session = mateSession;
+      encoded = ac::net::encodeKeepAlive(heartbeat, {}, frame, sizeof(frame));
+      AC_CHECK(encoded.isOk && send(mate, frame, encoded.bytes));
+    }
+    runtime.pollOnce(now += 30u);
+  }
   AC_CHECK(latestState(host, state));
   dumpState("lobby-idle-6s", state);
   AC_CHECK_EQ(static_cast<int>(state.phase), static_cast<int>(ac::room::MatchPhase::kLobby));

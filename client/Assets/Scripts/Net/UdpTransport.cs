@@ -260,7 +260,7 @@ namespace Ac.Net
 
         // ADR-009「握手时序」的 type 11：把本地昵称送到服务端（可靠、无回复）。
         // 受理语义与其它 C→S 消息一致：名字非法或本端未连接都返回 false，重传由逻辑通道负责。
-        // 无回复 ⇒ 本地 pid 仍由 MatchState 的玩家行按名认领（Ac.Net.LocalIdentity）。
+        // Join 不单独回复；协议 2 的单播 MatchState.localPid 提供权威身份，与昵称无关。
         public bool SendJoin(string name)
         {
             byte[] payload;

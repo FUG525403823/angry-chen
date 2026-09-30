@@ -24,6 +24,8 @@ namespace Ac.UI
         public float Alpha;
         public float Fill01;      // Bar：0..1 的填充比例
         public float SpreadPx;    // Crosshair：四段十字的臂长（由散布线性映射，见 Crosshair.SizePx）
+        public float ThicknessPx;
+        public float GapPx;
         public bool Target;       // Crosshair：压在可命中目标上
         public string Text;       // Text：已缓存的行；其余种类为 null
     }
@@ -112,6 +114,8 @@ namespace Ac.UI
         private string _hpLine = string.Empty;
         private int _hpCache = int.MinValue;
         private string _ammoLine = string.Empty;
+        private string _reserveLine = string.Empty;
+        private int _magSizeCache = -1;
         private int _magCache = int.MinValue;
         private int _reserveCache = int.MinValue;
         private string _rageLine = string.Empty;
@@ -313,14 +317,23 @@ namespace Ac.UI
 
             // 弹药 / 备弹（低弹色由 AmmoCounter 按该武器的弹匣容量判）
             var ammo = hud.Ammo;
-            if (ammo.Mag != _magCache || ammo.Reserve != _reserveCache)
+            if (ammo.Mag != _magCache || ammo.Reserve != _reserveCache || ammo.MagSize != _magSizeCache)
             {
                 _magCache = ammo.Mag;
                 _reserveCache = ammo.Reserve;
-                _ammoLine = ammo.Mag + " / " + ammo.Reserve;
+                _magSizeCache = ammo.MagSize;
+                _ammoLine = "弹匣 " + ammo.Mag + " / " + ammo.MagSize;
+                _reserveLine = "备弹 " + ammo.Reserve;
             }
-            AddText(OverlayTextRole.Numeric, OverlayAlign.Right, w - inset, bottom - fontNumeric - 40, Hud.ScaledPx(320, h), ammo.Color, 1f, _ammoLine);
-            if (ammo.Reloading) AddText(OverlayTextRole.Label, OverlayAlign.Right, w - inset, bottom - Hud.ScaledPx(22, h), Hud.ScaledPx(320, h), Hud.ColorNormal, 1f, ReloadText);
+            AddText(OverlayTextRole.Numeric, OverlayAlign.Right, w - inset, bottom - fontNumeric - Hud.ScaledPx(66, h), Hud.ScaledPx(320, h), ammo.Color, 1f,
+                ammo.DataReady ? _ammoLine : "弹药：等待同步");
+            if (ammo.DataReady)
+            {
+                AddText(OverlayTextRole.Label, OverlayAlign.Right, w - inset, bottom - Hud.ScaledPx(62, h), Hud.ScaledPx(320, h), Hud.ColorNormal, 1f, _reserveLine);
+                var status = ammo.Reloading ? ReloadText : ammo.Reserve == 0 ? "备弹已耗尽" : ammo.Mag >= ammo.MagSize ? "弹匣已满" : "可换弹";
+                AddText(OverlayTextRole.Label, OverlayAlign.Right, w - inset, bottom - Hud.ScaledPx(36, h), Hud.ScaledPx(320, h), Hud.ColorNormal, 1f, status);
+                if (ammo.Reloading) AddBar(w - inset - barW, bottom - Hud.ScaledPx(10, h), barW, barH, Hud.ColorNormal, 1f, ammo.ReloadProgress);
+            }
 
             // 怒气条 / 狂暴倒计时
             var rage = hud.Rage;
@@ -339,7 +352,7 @@ namespace Ac.UI
             var crosshair = hud.Crosshair;
             if (crosshair != null && crosshair.Visible)
             {
-                AddCrosshair(w / 2, h / 2, crosshair.SizePx, CrosshairColor(crosshair), crosshair.State == CrosshairState.Target);
+                AddCrosshair(w / 2, h / 2, crosshair);
             }
 
             // 击杀记录：右上角往下排，渐隐与爆头色都取自 KillFeed
@@ -637,7 +650,7 @@ namespace Ac.UI
             _count += 1;
         }
 
-        private void AddCrosshair(int x, int y, float spreadPx, int colorRgb, bool target)
+        private void AddCrosshair(int x, int y, Crosshair crosshair)
         {
             if (_count >= ItemCapacity) return;
             var item = default(OverlayItem);
@@ -645,10 +658,12 @@ namespace Ac.UI
             item.Align = OverlayAlign.Center;
             item.X = x;
             item.Y = y;
-            item.ColorRgb = colorRgb;
+            item.ColorRgb = CrosshairColor(crosshair);
             item.Alpha = 1f;
-            item.SpreadPx = spreadPx;
-            item.Target = target;
+            item.SpreadPx = crosshair.SizePx;
+            item.ThicknessPx = crosshair.ThicknessPx;
+            item.GapPx = crosshair.GapPx;
+            item.Target = crosshair.State == CrosshairState.Target;
             _items[_count] = item;
             _count += 1;
         }

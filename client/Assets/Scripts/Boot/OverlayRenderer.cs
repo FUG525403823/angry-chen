@@ -1,4 +1,5 @@
 using Ac.UI;
+using Ac.Core;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -28,6 +29,15 @@ namespace Ac.Boot
         private readonly Rect[] _arms = new Rect[CrosshairArmCount];
         private Texture2D _pixel;
         private int _drawnFrames;
+        private readonly Crosshair _preview = new Crosshair();
+        private Vector2 _settingsScroll;
+        private KeyCode _settingsHintKey = KeyCode.None;
+        private string _settingsHint = string.Empty;
+        private SettingsPanel _cachedPanel;
+        private int _cachedApplyCount = -1;
+        private SettingsSnapshot _cachedSettings;
+        private readonly float[] _sliderValues = { float.NaN, float.NaN, float.NaN, float.NaN };
+        private readonly string[] _sliderLabels = new string[4];
 
         // 真的画过多少帧（无头下恒为 0，用它区分"装配了"与"真的上屏了"）
         public int DrawnFrames { get { return _drawnFrames; } }
@@ -45,19 +55,114 @@ namespace Ac.Boot
         {
             var layer = _layer;
             if (layer == null || !CanRender) return;
-            // 一帧只画一次（OnGUI 每帧会被 Layout/Repaint 多次调用），只认 Repaint。
-            var current = Event.current;
-            if (current != null && current.type != EventType.Repaint) return;
-
-            var width = Screen.width;
-            var height = Screen.height;
-            var count = layer.BuildOverlay(width, height);
-            if (count <= 0) return;
             EnsureResources();
+            var current = Event.current;
+            if (current == null || current.type == EventType.Repaint)
+            {
+                var count = layer.BuildOverlay(Screen.width, Screen.height);
+                var items = layer.Overlay.Items;
+                for (var i = 0; i < count; i++) DrawItem(items[i]);
+                _drawnFrames += 1;
+            }
+            DrawSettings(layer);
+        }
 
-            var items = layer.Overlay.Items;
-            for (var i = 0; i < count; i++) DrawItem(items[i]);
-            _drawnFrames += 1;
+        public static Rect SettingsButtonRect(int width, int height)
+        {
+            return new Rect(12f, 12f, 112f, 32f);
+        }
+
+        public static bool SettingsButtonContains(Vector3 mousePosition, int width, int height)
+        {
+            return SettingsButtonRect(width, height).Contains(new Vector2(mousePosition.x, height - mousePosition.y));
+        }
+
+        private float SettingSlider(int index, string label, float value, float min, float max, float step)
+        {
+            if (_sliderValues[index] != value)
+            {
+                _sliderValues[index] = value;
+                _sliderLabels[index] = label + "  " + value.ToString("0.00");
+            }
+            GUILayout.Label(_sliderLabels[index], Style(OverlayTextRole.Label, OverlayAlign.Left));
+            var next = GUILayout.HorizontalSlider(value, min, max);
+            return Mathf.Approximately(next, value) ? value : Mathf.Clamp(Mathf.Round(next / step) * step, min, max);
+        }
+
+        private SettingsSnapshot PanelValues(SettingsPanel panel)
+        {
+            if (!ReferenceEquals(_cachedPanel, panel) || _cachedApplyCount != panel.ApplyCount)
+            {
+                _cachedPanel = panel;
+                _cachedApplyCount = panel.ApplyCount;
+                _cachedSettings = panel.Values;
+            }
+            return _cachedSettings;
+        }
+
+        private void DrawSettings(PresentationLayer layer)
+        {
+            var panel = layer.SettingsPanel;
+            if (panel == null) return;
+            var previousFont = GUI.skin.font;
+            if (_fonts != null && _fonts[(int)OverlayTextRole.Label] != null) GUI.skin.font = _fonts[(int)OverlayTextRole.Label];
+            try
+            {
+                if (!panel.Visible)
+                {
+                    if (_settingsHintKey != GameBootstrap.SettingsKeyCode)
+                    {
+                        _settingsHintKey = GameBootstrap.SettingsKeyCode;
+                        _settingsHint = "设置：" + _settingsHintKey + " / Esc 解锁";
+                    }
+                    if (Cursor.lockState == CursorLockMode.Locked)
+                        GUI.Label(new Rect(12, 12, 240, 32), _settingsHint, Style(OverlayTextRole.Feed, OverlayAlign.Left));
+                    else if (GUI.Button(SettingsButtonRect(Screen.width, Screen.height), "设置")) layer.ToggleSettings();
+                    return;
+                }
+                GUI.color = new Color(0f, 0f, 0f, 0.85f);
+                GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), _pixel);
+                GUI.color = Color.white;
+                var width = Mathf.Max(1f, Mathf.Min(620f, Screen.width - 24f));
+                var height = Mathf.Max(1f, Mathf.Min(680f, Screen.height - 24f));
+                GUILayout.BeginArea(new Rect((Screen.width - width) * 0.5f, (Screen.height - height) * 0.5f, width, height), GUI.skin.box);
+                _settingsScroll = GUILayout.BeginScrollView(_settingsScroll);
+                GUILayout.Label("设置 · 修改立即生效", Style(OverlayTextRole.Label, OverlayAlign.Left));
+                var values = PanelValues(panel);
+                panel.SetSensitivity(SettingSlider(0, "鼠标灵敏度", values.Sensitivity, SettingsDefaults.SensitivityMin, SettingsDefaults.SensitivityMax, 0.05f));
+                panel.SetCrosshairScale(SettingSlider(1, "准星大小", values.CrosshairScale, SettingsDefaults.CrosshairScaleMin, SettingsDefaults.CrosshairScaleMax, 0.05f));
+                panel.SetCrosshairThickness(SettingSlider(2, "准星粗细（像素）", values.CrosshairThickness, SettingsDefaults.CrosshairThicknessMin, SettingsDefaults.CrosshairThicknessMax, 1f));
+                panel.SetCrosshairGap(SettingSlider(3, "准星间距（像素）", values.CrosshairGap, SettingsDefaults.CrosshairGapMin, SettingsDefaults.CrosshairGapMax, 1f));
+                panel.SetCrosshairDynamic(GUILayout.Toggle(values.CrosshairDynamic, "动态准星（随武器散布变化）"));
+                if (GUILayout.Button("切换准星颜色")) panel.CycleCrosshairColor();
+                panel.SetColorblindSafe(GUILayout.Toggle(values.ColorblindSafe, "色盲安全配色（覆盖所选颜色）"));
+                values = PanelValues(panel);
+                _preview.ApplySettings(values);
+                var hud = layer.Sources().Hud;
+                _preview.SetSpread(hud == null ? Crosshair.MinSpreadDeg : hud.Crosshair.SpreadDeg);
+                var previewRect = GUILayoutUtility.GetRect(160f, 100f);
+                GUI.Box(previewRect, GUIContent.none);
+                if (Event.current.type == EventType.Repaint)
+                {
+                    var item = default(OverlayItem);
+                    item.X = (int)previewRect.center.x;
+                    item.Y = (int)previewRect.center.y;
+                    item.SpreadPx = _preview.SizePx;
+                    item.ThicknessPx = _preview.ThicknessPx;
+                    item.GapPx = _preview.GapPx;
+                    GUI.color = Rgb(_preview.CurrentColor);
+                    DrawCrosshair(item);
+                    GUI.color = Color.white;
+                }
+                GUILayout.Label("预览与实战共用准星绘制；联机对局不会暂停。", Style(OverlayTextRole.Feed, OverlayAlign.Left));
+                if (panel.Store.ReadOnlyFile) GUILayout.Label("配置来自更高版本：本次修改仅在当前运行有效。");
+                if (!string.IsNullOrEmpty(panel.Hint)) GUILayout.Label(panel.Hint);
+                if (GUILayout.Button("恢复默认设置")) panel.RestoreDefaults();
+                if (GUILayout.Button("关闭（Esc）")) layer.ToggleSettings();
+                GUILayout.EndScrollView();
+                GUILayout.EndArea();
+            }
+            finally { GUI.skin.font = previousFont; GUI.color = Color.white; }
         }
 
         // 模型的口径 → IMGUI 的矩形（两者必须在这里对齐，否则"居中"会画到屏幕外）：
@@ -114,8 +219,8 @@ namespace Ac.Boot
         private void DrawCrosshair(in OverlayItem item)
         {
             var size = item.SpreadPx < 1f ? 1f : item.SpreadPx;
-            var thickness = 2f;
-            var gap = 2f;
+            var thickness = item.ThicknessPx;
+            var gap = item.GapPx;
             var x = item.X;
             var y = item.Y;
             _arms[0] = new Rect(x - size - gap, y - thickness * 0.5f, size, thickness);   // 左

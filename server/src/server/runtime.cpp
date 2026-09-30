@@ -91,7 +91,8 @@ bool Runtime::start(const RuntimeConfig& config, std::string* error) {
     ac::http::HttpListenerDeps httpDeps{};
     httpDeps.user = this;
     httpDeps.fill = &Runtime::httpFillThunk;
-    if (!http_.start(config_.httpPort, &httpState_, httpDeps, error)) {
+    const ac::http::HttpListenerOptions httpOptions{config_.httpBindIpv4, config_.trustLoopbackProxy};
+    if (!http_.start(config_.httpPort, &httpState_, httpDeps, error, httpOptions)) {
       udp_.close();
       ac::room::destroyRoom(registry_, *room_);
       room_ = nullptr;
@@ -204,6 +205,26 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
     return;
   }
   const std::size_t payloadBytes = size - info.payloadOffset;
+  const auto type = static_cast<ac::net::PacketType>(info.header.type);
+  if (type == ac::net::PacketType::kResume) {
+    handleResume(from, info.header.session, bytes, size, nowMs);
+    return;
+  }
+  if (type == ac::net::PacketType::kHello) {
+    if (info.header.session != 0u) {
+      ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+      return;
+    }
+    handleHello(from, bytes, size, nowMs);
+    return;
+  }
+  const Client* sender = findClientByTransport(info.header.session);
+  const auto validation = handshake_.validateSession(info.header.session);
+  if (sender == nullptr || sender->endpoint != from || !validation.isAccepted ||
+      validation.isGracePeriod) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
   // §5.2：任何带在册 session 的包都是存活证据。命令是否被采纳（tick/seq 校验）是另一回事——
   // 以前只有 Hello/Resume 会刷新心跳，于是「命令被校验拒掉」会顺带把会话判死（实测 soak 33s 后房间停摆）。
   if (ac::net::SessionRecord* record = handshake_.sessions().find(info.header.session);
@@ -223,12 +244,6 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
     }
   }
   switch (static_cast<ac::net::PacketType>(info.header.type)) {
-    case ac::net::PacketType::kHello:
-      handleHello(from, bytes, size, nowMs);
-      break;
-    case ac::net::PacketType::kResume:
-      handleResume(from, info.header.session, bytes, size, nowMs);
-      break;
     case ac::net::PacketType::kCommand:
       handleCommand(info.header.session, bytes, size, payloadBytes, nowMs);
       break;
@@ -300,7 +315,8 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
     return;
   }
   const ac::net::HandshakeOutcome outcome =
-      handshake_.onHello(hello.value.nonce, hello.value.token, wallMs32(nowMs));
+      handshake_.onHello(hello.value.nonce, hello.value.token, wallMs32(nowMs),
+                         (static_cast<std::uint64_t>(from.ipv4) << 16u) | from.port);
   if (outcome.isDisconnectDue) {
     std::uint8_t buffer[32] = {};
     const ac::net::DisconnectPayload body{static_cast<std::uint8_t>(outcome.reason)};
@@ -317,13 +333,13 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
   if (record == nullptr) return;
   Client* client = claimClient(outcome.session, from, nowMs);
   if (client == nullptr) return;  // 槽位打满：丢包不回（槽位上限是运行时自己的约束）
-  client->session.token = record->token;
   bool admitted = true;
   if (room_ != nullptr && !ac::room::isInRoom(client->session)) {
     // ADR-012：准入结果不得静默丢弃 —— 被拒（满员 / 对局进行中）时在 HelloAck 之后补一帧 Disconnect。
     admitted =
         ac::room::roomJoin(*room_, client->session, nowMs) == ac::room::JoinOutcome::kOk;
   }
+  client->session.token = record->token;
   std::uint8_t buffer[64] = {};
   const ac::net::HelloAckPayload ack{room_ == nullptr ? 0u : room_->world->tick, record->salt};
   const ac::net::EncodeResult encoded = ac::net::encodeHelloAck(
@@ -366,19 +382,30 @@ void Runtime::handleResume(const ac::net::Endpoint& from, std::uint16_t session,
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;
   }
+  Client* resumed = findClientByTransport(session);
+  if (resumed == nullptr || (!validation.isGracePeriod && resumed->endpoint != from)) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
   const ac::net::HandshakeOutcome outcome =
       handshake_.onResume(session, resume.value.token, wallMs32(nowMs));
-  if (outcome.isDisconnectDue) return;
+  if (!outcome.isAccepted) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  const auto packet = ac::net::decodePacket(frame, size);
+  if (packet.isOk && packet.value.hasReliableExt) {
+    (void)ac::net::ackOnReceive(resumed->commandRecv, packet.value.reliableExt.msgId);
+    resumed->ackDue = true;
+  }
   if (!outcome.isResumed) return;
-  Client* resumed = findClientByTransport(session);
-  if (resumed == nullptr) return;
   resumed->endpoint = from;
   resumed->isFullSnapshotDue = outcome.isFullSnapshotDue;
   ac::metrics::addCounter(counters_, ac::metrics::CounterId::kGraceReconnects, 1u);
   if (room_ != nullptr) {
     for (std::size_t i = 0u; i < ac::room::kMaxPlayersPerRoom; ++i) {
       ac::room::Session* existing = room_->sessions[i];
-      if (existing == nullptr || existing == &resumed->session) continue;
+      if (existing == nullptr) continue;
       if (existing->token == 0u || existing->token != resume.value.token) continue;
       if (ac::room::roomReconnect(*room_, *existing, resumed->session)) break;
     }
@@ -479,6 +506,15 @@ void Runtime::pollOnce(std::uint64_t nowMs) {
   if (sessionTick.wentOffline > 0u) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kGraceStarts,
                             sessionTick.wentOffline);
+    if (room_ != nullptr) {
+      for (Client& client : clients_) {
+        if (!client.isUsed || !ac::room::isInRoom(client.session)) continue;
+        const auto* record = handshake_.sessions().find(client.transportId);
+        if (record != nullptr && record->isResumable()) {
+          (void)ac::room::roomDisconnect(*room_, client.session, nowMs);
+        }
+      }
+    }
   }
   if (sessionTick.released > 0u) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kGraceTimeouts,
@@ -725,7 +761,8 @@ void Runtime::onSendMatchState(ac::room::Session& session,
   ext.ackBits = client->commandRecv.ackBits;
   std::uint8_t buffer[ac::room::kMatchStateFrameMaxBytes] = {};
   const ac::net::EncodeResult encoded =
-      ac::net::encodeMatchState(header, ext, state, buffer, sizeof(buffer));
+      ac::net::encodeMatchState(header, ext, state, buffer, sizeof(buffer),
+                                static_cast<std::uint16_t>(session.pid));
   if (!encoded.isOk) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;

@@ -109,6 +109,24 @@ int pendingSocketError(NativeSocket socket) noexcept {
   return soError;
 }
 
+int ioResult(int result) noexcept {
+  if (result >= 0) return result;
+  const int error = lastSocketError();
+#if defined(_WIN32)
+  if (error == WSAEWOULDBLOCK || error == WSAEINTR) return TcpConnection::kWouldBlock;
+#else
+  if (error == EAGAIN || error == EWOULDBLOCK || error == EINTR)
+    return TcpConnection::kWouldBlock;
+#endif
+  return -1;
+}
+
+#if defined(MSG_NOSIGNAL)
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
 }  // namespace
 
 TcpConnection::~TcpConnection() { close(); }
@@ -138,6 +156,18 @@ int TcpConnection::recv(std::span<std::uint8_t> buffer, int timeoutMs) {
   return got;
 }
 
+int TcpConnection::recvSome(std::span<std::uint8_t> buffer) noexcept {
+  if (!isOpen() || buffer.empty()) return -1;
+  return ioResult(static_cast<int>(::recv(toNative(handle_),
+      reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0)));
+}
+
+int TcpConnection::sendSome(std::span<const std::uint8_t> bytes) noexcept {
+  if (!isOpen() || bytes.empty()) return -1;
+  return ioResult(static_cast<int>(::send(toNative(handle_),
+      reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), kSendFlags)));
+}
+
 bool TcpConnection::sendAll(std::span<const std::uint8_t> bytes) noexcept {
   return sendAll(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
@@ -149,7 +179,7 @@ bool TcpConnection::sendAll(const char* text, std::size_t size) noexcept {
   while (sent < size) {
     if (!isReady(socket, true, 2000)) return false;
     const int written =
-        static_cast<int>(::send(socket, text + sent, static_cast<int>(size - sent), 0));
+        static_cast<int>(::send(socket, text + sent, static_cast<int>(size - sent), kSendFlags));
     if (written <= 0) return false;
     sent += static_cast<std::size_t>(written);
   }
@@ -179,7 +209,7 @@ TcpListener& TcpListener::operator=(TcpListener&& other) noexcept {
   return *this;
 }
 
-bool TcpListener::bind(std::uint16_t port) noexcept {
+bool TcpListener::bind(std::uint16_t port, std::uint32_t ipv4) noexcept {
   close();
   handle_ = createStreamSocket();
   if (handle_ == kInvalidHandle) return false;
@@ -189,7 +219,7 @@ bool TcpListener::bind(std::uint16_t port) noexcept {
                static_cast<SockLen>(sizeof(yes)));
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_ANY);
+  address.sin_addr.s_addr = htonl(ipv4);
   address.sin_port = htons(port);
   if (::bind(socket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
     close();
@@ -207,7 +237,7 @@ bool TcpListener::bind(std::uint16_t port) noexcept {
 
 bool TcpListener::listen(int backlog) noexcept {
   if (!isOpen()) return false;
-  return ::listen(toNative(handle_), backlog) == 0;
+  return setBlocking(toNative(handle_), false) && ::listen(toNative(handle_), backlog) == 0;
 }
 
 bool TcpListener::poll(int timeoutMs) const noexcept {
@@ -224,6 +254,10 @@ TcpConnection TcpListener::accept() noexcept {
   const NativeSocket accepted =
       ::accept(socket, reinterpret_cast<sockaddr*>(&remote), &length);
   if (accepted == kInvalidSocket) return TcpConnection{};
+  if (!setBlocking(accepted, false)) {
+    closeNative(accepted);
+    return TcpConnection{};
+  }
   setNoDelay(accepted);
   TcpConnection connection{toHandle(accepted), ntohl(remote.sin_addr.s_addr)};
   return connection;

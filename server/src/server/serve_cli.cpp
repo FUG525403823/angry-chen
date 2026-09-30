@@ -64,7 +64,51 @@ bool parseSeed(const std::string& value, std::uint32_t& out, std::string* error)
   return true;
 }
 
+bool parseIpv4(const std::string& value, const char* name, std::uint32_t& out,
+               std::string* error) {
+  std::uint32_t address = 0u;
+  std::size_t at = 0u;
+  for (int part = 0; part < 4; ++part) {
+    const std::size_t start = at;
+    unsigned octet = 0u;
+    while (at < value.size() && value[at] >= '0' && value[at] <= '9') {
+      octet = octet * 10u + static_cast<unsigned>(value[at++] - '0');
+      if (at - start > 3u || octet > 255u) break;
+    }
+    if (at == start || at - start > 3u || octet > 255u ||
+        (part < 3 ? at == value.size() || value[at] != '.' : at != value.size())) {
+      *error = std::string(name) + " 非法值: " + value;
+      return false;
+    }
+    address = (address << 8u) | octet;
+    if (part < 3) ++at;
+  }
+  out = address;
+  return true;
+}
+
+bool parseTrustLoopbackProxy(const std::string& value, const char* name, bool& out,
+                             std::string* error) {
+  if (value != "0" && value != "1") {
+    *error = std::string(name) + " 非法值: " + value;
+    return false;
+  }
+  out = value == "1";
+  return true;
+}
+
 }  // namespace
+
+bool parseServeEnvironment(ServeOptions& options, std::string* error) {
+  const char* bind = std::getenv("AC_HTTP_BIND");
+  if (bind != nullptr &&
+      !parseIpv4(bind, "AC_HTTP_BIND", options.config.httpBindIpv4, error)) return false;
+  const char* trust = std::getenv("AC_TRUST_LOOPBACK_PROXY");
+  if (trust != nullptr &&
+      !parseTrustLoopbackProxy(trust, "AC_TRUST_LOOPBACK_PROXY",
+                              options.config.trustLoopbackProxy, error)) return false;
+  return true;
+}
 
 bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* error) {
   bool seenServe = false;
@@ -72,6 +116,8 @@ bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* e
   bool seenMinutes = false;
   bool seenUdpPort = false;
   bool seenHttpPort = false;
+  bool seenHttpBind = false;
+  bool seenTrustLoopbackProxy = false;
   bool seenDataDir = false;
   bool seenSeed = false;
   bool seenLogLevel = false;
@@ -117,6 +163,8 @@ bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* e
     if (key == "--minutes") seen = &seenMinutes;
     else if (key == "--udp-port") seen = &seenUdpPort;
     else if (key == "--http-port") seen = &seenHttpPort;
+    else if (key == "--http-bind") seen = &seenHttpBind;
+    else if (key == "--trust-loopback-proxy") seen = &seenTrustLoopbackProxy;
     else if (key == "--data-dir") seen = &seenDataDir;
     else if (key == "--seed") seen = &seenSeed;
     else if (key == "--log-level") seen = &seenLogLevel;
@@ -147,6 +195,15 @@ bool parseServeArgs(int argc, char** argv, ServeOptions& options, std::string* e
       if (!parseLong(value, kMinPort, kMaxPort, key.c_str(), port, error)) return false;
       if (key == "--udp-port") options.config.udpPort = static_cast<std::uint16_t>(port);
       else options.config.httpPort = static_cast<std::uint16_t>(port);
+      continue;
+    }
+    if (key == "--http-bind") {
+      if (!parseIpv4(value, "--http-bind", options.config.httpBindIpv4, error)) return false;
+      continue;
+    }
+    if (key == "--trust-loopback-proxy") {
+      if (!parseTrustLoopbackProxy(value, "--trust-loopback-proxy",
+                                  options.config.trustLoopbackProxy, error)) return false;
       continue;
     }
     if (key == "--seed") {

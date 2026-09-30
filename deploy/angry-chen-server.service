@@ -11,7 +11,8 @@ User=angrychen
 Group=angrychen
 WorkingDirectory=/opt/angry-chen
 EnvironmentFile=/etc/angry-chen/server.env
-ExecStart=/opt/angry-chen/bin/angry-chen-server --serve --udp-port=8788 --http-port=8787
+# 端口与 HTTP 信任配置从上面的 server.env 读取，不用 CLI 常量覆盖环境值。
+ExecStart=/opt/angry-chen/bin/angry-chen-server --serve
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

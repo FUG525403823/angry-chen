@@ -137,7 +137,7 @@ namespace Ac.Net
             return flags == RequiredFlags(type);
         }
 
-        public const byte ProtocolVersion = 1;
+        public const byte ProtocolVersion = 2;
         // 码表上界（= 最后一个已分配的 type）。新增类型时与 wire.hpp 的 kMaxPacketType 一起改，
         // 否则收包路径会把新类型判成 BadType（见 Read 里的注释）。
         public const byte MaxPacketType = (byte)PacketType.Join;

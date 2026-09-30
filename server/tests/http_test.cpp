@@ -20,7 +20,7 @@ struct Bench {
     std::string error;
     store = ac::persist::openMatchStore(dir.file("data"), &error);
     // /health 与 /metrics 共用这一份快照（填一次，两端点同源）。
-    process.protocol = 1u;
+    process.protocol = 2u;
     process.rooms = 2u;
     process.connections = 5u;
     process.players = 4u;
@@ -73,7 +73,7 @@ AC_TEST(http_health_reports_runtime_numbers) {
   AC_CHECK_EQ(response.status, 200);
   AC_CHECK(response.contentType == ac::http::kJsonContentType);
   AC_CHECK(response.body.find("\"status\":\"ok\"") != std::string::npos);
-  AC_CHECK(response.body.find("\"protocolVersion\":1") != std::string::npos);
+  AC_CHECK(response.body.find("\"protocolVersion\":2") != std::string::npos);
   AC_CHECK(response.body.find("\"rooms\":2") != std::string::npos);
   AC_CHECK(response.body.find("\"connections\":5") != std::string::npos);
   AC_CHECK(response.body.find("\"players\":4") != std::string::npos);
@@ -104,7 +104,7 @@ AC_TEST(http_metrics_body_is_served_with_frozen_content_type) {
   }
   AC_CHECK(response.body.find("# TYPE ac_rooms gauge") != std::string::npos);
   AC_CHECK(response.body.find("# TYPE ac_bytes_out_total counter") != std::string::npos);
-  AC_CHECK(response.body.find("ac_server_version{version=\"0.1.0\",protocol=\"1\",tick_ms=\"50\"} 1") !=
+  AC_CHECK(response.body.find("ac_server_version{version=\"0.1.0\",protocol=\"2\",tick_ms=\"50\"} 1") !=
            std::string::npos);
 }
 
@@ -172,30 +172,43 @@ AC_TEST(http_metrics_body_missing_returns_500) {
   AC_CHECK(response.body.find("\"error\":\"metrics-unavailable\"") != std::string::npos);
 }
 
+AC_TEST(http_monitoring_does_not_consume_business_quota) {
+  Bench bench("http");
+  for (std::uint32_t i = 0u; i < 40u; ++i) {
+    AC_CHECK_EQ(bench.get("/health", "", 1000u + i).status, 200);
+    AC_CHECK_EQ(bench.get("/metrics", "", 1000u + i).status, 200);
+  }
+  for (std::uint32_t i = 0u; i < 30u; ++i)
+    AC_CHECK_EQ(bench.get("/api/leaderboard", "", 1100u + i).status, 200);
+  AC_CHECK_EQ(bench.get("/api/leaderboard", "", 1200u).status, 429);
+  AC_CHECK_EQ(bench.get("/health", "", 1201u).status, 200);
+  AC_CHECK_EQ(bench.get("/metrics", "", 1201u).status, 200);
+}
+
 AC_TEST(http_rate_limit_blocks_thirty_first_request) {
   Bench bench("http");
   for (std::size_t i = 0u; i < ac::http::kReadRequestsPerMinute; ++i) {
-    const ac::http::Response response = bench.get("/health", "", static_cast<std::uint32_t>(1000u + i));
+    const ac::http::Response response = bench.get("/api/leaderboard", "", static_cast<std::uint32_t>(1000u + i));
     AC_CHECK_EQ(response.status, 200);
   }
-  const ac::http::Response blocked = bench.get("/health", "", 1030u);
+  const ac::http::Response blocked = bench.get("/api/leaderboard", "", 1030u);
   AC_CHECK_EQ(blocked.status, 429);
   AC_CHECK(blocked.extraHeaderName == ac::http::kRetryAfterHeader);
   AC_CHECK(blocked.extraHeaderValue == std::string_view("60"));
   AC_CHECK_EQ(ac::metrics::counterValue(bench.counters, ac::metrics::CounterId::kHttpRateLimited),
               static_cast<std::uint64_t>(1));
   // 另一个客户端不受影响
-  const ac::http::Response other = bench.get("/health", "", 1031u, "10.0.0.2");
+  const ac::http::Response other = bench.get("/api/leaderboard", "", 1031u, "10.0.0.2");
   AC_CHECK_EQ(other.status, 200);
 }
 
 AC_TEST(http_rate_limit_window_slides_after_a_minute) {
   Bench bench("http");
   for (std::size_t i = 0u; i < ac::http::kReadRequestsPerMinute; ++i) {
-    AC_CHECK_EQ(bench.get("/health", "", static_cast<std::uint32_t>(1000u + i)).status, 200);
+    AC_CHECK_EQ(bench.get("/api/leaderboard", "", static_cast<std::uint32_t>(1000u + i)).status, 200);
   }
-  AC_CHECK_EQ(bench.get("/health", "", 1030u).status, 429);
-  AC_CHECK_EQ(bench.get("/health", "", 1000u + ac::http::kReadWindowMs + 1u).status, 200);
+  AC_CHECK_EQ(bench.get("/api/leaderboard", "", 1030u).status, 429);
+  AC_CHECK_EQ(bench.get("/api/leaderboard", "", 1000u + ac::http::kReadWindowMs + 1u).status, 200);
   AC_CHECK_EQ(ac::metrics::counterValue(bench.counters, ac::metrics::CounterId::kHttpRateLimited),
               static_cast<std::uint64_t>(1));
 }

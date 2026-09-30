@@ -28,7 +28,9 @@ namespace Ac.UI
         public int Mag;                // 弹药（C06 AmmoLedger.mag / S10 单播 mag）
         public int MagSize;            // 该武器的弹匣容量（低弹判定用，步枪 30 / 霰弹 6 / 手枪 12）
         public int Reserve;            // 备弹
-        public int ReloadLeft10Ms;     // 换弹环（1/10 ms）
+        public bool AmmoDataReady;
+        public float ReloadProgress;   // 0..1 completed fraction while reloading
+        public int ReloadLeft10Ms;     // 换弹剩余（10 ms 单位）
         public int Rage;               // 怒气（满 100）
         public int RageLeft100Ms;      // 狂暴剩余（1/100 ms）
         public int ReviveRatio255;     // 救援进度
@@ -186,7 +188,8 @@ namespace Ac.UI
             }
 
             // 状态类：每帧都跟（不建对象、不写文本，只写结构体字段）
-            _ammo.Set(sample.Mag, sample.Reserve, sample.ReloadLeft10Ms, sample.MagSize, sample.Reloading);
+            _ammo.Set(sample.Mag, sample.Reserve, sample.ReloadLeft10Ms, sample.MagSize, sample.Reloading,
+                sample.AmmoDataReady, sample.ReloadProgress);
             _rage.Set(sample.Rage, sample.RageLeft100Ms, sample.RageMode);
             _downed.Update(sample.Downed, sample.Phase);
 

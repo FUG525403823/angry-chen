@@ -10,7 +10,7 @@
 
 namespace ac::net {
 
-inline constexpr uint8_t kProtocolVersion = 1u;
+inline constexpr uint8_t kProtocolVersion = 2u;
 
 inline constexpr std::size_t kCommonHeaderBytes = 8u;
 inline constexpr std::size_t kReliableExtBytes = 12u;

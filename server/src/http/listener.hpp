@@ -1,6 +1,7 @@
 #pragma once
-// S14 §2-3 / S15 §5：把 S13 的纯处理层 handleRequest 接到真实 TCP 监听上。
-// 一次请求一条连接（HTTP/1.1 + connection: close），无并发、无 keep-alive。
+// 一次请求一条连接（HTTP/1.1 + connection: close），定长非阻塞连接表。
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -10,20 +11,23 @@
 
 namespace ac::http {
 
-inline constexpr std::size_t kMaxRequestBytes = 8192u;  // 请求行 + 头，超出即 500 并断开
+inline constexpr std::size_t kMaxRequestBytes = 8192u;
 inline constexpr int kRequestTimeoutMs = 2000;
 inline constexpr int kAcceptBacklog = 32;
-// S15 §15.4 D4：把实现里的裸数字提成具名常量（取值来源 = S14 落地时的实测值，本批不改动任何一个）。
-inline constexpr std::size_t kRequestReadChunkBytes = 256u;  // 读请求头时每次 recv 的栈缓冲
-inline constexpr std::size_t kDrainChunkBytes = 512u;        // 收尾丢弃残留请求的栈缓冲
-inline constexpr std::size_t kDrainBudgetBytes = 65536u;     // 单条连接最多丢弃的残留字节
-inline constexpr int kDrainTimeoutMs = 50;                   // 丢弃阶段每次 recv 的就绪等待
-inline constexpr std::size_t kClientIdBufferBytes = 24u;     // "255.255.255.255" + NUL
+inline constexpr std::size_t kMaxHttpConnections = 32u;
+inline constexpr std::size_t kAcceptsPerPoll = 8u;
+inline constexpr std::size_t kRequestReadChunkBytes = 8192u;
+inline constexpr std::size_t kResponseWriteChunkBytes = 8192u;
+inline constexpr std::size_t kClientIdBufferBytes = 24u;
 
-// 每个请求前刷新一次依赖：metrics 文本与进程快照必须现渲染（缓存由 handleRequest 自己管）。
 struct HttpListenerDeps {
   void* user = nullptr;
   void (*fill)(void* user, HttpDeps& out) = nullptr;
+};
+
+struct HttpListenerOptions {
+  std::uint32_t bindIpv4 = 0x7F000001u;
+  bool trustLoopbackProxy = false;
 };
 
 class HttpListener {
@@ -32,9 +36,9 @@ class HttpListener {
   HttpListener(const HttpListener&) = delete;
   HttpListener& operator=(const HttpListener&) = delete;
 
-  // state 由调用方持有（生命周期须覆盖本对象）；失败原因写进 *error。
-  bool start(std::uint16_t port, HttpState* state, const HttpListenerDeps& deps, std::string* error);
-  // 最多处理一条连接；返回本次处理的请求数（timeoutMs = 0 时不等待）。
+  bool start(std::uint16_t port, HttpState* state, const HttpListenerDeps& deps,
+             std::string* error, const HttpListenerOptions& options = {});
+  // 有界 pump；timeoutMs 仅保留源兼容，始终不等待。返回本轮完成/失败关闭的请求数。
   std::size_t serveOnce(std::uint32_t nowMs, int timeoutMs = 0);
   void stop();
 
@@ -46,20 +50,29 @@ class HttpListener {
   bool hasOversizedRequest() const noexcept { return hasOversizedRequest_; }
 
  private:
+  struct Connection {
+    ac::net::TcpConnection socket{};
+    std::string head;
+    std::string output;
+    std::string clientId;
+    std::size_t sent = 0u;
+    std::uint32_t startedMs = 0u;
+    std::chrono::steady_clock::time_point startedAt{};
+    int status = 0;
+  };
+  void finish(Connection& connection, int status);
   ac::net::TcpListener listener_{};
+  std::array<Connection, kMaxHttpConnections> connections_{};
   HttpState* state_ = nullptr;
   HttpListenerDeps deps_{};
-  std::string clientId_{};
+  HttpListenerOptions options_{};
   std::size_t requestCount_ = 0u;
   int lastStatus_ = 0;
   std::string lastClientId_{};
   bool hasOversizedRequest_ = false;
 };
 
-// 状态码 -> reason phrase（只覆盖 §5 冻结的 200/404/429/500/503）。
 std::string_view statusText(int status) noexcept;
-
-// 组装响应头（含 content-length 与 connection: close，可选 retry-after）。
 std::string buildResponseHead(const Response& response);
 
 }  // namespace ac::http
