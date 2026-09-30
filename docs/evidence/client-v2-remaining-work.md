@@ -1,13 +1,14 @@
 # 客户端链条（C01–C15）收官清单
 
-> 更新：2026-09-29 ｜ 本轮（在 `0d2bc6f` 上，未提交前）：A14 产品侧连接入口、A15 角度表随包、
-> A16 运行期日志落盘、A17 真机复现 C14 门禁 ｜ 标签 `MC01 … MC15`（`MC15` 见 A2，联合验收已通过）
+> 更新：2026-09-30 ｜ 第三轮实跑反馈（A21 移动闪烁、A22 开枪整链）已在 `2b218df` 落地 ｜ 本轮
+> 之前的条目：A14 产品侧连接入口、A15 角度表随包、A16 运行期日志落盘、A17 真机复现 C14 门禁
+> ｜ 标签 `MC01 … MC15`（`MC15` 见 A2，联合验收已通过）
 > 本文每条都有实测出处。A 段是要你出手的，B 段是我能独立做完的。
 
 ## 0. 现状
 
 **能跑的**：帧回路（输入 → 预测/和解 → 快照镜像 → 视图同步 → HUD → 特效 → 覆盖层 → 绘制）、音频 mixer、**运行期呈现层装配**（相机/灯光/竞技场/羊群/特效/屏幕流/调试面板）、版本行与**日志落盘**（A16 起真接线）、一条命令出发布包、资源引用守卫、**出包版可用 `server.txt`/`-acserver` 指定服务器**（A14）。
-**已上屏**：HUD/准星/大厅/结算/波间/调试面板/局内聊天由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定；**材质来源已收口**：运行期着色器一律来自 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），不再靠 `Shader.Find` 按名字查（见 A13）；**角度表随包**（A15/ADR-017），出包 player 不再每帧抛异常。**还不能的**：`AmmoLedger`/武器数值缺权威来源；武器视图网格（C09 无生成器）；IL2CPP 出包（本机只有 Mono 变体）。
+**已上屏**：HUD/准星/大厅/结算/波间/调试面板/局内聊天由 `Ac.UI/OverlayModel.cs`（布局模型）+ `Ac.Boot/OverlayRenderer.cs`（IMGUI 适配层）真画；**身份已通**：昵称键入 → 认领 pid → `GameLoop.LocalPlayerId`/`SnapshotView`/`EntityViews.SetLocalPlayer` → 相机/HUD 绑定；**材质来源已收口**：运行期着色器一律来自 `Assets/Resources/*.mat` 的资产引用（`Ac.View.ArenaMaterials`），不再靠 `Shader.Find` 按名字查（见 A13）；**角度表随包**（A15/ADR-017），出包 player 不再每帧抛异常；**开火反馈已通**（A22：本地武器镜像 `Sim/LocalWeapon.cs` + `GameLoop.PumpWeapon` 当帧判定、`Effects` 曳光闸门与射速间隔有人喂、命中点取权威 `HitX/Y/Z`、HUD 弹药走 `AmmoLedger`、视角吃后坐）。**还不能的**：武器视图网格（C09 无生成器）；IL2CPP 出包（本机只有 Mono 变体）。
 
 | 事实 | 结果 |
 |---|---|
@@ -15,8 +16,8 @@
 | B1 后真正被构造的类 | `Camera`+`FpsCamera`、`LightingRig`、`ArenaMesh`（7 部件/6 材质/5 碰撞盒）、`Materials`、`SheepInstancePool`+`SheepVisuals`（经 `Culling`/`Batching`）、`Effects`、`ViewModel`、`Lobby`/`Results`/`Intermission`（按 `MatchStatePayload.Phase` 驱动）、`DebugPanel`（F3，走键位表）、准星调色板 |
 | 帧分段 | `input/sync/predict/hud/fx/overlay/draw` 有生产打点；`audio` 仅在音频设备可用时接线。**打点规则**：只在该段真的做功时 `Mark` |
 | 资产 guid | 本轮新增 **1 个** `.meta`（`Resources/trig-table.json`，TextAsset；guid 按 32 位十六进制手写）；`assets.guid_references_resolve` 仍是守门用例 |
-| 自测 | `SELFTEST OK cases=195`（A14/A15/A16 新增 2 条用例 + A14 在既有用例内扩断言），零失败 |
-| 发布包 | `BUILD OK ac-client-0.1.0+0d2bc6f-win64.zip`（`backend=Mono`；含 `Resources/trig-table.json`） |
+| 自测 | `SELFTEST OK cases=210`（A21 前为 203：移动两条；A22 七条：武器镜像/射速/弹药闸/后坐注入/开火当帧/权威命中点/弹药账），零失败 |
+| 发布包 | `BUILD OK ac-client-0.1.0+2b218df-win64.zip`（`backend=Mono`；sha256 `7ae1dda4…c6d3f4`，`latest.txt` 复核 `True`） |
 | 帧预算（真机 player 口径） | P95 **0.9970** ms、P99 **1.7447** ms、0 B/帧、GC0=0、`drawCalls=51`、`triangles=34917`（限 20/33/0/0/120/180000，见 A17） |
 
 ---
@@ -27,6 +28,9 @@
 
 | 优先级 | 事项 | 一句话 | 卡住什么 |
 |---|---|---|---|
+| ⏳ | **A22-1 第三轮实跑复核** | 新包 `ac-client-0.1.0+2b218df-win64.zip`（sha256 `7ae1dda4…`）：解压后把 `server.txt` 一行写成 `43.143.120.65:8788`（或 `angry-chen.exe -acserver 43.143.120.65:8788`）→ 看四件事：① 走路不再闪烁/顿卡 ② 视角跟手 ③ 按下左键**当帧**见枪口火焰 + 曳光 ④ HUD 弹药当帧掉数、命中点在羊身上（不是空地/身体中段） | 只有你能上机；服务端**已探活**（下一条） |
+| ✅ | ~~服务端在线预检（2026-09-30）~~ | 从本机探 `43.143.120.65:8787`：`/health` **200** `{"status":"ok","protocolVersion":1,"rooms":1,"connections":0,"uptimeSeconds":34357}`、`/metrics` `ac_server_version{version="0.1.0",protocol="1",tick_ms="50"} 1`、tick 绝对时刻误差 P95 `1.000ms` ⇒ 版本行与客户端 `proto=1` 匹配，**不需要重部署服务端** | 已闭环 |
+| **P4** | **A22-2 服务端输入陈旧超时（可选，本轮未做）** | 客户端上行连续丢包时服务端会一直沿用最后一条命令（窗口上界约 1s）⇒ 只在"丢包严重"的链路上表现为"被拉回"。要修就在 `server/src/room/room.cpp` 的输入受理处加「≥6 tick（300ms）没有新 `clientTick` ⇒ 本 tick 的移动/按键清零、保留 Ready」，按 S 链出用例与证据后重部署 | 只在实跑确认还有"网络抖动被拉回"时才值得做（要你重部署服务端） |
 | ✅ | ~~A7 fixture 格式~~ | 客户端 loader 已适配服务端新 schema（14 向量 + `trig-table.json`，5560 tick），自测全绿 | 已闭环（187 例 `SELFTEST OK`） |
 | ✅ | ~~A2 C15 六步联合验收~~ | 2026-XX-XX 本机 `JOINT-ACCEPTANCE PASS`（退出码 0），六步原始行 + 两侧版本行已入档 | **`MC15` 可以打标签** |
 | ✅ | ~~A8 昵称上报通道~~ | 新增 `type=11 kJoin`（可靠，昵称 1–12 字节），服务端行表落真名（联调里是"牧羊人阿"） | 已闭环 |
@@ -338,6 +342,13 @@ S09 命中点、C01 §5 事件域）⇒ 不新增 ADR、不动协议／量化／
 | `kAimPitchLimitRad` | 1.5533 | `WeaponTable.AimPitchLimitRad`（**射击方向**的夹取；采样器的瞄准夹取是 π/2，两者差 1°） |
 | `kShotMaxDistanceM` | 160 | `WeaponTable.ShotMaxDistanceM` |
 | `kWeapons[].damage` / `falloff*` / `headshotMultiplier` / `isAuto` | — | 刻意不镜像（纯服务端结算；`isAuto` 服务端也不用，只靠"按住 = 持续开火 + 射速间隔"把关） |
+
+**实跑前预检（2026-09-30，从本机探生产服务端）**：`43.143.120.65:8787` 可达；`/health` **200**
+`{"status":"ok","protocolVersion":1,"rooms":1,"connections":0,"players":0,"uptimeSeconds":34357}`
+（uptime ≈ 9.5h = 上一轮部署仍在跑）；`/metrics` 首行 `ac_server_version{version="0.1.0",protocol="1",
+tick_ms="50"} 1` ⇒ 与客户端 `ac-client 0.1.0+2b218df proto=1` 的 `proto`/`MAJOR.MINOR` 一致；
+`ac_tick_schedule_error_ms_p95 1.000`（20Hz 的 5%）。**结论：本轮只需换客户端，服务端不用动**（Phase C
+的输入陈旧超时见优先级表 A22-2，是可选后续）。
 
 **验证（变异打红：逐条把修法改回缺陷，看用例是否真的红）**
 
