@@ -31,6 +31,156 @@ namespace Ac.Tests
             SelfTest.Add("presentation.sheep_pool_and_draw", ChecksSheepPoolAndDraw);
             SelfTest.Add("presentation.dispose_cleanup", ChecksDisposeCleanup);
             SelfTest.Add("presentation.identity_warn_grace", ChecksIdentityWarnGrace);
+            SelfTest.Add("presentation.fire_same_frame", ChecksFireSameFrame);
+            SelfTest.Add("presentation.hit_uses_authoritative_point", ChecksHitUsesAuthoritativePoint);
+            SelfTest.Add("presentation.ammo_optimistic_then_authority", ChecksAmmoOptimisticThenAuthority);
+        }
+
+        // 一直按住左键的采样器（注入路径：不走引擎的 Input）
+        private static InputSampler FiringSampler()
+        {
+            var sampler = new InputSampler();
+            sampler.SetKey(KeyCode.Mouse0, true);
+            return sampler;
+        }
+
+        // 开火当帧反馈：本地武器镜像判定开火 → 枪口火焰 + 曳光，全部在**同一条帧回路**里完成。
+        // 抽掉 GameLoop.PumpWeapon（或把触发改回"弹匣变小"）这条就会红：权威弹匣是 1Hz 的，
+        // 靠它推理出来的开火最多要等一秒才见火光，实跑就是"点了半天才响"。
+        private static void ChecksFireSameFrame()
+        {
+            var rig = new Rig(SettingsDefaults.Default());
+            try
+            {
+                rig.WireSeams();                       // 枪口/曳光都在 fx 段里出图
+                rig.Loop.Sampler = FiringSampler();
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
+
+                Step(rig, 0, 1, -2, 1, 10);            // 第一帧：喂快照 + 走帧回路
+
+                SelfTest.True(rig.Loop.LocalShotFired, "按下当帧就要报开火", "没报");
+                SelfTest.Equal(1, (long)rig.Loop.ShotCount);
+                SelfTest.Equal(1, (long)rig.Layer.LocalTracerSpawns);
+                SelfTest.Equal(1, rig.Layer.Effects.Tracers.LiveCount);
+                SelfTest.Equal(0, (long)rig.Layer.Effects.RejectedShots);   // 闸门（此前恒 0 ⇒ 每发都被拒）
+                SelfTest.True(rig.Layer.Effects.MuzzleFlashRemainingMs > 0, "枪口火焰要亮起来",
+                    rig.Layer.Effects.MuzzleFlashRemainingMs.ToString());
+                // 准星散布：基线 0.8° + 一发 0.1°（此前 sample.SpreadDeg 没有任何写入者）
+                SelfTest.True(rig.Loop.Sample.SpreadDeg > WeaponTable.BaseSpreadOf(0) + 0.05f,
+                    "准星要跟着开火张开", rig.Loop.Sample.SpreadDeg.ToString("R"));
+
+                // 曳光起点必须是枪口，不是眼位（C09 §5(c) 要修的 v1 缺陷）
+                var newest = -1;
+                for (var i = 0; i < Tracer.Capacity; i++)
+                {
+                    if (!rig.Layer.Effects.Tracers.Segments[i].Alive) continue;
+                    newest = i;
+                }
+                SelfTest.True(newest >= 0, "至少一段曳光活着", newest.ToString());
+                var from = rig.Layer.Effects.Tracers.Segments[newest].From;
+                var eyeDistance = Vector3.Distance(from, rig.Layer.ViewModel.EyeWorld);
+                SelfTest.True(eyeDistance > ViewModel.MinMuzzleEyeDistanceM, "起点离眼位至少要有一个枪身的距离",
+                    eyeDistance.ToString("R"));
+
+                // 射速由镜像把闸：200ms 之内不再响（手枪 300rpm）
+                var frames = 1;
+                while (rig.Loop.ShotCount < 2 && frames < 60)
+                {
+                    StepDt(rig, 0, (uint)(frames + 1), 25.0);
+                    frames += 1;
+                }
+                SelfTest.Equal(2, (long)rig.Loop.ShotCount);
+                SelfTest.True(frames >= 9 && frames <= 11, "第二发落在射速间隔上（≈200ms = 9–11 帧）", frames.ToString());
+                SelfTest.Equal(2, (long)rig.Layer.LocalTracerSpawns);
+            }
+            finally { rig.Dispose(); }
+        }
+
+        // 命中回执 → 曳光终点改到**权威命中点**（S09 的 i16 厘米）。本地开火那一刻没有命中结果，
+        // 只能按视线外推 30m；这条钉住"回执一到就改点"，也钉住弹着特效不再挂在目标实体中心。
+        private static void ChecksHitUsesAuthoritativePoint()
+        {
+            var rig = new Rig(SettingsDefaults.Default());
+            try
+            {
+                rig.WireSeams();
+                rig.Loop.Sampler = FiringSampler();
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
+                Step(rig, 1, 1, -2, 1, 10);            // 羊实体 id=2 在 (x=-2, z=10)
+
+                var newest = -1;
+                for (var i = 0; i < Tracer.Capacity; i++)
+                {
+                    if (!rig.Layer.Effects.Tracers.Segments[i].Alive) continue;
+                    newest = i;
+                }
+                SelfTest.True(newest >= 0, "本地开火必须留下一段曳光", newest.ToString());
+                var before = rig.Layer.Effects.Tracers.Segments[newest].To;
+                SelfTest.True(before.magnitude > 20f, "还没回执时终点先按 30m 外推", before.ToString("R"));
+
+                rig.Loop.Events = new EventIdTracker();
+                var header = default(PacketHeader);
+                header.Type = PacketType.Event;
+                // 自己（subjectId=1）打中羊（targetId=2），权威命中点 = (100, 120, 900) 厘米
+                rig.Loop.OnPacket(header, HitEventPayload(1, 2, 100, 120, 900));
+
+                SelfTest.Equal(1, (long)rig.Layer.HitRetargets);
+                var after = rig.Layer.Effects.Tracers.Segments[newest].To;
+                SelfTest.True(Math.Abs(after.x - 1.0f) < 0.01f && Math.Abs(after.y - 1.2f) < 0.01f && Math.Abs(after.z - 9.0f) < 0.01f,
+                    "曳光终点 = 权威命中点 (1.00, 1.20, 9.00)", after.ToString("R"));
+                // 弹着粒子也落在权威命中点上（z=9），而不是目标实体中心（z=10）
+                var particles = rig.Layer.Effects.ParticlePool;
+                SelfTest.True(particles.LiveCount > 0, "命中事件必须真的发出粒子", particles.LiveCount.ToString());
+                var onPoint = false;
+                for (var i = 0; i < Particles.Capacity; i++)
+                {
+                    if (!particles.Buffer[i].Alive) continue;
+                    onPoint = Math.Abs(particles.Buffer[i].Position.z - 9f) < 0.01f;
+                    break;
+                }
+                SelfTest.True(onPoint, "弹着点取权威命中点（z=9）", onPoint ? "对" : "挂到别处了");
+            }
+            finally { rig.Dispose(); }
+        }
+
+        // 弹药：显示值 = 权威 − 未确认开火。权威是 1Hz 的，靠它驱动反馈要等最多一秒。
+        private static void ChecksAmmoOptimisticThenAuthority()
+        {
+            var rig = new Rig(SettingsDefaults.Default());
+            try
+            {
+                var sampler = new InputSampler();        // 先不按左键：第一帧要看到权威值本身
+                rig.Loop.Sampler = sampler;
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
+                StepDt(rig, 1, 1, 1000.0 / 60.0);
+                SelfTest.Equal(12, (long)rig.Loop.Sample.Mag);          // 权威 12
+                SelfTest.Equal(12, (long)rig.Loop.Sample.MagSize);
+                SelfTest.Equal(0, (long)rig.Loop.AmmoPendingShots);
+
+                // 下一帧按住左键：本地镜像当帧开火 ⇒ HUD **同一帧**就掉到 11（不是等 1 秒后的 MatchState）
+                sampler.SetKey(KeyCode.Mouse0, true);
+                StepDt(rig, 1, 2, 1000.0 / 60.0);
+                SelfTest.True(rig.Loop.LocalShotFired, "这一帧开火了", "没开");
+                SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
+                SelfTest.Equal(1, (long)rig.Loop.AmmoPendingShots);
+
+                // 再来一条**仍是 12** 的 MatchState（服务端还没处理这一枪）：显示值不回弹
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
+                StepDt(rig, 1, 3, 1000.0 / 60.0);
+                SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
+                SelfTest.Equal(1, (long)rig.Loop.AmmoPendingShots);
+
+                // 权威降到 11（服务端认了这一枪）：账清了，显示值保持 11，且没有"被拒收"的记录
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 11, 0));
+                StepDt(rig, 1, 4, 1000.0 / 60.0);
+                SelfTest.Equal(0, (long)rig.Loop.AmmoPendingShots);
+                SelfTest.Equal(11, (long)rig.Loop.Sample.Mag);
+                SelfTest.Equal(0, (long)rig.Loop.AmmoRejectedTotal);
+
+                // 本地镜像也被权威拉低（只降不升）：装弹量与显示值同步
+                SelfTest.Equal(11, (long)rig.Loop.Weapon.ActiveMag);
+            }
+            finally { rig.Dispose(); }
         }
 
         // 真机实跑暴露的诊断缺陷：「本地身份未绑定」原来第一帧就报，而**起跑线上必然没绑上**
@@ -705,29 +855,30 @@ namespace Ac.Tests
 
         // type=10 的载荷：phase u8 | wave u8 | intermissionMs u16 | count u8 | 玩家块（见 MatchStateCodec.Decode）。
         // 生产侧没有 match state 编码器（该包只有服务端→客户端一个方向），所以用例自带一个小写入器。
-        private static byte[] MatchStatePayloadBytes(byte phase, byte wave, ushort intermissionMs)
+        // localMag/localWeapon 默认 0：弹药账的用例要喂"权威弹匣"，其余用例不关心。
+        private static byte[] MatchStatePayloadBytes(byte phase, byte wave, ushort intermissionMs, int localMag = 0, byte localWeapon = 0)
         {
             var bytes = new List<byte>(40);
             bytes.Add(phase);
             bytes.Add(wave);
             PutU16(bytes, intermissionMs);
             bytes.Add(2);                                     // 2 名玩家
-            WritePlayer(bytes, 1, "a", true);
-            WritePlayer(bytes, 2, "b", false);
+            WritePlayer(bytes, 1, "a", true, localMag, localWeapon);
+            WritePlayer(bytes, 2, "b", false, 0, 0);
             return bytes.ToArray();
         }
 
-        private static void WritePlayer(List<byte> bytes, ushort pid, string name, bool ready)
+        private static void WritePlayer(List<byte> bytes, ushort pid, string name, bool ready, int mag, byte weapon)
         {
             PutU16(bytes, pid);
             var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
             bytes.Add((byte)nameBytes.Length);
             for (var i = 0; i < nameBytes.Length; i++) bytes.Add(nameBytes[i]);
             bytes.Add((byte)(ready ? 1 : 0));
-            bytes.Add(0);        // weapon（0 ≤ Shotgun）
+            bytes.Add(weapon);   // weapon（0 ≤ Shotgun）
             bytes.Add(255);      // hpRatio
             PutU16(bytes, 0);    // kills
-            bytes.Add(0);        // mag
+            bytes.Add((byte)mag);
             PutU16(bytes, 0);    // reserve
             bytes.Add(0);        // reloadLeft10Ms
             bytes.Add(0);        // rage
@@ -740,18 +891,24 @@ namespace Ac.Tests
         // 生产侧没有事件编码器（事件只有服务端→客户端一个方向），所以用例自带一个小写入器。
         private static byte[] HitEventPayload()
         {
+            return HitEventPayload(1, 2, 0, 0, 0);
+        }
+
+        // 带权威命中点的一版（i16 厘米）：subjectId = 射手实体 id，用来判"这一枪是不是我打的"。
+        private static byte[] HitEventPayload(ushort subject, ushort target, short hitX, short hitY, short hitZ)
+        {
             var bytes = new List<byte>(32);
             PutU32(bytes, 7);                                     // tick
             bytes.Add(1);                                         // count
             PutU32(bytes, 1);                                     // eventId（幂等键）
             bytes.Add((byte)Ac.Net.EventType.PlayerHit);
-            PutU16(bytes, 1);                                     // subjectId
-            PutU16(bytes, 2);                                     // targetId = 羊实体 id
+            PutU16(bytes, subject);                               // subjectId
+            PutU16(bytes, target);                                // targetId = 羊实体 id
             PutU16(bytes, 30);                                    // value（伤害）
             bytes.Add((byte)CombatFlags.HitFlagKilled);
-            PutU16(bytes, 0);                                     // hitX/Y/Z（i16，本用例不读）
-            PutU16(bytes, 0);
-            PutU16(bytes, 0);
+            PutU16(bytes, (ushort)hitX);                          // hitX/Y/Z（i16 厘米）
+            PutU16(bytes, (ushort)hitY);
+            PutU16(bytes, (ushort)hitZ);
             return bytes.ToArray();
         }
 

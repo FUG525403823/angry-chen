@@ -80,7 +80,6 @@ namespace Ac.Boot
         private double _weaponSwayMs;
         private float _weaponKick01;          // 1 = 刚开火，随时间衰减到 0
         private int _weaponSlotBuilt = -1;
-        private int _lastMagForKick = -1;
         private float _bobPhase;
 
         private Material _emblemMaterial;   // 保留：旧路径的单份引用（用于就绪判定）
@@ -129,6 +128,10 @@ namespace Ac.Boot
         public int OverlayTicks { get; private set; }
         public int DrawTicks { get; private set; }
         public int HitFxCount { get; private set; }
+        // 本地开火当帧射出的曳光条数 / 被权威命中点改写终点的条数。用例靠它们区分"开火真的出图了"
+        // 与"只播了个动画"，也钉住"命中回执确实回填到了曳光上"。
+        public int LocalTracerSpawns { get; private set; }
+        public int HitRetargets { get; private set; }
         public int CameraPoseUpdates { get; private set; }
         public int WrittenSheepCount { get; private set; }
         public int CulledSheepCount { get; private set; }
@@ -335,6 +338,17 @@ namespace Ac.Boot
             FxTicks += 1;
             SyncCamera();
             ViewModel.Refresh();
+            // 特效层的开火闸门。此前 `SetAmmoGate` / `SetFireIntervalMs` **没有任何生产调用者**：
+            // AmmoGate 恒 0 ⇒ `Effects.SpawnTracer` 每一发都走 RejectedShots 分支，曳光在出包里
+            // 一条都不会出现（枪口火焰来自坐力曲线，所以"能看到闪、看不到弹道"）。
+            // 闸门取本地武器镜像**开火前**的弹匣：本帧已经打出去的那一发要加回来，否则"最后一发"的
+            // 曳光会被自己的"打完归零"闸掉。射速间隔取 kWeapons 镜像表（与服务端同一条公式）。
+            var gateLoop = _loop;
+            if (gateLoop != null)
+            {
+                Effects.SetAmmoGate(gateLoop.Weapon.ActiveMag + (gateLoop.LocalShotFired ? 1 : 0));
+                Effects.SetFireIntervalMs(WeaponTable.FireIntervalMs(gateLoop.Weapon.Slot, 1.0f));
+            }
             UpdateWeaponView(dtMs);
             Effects.Tick((float)dtMs);
         }
@@ -492,11 +506,32 @@ namespace Ac.Boot
         private void OnEventApplied(HudEvent hudEvent)
         {
             if (hudEvent.Type != Ac.Net.EventType.PlayerHit && hudEvent.Type != Ac.Net.EventType.SheepKilled) return;
-            var position = MainCamera == null ? Vector3.zero : MainCamera.transform.position;
-            EntityView target;
-            if (hudEvent.TargetId > 0 && _loop != null && _loop.Views.TryGet((ushort)hudEvent.TargetId, out target) && target != null)
+            var loop = _loop;
+            // 权威命中点（S09 的 i16 厘米）优先：它才是"子弹真正打中的那一点"（头/胸/腿），
+            // 拿目标实体的中心当锚点会让爆头反馈落在身体中段。三个分量全 0 = 这条事件没带命中点。
+            var hasPoint = hudEvent.Type == Ac.Net.EventType.PlayerHit
+                && (hudEvent.HitX != 0 || hudEvent.HitY != 0 || hudEvent.HitZ != 0);
+            Vector3 position;
+            if (hasPoint)
             {
-                position = new Vector3((float)target.RenderX, (float)target.RenderY, (float)target.RenderZ);
+                position = new Vector3(
+                    (float)Quantize.DequantizePosition(hudEvent.HitX),
+                    (float)Quantize.DequantizePosition(hudEvent.HitY),
+                    (float)Quantize.DequantizePosition(hudEvent.HitZ));
+                // 自己打出去的那一枪：把最近一段曳光的终点从"视线外推 30m"改到权威命中点上。
+                if (loop != null && hudEvent.SubjectId == loop.LocalPlayerId && Effects.RetargetNewestTracer(position))
+                {
+                    HitRetargets += 1;
+                }
+            }
+            else
+            {
+                position = MainCamera == null ? Vector3.zero : MainCamera.transform.position;
+                EntityView target;
+                if (hudEvent.TargetId > 0 && _loop != null && _loop.Views.TryGet((ushort)hudEvent.TargetId, out target) && target != null)
+                {
+                    position = new Vector3((float)target.RenderX, (float)target.RenderY, (float)target.RenderZ);
+                }
             }
             Effects.SetHitAnchor(position);
             Effects.SpawnHit(hudEvent.HitFlags);
@@ -797,9 +832,14 @@ namespace Ac.Boot
             if (!inCombat) return;
             _weaponSwayMs += dtMs;
             var loop = _loop;
-            var mag = loop == null ? -1 : loop.Hud.Ammo.Mag;
-            if (_lastMagForKick >= 0 && mag >= 0 && mag < _lastMagForKick) _weaponKick01 = 1f;
-            _lastMagForKick = mag;
+            // 开火信号 = 本地武器镜像的**当帧**结果（C06 §5(c)）。此前这里是"弹匣变小"这条推断：
+            // 权威弹匣是 1Hz 的（1 秒才掉一次数），推理出来的开火要等最多一秒才见枪口火焰与坐力；
+            // 本地账接上之后 mag 也不再可靠（打空枪、被拒收都会动它）。现在按下那一帧就响。
+            if (loop != null && loop.LocalShotFired)
+            {
+                _weaponKick01 = 1f;
+                SpawnLocalShotTracer();
+            }
             if (_weaponKick01 > 0f)
             {
                 _weaponKick01 -= (float)(dtMs / 180.0);      // 180ms 衰减完
@@ -838,6 +878,17 @@ namespace Ac.Boot
                     }
                 }
             }
+        }
+
+        // 开火当帧的曳光：起点 = 枪口挂点（**不是眼位**，C09 §5(c) 要修的 v1 缺陷），方向 = 当前视线，
+        // 终点先按 30m 外推（Tracer.FallbackEnd）。这里**不做命中判定**——服务端的 PlayerHit 一到，
+        // OnEventApplied 会把最近这一段重新指向权威命中点：打 3m 外的羊时那条 30m 长条只存在 1–3 帧。
+        private void SpawnLocalShotTracer()
+        {
+            if (MainCamera == null) return;
+            ViewModel.OnFire();   // 刷新枪口挂点（相机空间的挂点，帧内相机刚动过）
+            Effects.SpawnTracerFromMuzzle(ViewModel, MainCamera.transform.forward, false, Vector3.zero);
+            LocalTracerSpawns += 1;
         }
 
         // 视图模型基座：锚点的横向偏移按 0.55 收进去（实测：直接用 0.17m 会把整枪顶到右缘外），

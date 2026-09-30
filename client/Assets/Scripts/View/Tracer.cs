@@ -20,6 +20,7 @@ namespace Ac.View
         private readonly TracerSegment[] _segments = new TracerSegment[Capacity];
         private int _cursor;
         private int _live;
+        private int _lastSpawned = -1;
 
         public int OverflowCount { get; private set; }
         public int LiveCount { get { return _live; } }
@@ -30,6 +31,20 @@ namespace Ac.View
             for (var i = 0; i < Capacity; i++) _segments[i].Alive = false;
             _cursor = 0;
             _live = 0;
+            _lastSpawned = -1;
+        }
+
+        // 权威命中点回填（S09 的 PlayerHit.HitX/Y/Z）：本地开火那一刻还没有命中结果，终点只能按视线
+        // 外推 30m；回执一到就把**最近那一段**的终点改到真正打中的点上（寿命 120ms，回执通常 1–3 帧内到）。
+        // 只改最近一段：更早的几段早该消失了，而且玩家正在看的就是刚打出去的那一条。
+        public bool RetargetNewest(in Vector3 end)
+        {
+            if (_lastSpawned < 0) return false;
+            var segment = _segments[_lastSpawned];
+            if (!segment.Alive) return false;   // 已过期的段不能改（否则会改到"上一枪"）
+            segment.To = end;
+            _segments[_lastSpawned] = segment;
+            return true;
         }
 
         // §5(c)：池满覆盖最旧一条并计数
@@ -45,6 +60,7 @@ namespace Ac.View
             _segments[index] = segment;
             _cursor = (_cursor + 1) % Capacity;
             if (_live < Capacity) _live += 1;
+            _lastSpawned = index;
             return index;
         }
 

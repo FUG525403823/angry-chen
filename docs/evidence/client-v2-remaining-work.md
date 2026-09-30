@@ -304,6 +304,94 @@ FRAME-BENCH PASS p95=0.996999999999844ms alloc=0B mechanism=player emptyP95=0.66
 （ADR-014 裁决 4 只要求它回答"地板是否低于预算"），**仍要求真图形设备与 `P95 < 预算`**；
 被判定的三轮一项都不放宽。明细见 `docs/evidence/client-v2-frame-acceptance.md` §4。
 
+### A22. ✅ 第三轮实跑反馈（续）：「开枪」整条反馈链四处断线（枪口火焰迟一秒 / 没有曳光 / 命中点不对 / 弹药等一秒）
+
+A21 修完移动之后，用户要的下一件事是"像 CS 一样正常开枪"。查下来开火这一路**不是慢，是断**：
+本地没有任何"这一枪响了"的判定，特效层与 HUD 各自靠一条不可靠的间接推断活着，而三处关键接线
+在生产里**根本没有调用者**（全仓只有用例在调）。同样全部落在已冻结契约内（C06 §5(c)、C09 §5/§6、
+S09 命中点、C01 §5 事件域）⇒ 不新增 ADR、不动协议／量化／握手。
+
+| # | 冻结契约 | 根因（实测） | 修法 |
+|---|---|---|---|
+| F1 | 开火反馈必须当帧（C06 §5(c)、C09 §5） | 客户端**没有本地开火判定**：`PresentationLayer.UpdateWeaponView` 只能用"弹匣变小"推断开火（`_lastMagForKick`），而权威弹匣在 **1Hz** 的 MatchState 里 ⇒ 枪口火焰/坐力最多迟 1 秒，且任何一次权威纠正都会误触发 | 新增 `Sim/LocalWeapon.cs`（逐条复刻 `server/src/combat/weapon.cpp` 的 `resetWeaponState/updateWeapon/tryFire/tryStartReload/switchSlot`）+ `GameLoop.PumpWeapon()`：每帧按采样器的**当前**按钮位驱动、开火当帧置 `LocalShotFired` |
+| F2 | 曳光闸门由弹药账给（C09 §5(c)/§6） | `Effects.SetAmmoGate` / `SetFireIntervalMs` **没有任何生产调用者**（全仓只有 `EffectsSuite` 在用）⇒ `AmmoGate` 恒 `0` ⇒ `Effects.SpawnTracer` 每一发都走 `RejectedShots` 分支 ⇒ **曳光一条都不会出现**（枪口火焰来自坐力曲线 ⇒ 实跑症状就是"看得到闪、看不到弹道"） | `PresentationLayer.TickFx` 每帧喂闸门与间隔；闸门取本地镜像**开火前**的弹匣（否则"最后一发"会被自己"打完归零"闸掉），间隔取 `WeaponTable.FireIntervalMs`（与服务端同一条公式） |
+| F3 | 命中反馈落在权威命中点（S09 `HitX/Y/Z`） | `GameLoop.ApplyEvent` 把 `EventEntry` 转 `HudEvent` 时**丢掉了 `SubjectId` 与 `HitX/Y/Z`** ⇒ 弹着特效只能挂目标实体中心（爆头反馈落在身体中段），曳光终点也只能按视线外推 30m | `HudEvent` 增 `SubjectId/HitX/HitY/HitZ`；`OnEventApplied` 优先用权威命中点（三分量全 0 才退回实体中心）；`Tracer.RetargetNewest()` + `Effects.RetargetNewestTracer()` 把最近一段曳光改到该点 |
+| F4 | 弹药显示 = 权威 − 未确认开火（C06 §5(c)） | `AmmoLedger` 同样没有任何生产调用者，`FillSample` 直接把 1Hz 的 `MatchState.mag` 铺上 HUD ⇒ 打完一发要等最多 1 秒才掉数 | `FillSample` 改走 `AmmoLedger.Reconcile(...)`；快照路径补 `NoteServerAck(authority.LastAckedSeq)`，重连 `Reset()`；`LocalWeapon.SyncAuthority` 只把本地镜像**拉低**（1Hz 的旧值不许把打掉的子弹还回来） |
+| F5 | 后坐 0.35°/±0.2°、衰减 7.5/s（C09 §5） | 后坐只做在**视图模型**上（`WeaponAnim`），视角不吃后坐 ⇒ 服务端射线方向与玩家看到的后坐无关（跟 CS 不一致） | `InputSampler.ApplyAimPunch()`：开火当帧顶视角（下一帧上行即带上，服务端射线跟着后坐走），按 7.5°/s **线性**回正，且只回正"后坐抬起来的那部分" |
+| F6 | 用例缺口 | 帧回路 → 开火 → 特效／弹药这条缝没有集成用例 | 新增 7 条：`weapon.mirror_values`、`weapon.local_fire_interval`、`weapon.ammo_gate`、`camera.recoil_punch`、`presentation.fire_same_frame`、`presentation.hit_uses_authoritative_point`、`presentation.ammo_optimistic_then_authority` |
+
+**客户端 ↔ 服务端镜像值登记**（跨语言冻结值只有一份来源：`server/src/config/weapons.hpp`；
+客户端的落点是 `Sim/WeaponTable.cs`，改任何一项都必须两端同改，见 ADR-010 §7）
+
+| 服务端符号 | 值 | 客户端符号 |
+|---|---|---|
+| `kWeapons[].mag` | 12 / 30 / 6 | `WeaponTable.MagSize` |
+| `kWeapons[].rpm` | 300 / 600 / 70 | `WeaponTable.Rpm` |
+| `kWeapons[].pellets` | 1 / 1 / 8 | `WeaponTable.Pellets` |
+| `kWeapons[].reloadMs` | 1400 / 2000 / 2600 | `WeaponTable.ReloadMs` |
+| `kWeapons[].spreadDeg` | 0.8 / 0.6 / 4.0 | `WeaponTable.BaseSpreadDeg` |
+| `kSpreadGrowthPerShotDeg` / `kSpreadMaxDeg` | 0.1 / 0.25 | `WeaponTable.SpreadGrowthPerShotDeg` / `.SpreadMaxDeg` |
+| `kSpreadDecayDelayMs` / `kSpreadDecayPerSecondDeg` | 350 / 6.0 | `WeaponTable.SpreadDecayDelayMs` / `.SpreadDecayPerSecondDeg` |
+| `kRageFireRateMultiplier` | 1.25 | `WeaponTable` **未镜像**（本地按 1.0 计时，见残留①） |
+| `kReserveAmmoInitial` | 120 | `WeaponTable.ReserveAmmoInitial` |
+| `kRecoilPitchPerShotDeg` / `kRecoilYawJitterDeg` | 0.35 / 0.2 | `WeaponTable.RecoilPitchPerShotDeg` / `.RecoilYawJitterDeg`（C09 §5 同值） |
+| `kAimPitchLimitRad` | 1.5533 | `WeaponTable.AimPitchLimitRad`（**射击方向**的夹取；采样器的瞄准夹取是 π/2，两者差 1°） |
+| `kShotMaxDistanceM` | 160 | `WeaponTable.ShotMaxDistanceM` |
+| `kWeapons[].damage` / `falloff*` / `headshotMultiplier` / `isAuto` | — | 刻意不镜像（纯服务端结算；`isAuto` 服务端也不用，只靠"按住 = 持续开火 + 射速间隔"把关） |
+
+**验证（变异打红：逐条把修法改回缺陷，看用例是否真的红）**
+
+| 变异 | 实测（红的用例与数值） |
+|---|---|
+| `WeaponTable.Pellets[2]` 8→7 | `weapon.mirror_values`：`expected=8 actual=7` |
+| `LocalWeapon.TryFire` 去掉射速闸（`nowMs < nextFireAllowedAtMs` 一行） | `weapon.local_fire_interval`：2 秒打 `13` 发（修后 `10`）；集成侧连带 `presentation.fire_same_frame`：第二发落在第 `2` 帧（修后 9–11）；`presentation.ammo_optimistic_then_authority`：`expected=11 actual=10`（每帧都在开火） |
+| `LocalWeapon.TryFire` 弹匣闸 `<=0` → `<0` | `weapon.ammo_gate`：`expected=12 actual=13` |
+| `GameLoop.LocalFireRateMultiplier` 1.0→2.0 | `presentation.fire_same_frame`：第二发落在第 `6` 帧（修后 9–11） |
+| `ApplyEvent` 不转发 `HitX/Y/Z` | `presentation.hit_uses_authoritative_point`：`expected=1 actual=0`（`HitRetargets` 恒 0） |
+| `FillSample` 直接铺 `players[i].Mag`（绕过弹药账） | `presentation.ammo_optimistic_then_authority`：`expected=11 actual=12` |
+| **实现期真实缺陷**：`DecayRecoil` 把 `7.5°/s` 当 `7.5 rad/s` 用 | `camera.recoil_punch`：`expected=回正在进行但没做完 actual=0`（一帧就把后坐还完 = 视角完全不抬）——这条是**先红后修**（不是事后补的变异），换算写成 `RecoilDecayPerSecond * DegToRad * dtMs / 1000` |
+
+修后全绿：`SELFTEST OK cases=210`（A21 时为 203，七条新用例）。
+
+**已知残留（登记，不在本轮修）**：① 本地开火镜像按 **1.0** 倍率计时、**不镜像 rage 的 1.25×** ⇒ 狂暴窗口里
+本地射速比服务端慢 1/5，多出来的那几发由权威弹匣拉回（不产生"幻影开火"，只是本地少放几发特效）；
+② 回执到达前曳光终点按视线外推 30m（`Tracer.FallbackEnd`），`PlayerHit` 一到就改到权威命中点（打 3m
+外的目标时那条长条存在 1–3 帧）；③ 本地**不做命中判定**（射线/回溯全在服务端 S08/S09）⇒ "打没打中"
+完全由 `PlayerHit` 决定，曳光/弹着点在 RTT 内不是权威；④ 开火按**帧**驱动而不是 50ms 子步：射速由
+`nextFireAllowedAtMs` 把关（帧率不改变射速，只改变"按下到出膛"的粒度），而上行仍是 30Hz 采样 ⇒
+服务端那一格可能比本地晚最多一条命令（弹药账与命中回执各自把这点吸收掉）。
+
+### A21. ✅ 第三轮实跑反馈：移动「疯狂闪烁 / 来回闪烁」+ 视角迟滞（预测—和解链路四处回归）
+
+用户复述的症状是"移动起来巨卡无比，移动一下就会疯狂闪烁，来回闪烁"。四处问题全在客户端，且都是
+**对已经冻结的契约的回归**（C05 §5.4/§5.5/§8、C06 §5(b)/§8、C04 §5.5）⇒ 不新增 ADR、不动协议／
+量化／握手；修法只是把实现改回契约描述的行为。
+
+| # | 冻结契约 | 根因（实测） | 修法 |
+|---|---|---|---|
+| R1 | 本地玩家渲染用预测姿态（C05 §5.4） | `EntityView.HasPrediction / PredictedX/Y/Z / PredictedYawRad / PredictedPitchRad` 在生产代码里**没有任何写入者**（全仓只有 `Tests/InterpolationSuite.cs` 在用），`EntityViews.SyncFrame` 因此恒走"按最新帧吸附"那一支 ⇒ 本地玩家只能按 20Hz 快照跳格 | `GameLoop.PublishLocalPrediction()`：每帧把 `Predictor.RenderPosition()`（50ms 子步 + 渲染外推）写进视图，并在没有本地实体时清标志 |
+| R2 | 相机 yaw/pitch 直接取自本机命令姿态（C05 §5.5） | `SyncCamera` 读 `local.YawRad/PitchRad`，而那份值来自权威快照 ⇒ 视角被 RTT + 50ms 拖住（"鼠标迟滞"） | 同一处写入点：预测 yaw/pitch 取**采样器当前值**（与上行命令同一份）；`SyncCamera` 无需改动 |
+| R3 | 重放只在收到权威快照时发生（C06 §8）；缓冲每条 = 一个 50ms 子步（C06 §5(b)） | `Frame` 每帧都调一次 `Reconcile`，且每帧只 `Push` 一条命令（按帧率 ≈ 2× 于 20Hz 步进）⇒ 重放条数系统性多一倍（实测本场景每 tick 2 帧：重放 `4` 步而不是 `2` 步） | 和解改为"**已应用快照的 tick 变过**才做一次"（判据取 `SnapshotView.AppliedTick`，不用"本帧收到过包"——装配根/帧基准直接喂快照的那条路同样要和）；命令缓冲改为每个子步进入队一条（`Advance` 返回的步数即条数） |
+| R4 | 给平滑器的是「和解前 − 重放后」（C06 §5(b) + C04 §5.5） | `Frame` 传的是 `predictor.State - result.Offset`（= 2×重放后 − 和解前），每帧往偏移里灌进约一个帧位移量级；量级越过 `SnapThresholdM = 1.0` 就 `Reset()` 归零 ⇒ 渲染位置在「权威+大偏移」与「权威+0」之间来回跳 = **用户看到的来回闪烁** | 新增 `EntityViews.ApplyPoseDelta(view, dx, dy, dz)`：把**姿态位移量**（`ReconcileResult.Offset*`）交给 `ErrorSmoother.Apply`（在旧偏移基础上累加），而不是拼一个"位置"出来 |
+| R5 | 用例缺口 | GameLoop → 视图／和解／相机这条缝**一条集成用例都没有**（前两轮的真实缺陷都从这条缝漏出去） | 新增 `boot.local_pose_from_prediction`、`boot.no_camera_flicker`（含"确实和解过"的判据 `Reconciles`／`LastReplayed`，避免平滑断言在没和解时真空通过） |
+
+**验证（变异打红：逐条把修法改回缺陷，看用例是否真的红）**
+
+| 变异 | 实测（红的用例与数值） |
+|---|---|
+| R4：`ApplyPoseDelta` 换回 `ApplyCorrection(local, State − Offset)` | `boot.no_camera_flicker`：单帧位移 `0.6683` > C05 §8 上界 `0.315`，轨迹里出现 `9.312 → 9.254` 的**回退**（＝来回闪烁在用例里复现）；`boot.local_pose_from_prediction`：领先量 `0.70..1.28`（修后 `0.27..0.49`） |
+| R3：命令缓冲改回每帧一条 | `boot.local_pose_from_prediction`：重放条数恒 `4`（修后恒 `2`） |
+| R3：和解改回每帧一次 | 两条用例同时红：`Reconciles = 80`（修后 `40`＝一 tick 一次） |
+| R1/R2：去掉 `PublishLocalPrediction()` | `boot.local_pose_from_prediction`：`68` 帧没有预测值（修后 `0`），领先量退回 ≈0 |
+
+修后全绿：`SELFTEST OK cases=203`（A20 时为 201，两条新用例）。
+
+**已知残留（登记，不在本轮修）**：① 快照可能落在本 tick 子步**之前**，于是模拟误差按相位在
+`0.005/0.225m` 之间交替（≤ 一个子步）——平滑器把它吸收成渲染偏移，**渲染位置保持连续、无回退**，
+用例按 C05 §8 的"一个子步"上界钉住；② `Predictor.Advance(int dtMs)` 会把 16.67ms 截断成 16ms，
+客户端时钟比权威慢约 4%（稳态留下一个小偏置）——改签名属 C05 冻结面，另立后续项；③ 30Hz 采样 /
+20Hz tick 时 ack 可能多追一条 push，重放少一步（≤0.315m），同样由平滑器吸收。
+
 ### A20. ✅ 第二轮实跑反馈（移动一顿一顿 / 灵敏度 / 有枪 / 羊）+ 美术细节
 
 | 反馈 | 根因（实测） | 修法 |

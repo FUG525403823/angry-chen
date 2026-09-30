@@ -10,9 +10,15 @@ namespace Ac.UI
         public Ac.Net.EventType Type;
         public int HitFlags;      // HIT_FLAG：headshot=1 / downed=2 / killed=4
         public int TargetId;      // 事件目标（击杀事件的受害者）实体 id，来自 EventEntry.TargetId
+        public int SubjectId;     // 事件主体（命中事件的射手）实体 id，来自 EventEntry.SubjectId
         public int Wave;
         public int ReviveRatio255;
         public int WaveSize;
+        // PlayerHit 的**权威命中点**（i16 厘米，S09 的 HitX/Y/HitZ）。呈现层用它把曳光的终点从
+        // "本地按视线外推 30m"改到服务端真正打到的那一点上——这一条就是"打中了但看着没打中"的解药。
+        public short HitX;
+        public short HitY;
+        public short HitZ;
     }
 
     // §5(b)：每帧复用的采样对象。字段与 §5(a) 的元素一一对应。

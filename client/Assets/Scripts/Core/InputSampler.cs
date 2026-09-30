@@ -69,6 +69,37 @@ namespace Ac.Core
         public double SensitivityValue { get; private set; }
         public double YawRad { get; private set; }
         public double PitchRad { get; private set; }
+        // 本帧的**当前**按钮位（不消耗待发队列、不推进 seq）：本地武器镜像按它逐帧决定"响没响"。
+        // 它必须和上行命令的按钮位同源同值，否则会出现"画面上开火了、服务端那一格没有 Fire 位"
+        // （上行按 30Hz 采样，本地按帧判定）。
+        public byte CurrentButtons { get { return SampleButtons(); } }
+        public byte CurrentSwitchTo { get { return _switchTo; } }
+
+        // 后坐注入面（C09 §5：俯仰 0.35°/发、偏航 ±0.2°/发、衰减 7.5/s）。开火当帧把视角顶上去
+        // （下一帧上行就带上这个偏移 ⇒ 服务端射线方向跟着后坐走，跟 CS 一样），随后按 7.5/s 回正。
+        // 回正的只是"后坐抬起来的那部分"：玩家自己拖的鼠标不会被回正吃掉。
+        public const double RecoilDecayPerSecond = 7.5;
+        public const double DegToRad = 0.017453292519943295;   // π/180（与服务端 kDegToRad 同值）
+        private double _recoilRecoverPitchRad;
+        private double _recoilRecoverYawRad;
+        private int _punchYawSign = 1;
+
+        // 偏航左右交替、幅度固定——与 WeaponAnim 同一约定（不用随机数，回放可复现）。
+        public void ApplyAimPunch(double pitchDeg, double yawJitterDeg)
+        {
+            var pitchRad = pitchDeg * DegToRad;
+            var yawRad = yawJitterDeg * _punchYawSign * DegToRad;
+            _punchYawSign = -_punchYawSign;
+            PitchRad += pitchRad;
+            if (PitchRad > PitchLimitRad) PitchRad = PitchLimitRad;
+            else if (PitchRad < -PitchLimitRad) PitchRad = -PitchLimitRad;
+            YawRad = WrapRadians(YawRad + yawRad);
+            _recoilRecoverPitchRad += pitchRad;
+            _recoilRecoverYawRad += yawRad;
+        }
+
+        public double RecoilPitchRad { get { return _recoilRecoverPitchRad; } }
+        public double RecoilYawRad { get { return _recoilRecoverYawRad; } }
         public bool Focused { get; private set; }
         public int CommandsMerged { get; private set; }
         public int PendingCount { get { return _pendingCount; } }
@@ -186,6 +217,7 @@ namespace Ac.Core
             if (!Focused) return false;
             if (dtMs < 0.0) dtMs = 0.0;
             Sample();
+            DecayRecoil(dtMs);
             _sinceLastSendMs += dtMs;
             if (_sinceLastSendMs < UpIntervalMs) return false;
             _sinceLastSendMs -= UpIntervalMs;
@@ -268,6 +300,17 @@ namespace Ac.Core
                 : AxisValue(Input.GetAxisRaw("Horizontal"));
             intent.Yaw = QuantizeRadians(YawRad);
             intent.Pitch = QuantizeRadians(PitchRad);
+            // 与 ReadyHeld 相或：准备位是状态，不随按键采样消失（见 BuildIntent 顶部）。
+            intent.Buttons = (byte)((SampleButtons() | intent.Buttons) & 0xff);
+            intent.SwitchTo = _switchTo;
+            return intent;
+        }
+
+        // §5.1 的局内按钮位（引擎路径读真实按键、注入路径读键位表；失焦/挂起后一律 0——KeyDown 自己
+        // 看 _intentCleared）。Ready 位**不在这里**：它是状态不是按键（见 BuildIntent 顶部）。
+        // 本地武器镜像每帧按它决定"响没响"，与上行命令用同一份判读。
+        private byte SampleButtons()
+        {
             var buttons = 0;
             if (KeyDown(KeyCode.Mouse0)) buttons |= ButtonFire;
             if (KeyDown(KeyCode.LeftShift) || KeyDown(KeyCode.RightShift)) buttons |= ButtonSprint;
@@ -276,10 +319,27 @@ namespace Ac.Core
             if (KeyDown(KeyCode.E)) buttons |= ButtonInteract;
             if (KeyDown(KeyCode.F)) buttons |= ButtonRage;
             if (KeyDown(KeyCode.Q)) buttons |= ButtonSwitchWeapon;
-            // 与 ReadyHeld 相或：准备位是状态，不随按键采样消失（见 BuildIntent 顶部）。
-            intent.Buttons = (byte)((buttons | intent.Buttons) & 0xff);
-            intent.SwitchTo = _switchTo;
-            return intent;
+            return (byte)buttons;
+        }
+
+        // 后坐回正：线性速率 7.5/s（与 WeaponAnim.Decay 同口径——那条是 View 层的后坐动画，
+        // 这里回正的是**视角**）。回正量从视角里扣掉同样的弧度，玩家自己拖的鼠标不受影响。
+        private void DecayRecoil(double dtMs)
+        {
+            if (_recoilRecoverPitchRad == 0.0 && _recoilRecoverYawRad == 0.0) return;
+            // 7.5 是**度**/秒（C09 §5 的冻结值），而存下来的要回正的量是弧度：这里必须换算，
+            // 否则回正会快 57 倍（一帧就把后坐还完，视角等于完全不抬）。
+            var amount = RecoilDecayPerSecond * DegToRad * dtMs / 1000.0;
+            var pitchBack = _recoilRecoverPitchRad > amount ? amount : _recoilRecoverPitchRad;
+            var yawBack = _recoilRecoverYawRad > amount
+                ? amount
+                : (_recoilRecoverYawRad < -amount ? -amount : _recoilRecoverYawRad);
+            _recoilRecoverPitchRad -= pitchBack;
+            _recoilRecoverYawRad -= yawBack;
+            PitchRad -= pitchBack;
+            if (PitchRad > PitchLimitRad) PitchRad = PitchLimitRad;
+            else if (PitchRad < -PitchLimitRad) PitchRad = -PitchLimitRad;
+            YawRad = WrapRadians(YawRad - yawBack);
         }
 
         private void ClearIntentInternal()

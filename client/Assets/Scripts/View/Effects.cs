@@ -75,6 +75,14 @@ namespace Ac.View
             return SpawnTracer(model.MuzzleWorld, end);
         }
 
+        // 权威命中点回填（S09）：本地开火时终点只能按视线外推，服务端的 PlayerHit 一到就改最近一段。
+        // 刻意**不走闸门**：这一枪的弹药在本地开火时就已经放行了，回填只是把终点换个位置，
+        // 再闸一次会让"最后一发"的曳光永远停在 30m 外。
+        public bool RetargetNewestTracer(in Vector3 end)
+        {
+            return _tracer.RetargetNewest(end);
+        }
+
         public MarkerState SpawnHit(int hitFlags)
         {
             var state = _marker.ShowFromFlags(hitFlags);

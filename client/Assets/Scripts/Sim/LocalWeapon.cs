@@ -1,0 +1,124 @@
+namespace Ac.Sim
+{
+    // C06 §5(c) 的本地武器镜像：逐条复刻 `server/src/combat/weapon.cpp` 的 WeaponState 语义
+    // （resetWeaponState / updateWeapon / tryFire / tryStartReload / switchSlot）。
+    //
+    // 它存在的唯一理由是**节奏**：权威弹匣只在 MatchState（1Hz）里，命中回执要一个 RTT；而
+    // "按下去这一帧枪就响"必须当帧可见（枪口火焰、曳光、后坐、准星散布）。开火间隔、换弹时长、
+    // 弹匣容量都来自 WeaponTable（＝服务端 kWeapons 的镜像），所以本地镜像的射速与服务端一致，
+    // 不会出现"客户端突突突、服务端慢半拍"。
+    //
+    // 边界：这里**不做命中判定**（那是服务端的事，S08/S09 的射线与回溯），也不做伤害/击杀。
+    // 按钮位的判读留在调用方（与 resolve.cpp 的分工一致：weapon.cpp 不认识 buttons）。
+    public sealed class LocalWeapon
+    {
+        public const int SlotCount = WeaponTable.SlotCount;
+
+        private readonly int[] _magInSlot = new int[SlotCount];
+        private int _activeSlot;
+        private int _reserveAmmo;
+        private double _reloadEndsAtMs;
+        private double _nextFireAllowedAtMs;
+        private double _spreadDeg;
+
+        public LocalWeapon()
+        {
+            Reset();
+        }
+
+        // resetWeaponState：满弹匣 + 初始备弹 + 无换弹无散布。
+        public void Reset()
+        {
+            _activeSlot = 0;
+            for (var slot = 0; slot < SlotCount; slot++) _magInSlot[slot] = WeaponTable.MagSize[slot];
+            _reserveAmmo = WeaponTable.ReserveAmmoInitial;
+            _reloadEndsAtMs = 0.0;
+            _nextFireAllowedAtMs = 0.0;
+            _spreadDeg = 0.0;
+        }
+
+        public int Slot { get { return _activeSlot; } }
+        public int ActiveMag { get { return _magInSlot[_activeSlot]; } }
+        public int Reserve { get { return _reserveAmmo; } }
+        public double SpreadDeg { get { return _spreadDeg; } }
+        public bool IsReloading { get { return _reloadEndsAtMs != 0.0; } }
+
+        public double ReloadRemainingMs(double nowMs)
+        {
+            if (_reloadEndsAtMs == 0.0) return 0.0;
+            var remaining = _reloadEndsAtMs - nowMs;
+            return remaining > 0.0 ? remaining : 0.0;
+        }
+
+        // updateWeapon：换弹到点就补弹（从备弹取），散布在"距上次开火 ≥ kSpreadDecayDelayMs"后按
+        // kSpreadDecayPerSecondDeg 衰减。返回本帧是否刚好补完弹（调用方据此重挂弹匣视图）。
+        public bool Update(double nowMs, double dtMs, float fireRateMultiplier)
+        {
+            var reloadFinished = false;
+            if (_reloadEndsAtMs != 0.0 && nowMs >= _reloadEndsAtMs)
+            {
+                var need = WeaponTable.MagSizeOf(_activeSlot) - _magInSlot[_activeSlot];
+                var take = need < _reserveAmmo ? need : _reserveAmmo;
+                _magInSlot[_activeSlot] += take;
+                _reserveAmmo -= take;
+                _reloadEndsAtMs = 0.0;
+                reloadFinished = true;
+            }
+
+            if (_spreadDeg > 0.0)
+            {
+                var interval = WeaponTable.FireIntervalMs(_activeSlot, fireRateMultiplier);
+                var lastShotAtMs = _nextFireAllowedAtMs - interval;
+                if (nowMs - lastShotAtMs >= WeaponTable.SpreadDecayDelayMs)
+                {
+                    var decayed = _spreadDeg - (WeaponTable.SpreadDecayPerSecondDeg * dtMs) / 1000.0;
+                    _spreadDeg = decayed > 0.0 ? decayed : 0.0;
+                }
+            }
+            return reloadFinished;
+        }
+
+        // tryFire：换弹中 / 未到射速间隔 / 空弹匣一律不响。响一次就扣一发、推进射速间隔、涨散布。
+        public bool TryFire(double nowMs, float fireRateMultiplier)
+        {
+            if (_reloadEndsAtMs != 0.0) return false;
+            if (nowMs < _nextFireAllowedAtMs) return false;
+            if (_magInSlot[_activeSlot] <= 0) return false;
+            _magInSlot[_activeSlot] -= 1;
+            _nextFireAllowedAtMs = nowMs + WeaponTable.FireIntervalMs(_activeSlot, fireRateMultiplier);
+            var grown = _spreadDeg + WeaponTable.SpreadGrowthPerShotDeg;
+            _spreadDeg = grown < WeaponTable.SpreadMaxDeg ? grown : WeaponTable.SpreadMaxDeg;
+            return true;
+        }
+
+        public bool TryStartReload(double nowMs)
+        {
+            if (_reloadEndsAtMs != 0.0) return false;
+            if (_magInSlot[_activeSlot] >= WeaponTable.MagSizeOf(_activeSlot)) return false;
+            if (_reserveAmmo <= 0) return false;
+            _reloadEndsAtMs = nowMs + WeaponTable.ReloadMs[WeaponTable.ClampSlot(_activeSlot)];
+            return true;
+        }
+
+        public bool SwitchSlot(byte slot, double nowMs)
+        {
+            if (slot >= SlotCount) return false;
+            if (slot == _activeSlot) return false;
+            _activeSlot = slot;
+            _reloadEndsAtMs = 0.0;
+            if (_nextFireAllowedAtMs < nowMs) _nextFireAllowedAtMs = nowMs;
+            return true;
+        }
+
+        // 权威对齐（客户端独有）：MatchState 的弹匣/备弹/槽位是**只降不升**的纠正面——
+        // 本地镜像漏算的开火（丢包、被服务端拒收）在这里被拉回，避免"客户端还能打、服务端已经空仓"。
+        // 补弹（权威值更大）不采用：那会让一个 1Hz 的旧值把刚打掉的子弹还回来。
+        public void SyncAuthority(int mag, int reserve, int slot)
+        {
+            var clamped = WeaponTable.ClampSlot(slot);
+            if (clamped != _activeSlot) SwitchSlot((byte)clamped, 0.0);
+            if (mag >= 0 && mag < _magInSlot[_activeSlot]) _magInSlot[_activeSlot] = mag;
+            if (reserve >= 0 && reserve < _reserveAmmo) _reserveAmmo = reserve;
+        }
+    }
+}

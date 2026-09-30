@@ -30,6 +30,9 @@ namespace Ac.Boot
     public sealed class GameLoop
     {
         public const int MaxInboundPerPoll = 64;
+        // 本地开火镜像用的射速倍率：服务端是 `rage ? kRageFireRateMultiplier(1.25) : 1`，
+        // 本地不镜像 rage（残余记录见 client-v2-remaining-work.md 的 A21）。
+        private const float LocalFireRateMultiplier = 1.0f;
 
         private readonly SnapshotView _view;
         private readonly EntityViews _views;
@@ -38,6 +41,9 @@ namespace Ac.Boot
         private readonly Predictor _predictor = new Predictor();
         private readonly Reconciler _reconciler = new Reconciler();
         private readonly CommandBuffer _commands = new CommandBuffer();
+        // 和解的触发条件（见 Frame 的 ③）：已应用快照的 tick 变过才回滚重放一次。
+        private uint _lastReconciledTick;
+        private bool _reconciledOnce;
         private readonly Interpolation.RenderClock _clock = new Interpolation.RenderClock();
         // 本地身份 = pid（= 玩家实体 id）。服务端不回 pid，只能按昵称从 MatchState 认领：
         // 过渡方案与代价写在 Ac.Net.LocalIdentity 的类注释里。
@@ -50,6 +56,9 @@ namespace Ac.Boot
         private StepCommand _pending;
         private bool _hasPending;
         private double _nowMs;
+        // C06 §5(c)：本地武器镜像（射速/换弹/弹匣/散布）+ 弹药本地账（未确认开火）。
+        private readonly LocalWeapon _weapon = new LocalWeapon();
+        private readonly AmmoLedger _ammo = new AmmoLedger();
         private byte _phase = Hud.PhaseLobby;
         private int _wave;
         private int _intermissionMs;
@@ -147,6 +156,21 @@ namespace Ac.Boot
         public int DecodeFailures { get; private set; }
         public int HardCorrects { get; private set; }
         public double LastReconcileErrorM { get; private set; }
+        // 和解次数（每条新权威快照一次，见 Frame ③）与最近一次重放条数。给用例一条"确实和解过、
+        // 且重放了几步"的判据：少了它们，那些"位置平滑/误差很小"的断言在没有和解时也会真空通过。
+        public int Reconciles { get; private set; }
+        public int LastReplayed { get; private set; }
+        // 本地武器镜像与弹药账（C06 §5(c)）：`LocalShotFired` 是**当帧**开火信号——枪口火焰、曳光、
+        // 后坐、准星散布都跟它走（权威命中要等一个 RTT，MatchState 的弹匣要等 1Hz，都不能用来驱动反馈）。
+        // 用例靠 ShotCount / LastShotSeq / AmmoRejectedTotal 判断"真的响过"，而不是断言一个恒 false 的位。
+        public bool LocalShotFired { get; private set; }
+        public int LocalShotSlot { get; private set; }
+        public int ShotCount { get; private set; }
+        public int LastShotSeq { get; private set; }
+        public LocalWeapon Weapon { get { return _weapon; } }
+        public AmmoView Ammo { get; private set; }
+        public int AmmoRejectedTotal { get { return _ammo.RejectedTotal; } }
+        public int AmmoPendingShots { get { return _ammo.PendingShots; } }
         public FrameProfiler Profiler { get { return _profiler; } }
         public SnapshotView View { get { return _view; } }
         public EntityViews Views { get { return _views; } }
@@ -219,10 +243,14 @@ namespace Ac.Boot
             var hudEvent = default(HudEvent);
             hudEvent.Type = entry.Type;
             hudEvent.HitFlags = entry.Flags;
+            hudEvent.SubjectId = entry.SubjectId;
             hudEvent.TargetId = entry.TargetId;
             hudEvent.Wave = entry.Wave;
             hudEvent.WaveSize = entry.Budget;
             hudEvent.ReviveRatio255 = entry.Ratio255;
+            hudEvent.HitX = entry.HitX;
+            hudEvent.HitY = entry.HitY;
+            hudEvent.HitZ = entry.HitZ;
             _hud.PushEvent(hudEvent);
             EventsApplied += 1;
             var handler = EventApplied;
@@ -259,6 +287,76 @@ namespace Ac.Boot
             }
         }
 
+        // C06 §5(c)：本地武器镜像 → **当帧**开火反馈。按钮位的判读留在这里（与 resolve.cpp 的分工一致：
+        // weapon.cpp 只提供 tryFire/tryStartReload/switchSlot，不认识 buttons），调用顺序也照抄服务端
+        // tick：先 updateWeapon（换弹完成 + 散布衰减），再 switchSlot → tryStartReload → tryFire。
+        //
+        // 为什么按**帧**驱动而不是按 50ms 子步：射速由 `nextFireAllowedAtMs` 把关（服务端也是这么把关的），
+        // 所以调用频率不改变射速，只改变"按下到出膛"的粒度。按子步驱动的话，30Hz 采样 + 20Hz 子步
+        // 会让按下最多等 83ms 才见枪口火焰——那正是"点了半天才响"的手感。
+        private void PumpWeapon(double dtMs)
+        {
+            var sampler = Sampler;
+            if (sampler == null) return;
+            var nowMs = _nowMs;
+            // rage 倍率（kRageFireRateMultiplier = 1.25）暂不镜像：本地只按 1.0 计时，狂暴窗口里本地
+            // 射速比服务端慢 1/5，多出来的那点在弹药账里被权威拉回（见 A21 的残余记录）。
+            _weapon.Update(nowMs, dtMs, LocalFireRateMultiplier);
+            var buttons = sampler.CurrentButtons;
+            if ((buttons & InputSampler.ButtonSwitchWeapon) != 0) _weapon.SwitchSlot(sampler.CurrentSwitchTo, nowMs);
+            if ((buttons & InputSampler.ButtonReload) != 0) _weapon.TryStartReload(nowMs);
+            if ((buttons & InputSampler.ButtonFire) == 0) return;
+            if (!_weapon.TryFire(nowMs, LocalFireRateMultiplier)) return;
+
+            LocalShotFired = true;
+            LocalShotSlot = _weapon.Slot;
+            ShotCount += 1;
+            // 序号取采样器当前 seq：服务端会用**它收到的那条命令**的 seq 派生抖动，两者最多差一条命令
+            // （30Hz），不影响本地的枪口/曳光（命中点由权威事件回填，见 ApplyEvent）。
+            LastShotSeq = sampler.Seq;
+            _ammo.NoteLocalShot(sampler.Seq, LocalShotSlot, (int)nowMs);
+            // 后坐当帧顶视角（C09 §5 的 0.35°/±0.2°）：下一帧上行就带上这个偏移，服务端射线跟着后坐走。
+            sampler.ApplyAimPunch(WeaponTable.RecoilPitchPerShotDeg, WeaponTable.RecoilYawJitterDeg);
+        }
+
+        // C05 §5.4/§5.5 的落地：把**预测姿态**与本机**命令视角**交给实体视图。在这之前渲染路径一直
+        // 拿权威快照当本地玩家的姿态（`HasPrediction`/`Predicted*` 在生产里没有任何写入者），
+        // 于是本地玩家只能按 20Hz 吸附、鼠标视角被 RTT + 50ms 拖住 —— 实跑就是"移动一顿一顿"。
+        //  - 位置取 `Predictor.RenderPosition`（50ms 子步 + 渲染外推），不是裸 state：外推把累加器里的
+        //    零头也画出来，画面才在帧率上连续（C05 §5.4）。
+        //  - 视角直接取采样器的当前 yaw/pitch（C05 §5.5 冻结：「相机旋转 yaw/pitch 直接取自本机命令
+        //    姿态」）。上行命令里的 yaw/pitch 也是这一份，所以"看到的画面"与"打出去的射线"同源。
+        //  - 只有本帧确实有本地实体时才置位；否则清掉，免得拿陈旧预测继续渲染。
+        private void PublishLocalPrediction()
+        {
+            EntityView local;
+            if (LocalPlayerId == 0 || !_views.TryGet(LocalPlayerId, out local) || local == null)
+            {
+                _views.ClearPrediction();
+                return;
+            }
+            double x;
+            double y;
+            double z;
+            _predictor.RenderPosition(out x, out y, out z);
+            var sampler = Sampler;
+            var yaw = sampler != null ? sampler.YawRad : _predictor.State.YawRad;
+            var pitch = sampler != null ? sampler.PitchRad : _predictor.State.PitchRad;
+            local.HasPrediction = true;
+            local.PredictedX = x;
+            local.PredictedY = y;
+            local.PredictedZ = z;
+            local.PredictedYawRad = yaw;
+            local.PredictedPitchRad = pitch;
+            // 姿态本身也写：最新快照是**差分**帧，本地玩家没变化时不在它的记录里，而 SyncFrame 的
+            // 插值循环只遍历差分记录 ⇒ 不写就会停在上一次写入的位置（站着不动看不出来，起步那一拍会顿）。
+            local.X = x;
+            local.Y = y;
+            local.Z = z;
+            local.YawRad = yaw;
+            local.PitchRad = pitch;
+        }
+
         // 局内聊天（键位表 [ActionChat]）：显隐的唯一真相是相位，与 HUD 用同一条判据（本层不自己推相位）。
         // 读 `_phase`（MatchState 的权威字节）而不是 `_sample.Phase`：后者由帧末的 FillSample 写，
         // 在帧首问它会拿到上一帧的值。
@@ -276,13 +374,19 @@ namespace Ac.Boot
         public void Frame(double dtMs)
         {
             _profiler.Begin();
+            // 当帧信号：上一帧的"响过"不能留到这一帧（否则枪口火焰会一直亮）。
+            LocalShotFired = false;
 
-            // ① input：采样 → 上行 + 本地预测
+            // ① input：采样 → 上行 + 本地预测 + 本地武器镜像
             PumpInput(dtMs);
+            PumpWeapon(dtMs);
             if (_hasPending)
             {
-                _predictor.Advance((int)dtMs, _pending);
-                _commands.Push(_pending);
+                // 命令缓冲里存的必须是「每个 50ms 子步进的输入」：C06 §5(b) 的重放是逐条
+                // `localStep(50ms)`，条数即步数。此前每帧只入队一条（≈30Hz，取决于帧率）而预测按
+                // 20Hz 出步，重放出来的时间片比真实经过时间多约 1.5× ⇒ 预测位置被持续拽偏。
+                var steps = _predictor.Advance((int)dtMs, _pending);
+                for (var i = 0; i < steps; i++) _commands.Push(_pending);
                 _hasPending = false;
             }
             _profiler.Mark(FrameStage.Input);
@@ -301,30 +405,50 @@ namespace Ac.Boot
                 {
                     _mirrorReconnectCount = reconnects;
                     _view.ResetForNewSession();
+                    // 重连换了会话：未确认开火与本地武器镜像一并复位（旧会话的 seq 在新会话里毫无意义，
+                    // 留着会让弹药账把新会话的前 20 条命令都当成"已确认"而丢弃）。
+                    _weapon.Reset();
                 }
                 Transport.Poll(MaxInboundPerPoll);
                 FlushJoin();
             }
+            // 本帧之前有没有**新的**权威快照进来：和解只在"有新权威"时发生（C06 §8：重放只在收到
+            // 权威快照时发生）。判据用已应用快照的 tick，不用"本帧收到过包"：快照也可能由装配根或
+            // 帧基准直接喂（`ApplySnapshot`），那条路同样必须触发和解，否则本地预测就与权威失联。
+            var appliedTick = _view.AppliedTick;
+            var hasNewAuthority = !_reconciledOnce || appliedTick != _lastReconciledTick;
             _profiler.Mark(FrameStage.Sync);
 
             // ③ predict：本地权威 + 和解
             LocalAuthority authority;
-            if (LocalAuthority.TryProject(_view, out authority))
+            if (hasNewAuthority && LocalAuthority.TryProject(_view, out authority))
             {
+                _reconciledOnce = true;
+                _lastReconciledTick = appliedTick;
+                Reconciles += 1;
                 var result = _reconciler.Reconcile(authority, _commands, _predictor);
+                LastReplayed = result.Replayed;
                 LastReconcileErrorM = result.ErrorM;
                 if (result.HardCorrect) HardCorrects += 1;
                 EntityView local;
                 if (_views.TryGet(LocalPlayerId, out local) && result.ErrorM > 0.0)
                 {
-                    _views.ApplyCorrection(local, _predictor.State.X - result.OffsetX, _predictor.State.Y - result.OffsetY, _predictor.State.Z - result.OffsetZ);
+                    // 交给平滑器的是**姿态位移量**（C06 §5(b)：和解前 − 重放后），不是"重放后 ± 位移"
+                    // 这类拼出来的位置。此前传的是 `State - Offset`（= 2×重放后 − 和解前），每帧往
+                    // 偏移里灌进约一个帧位移量级，量级越过 1.0m 吸附阈值就 Reset 归零 ⇒ 渲染位置在
+                    // 「权威+大偏移」与「权威+0」之间来回跳，实跑就是"移动一下疯狂闪烁、来回闪烁"。
+                    _views.ApplyPoseDelta(local, result.OffsetX, result.OffsetY, result.OffsetZ);
                 }
+                // 弹药账的确认水位：服务端"已收到哪条命令"的最新值就在这份权威投影里。
+                // 没有这一步，未确认开火永远等不到确认，只有超时丢弃一条路（弹匣会一直偏低）。
+                _ammo.NoteServerAck(authority.LastAckedSeq);
             }
             _profiler.Mark(FrameStage.Predict);
 
             // ④ 视图：渲染时钟推进 + 镜像同步
             _nowMs += dtMs;
             _clock.Advance(_nowMs);
+            PublishLocalPrediction();   // 必须早于 SyncFrame：SyncFrame 读 Predicted*，有预测值就不吸附镜像
             _views.SyncFrame(_view, _clock, dtMs);
             _profiler.Mark(FrameStage.Sync);   // 镜像同步算 sync 段；draw 段在没有渲染器时不打点（见 FrameBench）
 
@@ -386,12 +510,20 @@ namespace Ac.Boot
             for (var i = 0; i < players.Length; i++)
             {
                 if (players[i].Pid != LocalPlayerId) continue;
-                _sample.Mag = players[i].Mag;
-                _sample.Reserve = players[i].Reserve;
+                // C06 §5(c) 的弹药账：显示值 = 权威弹匣 − 未确认开火数。直接把 MatchState 铺上去的话，
+                // "打完一发"要等最多 1 秒（MatchState 是 1Hz）才在 HUD 上动 —— 触发反馈只能靠本地账。
+                var ammo = _ammo.Reconcile(players[i].Mag, players[i].Reserve, players[i].Weapon, (int)_nowMs);
+                Ammo = ammo;
+                _sample.Mag = ammo.Mag;
+                _sample.Reserve = ammo.Reserve;
                 _sample.ReloadLeft10Ms = players[i].ReloadLeft10Ms;
-                _sample.MagSize = Ac.Sim.WeaponTable.MagSizeOf(players[i].Weapon);
+                _sample.MagSize = Ac.Sim.WeaponTable.MagSizeOf(ammo.Slot);
+                // 准星散布 = 该槽位基线 + 本地镜像的射击累计（与服务端射线用的 spreadDeg 同一个量）。
+                _sample.SpreadDeg = Ac.Sim.WeaponTable.CrosshairSpreadDeg(ammo.Slot, (float)_weapon.SpreadDeg);
                 _sample.Rage = players[i].Rage;
                 _sample.RageLeft100Ms = players[i].RageLeft100Ms;
+                // 本地镜像只被权威**拉低**（漏算的开火在这里被纠正；永不把一个 1Hz 的旧值当补弹）。
+                _weapon.SyncAuthority(players[i].Mag, players[i].Reserve, players[i].Weapon);
                 return;
             }
         }

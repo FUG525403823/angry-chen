@@ -260,6 +260,28 @@ namespace Ac.View
             return view.Smoother.Apply(previousX - view.X, previousY - view.Y, previousZ - view.Z);
         }
 
+        // §5.5 的和解用法：模拟姿态被回滚重放改写后，把**姿态的位移量**（C06 §5(b) 的
+        // 「和解前位置 − 重放后位置」）加进渲染偏移，渲染因此保持连续：
+        //   render_new = 重放后姿态 + (旧偏移 + 位移量) = 和解前姿态 + 旧偏移 = 本帧原本要渲染的位置。
+        // 与 ApplyCorrection 的差别在入参语义：这里要的是**姿态位移**，不是"纠正前的渲染位置"——
+        // 旧偏移已经存在 smoother 里，再掺一次就是双重计数（实跑表现为移动时渲染位置来回跳）。
+        public SmoothingAction ApplyPoseDelta(EntityView view, double dx, double dy, double dz)
+        {
+            if (view == null) return SmoothingAction.None;
+            return view.Smoother.Apply(dx, dy, dz);
+        }
+
+        // 本地玩家不再有预测值（身份没绑上 / 世界里还没有本地实体）：清掉标志并丢弃残留偏移。
+        // 不清就会继续拿上一次的预测姿态渲染，相机停在一个陈旧位置上。
+        public void ClearPrediction()
+        {
+            if (LocalPlayerId == 0) return;
+            EntityView view;
+            if (!TryGet(LocalPlayerId, out view) || view == null) return;
+            view.HasPrediction = false;
+            view.Smoother.Reset();
+        }
+
         private struct Pose
         {
             public double X;

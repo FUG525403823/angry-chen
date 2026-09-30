@@ -23,6 +23,202 @@ namespace Ac.Tests
             SelfTest.Add("boot.snapshot_reaches_mirror", ChecksSnapshotReachesMirror);
             SelfTest.Add("boot.command_tick_from_snapshot", ChecksCommandTickFromSnapshot);
             SelfTest.Add("boot.hud_ammo_rage_from_match_state", ChecksHudAmmoRage);
+            SelfTest.Add("boot.local_pose_from_prediction", ChecksLocalPoseFromPrediction);
+            SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
+        }
+
+        // 本地玩家的姿态必须来自**预测**，不是权威快照吸附（C05 §5.4）。
+        // 在这条用例之前 `EntityView.HasPrediction/PredictedX/Y/Z` 在生产代码里没有任何写入者：
+        // 本地玩家只能按 20Hz 吸附权威位姿 ⇒ 实跑"移动起来巨卡、一顿一顿"。
+        // 场景：一直按 W，权威按 20Hz 给出一条线性轨迹（本地玩家沿 +Z 4.5 m/s，X=5 在谷仓外），
+        // 客户端 60fps；预测应稳定领先最新权威约一个 RTT 的量（2 tick = 0.45m），而不是贴着它跳。
+        private static void ChecksLocalPoseFromPrediction()
+        {
+            var run = RunWalk(40);
+            SelfTest.Equal(0, run.ApplyFailures);
+            SelfTest.True(run.Loop.LocalSteps > 0, "按住 W 必须有本地步进", run.Loop.LocalSteps.ToString());
+            // 每来一条新权威快照和解一次（40 条 ⇒ 40 次）。没有这一条，下面的平滑断言会在
+            // "压根没和解"的情况下真空通过。
+            SelfTest.Equal(40, (long)run.Loop.Reconciles);
+
+            var missing = 0;
+            var minLead = double.MaxValue;
+            var maxLead = double.MinValue;
+            // 预热：本地实体入场的第一帧只能按权威吸附（那时还没有预测值）。
+            for (var i = WalkWarmupFrames; i < run.Frames; i++)
+            {
+                if (!run.HasPrediction[i]) missing += 1;
+                var lead = run.RenderedZ[i] - run.AuthorityZ[i];
+                if (lead < minLead) minLead = lead;
+                if (lead > maxLead) maxLead = lead;
+            }
+            SelfTest.Equal(0, (long)missing);                             // 每帧都该有预测值
+            // 重放条数必须是常数：权威延迟固定 2 个 tick ⇒ 缓冲里恒剩 2 条。少了（多跑）会让预测
+            // 位置整体偏一个子步，多了（少跑）会让位置被反复往回拽。
+            var replayed = new System.Text.StringBuilder();
+            var minReplay = int.MaxValue;
+            var maxReplay = int.MinValue;
+            for (var i = WalkWarmupFrames; i < run.Frames; i++)
+            {
+                if (run.Replayed[i] < minReplay) minReplay = run.Replayed[i];
+                if (run.Replayed[i] > maxReplay) maxReplay = run.Replayed[i];
+                if (i < WalkWarmupFrames + 8) replayed.Append(run.Replayed[i]).Append(' ');
+            }
+            SelfTest.True(minReplay == maxReplay && minReplay == 2,
+                "重放条数应当恒等于权威延迟的 tick 数（2）", replayed.ToString());
+            // 领先量 = 重放的两步（2 × 0.225 = 0.45m）± 一个子步（快照落在子步的哪一帧）+ 渲染外推。
+            // 贴着权威（≈0）就是没走预测；明显更大就是重放多跑了步。
+            SelfTest.True(minLead > 0.2 && maxLead < 0.7,
+                "预测位置应当领先最新权威快照约一个往返（0.45m ± 一个子步）",
+                minLead.ToString("F4") + ".." + maxLead.ToString("F4") + " DBG " + TraceTail(run));
+        }
+
+        // 「移动一下就会疯狂闪烁、来回闪烁」的回归闸：C05 §8 的验收行原文是
+        // 「预测位置单调不跳变：单步位移不超过 sprintSpeed * 50ms = 0.315m」。
+        // 根因是 GameLoop 每帧都做一次回滚重放，且把 `State - Offset`（= 2×重放后 − 和解前）
+        // 当"纠正前的渲染位置"喂给 ErrorSmoother：偏移量每帧被灌进约一个帧位移量级，
+        // 越过 1.0m 吸附阈值就 Reset 归零 ⇒ 渲染位置在「权威+大偏移」与「权威+0」之间来回跳。
+        private static void ChecksNoCameraFlicker()
+        {
+            var run = RunWalk(40);
+            SelfTest.Equal(40, (long)run.Loop.Reconciles);
+            const double bound = 6.3 * 0.05;   // C05 §8：sprintSpeed * 50ms，不是手写的近似值
+
+            var worstJump = 0.0;
+            var worstBack = 0.0;
+            for (var i = WalkWarmupFrames + 1; i < run.Frames; i++)
+            {
+                var delta = run.RenderedZ[i] - run.RenderedZ[i - 1];
+                if (delta > worstJump) worstJump = delta;
+                if (-delta > worstBack) worstBack = -delta;
+            }
+            // 单帧前进不超过一个冲刺子步；后退只允许量化噪声（快照位置按厘米量化，±0.5cm）。
+            SelfTest.True(worstJump <= bound, "单帧位移不得超过 sprintSpeed * 50ms（C05 §8）", worstJump.ToString("F4"));
+            SelfTest.True(worstBack <= 0.02, "前进过程中不得出现回退（来回闪烁＝回退）", worstBack.ToString("F4"));
+
+            EntityView local;
+            var hasLocal = run.Loop.Views.TryGet(1, out local) && local != null;
+            SelfTest.True(hasLocal, "本地实体应当在视图池里", "不在");
+            // 起步那一拍真会硬纠正一次（客户端从原点被拉到出生点，5m ⇒ 吸附），所以只看"稳定之后有没有再发生"。
+            if (hasLocal) SelfTest.Equal((long)run.SnapCount[WalkWarmupFrames], (long)local.Smoother.SnapCount);
+            SelfTest.Equal((long)run.HardCorrects[WalkWarmupFrames], (long)run.Loop.HardCorrects);
+            // 重放条数必须等于"自权威以来经过的 tick 数"：每帧多入队一条会让重放多跑约 1×（本场景
+            // 每 tick 2 帧），稳态误差从 ±一个子步涨到两个子步以上。误差本身按 C05 §8 的口径用
+            // "一个子步"做上界：快照可能落在本 tick 子步之前，那时客户端天然差一步（这一段由
+            // 平滑器吸收，渲染位置不断，见上面两条断言）。
+            var maxError = 0.0;
+            for (var i = WalkWarmupFrames; i < run.Frames; i++) if (run.ErrorM[i] > maxError) maxError = run.ErrorM[i];
+            SelfTest.True(maxError < 0.315, "稳态和解误差不得超过一个子步（C05 §8）",
+                maxError.ToString("F4") + " DBG " + TraceTail(run));
+        }
+
+        // C05 §5.4 的 W 速度：4.5 m/s × 50ms 子步 = 0.225m/tick。权威轨迹按这个值线性前进，
+        // 于是"重放条数不对""偏移符号不对""没走预测"三类缺陷都会在数值上直接暴露。
+        // 帧长取 25ms（`Predictor.Advance` 的入参是 int，50/3 这种非整数帧长会被截断成 16ms，
+        // 客户端时钟因此比权威慢 4%，那是另一个课题，不该混进这条用例的数值）。
+        private const double WalkTickMeters = 4.5 * 0.05;
+        private const double WalkFrameMs = 25.0;
+        private const int WalkFramesPerTick = 2;
+        private const int WalkWarmupFrames = 12;   // 起步那几帧：本地实体尚未入场、位置按权威吸附
+
+        private sealed class WalkRun
+        {
+            internal GameLoop Loop;
+            internal double[] RenderedZ;
+            internal double[] AuthorityZ;
+            internal double[] ErrorM;
+            internal bool[] HasPrediction;
+            internal int[] SnapCount;
+            internal int[] HardCorrects;
+            internal int[] Replayed;
+            internal int Frames;
+            internal int ApplyFailures;
+        }
+
+        // 一直按 W + 20Hz 权威快照（每 2 帧一条，40fps）+ 逐帧记录渲染位置。
+        // 权威延迟按真实的 2 个 tick（ack 取两个 tick 之前那一条命令的 seq），与被测代码的
+        // "重放自权威以来经过的 tick"口径一致。
+        private static WalkRun RunWalk(int ticks)
+        {
+            SnapshotFrame frame;
+            var loop = NewLoop(1, out frame);
+            var sampler = new InputSampler();
+            sampler.SetKey(UnityEngine.KeyCode.W, true);
+            loop.Sampler = sampler;
+
+            var run = new WalkRun();
+            run.Loop = loop;
+            run.Frames = ticks * WalkFramesPerTick;
+            run.RenderedZ = new double[run.Frames];
+            run.AuthorityZ = new double[run.Frames];
+            run.ErrorM = new double[run.Frames];
+            run.HasPrediction = new bool[run.Frames];
+            run.SnapCount = new int[run.Frames];
+            run.HardCorrects = new int[run.Frames];
+            run.Replayed = new int[run.Frames];
+
+            var seqs = new ushort[16];
+            for (uint tick = 1; tick <= (uint)ticks; tick++)
+            {
+                // ack 取"两个 tick 之前那条命令"的 seq（100ms 的真实往返）：`seqs[]` 记的是每个 tick
+                // **末尾**采样器的新序号，而入缓冲的那条是 tick 内的最新采样，所以 T-3 的读数才对得上
+                // T-2 那次入缓冲 ⇒ 缓冲里剩 T-1 与 T 两条，重放两步正好补上两个 tick 的权威延迟。
+                var acked = tick > 3 ? seqs[(tick - 3) % 16] : (ushort)0;
+                if (!FeedWalking(loop, ref frame, tick, acked)) run.ApplyFailures += 1;
+                for (var f = 0; f < WalkFramesPerTick; f++)
+                {
+                    var index = (int)((tick - 1) * WalkFramesPerTick) + f;
+                    loop.Frame(WalkFrameMs);
+                    EntityView local;
+                    if (loop.Views.TryGet(1, out local) && local != null)
+                    {
+                        run.RenderedZ[index] = local.RenderZ;
+                        run.HasPrediction[index] = local.HasPrediction;
+                        run.SnapCount[index] = local.Smoother.SnapCount;
+                    }
+                    run.AuthorityZ[index] = loop.Views.LastAuthorityZ;
+                    run.ErrorM[index] = loop.LastReconcileErrorM;
+                    run.HardCorrects[index] = loop.HardCorrects;
+                    run.Replayed[index] = loop.LastReplayed;
+                }
+                seqs[tick % 16] = sampler.Seq;
+            }
+            return run;
+        }
+
+        // 一条线性权威轨迹：本地玩家 X=5.00m（谷仓外，免得 PushOutOfBarn 把姿态推走）、
+        // 沿 +Z 每 tick 前进 0.225m（yaw=0 的 W），位置按厘米量化（与快照的 i16 同口径）。
+        private static bool FeedWalking(GameLoop loop, ref SnapshotFrame frame, uint tick, ushort ackedSeq)
+        {
+            frame.Tick = tick;
+            frame.ServerTimeMs = tick * 50u;
+            frame.LastAckedSeq = ackedSeq;
+            frame.BaselineTick = 0u;
+            frame.EntityCount = 1;
+            frame.RemovedCount = 0;
+            var e = default(FrameEntity);
+            e.Id = 1;                                        // NewLoop 把 LocalPlayerId 设成 1
+            e.XCm = 500;
+            e.ZCm = (short)Math.Round(WalkTickMeters * tick * 100.0);
+            e.YawUnits = 0;
+            e.PitchUnits = 32768;
+            e.HpRatioUnits = 255;
+            e.KindFlags = 0;
+            frame.Entities[0] = e;
+            return loop.ApplySnapshot(frame);
+        }
+
+        private static string TraceTail(WalkRun run)
+        {
+            var text = new System.Text.StringBuilder();
+            for (var i = run.Frames - 10; i < run.Frames; i++)
+            {
+                text.Append(i).Append(":r=").Append(run.RenderedZ[i].ToString("F3"))
+                    .Append(",a=").Append(run.AuthorityZ[i].ToString("F3"))
+                    .Append(",e=").Append(run.ErrorM[i].ToString("F3"))
+                    .Append(",n=").Append(run.Replayed[i]).Append("  ");
+            }
+            return text.ToString();
         }
 
         // 弹药/怒气 HUD 的权威来源：**本地玩家那行 MatchState**。此前客户端没有任何地方把 MatchState 的

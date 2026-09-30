@@ -18,7 +18,51 @@ namespace Ac.Tests
             SelfTest.Add("input.ready_bit", ChecksReadyBit);
             SelfTest.Add("input.ready_key", ChecksReadyKey);
             SelfTest.Add("camera.pitch_clamp", ChecksPitchClamp);
+            SelfTest.Add("camera.recoil_punch", ChecksRecoilPunch);
             SelfTest.Add("sim.local_step", ChecksLocalStep);
+        }
+
+        // C09 §5 的后坐注入面：开火当帧顶视角（0.35° 俯仰 + ±0.2° 偏航交替），按 7.5°/s 回正。
+        // 回正只还"后坐抬起来的那部分"——玩家自己拖出来的视角不能被吃掉。
+        private static void ChecksRecoilPunch()
+        {
+            var sampler = new InputSampler();
+            var pitch0 = sampler.PitchRad;
+            var yaw0 = sampler.YawRad;
+
+            sampler.ApplyAimPunch(0.35, 0.2);
+            var pitchRad = 0.35 * InputSampler.DegToRad;
+            var yawRad = 0.2 * InputSampler.DegToRad;
+            SelfTest.True(Math.Abs(sampler.PitchRad - (pitch0 + pitchRad)) < 1e-9, "俯仰顶上去 0.35°",
+                sampler.PitchRad.ToString("R"));
+            SelfTest.True(Math.Abs(sampler.YawRad - (yaw0 + yawRad)) < 1e-9, "第一发偏航向右 +0.2°",
+                sampler.YawRad.ToString("R"));
+            SelfTest.True(Math.Abs(sampler.RecoilPitchRad - pitchRad) < 1e-9, "记下要回正的量",
+                sampler.RecoilPitchRad.ToString("R"));
+
+            // 交替：第二发往左
+            sampler.ApplyAimPunch(0.35, 0.2);
+            SelfTest.True(Math.Abs(sampler.YawRad - yaw0) < 1e-9, "第二发偏航回中线（左右交替）",
+                sampler.YawRad.ToString("R"));
+
+            // 7.5°/s 回正：0.35° 需要约 47ms（一帧 16.7ms 只还一小部分）
+            sampler.Update(16.7);
+            SelfTest.True(sampler.RecoilPitchRad > 0.0 && sampler.RecoilPitchRad < 2.0 * pitchRad,
+                "回正在进行但没做完", sampler.RecoilPitchRad.ToString("R"));
+            for (var i = 0; i < 20; i++) sampler.Update(16.7);
+            SelfTest.True(Math.Abs(sampler.RecoilPitchRad) < 1e-9, "后坐回正清零", sampler.RecoilPitchRad.ToString("R"));
+            SelfTest.True(Math.Abs(sampler.PitchRad - pitch0) < 1e-9, "俯仰回到开火前", sampler.PitchRad.ToString("R"));
+
+            // 玩家自己的鼠标输入不被回正吃掉：先拖一段视角，再打一发，回正之后仍停在拖到的那个角度
+            var turned = new InputSampler();
+            turned.AddMouse(300.0, 0.0);
+            turned.Update(1.0);
+            var turnedYaw = turned.YawRad;
+            SelfTest.True(Math.Abs(turnedYaw) > 1e-6, "鼠标真的转了视角", turnedYaw.ToString("R"));
+            turned.ApplyAimPunch(0.35, 0.2);
+            for (var i = 0; i < 40; i++) turned.Update(16.7);
+            SelfTest.True(Math.Abs(turned.YawRad - turnedYaw) < 1e-9, "回正不吃玩家的鼠标输入",
+                turned.YawRad.ToString("R"));
         }
 
         // §6 第 2 条：以 1ms 步进模拟 1000ms → 恰好 30 条（±1）。
