@@ -81,12 +81,14 @@ namespace Ac.View
         public MeshStats Build()
         {
             GroundMesh = MakeMesh("ArenaGround", BuildGround(), BuildGroundIndices(), GroundUvs());
-            FenceMesh = MakeBoxes("ArenaFence", BuildFenceBoxes());
-            BarnMesh = MakeBoxes("ArenaBarn", Barn());
-            BarnRoofMesh = MakeBoxes("ArenaBarnRoof", BarnRoof());
-            HayBaleMesh = MakeBoxes("ArenaHay", HayBale());
-            DirtYardMesh = MakeMesh("ArenaDirtYard", BuildDirtYard(), BuildDirtIndices(), DirtUvs());
-            OuterRingMesh = MakeMesh("ArenaOuterRing", BuildOuterRing(), BuildRingIndices(OuterRingCells()), RingUvs());
+            FenceMesh = MakeBoxes("ArenaFence", BuildFenceBoxes(), ArenaParams.WoodTileM);
+            BarnMesh = MakeBoxes("ArenaBarn", Barn(), 0.0);
+            BarnRoofMesh = MakeBoxes("ArenaBarnRoof", BarnRoof(), 0.0);
+            HayBaleMesh = MakeBoxes("ArenaHay", HayBale(), 0.0);
+            var dirtVertices = BuildDirtYard();
+            var ringVertices = BuildOuterRing();
+            DirtYardMesh = MakeMesh("ArenaDirtYard", dirtVertices, BuildDirtIndices(), WorldUvs(dirtVertices, ArenaParams.DirtTileM));
+            OuterRingMesh = MakeMesh("ArenaOuterRing", ringVertices, BuildRingIndices(OuterRingCells()), WorldUvs(ringVertices, ArenaParams.GrassTileM));
 
             var stats = default(MeshStats);
             stats.Vertices = GroundMesh.vertexCount + FenceMesh.vertexCount + BarnMesh.vertexCount
@@ -165,17 +167,13 @@ namespace Ac.View
             return uvs;
         }
 
-        private Vector2[] DirtUvs()
+        private Vector2[] WorldUvs(Vector3[] vertices, double tile)
         {
-            var uvs = new Vector2[DirtVertexCount];
-            for (var i = 0; i < uvs.Length; i++) uvs[i] = new Vector2(0.5f, 0.5f);
-            return uvs;
-        }
-
-        private Vector2[] RingUvs()
-        {
-            var uvs = new Vector2[OuterRingCells() * 4];
-            for (var i = 0; i < uvs.Length; i++) uvs[i] = new Vector2(0.5f, 0.5f);
+            var uvs = new Vector2[vertices.Length];
+            for (var i = 0; i < vertices.Length; i++)
+            {
+                uvs[i] = new Vector2((float)(vertices[i].x / tile), (float)(vertices[i].z / tile));
+            }
             return uvs;
         }
 
@@ -234,8 +232,8 @@ namespace Ac.View
             for (var i = 0; i < DirtVertexCount - 1; i++)
             {
                 indices[i * 3] = 0;
-                indices[i * 3 + 1] = i + 1;
-                indices[i * 3 + 2] = (i + 1) % (DirtVertexCount - 1) + 1;
+                indices[i * 3 + 1] = (i + 1) % (DirtVertexCount - 1) + 1;
+                indices[i * 3 + 2] = i + 1;
             }
             return indices;
         }
@@ -317,23 +315,38 @@ namespace Ac.View
             vertices[offset + 7] = new Vector3((float)minX, (float)maxY, (float)maxZ);
         }
 
-        private static readonly int[] BoxIndices =
+        private static readonly int[] BoxFaces =
         {
-            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
-            3, 7, 6, 3, 6, 2, 1, 2, 6, 1, 6, 5, 0, 4, 7, 0, 7, 3,
+            0, 1, 2, 3, 4, 7, 6, 5, 0, 4, 5, 1,
+            3, 2, 6, 7, 1, 5, 6, 2, 0, 3, 7, 4,
         };
 
-        private static Mesh MakeBoxes(string name, Vector3[] boxes)
+        private static Mesh MakeBoxes(string name, Vector3[] boxes, double tile)
         {
             var count = boxes.Length / 8;
-            var vertices = new Vector3[boxes.Length];
-            System.Array.Copy(boxes, vertices, boxes.Length);
-            var indices = new int[count * BoxIndices.Length];
-            var uvs = new Vector2[boxes.Length];
+            var vertices = new Vector3[count * 24];
+            var indices = new int[count * 36];
+            var uvs = new Vector2[vertices.Length];
             for (var box = 0; box < count; box++)
             {
-                for (var i = 0; i < BoxIndices.Length; i++) indices[box * BoxIndices.Length + i] = BoxIndices[i] + box * 8;
-                for (var i = 0; i < 8; i++) uvs[box * 8 + i] = new Vector2(i < 4 ? 0f : 1f, (i % 4) < 2 ? 0f : 1f);
+                var source = box * 8;
+                var target = box * 24;
+                for (var face = 0; face < 6; face++)
+                {
+                    var a = boxes[source + BoxFaces[face * 4]];
+                    var b = boxes[source + BoxFaces[face * 4 + 1]];
+                    var c = boxes[source + BoxFaces[face * 4 + 2]];
+                    var d = boxes[source + BoxFaces[face * 4 + 3]];
+                    var v = target + face * 4;
+                    vertices[v] = a; vertices[v + 1] = b; vertices[v + 2] = c; vertices[v + 3] = d;
+                    var width = tile > 0.0 ? (b - a).magnitude / (float)tile : 1.0f;
+                    var height = tile > 0.0 ? (d - a).magnitude / (float)tile : 1.0f;
+                    uvs[v] = new Vector2(0f, 0f); uvs[v + 1] = new Vector2(width, 0f);
+                    uvs[v + 2] = new Vector2(width, height); uvs[v + 3] = new Vector2(0f, height);
+                    var i = box * 36 + face * 6;
+                    indices[i] = v; indices[i + 1] = v + 1; indices[i + 2] = v + 2;
+                    indices[i + 3] = v; indices[i + 4] = v + 2; indices[i + 5] = v + 3;
+                }
             }
             return MakeMesh(name, vertices, indices, uvs);
         }
@@ -345,11 +358,11 @@ namespace Ac.View
             {
                 var v = i * 4;
                 indices[i * 6] = v;
-                indices[i * 6 + 1] = v + 1;
-                indices[i * 6 + 2] = v + 2;
+                indices[i * 6 + 1] = v + 2;
+                indices[i * 6 + 2] = v + 1;
                 indices[i * 6 + 3] = v;
-                indices[i * 6 + 4] = v + 2;
-                indices[i * 6 + 5] = v + 3;
+                indices[i * 6 + 4] = v + 3;
+                indices[i * 6 + 5] = v + 2;
             }
             return indices;
         }

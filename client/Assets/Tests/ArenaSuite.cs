@@ -13,6 +13,7 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("arena.mesh_budget", ChecksBudget);
+            SelfTest.Add("arena.mesh_faces_uv_normals", ChecksMeshGeometry);
             SelfTest.Add("arena.mesh_determinism", ChecksDeterminism);
             SelfTest.Add("arena.fence_barn_values", ChecksFrozenValues);
             SelfTest.Add("arena.colliders", ChecksColliders);
@@ -26,13 +27,91 @@ namespace Ac.Tests
             var stats = mesh.Build();
             SelfTest.Equal(441, mesh.GroundMesh.vertexCount);
             SelfTest.Equal(800, mesh.GroundMesh.triangles.Length / 3);
-            SelfTest.Equal(1514, stats.Vertices);
+            SelfTest.Equal(1626, stats.Vertices);
             SelfTest.Equal(1400, stats.Triangles);
             SelfTest.True(mesh.OuterRingMesh.vertexCount == 1000 && mesh.OuterRingMesh.vertexCount <= ArenaParams.OuterRingVerticesCap, "环带 1000 顶点且 ≤ 1024", mesh.OuterRingMesh.vertexCount.ToString());
             SelfTest.True(stats.Vertices <= 4096, "顶点预算 ≤ 4096", stats.Vertices.ToString());
             SelfTest.True(stats.Triangles <= 3072, "三角形预算 ≤ 3072", stats.Triangles.ToString());
             SelfTest.True(stats.Materials <= 6 && stats.Materials == Materials.MaterialCount, "材质 ≤ 6 且取自材质表", stats.Materials.ToString());
             SelfTest.True(stats.DrawCalls <= 8, "绘制调用预算 ≤ 8", stats.DrawCalls.ToString());
+        }
+
+        private static void ChecksMeshGeometry()
+        {
+            var arena = new ArenaMesh(ArenaParams.Default());
+            arena.Build();
+            CheckMeshGeometry(arena.GroundMesh, 0, 6.0, false);
+            CheckMeshGeometry(arena.DirtYardMesh, 0, 4.0, false);
+            CheckMeshGeometry(arena.OuterRingMesh, 0, 6.0, false);
+            CheckMeshGeometry(arena.FenceMesh, 4, 0.0, true);
+            CheckMeshGeometry(arena.BarnMesh, 1, 0.0, false);
+            CheckMeshGeometry(arena.BarnRoofMesh, 1, 0.0, false);
+            CheckMeshGeometry(arena.HayBaleMesh, 1, 0.0, false);
+        }
+
+        private static void CheckMeshGeometry(Mesh mesh, int boxes, double tile, bool wood)
+        {
+            var v = mesh.vertices;
+            var t = mesh.triangles;
+            var n = mesh.normals;
+            var uv = mesh.uv;
+            SelfTest.Equal(v.Length, n.Length);
+            SelfTest.Equal(v.Length, uv.Length);
+            SelfTest.Equal(0, t.Length % 3);
+            if (boxes > 0) SelfTest.Equal(boxes * 24, v.Length);
+            var centers = new Vector3[boxes];
+            for (var box = 0; box < boxes; box++)
+            {
+                for (var j = box * 24; j < (box + 1) * 24; j++) centers[box] += v[j];
+                centers[box] /= 24f;
+            }
+            for (var i = 0; i < v.Length; i++)
+            {
+                SelfTest.True(Finite(v[i].x) && Finite(v[i].y) && Finite(v[i].z)
+                    && Finite(n[i].x) && Finite(n[i].y) && Finite(n[i].z)
+                    && Finite(uv[i].x) && Finite(uv[i].y), mesh.name + " finite attributes", i.ToString());
+                SelfTest.True(Math.Abs(n[i].magnitude - 1f) < 1e-4, mesh.name + " unit normal", i.ToString());
+                if (tile > 0)
+                    SelfTest.True(Math.Abs((uv[i].x - uv[0].x) - (v[i].x - v[0].x) / tile) < 1e-4
+                        && Math.Abs((uv[i].y - uv[0].y) - (v[i].z - v[0].z) / tile) < 1e-4,
+                        mesh.name + " world XZ UV", i.ToString());
+            }
+            for (var i = 0; i < t.Length; i += 3)
+            {
+                var a = t[i]; var b = t[i + 1]; var c = t[i + 2];
+                var valid = a >= 0 && b >= 0 && c >= 0 && a < v.Length && b < v.Length && c < v.Length;
+                SelfTest.True(valid, mesh.name + " valid indices", i.ToString());
+                if (!valid) continue;
+                var cross = Vector3.Cross(v[b] - v[a], v[c] - v[a]);
+                var maxEdge = Math.Max((v[b] - v[a]).sqrMagnitude, Math.Max((v[c] - v[a]).sqrMagnitude, (v[c] - v[b]).sqrMagnitude));
+                SelfTest.True(cross.magnitude > Math.Max(1e-12, maxEdge * 1e-6), mesh.name + " nondegenerate face", i.ToString());
+                var face = cross.normalized;
+                if (boxes == 0) SelfTest.True(cross.y > 0, mesh.name + " upward face", i.ToString());
+                else
+                {
+                    var box = a / 24;
+                    SelfTest.True(b / 24 == box && c / 24 == box, mesh.name + " independent box", i.ToString());
+                    SelfTest.True(Vector3.Dot(face, (v[a] + v[b] + v[c]) / 3f - centers[box]) > 0,
+                        mesh.name + " outward face", i.ToString());
+                    SelfTest.True((n[a] - face).magnitude < 1e-4 && (n[b] - face).magnitude < 1e-4 && (n[c] - face).magnitude < 1e-4,
+                        mesh.name + " hard plane normals", i.ToString());
+                }
+                var uvArea = Math.Abs((double)(uv[b].x - uv[a].x) * (uv[c].y - uv[a].y)
+                    - (double)(uv[b].y - uv[a].y) * (uv[c].x - uv[a].x));
+                SelfTest.True(uvArea > 1e-10, mesh.name + " nondegenerate UV", i.ToString());
+                if (wood)
+                    foreach (var edge in new[] { new[] { a, b }, new[] { b, c }, new[] { c, a } })
+                    {
+                        var expected = (v[edge[0]] - v[edge[1]]).magnitude / 2.4;
+                        var actual = (uv[edge[0]] - uv[edge[1]]).magnitude;
+                        SelfTest.True(Math.Abs(actual - expected) < 1e-4 * Math.Max(1, expected), mesh.name + " wood tile 2.4m", i.ToString());
+                    }
+            }
+        }
+
+        private static bool Finite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private static void ChecksDeterminism()
