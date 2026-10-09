@@ -28,6 +28,8 @@ namespace Ac.Tests
             SelfTest.Add("boot.cached_authority_three_reloads", ChecksCachedAuthorityReloads);
             SelfTest.Add("boot.local_pose_from_prediction", ChecksLocalPoseFromPrediction);
             SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
+            SelfTest.Add("boot.match_start_reanchors_projection", ChecksMatchStartReanchorsProjection);
+            SelfTest.Add("boot.reconnect_no_projection_overshoot", ChecksReconnectNoProjectionOvershoot);
         }
 
         private static void ChecksLocalMotionIndependentOfSendRate()
@@ -181,6 +183,118 @@ namespace Ac.Tests
             for (var i = WalkWarmupFrames; i < run.Frames; i++) if (run.ErrorM[i] > maxError) maxError = run.ErrorM[i];
             SelfTest.True(maxError < 0.315, "稳态和解误差不得超过一个子步（C05 §8）",
                 maxError.ToString("F4") + " DBG " + TraceTail(run));
+        }
+
+        // 大厅 world tick 冻结 + 对局恢复推进：大厅里走动让 _predictionSteps 照常累计（客户端预测
+        // 照跑），一旦开局世界 tick 从冻结处恢复步进，步数差就带着大厅积累的大偏移（实跑复现：
+        // 玩家被外推到出生点 + 数米，画面一直闪、移动"失效"）。修复：偏移超出投影窗口就按权威
+        // tick 重锚预测步数（丢偏移，不投影），此后投影恢复小窗口补偿。
+        private static void ChecksMatchStartReanchorsProjection()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.LocalPlayerId = 1;
+            var sampler = new InputSampler();
+            sampler.SetKey(UnityEngine.KeyCode.W, true);
+            loop.Sampler = sampler;
+
+            SnapshotFrame frame = default(SnapshotFrame);
+            frame.Entities = new Ac.Sim.FrameEntity[Ac.Sim.SnapshotView.MaxRecordsPerFrame];
+            frame.RemovedIds = new ushort[Ac.Sim.SnapshotView.MaxRemovedPerFrame];
+            // ① 大厅：权威 tick 冻结（tick=1 不动），客户端按住 W 自由预测，累计约 40 步偏移。
+            SelfTest.True(FeedWalking(loop, ref frame, 1, 0), "大厅权威", "被拒");
+            for (var i = 0; i < 40; i++)
+            {
+                loop.Frame(WalkFrameMs);
+                loop.Frame(WalkFrameMs);
+            }
+            // ② 对局开始：权威 tick 恢复步进（世界 20Hz 推进），玩家位置从对局出生点重新开始。
+            //    首个推进 tick 的步数差 ≈ 40 偏移 → 必须重锚（单次回出生点），随后误差收敛。
+            var maxError = 0.0;
+            for (var tick = 2; tick <= 30; tick++)
+            {
+                // 对局开始（tick 恢复推进）的首个权威允许一次性回锚（大厅自由预测停在 ~9m，
+                // 出生点回到 0.225m）；之后的每次和解误差必须回到小窗口。注意 LastReconcileErrorM
+                // 是上一次 Frame 的和解结果：必须在 Frame 之后再读，否则拿到的是上个 tick 的值。
+                SelfTest.True(FeedWalking(loop, ref frame, (uint)tick, 0),
+                    tick == 2 ? "对局首个权威" : "对局权威", "被拒");
+                loop.Frame(WalkFrameMs);
+                loop.Frame(WalkFrameMs);
+                if (tick > 2 && loop.LastReconcileErrorM > maxError) maxError = loop.LastReconcileErrorM;
+            }
+            // 重锚之后每次和解误差必须回到小窗口（<1m：单个子步相位级别）。
+            // 修复前：偏移 40 全程外推 ≈ 9m，误差在投影与预测之间反复横跳，远超 1m。
+            SelfTest.True(maxError < 1.0,
+                "对局开始后步数差必须重锚回小窗口（大厅偏移不得持续外推）", maxError.ToString("F4"));
+        }
+
+        // 断线重连后步数对齐投影不得越界外推（A23 残留修复）：
+        // 实跑高频断线重连（服务端宽限期死亡螺旋）时屏幕狂闪，根源之一是 _predictionSteps 只在
+        // 本会话的预测网格里有效，重连后新会话/新房间的权威 tick 重置（从 0 起），若沿用旧累计，
+        // 第一次和解 extraSteps = 旧累计 − 新 tick ⇒ 把权威外推几十米 ⇒ 硬纠正 ⇒ 闪烁/传送。
+        // 修复：ClearIdentity（断线/换会话必经）把 _predictionSteps 归零 ⇒ extraSteps ≤ 0 不投影，
+        // 新会话从权威原始位置起算，只有"重生"那一次合理解除吸附。
+        private static void ChecksReconnectNoProjectionOvershoot()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new Ac.Net.UdpTransport(socket, delegate { return now; });
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.Transport = transport;
+            var sampler = new InputSampler();
+            sampler.SetKey(UnityEngine.KeyCode.W, true);
+            loop.Sampler = sampler;
+
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "Connect 返回 false");
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+            loop.LocalPlayerId = 1;
+
+            SnapshotFrame frame = default(SnapshotFrame);
+            frame.Entities = new Ac.Sim.FrameEntity[Ac.Sim.SnapshotView.MaxRecordsPerFrame];
+            frame.RemovedIds = new ushort[Ac.Sim.SnapshotView.MaxRemovedPerFrame];
+            for (uint tick = 1; tick <= 20; tick++)
+            {
+                SelfTest.True(FeedWalking(loop, ref frame, tick, 0), "行走权威", tick.ToString());
+                for (var f = 0; f < WalkFramesPerTick; f++) loop.Frame(WalkFrameMs);
+            }
+            EntityView before;
+            SelfTest.True(loop.Views.TryGet(1, out before) && before != null, "本地实体", "不在");
+            var walkedZ = before.RenderZ;
+            // 走 20 tick 后预测应明显领先出生点（累计 ~40 子步 ≈ 9m），否则本用例自身无效。
+            SelfTest.True(walkedZ > 4.0, "前置：预测步数应已累计到数米量级", walkedZ.ToString("F4"));
+
+            // 服务端把会话判离线（宽限期死亡螺旋的起点）：连接状态 → Disconnected → ClearIdentity。
+            transport.Machine.OnDisconnect(Ac.Net.DisconnectReason.Timeout, now);
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Disconnected, (long)transport.State);
+            SelfTest.Equal(0, loop.LocalPlayerId);   // 身份已随断线清空
+            // 真实重连路径在 ReconnectAttempts 变化时复位镜像与 tick 原点（GameLoop ②），
+            // 否则旧高 tick 会让新会话的低 tick 快照过不了单调过滤。这里按同口径复位。
+            loop.View.ResetForNewSession();
+
+            // 重连到新会话（HelloAck 换新 session）：会话层回到 Connected 且身份重新认领。
+            socket.HelloSession = 1235;
+            transport.Machine.StartConnect("mem", 0x2222u, now);
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+            loop.LocalPlayerId = 1;   // MatchState 重新认领本地身份
+
+            // 新房间从 tick=1 起：权威回到出生点（Z = WalkTickMeters ≈ 0.225m）。
+            SelfTest.True(FeedWalking(loop, ref frame, 1, 0), "新会话权威", "被拒");
+            for (var f = 0; f < WalkFramesPerTick; f++) loop.Frame(WalkFrameMs);
+            EntityView local;
+            SelfTest.True(loop.Views.TryGet(1, out local) && local != null, "重连后本地实体", "不在");
+            // 若预测步数未随会话归零：extraSteps ≈ 40 ⇒ 权威被外推到出生点 + ~9m ⇒ 渲染远离出生点。
+            // 归零后不投影，渲染落在出生点附近（重生那一次吸附是合法行为）。
+            SelfTest.True(Math.Abs(local.RenderZ - WalkTickMeters) < 1.0,
+                "重连后首帧不得把权威外推数十米（预测步数须随会话归零）", local.RenderZ.ToString("F4"));
         }
 
         // C05 §5.4 的 W 速度：4.5 m/s × 50ms 子步 = 0.225m/tick。权威轨迹按这个值线性前进，
@@ -959,6 +1073,9 @@ namespace Ac.Tests
             private uint _nextMsgId = 1;
             private bool _bound;
 
+            // 重连用例用：换一个会话号，让 GameLoop 的「会话变了 → ClearIdentity」路径被走到。
+            public ushort HelloSession = 1234;
+
             public bool IsBound { get { return _bound; } }
             public int Port { get { return 40404; } }
             public bool HasDatagram { get { return _inbound.Count > 0; } }
@@ -984,7 +1101,7 @@ namespace Ac.Tests
                 if (header.IsReliable) _received.NoteReceived(header.MsgId);
                 if (header.Type == Ac.Net.PacketType.Hello)
                 {
-                    var payload = Ac.Net.HandshakeCodec.EncodeHelloAck(1234u, 0xCAFEBABEu);
+                    var payload = Ac.Net.HandshakeCodec.EncodeHelloAck(HelloSession, 0xCAFEBABEu);
                     _inbound.Enqueue(Control(Ac.Net.PacketType.HelloAck, payload));
                     return true;
                 }

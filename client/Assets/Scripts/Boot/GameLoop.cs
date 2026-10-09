@@ -48,6 +48,9 @@ namespace Ac.Boot
         // 残留①③修复用它做「步数对齐投影」：权威 tick T 的位置是服务端 T−1 步，客户端此刻
         // 已经预测到 _predictionSteps 步，把权威按本地速度外推 (extraSteps×50ms) 到客户端当前
         // 网格，相位级的 0/1 子步差就不进误差了（见 Frame ③ 的注释）。
+        // 投影只补偿本会话的 RTT 往返相位：extraSteps 超过这个窗口就说明权威 tick 与本地预测
+        // 不是同一条时钟（大厅 world tick 冻结 / 换会话 / 时钟漂移），再按它外推就是错上加错。
+        private const int MaxProjectionSteps = 4;   // 4 步 = 200ms：覆盖任何真实 RTT 的往返相位
         private int _predictionSteps;
         private readonly Interpolation.RenderClock _clock = new Interpolation.RenderClock();
         // 本地身份只接受 MatchState 的权威 localPid；昵称单独用于 Join。
@@ -125,6 +128,9 @@ namespace Ac.Boot
                 if (_identitySession != 0 && _identitySession != _transport.Session) ClearIdentity();
                 _identitySession = _transport.Session;
             }
+            // 会话层换状态的可见性（实跑排障用）：断线/重连不静默。
+            UnityEngine.Debug.Log("Ac.Boot: 连接状态 " + previous + " -> " + next
+                + "（session=" + (_transport == null ? 0 : _transport.Session) + "）");
         }
 
         private void ClearIdentity()
@@ -138,6 +144,12 @@ namespace Ac.Boot
             LocalPlayerId = 0;
             _hasPending = false;
             _pending = default(StepCommand);
+            // A23 残留修复：步数对齐投影的计数只对「本会话的预测网格」有意义。断线/换会话后
+            // 权威 tick 会重置（新房间从 0 起）或延续旧房间；不把 _predictionSteps 归零的话，
+            // 重连后第一次和解的 extraSteps = 旧累计 − 新 tick，可能算成几十上百步的外推 ⇒
+            // 权威被投影甩出几十米 ⇒ 硬纠正 ⇒ 画面闪烁/传送（实跑：频繁断线重连时屏幕狂闪）。
+            // 归零后 extraSteps ≤ 0 不再投影，新会话从权威原始位置起算，由平滑器接管小误差。
+            _predictionSteps = 0;
         }
         // 输入采样器（C05 §5.1）：**产品侧唯一的键鼠来源**。接上之后本帧的命令会①从传输发出去
         // ②进本地预测；为 null 时（帧基准/无头）一帧都不采样。此前它连 `new` 都没有生产调用者：
@@ -506,8 +518,28 @@ namespace Ac.Boot
                 // 丢包不缺步）；输入真的变了（转向/变速）才出现误差，该纠正的纠正。墙钟年龄
                 // （now−serverTimeMs）投影在到达抖动下仍残留相位差（0.005~0.155m），步数对齐
                 // 投影与预测网格同构，无残留。
+                // 但"步数对齐"的前提是权威 tick 与本地预测同一条 20Hz 时钟。实跑发现这个前提
+                // 在大厅不成立：服务端世界只在 kPlaying 步进（room.cpp 的 stepWorld），大厅里
+                // world->tick 冻结不变，而客户端一按方向键 _predictionSteps 照常累计 ⇒
+                // extraSteps = _predictionSteps − (冻结tick−1) 每步 +1 无限膨胀 ⇒ 权威被外推得
+                // 越来越远，预测被反复拽回 ⇒ 画面一直闪 + 移动"失效"。投影本意只补偿本会话的
+                // RTT 往返相位（≈ 0..几个 tick）；超过窗口（时钟失联/冻结/换会话/漂移）就退回
+                // 原始权威，把小的相位差交给平滑器，而不是把一条失联时钟的膨胀当成相位差灌进去。
                 var extraSteps = _predictionSteps - ((int)authority.Tick - 1);
-                if (extraSteps > 0)
+                // 步数对齐的前提是两条 20Hz 时钟同原点。实跑发现会失联的场景：
+                //  · 大厅走动：服务端世界只在 kPlaying 步进（room.cpp stepWorld），大厅里 world->tick
+                //    冻结，而客户端 _predictionSteps 照常累计 ⇒ 把大厅积累的偏移带进对局；
+                //  · 时钟漂移：两台机器的 20Hz 不是严格同频，长期对局步数差缓慢漂移；
+                //  · 换会话/换房间：tick 原点重置（ClearIdentity 已归零，这里兜底）。
+                // 失联时 extraSteps 带着与相位无关的大偏移：要么远超窗口（正向），要么为负
+                // （权威 tick 已领先预测）。把偏移当相位差灌进投影会把玩家外推到错误位置。
+                // 处理：按权威 tick 重锚预测步数，丢掉失联偏移，此后投影恢复小窗口补偿。
+                if (extraSteps > MaxProjectionSteps || extraSteps < 0)
+                {
+                    _predictionSteps = (int)authority.Tick - 1;
+                    extraSteps = 0;
+                }
+                else if (extraSteps > 0)
                 {
                     var extrapMs = extraSteps * LocalStep.StepDtMs;
                     authority.X += _predictor.State.Vx * extrapMs / 1000.0;
@@ -518,6 +550,16 @@ namespace Ac.Boot
                 LastReplayed = result.Replayed;
                 LastReconcileErrorM = result.ErrorM;
                 if (result.HardCorrect) HardCorrects += 1;
+                // 实机排障观测：节流记录每次和解的时钟对齐与误差（大厅/对局 tick 冻结、漂移、
+                // 硬纠频次都能从这里看出来）。HardCorrect 单独记（不节流），其他每 25 次记一条。
+                // 批处理自检（isBatchMode）跳过：Debug.Log 会分配，破坏 steady-state 零分配用例。
+                if (!UnityEngine.Application.isBatchMode
+                    && (result.HardCorrect || (Reconciles % 25) == 0))
+                {
+                    UnityEngine.Debug.Log("Ac.Boot: 和解 tick=" + authority.Tick
+                        + " 预测步=" + _predictionSteps + " 投影步=" + extraSteps
+                        + " 误差=" + result.ErrorM.ToString("F4") + "m 硬纠=" + result.HardCorrect);
+                }
                 EntityView local;
                 if (_views.TryGet(LocalPlayerId, out local) && result.ErrorM > 0.0)
                 {
