@@ -45,8 +45,9 @@ namespace Ac.Net {
 }
 namespace Ac.UI {
  public struct HudEvent {public EventType Type;public int HitFlags,TargetId,SubjectId,Wave,ReviveRatio255,WaveSize;public short HitX,HitY,HitZ;}
- public struct HudSample {public int HpRatio255,Mag,MagSize,Reserve,ReloadLeft10Ms,Rage,RageLeft100Ms,Wave,IntermissionMs;public byte Phase;public bool Downed,RageMode,Reloading,Charging;public float SpreadDeg;}
- public sealed class Hud {public const byte PhaseLobby=0;public static bool CombatUiVisible(byte phase){return phase==2||phase==3;}public void Apply(HudSample s){}public void Tick(float dt){}public void PushEvent(HudEvent e){}}
+ public struct HudSample {public int HpRatio255,Mag,MagSize,Reserve,ReloadLeft10Ms,Rage,RageLeft100Ms,ReviveRatio255,Wave,IntermissionMs;public byte Phase;public bool Downed,RageMode,Reloading,Charging,AmmoDataReady,TargetInSight;public float ReloadProgress,NearestAllyDistanceM,SpreadDeg;}
+ public sealed class AmmoCounter { public bool DataReady { get { return false; } } public float ReloadProgress { get { return 0f; } } public bool Reloading { get { return false; } } public int Mag { get { return 0; } } public int MagSize { get { return 1; } } public int Reserve { get { return 0; } } public int ReloadLeft10Ms { get { return 0; } } public float ReloadRingMs { get { return ReloadLeft10Ms * 10f; } } public bool IsLow { get { return false; } } public int Color { get { return 0; } } }
+ public sealed class Hud {public const byte PhaseLobby=0;public static bool CombatUiVisible(byte phase){return phase==2||phase==3;}public void Apply(HudSample s){}public void Tick(float dt){}public void PushEvent(HudEvent e){}public AmmoCounter Ammo{get{return new AmmoCounter();}}}
 }
 '@
 $checks = @'
@@ -115,14 +116,19 @@ $walkStart=$boot.IndexOf('        private static void ChecksLocalMotionIndepende
 $walkEnd=$boot.IndexOf('        private static void ChecksHudAmmoRage()')
 $newLoopStart=$boot.IndexOf('        private static GameLoop NewLoop(')
 $newLoopEnd=$boot.IndexOf('        private static void Feed(', $newLoopStart)
-if($walkStart -lt 0 -or $walkEnd -le $walkStart -or $newLoopStart -lt 0 -or $newLoopEnd -le $newLoopStart){throw 'Existing BootSuite extraction anchors changed.'}
-$existing='namespace MovementOffline { public static class ExistingWalk {'+$boot.Substring($walkStart,$walkEnd-$walkStart)+$boot.Substring($newLoopStart,$newLoopEnd-$newLoopStart)+@'
+$mshStart=$boot.IndexOf('        private static PacketHeader MatchStateHeader()')
+$msbStart=$boot.IndexOf('        private static byte[] MatchStateBytes', $mshStart)
+$msbEnd=$boot.IndexOf('        private static void ChecksCommandUplink()', $msbStart)
+if($walkStart -lt 0 -or $walkEnd -le $walkStart -or $newLoopStart -lt 0 -or $newLoopEnd -le $newLoopStart -or $mshStart -lt 0 -or $msbEnd -le $msbStart){throw 'Existing BootSuite extraction anchors changed.'}
+$existing='namespace MovementOffline { public static class ExistingWalk {'+$boot.Substring($walkStart,$walkEnd-$walkStart)+$boot.Substring($mshStart,$msbEnd-$mshStart)+$boot.Substring($newLoopStart,$newLoopEnd-$newLoopStart)+@'
  public static Result Run(int test) {var names=new[]{"existing-boot.local_pose_from_prediction","existing-boot.no_camera_flicker","boot.remote_motion_render_cadence","boot.local_motion_independent_of_send_rate"};var r=new Result{name=names[test],fps=test<2?40:0};try{if(test==0)ChecksLocalPoseFromPrediction();else if(test==1)ChecksNoCameraFlicker();else if(test==2)ChecksRemoteMotionRenderCadence();else ChecksLocalMotionIndependentOfSendRate();r.passed=true;}catch(Exception e){r.error=e.Message;}return r;}
  }}
  namespace Ac.Core { public static class SelfTest {
  public static void Equal(long expected,long actual){if(expected!=actual)throw new Exception("expected="+expected+" actual="+actual);}
  public static void True(bool value,string expected,string actual){if(!value)throw new Exception(expected+": "+actual);}
- }}
+ }
+ public static class SettingsDefaults { public const float Sensitivity = 1.00f; public const float SensitivityMin = 0.20f; public const float SensitivityMax = 5.00f; }
+ }
 '@
 $hashes += [ordered]@{path='Tests/BootSuite.cs extracted movement methods';actualPath=(Resolve-Path $bootPath).Path;sha256=(Get-FileHash $bootPath -Algorithm SHA256).Hash}
 $source = (($usings | Select-Object -Unique) -join "`n") + "`n" + $stubs + "`n" + ($sources -join "`n") + "`n" + $checks + "`n" + $existing
