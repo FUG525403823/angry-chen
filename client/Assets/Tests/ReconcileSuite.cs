@@ -271,7 +271,9 @@ namespace Ac.Tests
             SelfTest.Equal(129, (long)buffer.At(127).Seq);
         }
 
-        // §5(b)：落地权威姿态 → AckUpTo → 最旧到最新逐条重放
+        // §5(b)：落地权威姿态（重放被权威投影取代——Reconciler 只落地投影后的基线，投影由
+        // GameLoop ③ 按步数差完成；A21 的 0.005/0.225m 相位交替误差与 ack 裁剪的重放错位
+        // 由此消除，见 C06 残留①③的勘误记录）
         private static void ChecksReplayOrder()
         {
             var predictor = new Predictor();
@@ -290,13 +292,13 @@ namespace Ac.Tests
             authority.LastAckedSeq = 1;
             var reconciler = new Reconciler();
             var result = reconciler.Reconcile(authority, buffer, predictor);
-            SelfTest.Equal(2, result.Replayed);
-            SelfTest.Equal(2, buffer.Size);
-            SelfTest.Equal(2, (long)buffer.At(0).Seq);
+            // 投影基线取代回滚重放：直接落地权威（投影由调用方完成），缓冲清空、不逐条重放。
+            SelfTest.Equal(0, result.Replayed);
+            SelfTest.Equal(0, buffer.Size);
             SelfTest.True(Math.Abs(predictor.State.X - 2.0) < 1e-12, "权威 x 落地", predictor.State.X.ToString("R"));
-            SelfTest.True(Math.Abs(predictor.State.Z - 10.45) < 1e-12, "重放剩余两条 0.45m", predictor.State.Z.ToString("R"));
-            SelfTest.True(Math.Abs(result.OffsetX - (0.0 - 2.0)) < 1e-12, "偏移 = 和解前 − 重放后", result.OffsetX.ToString("R"));
-            SelfTest.True(result.HardCorrect, "误差 2.0125m 触发硬纠正", result.ErrorM.ToString("R"));
+            SelfTest.True(Math.Abs(predictor.State.Z - 10.0) < 1e-12, "权威 z 落地", predictor.State.Z.ToString("R"));
+            SelfTest.True(Math.Abs(result.OffsetX - (0.0 - 2.0)) < 1e-12, "偏移 = 和解前 − 落地后", result.OffsetX.ToString("R"));
+            SelfTest.True(result.HardCorrect, "误差 2.11m 触发硬纠正", result.ErrorM.ToString("R"));
             SelfTest.Equal(1, reconciler.HardCorrectCount);
             SelfTest.True(reconciler.DebugLine(0).Contains("hardCorrect=1"), "调试行含 hardCorrect", reconciler.DebugLine(0));
 

@@ -44,6 +44,11 @@ namespace Ac.Boot
         // 和解的触发条件（见 Frame 的 ③）：已应用快照的 tick 变过才回滚重放一次。
         private uint _lastReconciledTick;
         private bool _reconciledOnce;
+        // 本地预测的累计子步数（只计 Advance 的预测步，不算和解重放）。
+        // 残留①③修复用它做「步数对齐投影」：权威 tick T 的位置是服务端 T−1 步，客户端此刻
+        // 已经预测到 _predictionSteps 步，把权威按本地速度外推 (extraSteps×50ms) 到客户端当前
+        // 网格，相位级的 0/1 子步差就不进误差了（见 Frame ③ 的注释）。
+        private int _predictionSteps;
         private readonly Interpolation.RenderClock _clock = new Interpolation.RenderClock();
         // 本地身份只接受 MatchState 的权威 localPid；昵称单独用于 Join。
         private readonly LocalIdentity _identity = new LocalIdentity();
@@ -448,7 +453,9 @@ namespace Ac.Boot
                 // `localStep(50ms)`，条数即步数。此前每帧只入队一条（≈30Hz，取决于帧率）而预测按
                 // 20Hz 出步，重放出来的时间片比真实经过时间多约 1.5× ⇒ 预测位置被持续拽偏。
                 // 上行只发30Hz，预测必须每渲染帧推进；没有新命令时继续持有最近输入。
+                // （缓冲现在只保留「步数对齐投影」的计数用，重放已被投影取代，见 Reconciler。）
                 var steps = _predictor.Advance(dtMs, _pending);
+                _predictionSteps += steps;
                 for (var i = 0; i < steps; i++) _commands.Push(_pending);
             }
             _profiler.Mark(FrameStage.Input);
@@ -490,6 +497,23 @@ namespace Ac.Boot
                 _reconciledOnce = true;
                 _lastReconciledTick = appliedTick;
                 Reconciles += 1;
+                // 残留①③修复：把权威投影到客户端当前预测网格再对账（Reconciler 落地投影后的
+                // 基线，重放被投影取代，见 Reconciler.Reconcile 的注释）。权威快照是服务端
+                // tick T 时刻（T−1 步）的位置，客户端此刻已预测到 _predictionSteps 步；直接拿它
+                // 当基线，相位级的 0/1 子步差（0.005/0.225m 交替）每次都进误差 ⇒ 平滑器被周期性
+                // 灌偏移，移动画面来回抖。这里按步数差外推（本地速度 × extraSteps×50ms）：恒定
+                // 移动时投影位置 ≡ 本地预测位置 ⇒ 误差恒 ≈ 0（丢包也一样——服务端持最近命令，
+                // 丢包不缺步）；输入真的变了（转向/变速）才出现误差，该纠正的纠正。墙钟年龄
+                // （now−serverTimeMs）投影在到达抖动下仍残留相位差（0.005~0.155m），步数对齐
+                // 投影与预测网格同构，无残留。
+                var extraSteps = _predictionSteps - ((int)authority.Tick - 1);
+                if (extraSteps > 0)
+                {
+                    var extrapMs = extraSteps * LocalStep.StepDtMs;
+                    authority.X += _predictor.State.Vx * extrapMs / 1000.0;
+                    authority.Y += _predictor.State.Vy * extrapMs / 1000.0;
+                    authority.Z += _predictor.State.Vz * extrapMs / 1000.0;
+                }
                 var result = _reconciler.Reconcile(authority, _commands, _predictor);
                 LastReplayed = result.Replayed;
                 LastReconcileErrorM = result.ErrorM;

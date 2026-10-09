@@ -120,8 +120,10 @@ namespace Ac.Tests
                 if (lead > maxLead) maxLead = lead;
             }
             SelfTest.Equal(0, (long)missing);                             // 每帧都该有预测值
-            // 重放条数必须是常数：权威延迟固定 2 个 tick ⇒ 缓冲里恒剩 2 条。少了（多跑）会让预测
-            // 位置整体偏一个子步，多了（少跑）会让位置被反复往回拽。
+            // 重放被权威投影取代（残留①③修复，见 Reconciler 与 GameLoop ③）：Replayed 必须恒为 0。
+            // 旧语义是"缓冲里恒剩 2 条（= 权威延迟）逐条重放"——ack 裁剪与区间相位让重放条数在
+            // 小 RTT/丢包/抖动下不再是常数，制造整步假性误差；步数对齐投影把权威外推到客户端当前
+            // 网格，重放不需要了。这里仍把 Replayed==0 钉成回归闸：谁把重放加回来就红。
             var replayed = new System.Text.StringBuilder();
             var minReplay = int.MaxValue;
             var maxReplay = int.MinValue;
@@ -131,12 +133,15 @@ namespace Ac.Tests
                 if (run.Replayed[i] > maxReplay) maxReplay = run.Replayed[i];
                 if (i < WalkWarmupFrames + 8) replayed.Append(run.Replayed[i]).Append(' ');
             }
-            SelfTest.True(minReplay == maxReplay && minReplay == 2,
-                "重放条数应当恒等于权威延迟的 tick 数（2）", replayed.ToString());
-            // 领先量 = 重放的两步（2 × 0.225 = 0.45m）± 一个子步（快照落在子步的哪一帧）+ 渲染外推。
-            // 贴着权威（≈0）就是没走预测；明显更大就是重放多跑了步。
-            SelfTest.True(minLead > 0.2 && maxLead < 0.7,
-                "预测位置应当领先最新权威快照约一个往返（0.45m ± 一个子步）",
+            SelfTest.True(minReplay == maxReplay && minReplay == 0,
+                "重放已被权威投影取代，Replayed 恒 0", replayed.ToString());
+            // 领先量 = 投影补的步 + 渲染外推。本场景权威喂的是「当下 tick」（无 RTT 延迟），
+            // 步数对齐投影的补偿 ≈ 0，领先只来自外推（0..一个子步）与量化噪声 ⇒ 渲染贴着权威
+            // 轨迹走而不是贴它跳。真实链路里权威带 RTT 延迟，投影按步数差把领先补到 ≈ 一个往返
+            // （JitterSim 全矩阵：任何 RTT/抖动/丢包下渲染步长恒 0.075m、无回退）。
+            // 贴着权威（恒 0 且不回退）才是"没走预测"。
+            SelfTest.True(minLead > -0.05 && maxLead < 0.25,
+                "渲染应贴预测轨迹（权威 ± 外推），不贴权威跳也不超前一个子步以上",
                 minLead.ToString("F4") + ".." + maxLead.ToString("F4") + " DBG " + TraceTail(run));
         }
 
@@ -169,10 +174,9 @@ namespace Ac.Tests
             // 起步那一拍真会硬纠正一次（客户端从原点被拉到出生点，5m ⇒ 吸附），所以只看"稳定之后有没有再发生"。
             if (hasLocal) SelfTest.Equal((long)run.SnapCount[WalkWarmupFrames], (long)local.Smoother.SnapCount);
             SelfTest.Equal((long)run.HardCorrects[WalkWarmupFrames], (long)run.Loop.HardCorrects);
-            // 重放条数必须等于"自权威以来经过的 tick 数"：每帧多入队一条会让重放多跑约 1×（本场景
-            // 每 tick 2 帧），稳态误差从 ±一个子步涨到两个子步以上。误差本身按 C05 §8 的口径用
-            // "一个子步"做上界：快照可能落在本 tick 子步之前，那时客户端天然差一步（这一段由
-            // 平滑器吸收，渲染位置不断，见上面两条断言）。
+            // 稳态误差：残留①③修复后误差来源只剩量化与投影取整（±半个子步内），收紧到
+            // 原来的上界（C05 §8 的一个子步）仍然成立；0.005/0.225 相位交替已由步数对齐投影
+            // 消除（见 Reconciler / GameLoop ③），这里把 0.315 上界保留为回归闸即可。
             var maxError = 0.0;
             for (var i = WalkWarmupFrames; i < run.Frames; i++) if (run.ErrorM[i] > maxError) maxError = run.ErrorM[i];
             SelfTest.True(maxError < 0.315, "稳态和解误差不得超过一个子步（C05 §8）",
@@ -202,7 +206,8 @@ namespace Ac.Tests
         }
 
         // 一直按 W + 20Hz 权威快照（每 2 帧一条，40fps）+ 逐帧记录渲染位置。
-        // 合成ack保留两个未确认预测子步，用来隔离和解误差；不是完整网络RTT模拟。
+        // 合成 ack 沿用了旧 T-2 水位（历史上用于保留两个未确认子步给重放）；残留①③修复后
+        // 重放被步数对齐投影取代，ack 水位只影响 LastAckedSeq 透传，不影响姿态（见 Reconciler）。
         private static WalkRun RunWalk(int ticks)
         {
             SnapshotFrame frame;
