@@ -22,6 +22,7 @@ namespace Ac.Tests
             SelfTest.Add("render.settings_modal", ChecksSettingsModal);
             SelfTest.Add("render.renderer_attached", ChecksRendererAttached);
             SelfTest.Add("render.lobby_items", ChecksLobbyItems);
+            SelfTest.Add("render.lobby_menu_layout", ChecksLobbyMenuLayout);
             SelfTest.Add("render.combat_hud_items", ChecksCombatHudItems);
             SelfTest.Add("render.crosshair_palette", ChecksCrosshairPalette);
             SelfTest.Add("render.kill_feed_lines", ChecksKillFeedLines);
@@ -365,10 +366,17 @@ namespace Ac.Tests
                 rig.PushState(Hud.PhaseLobby, 0, 0);
                 var model = Build(rig);
 
-                // 大厅：标题 + 昵称 + 合法性 + 房间码 + 准备行 + 备战条 + 提示 + 队伍表头 + 2 行 = 10
-                SelfTest.Equal(10, (long)model.Count);
-                SelfTest.Equal(9, (long)CountOf(model, OverlayItemKind.Text));
-                SelfTest.Equal(1, (long)CountOf(model, OverlayItemKind.Bar));
+                // 大厅：深蓝底 + 双栏面板，左栏身份/准备，右栏操作指南/队伍表。
+                SelfTest.Equal(23, (long)model.Count);
+                SelfTest.Equal(16, (long)CountOf(model, OverlayItemKind.Text));
+                SelfTest.Equal(7, (long)CountOf(model, OverlayItemKind.Bar));
+                int actionX, actionY, actionW, actionH;
+                OverlayModel.LobbyActionArea(ViewW, ViewH, out actionX, out actionY, out actionW, out actionH);
+                SelfTest.True(actionW > 0 && actionH > 0 && actionX >= 0 && actionY >= 0 && actionX + actionW <= ViewW && actionY + actionH <= ViewH,
+                    "准备按钮区域必须落在右栏内", actionX + "," + actionY);
+                SelfTest.True(HasText(model, OverlayModel.LobbyGuideTitle), "右栏操作指南", "没有");
+                SelfTest.True(HasText(model, OverlayModel.LobbyGuideReady), "准备操作说明", "没有");
+                SelfTest.True(HasText(model, OverlayModel.LobbyGuideTeam), "队伍操作说明", "没有");
                 SelfTest.Equal(0, (long)CountOf(model, OverlayItemKind.Crosshair));   // 大厅没有准星
                 SelfTest.True(HasText(model, OverlayModel.LobbyTitle), "大厅标题要画出来", "没有");
                 SelfTest.True(HasText(model, "昵称: (未设置)"), "昵称行要显示当前昵称", "没有");
@@ -398,7 +406,7 @@ namespace Ac.Tests
                 // 没有玩家表的行（pid <= 0 整行不渲染）⇒ 队伍表整块消失
                 rig.PushStateZeroPid(Hud.PhaseLobby, 0);
                 model = Build(rig);
-                SelfTest.Equal(7, (long)model.Count);                              // 表头与两行都不画了
+                SelfTest.Equal(20, (long)model.Count);                             // 右栏指南保留，队伍表头与两行都不画
                 SelfTest.True(!HasText(model, OverlayModel.RosterHeader), "没有可见玩家时不画队伍表", "还在");
                 SelfTest.True(!HasText(model, "#0 ghost 步枪 未准备"), "pid <= 0 的行整行不渲染", "画了");
 
@@ -409,6 +417,68 @@ namespace Ac.Tests
                 SelfTest.True(HasText(model, "载入中"), "载入相位要画出来", "没有");
             }
             finally { rig.Dispose(); }
+        }
+
+        private static void ChecksLobbyMenuLayout()
+        {
+            using (var rig = new Rig())
+            {
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStateBytes(Hud.PhaseLobby, 0, 0,
+                    new ushort[] { 1, 2, 3, 4 }, new[] { "甲乙丙丁", "b", "c", "d" }, new[] { true, false, false, true }, 1));
+                rig.Loop.Frame(1000.0 / 60.0);
+                var sizes = new[] { new[] { 1280, 720 }, new[] { 1920, 1080 }, new[] { 2560, 1440 } };
+                foreach (var size in sizes)
+                {
+                    var w = size[0];
+                    var h = size[1];
+                    rig.Layer.BuildOverlay(w, h);
+                    var model = rig.Layer.Overlay;
+                    int x, y, width, height;
+                    OverlayModel.LobbyActionArea(w, h, out x, out y, out width, out height);
+                    var action = new Rect(x, y, width, height);
+                    SelfTest.True(x > w / 2 && width > 0 && height >= 56 && action.xMax <= w && action.yMax <= h,
+                        "准备按钮保留在右栏底部", action.ToString());
+                    var background = model.ItemAt(0);
+                    SelfTest.Equal((long)OverlayModel.LobbyBackgroundRgb, (long)background.ColorRgb);
+                    SelfTest.True(background.Kind == OverlayItemKind.Bar && background.X == 0 && background.Y == 0 &&
+                        background.W == w && background.H == h && background.Alpha == 1f && background.Fill01 == 1f,
+                        "深蓝背景必须不透明铺满", "背景不完整");
+                    OverlayItem title, name, guide, roster;
+                    SelfTest.True(TryFindText(model, OverlayModel.LobbyTitle, out title), "英雄标题", "缺失");
+                    SelfTest.True(TryFindText(model, "昵称: (未设置)", out name), "身份区", "缺失");
+                    SelfTest.True(TryFindText(model, OverlayModel.LobbyGuideTitle, out guide), "指南区", "缺失");
+                    SelfTest.True(TryFindText(model, OverlayModel.RosterHeader, out roster), "队伍区", "缺失");
+                    SelfTest.True(title.X < w / 2 && name.X == title.X && name.Y > title.Y + title.H,
+                        "左栏标题与身份分区留白", "错位或重叠");
+                    SelfTest.True(guide.X == x && roster.X == x && roster.Y > guide.Y + guide.H,
+                        "右栏指南与队伍独立分区", "错位或重叠");
+                    for (var i = 0; i < model.Count; i++)
+                    {
+                        var item = model.ItemAt(i);
+                        var rect = OverlayRenderer.ItemRect(item);
+                        SelfTest.True(rect.xMin >= 0 && rect.yMin >= 0 && rect.xMax <= w && rect.yMax <= h,
+                            "大厅绘制项在视口内", item.Text);
+                        if (item.Kind != OverlayItemKind.Text) continue;
+                        SelfTest.True(item.H >= Hud.ScaledFontPx(OverlayModel.RoleName(item.Role), h),
+                            "大厅文字矩形随字号缩放", item.Text);
+                        SelfTest.True(!rect.Overlaps(action), "文字不能侵占准备按钮", item.Text);
+                        for (var j = i + 1; j < model.Count; j++)
+                        {
+                            var next = model.ItemAt(j);
+                            if (next.Kind == OverlayItemKind.Text)
+                                SelfTest.True(!rect.Overlaps(OverlayRenderer.ItemRect(next)), "大厅文字行不重叠", item.Text + " / " + next.Text);
+                        }
+                    }
+                    var warm = new OverlayItem[model.Count];
+                    Array.Copy(model.Items, warm, warm.Length);
+                    var before = AllocMeter.Begin();
+                    for (var frame = 0; frame < 100; frame++) rig.Layer.BuildOverlay(w, h);
+                    AllocMeter.AssertZero(before);
+                    SelfTest.Equal(warm.Length, (long)model.Count);
+                    for (var i = 0; i < warm.Length; i++)
+                        SelfTest.True(ReferenceEquals(warm[i].Text, model.Items[i].Text), "大厅稳态复用缓存字符串", "重建字符串");
+                }
+            }
         }
 
         private static void ChecksCombatHudItems()

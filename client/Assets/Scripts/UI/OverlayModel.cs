@@ -78,7 +78,34 @@ namespace Ac.UI
 
         // 常量行：不随帧变化，构造期就冻住（帧内拼接 = 每帧一次分配）
         public const string LobbyTitle = "ANGRY CHEN";
-        public const string LobbyHint = "键入字符修改昵称 · 服务器下发相位后自动进入对局";
+        public const string LobbyHint = "直接键入修改昵称 · 退格删除";
+        public const int LobbyBackgroundRgb = 0x081421;
+        public const int LobbyPanelRgb = 0x102638;
+        public const int LobbyAccentRgb = 0x46D8C4;
+        public const int LobbyMutedRgb = 0x9DB4C7;
+        public const int LobbyPanelBorderRgb = 0x1E5160;
+        public const string LobbyGuideTitle = "02  /  操作指南";
+        public const string LobbyGuideName = "填写昵称，确认队伍成员";
+        public const string LobbyGuideReady = "点击准备按钮，或使用准备快捷键";
+        public const string LobbyGuideTeam = "全员准备后，等待服务器开局";
+
+        // 主代理的准备按钮与大厅右栏共用这块几何；模型只提供区域，不处理输入。
+        public static void LobbyActionArea(int w, int h, out int x, out int y, out int width, out int height)
+        {
+            var margin = h <= 0 ? 24 : h / 24;
+            if (margin < 24) margin = 24;
+            var gap = margin;
+            var panelWidth = (w - margin * 2 - gap) / 2;
+            if (panelWidth < 1) panelWidth = 1;
+            var padding = h <= 0 ? 16 : h / 54;
+            if (padding < 16) padding = 16;
+            width = panelWidth - padding * 2;
+            if (width < 1) width = 1;
+            height = h <= 0 ? 56 : h / 14;
+            if (height < 56) height = 56;
+            x = margin + panelWidth + gap + padding;
+            y = h - margin - padding - height;
+        }
         public const string RosterHeader = "队伍";
         public const string NameValidText = "昵称合法";
         public const string NameInvalidText = "昵称必须是 1..12 个字节（UTF-8）";
@@ -200,21 +227,38 @@ namespace Ac.UI
         private void BuildLobby(in OverlaySources sources, int w, int h, int inset)
         {
             var lobby = sources.Lobby;
-            var y = inset;
-            AddText(OverlayTextRole.Title, OverlayAlign.Center, w / 2, y, w, Hud.ColorNormal, 1f, LobbyTitle);
-            y += Hud.ScaledFontPx("title", h) + 12;
+            int actionX, actionY, actionW, actionH;
+            LobbyActionArea(w, h, out actionX, out actionY, out actionW, out actionH);
+            var margin = System.Math.Max(24, h / 24);
+            var padding = System.Math.Max(16, h / 54);
+            var panelWidth = actionW + padding * 2;
+            var leftX = margin + padding;
+            var rightX = actionX;
+            var top = margin + padding;
+            var row = Hud.ScaledFontPx("feed", h) + Hud.ScaledPx(14, h);
 
-            // 昵称只**显示**：输入的唯一通路是 GameLoopDriver → ScreenFlow.CaptureName → Ac.UI.NameInput，
-            // 这里再挂一个 IMGUI TextField 就是第二条平行输入源（会双重输入）。
+            AddBar(0, 0, w, h, LobbyBackgroundRgb, 1f, 1f);
+            AddBar(margin, margin, panelWidth, h - margin * 2, LobbyPanelRgb, 1f, 1f);
+            AddBar(rightX - padding, margin, panelWidth, h - margin * 2, LobbyPanelRgb, 1f, 1f);
+            AddBar(leftX, top, Hud.ScaledPx(64, h), Hud.ScaledPx(4, h), LobbyAccentRgb, 1f, 1f);
+            AddLobbyText(OverlayTextRole.Feed, leftX, top + h / 18, actionW, LobbyMutedRgb, "CO-OP SURVIVAL  /  作战大厅", h);
+            AddLobbyText(OverlayTextRole.Title, leftX, top + h / 9, actionW, LobbyAccentRgb, LobbyTitle, h);
+            AddLobbyText(OverlayTextRole.Label, leftX, top + h / 5, actionW, Hud.ColorNormal, "集结队伍 · 迎战下一波", h);
+
+            var y = top + h / 3;
+            AddBar(leftX, y, actionW, Hud.ScaledPx(2, h), LobbyPanelBorderRgb, 1f, 1f);
+            y += row;
+            AddLobbyText(OverlayTextRole.Label, leftX, y, actionW, LobbyAccentRgb, "01  /  玩家身份", h);
+            y += row * 2;
+            // 只显示 NameInput 的既有结果，不建立第二条输入通路。
             var name = lobby.Name;
-            if (!ReferenceEquals(name, _nameCache))
+            if (!ReferenceEquals(name, _nameCache) || _nameLine.Length == 0)
             {
                 _nameCache = name;
                 _nameLine = "昵称: " + (string.IsNullOrEmpty(name) ? "(未设置)" : name);
             }
-            AddText(OverlayTextRole.Numeric, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, _nameLine);
-            y += Hud.ScaledFontPx("numeric", h) + 4;
-
+            AddLobbyText(OverlayTextRole.Numeric, leftX, y, actionW, Hud.ColorNormal, _nameLine, h);
+            y += Hud.ScaledFontPx("numeric", h) + Hud.ScaledPx(14, h);
             var valid = lobby.IsNameValid;
             if (!_nameValidSet || valid != _nameValidCache)
             {
@@ -222,37 +266,51 @@ namespace Ac.UI
                 _nameValidCache = valid;
                 _nameStatusLine = valid ? NameValidText : NameInvalidText;
             }
-            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset,
-                valid ? Hud.ColorNormal : Hud.ColorHurt, 1f, _nameStatusLine);
-            y += Hud.ScaledFontPx("label", h) + 16;
-
+            AddLobbyText(OverlayTextRole.Label, leftX, y, actionW, valid ? LobbyAccentRgb : Hud.ColorHurt, _nameStatusLine, h);
+            y += row;
+            AddLobbyText(OverlayTextRole.Feed, leftX, y, actionW, LobbyMutedRgb, LobbyHint, h);
             var code = lobby.RoomCode == null ? null : lobby.RoomCode.Code;
-            if (!ReferenceEquals(code, _roomCodeCache))
+            if (!ReferenceEquals(code, _roomCodeCache) || _roomLine.Length == 0)
             {
                 _roomCodeCache = code;
                 _roomLine = "房间码: " + (string.IsNullOrEmpty(code) ? "(未输入)" : code);
             }
-            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, _roomLine);
-            y += Hud.ScaledFontPx("label", h) + 4;
+            AddLobbyText(OverlayTextRole.Label, leftX, actionY - row * 2, actionW, LobbyMutedRgb, _roomLine, h);
 
-            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 1f, ReadyLine(lobby));
-            y += Hud.ScaledFontPx("label", h) + 6;
-
-            // 备战条：已准备人数 / 总人数
-            var total = lobby.PlayerCount;
-            var fill = total <= 0 ? 0f : lobby.ReadyCount / (float)total;
-            AddBar(inset, y, Hud.ScaledPx(BarWidthPx, h), Hud.ScaledPx(10, h), Hud.ColorRage, 1f, fill);
-            y += 10 + 14;
-
-            AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorNormal, 0.8f, LobbyHint);
-            y += Hud.ScaledFontPx("label", h) + 16;
-
-            if (Roster.VisibleRows(sources.Players) > 0)
+            AddLobbyText(OverlayTextRole.Label, rightX, top, actionW, LobbyAccentRgb, LobbyGuideTitle, h);
+            AddLobbyText(OverlayTextRole.Feed, rightX, top + row * 2, actionW, Hud.ColorNormal, LobbyGuideName, h);
+            AddLobbyText(OverlayTextRole.Feed, rightX, top + row * 3, actionW, Hud.ColorNormal, LobbyGuideReady, h);
+            AddLobbyText(OverlayTextRole.Feed, rightX, top + row * 4, actionW, LobbyMutedRgb, LobbyGuideTeam, h);
+            var visibleRows = Roster.VisibleRows(sources.Players);
+            var rosterY = top + h / 3;
+            var rosterReserve = (visibleRows + 3) * row;
+            var latestRosterY = actionY - rosterReserve;
+            if (rosterY > latestRosterY) rosterY = latestRosterY;
+            if (rosterY < top + row * 5) rosterY = top + row * 5;
+            AddBar(rightX, rosterY, actionW, Hud.ScaledPx(2, h), LobbyPanelBorderRgb, 1f, 1f);
+            if (visibleRows > 0)
             {
-                AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, y, w - inset, Hud.ColorTarget, 1f, RosterHeader);
-                y += Hud.ScaledFontPx("label", h) + 2;
-                BuildRosterRows(sources, inset, y, w - inset);
+                AddLobbyText(OverlayTextRole.Label, rightX, rosterY + row, actionW, LobbyAccentRgb, RosterHeader, h);
+                var firstRow = _count;
+                BuildRosterRows(sources, rightX, rosterY + row * 2, actionW);
+                for (var i = firstRow; i < _count; i++)
+                {
+                    _items[i].Y = rosterY + row * (2 + i - firstRow);
+                    _items[i].H = Hud.ScaledFontPx("feed", h) + Hud.ScaledPx(6, h);
+                }
             }
+            var readyY = actionY - row * 2;
+            AddLobbyText(OverlayTextRole.Label, rightX, readyY, actionW, Hud.ColorNormal, ReadyLine(lobby), h);
+            var total = lobby.PlayerCount;
+            AddBar(rightX, readyY + row, actionW, Hud.ScaledPx(6, h), LobbyAccentRgb, 1f,
+                total <= 0 ? 0f : lobby.ReadyCount / (float)total);
+        }
+
+        private void AddLobbyText(OverlayTextRole role, int x, int y, int width, int color, string text, int h)
+        {
+            var index = _count;
+            AddText(role, OverlayAlign.Left, x, y, width, color, 1f, text);
+            if (_count > index) _items[index].H = Hud.ScaledFontPx(RoleName(role), h) + Hud.ScaledPx(6, h);
         }
 
         private void BuildLoading(int w, int h)

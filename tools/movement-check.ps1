@@ -27,7 +27,7 @@ foreach ($rel in $files) {
 }
 $stubs = @'
 namespace UnityEngine {
- public enum KeyCode { W,S,A,D,LeftShift,RightShift,Space,Mouse0,R,E,F,Q,Return }
+ public enum KeyCode { Alpha1 = 49, Alpha2 = 50, Alpha3 = 51, W,S,A,D,LeftShift,RightShift,Space,Mouse0,R,E,F,Q,Return }
  public static class Application { public static bool isPlaying { get { return false; } } public static bool isFocused { get { return true; } } }
  public static class Input { public static float GetAxisRaw(string name){throw new System.InvalidOperationException("Use injected input only");} public static bool GetKey(KeyCode code){throw new System.InvalidOperationException("Use injected input only");} }
 }

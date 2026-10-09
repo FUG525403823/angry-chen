@@ -5,8 +5,8 @@ using UnityEngine.Rendering;
 
 namespace Ac.Boot
 {
-    // 薄 IMGUI 适配层：把 Ac.UI.OverlayModel 的绘制项翻译成 GUI 调用。这里**没有任何界面逻辑**
-    //（相位、显隐、字符串、名次全在布局模型里），也没有第二条昵称输入源（不碰 TextField）。
+    // IMGUI 适配层：绘制布局模型，并将菜单操作交给现有输入和设置模型。
+    // 昵称仍由 ScreenFlow 捕获，不创建第二条 TextField 输入源。
     //
     // 只在真的有显示设备时才画：批处理 / -nographics 下 SystemInfo.graphicsDeviceType 是 Null，
     // OnGUI 即便被调用也在这里立刻返回，一条 GUI 调用都不发（纹理与 GUIStyle 也就永不创建），
@@ -31,6 +31,11 @@ namespace Ac.Boot
         private int _drawnFrames;
         private readonly Crosshair _preview = new Crosshair();
         private Vector2 _settingsScroll;
+        private int _settingsTab;
+        private GUIStyle _menuButton, _menuLabel, _menuTitle, _menuSmall;
+        private static readonly string[] SettingsTabs = { "操控", "准星", "装备" };
+        private static readonly string[] WeaponNames = { "01   手枪", "02   步枪", "03   霰弹枪" };
+        private static readonly string[] WeaponNotes = { "精准点射 · 稳定可靠", "持续火力 · 中距离压制", "多弹丸散射 · 近距离爆发" };
         private KeyCode _settingsHintKey = KeyCode.None;
         private string _settingsHint = string.Empty;
         private SettingsPanel _cachedPanel;
@@ -77,16 +82,42 @@ namespace Ac.Boot
             return SettingsButtonRect(width, height).Contains(new Vector2(mousePosition.x, height - mousePosition.y));
         }
 
-        private float SettingSlider(int index, string label, float value, float min, float max, float step)
+        private void Fill(Rect rect, int rgb)
+        {
+            GUI.color = Rgb(rgb);
+            GUI.DrawTexture(rect, _pixel);
+            GUI.color = Color.white;
+        }
+
+        private bool MenuButton(Rect rect, string text, bool primary = false)
+        {
+            var hover = rect.Contains(Event.current.mousePosition);
+            Fill(rect, primary ? (hover ? 0x83F5DC : 0x50DDBB) : (hover ? 0x293D50 : 0x1A2B3B));
+            GUI.contentColor = primary ? Rgb(0x091A22) : Color.white;
+            var pressed = GUI.Button(rect, text, _menuButton);
+            GUI.contentColor = Color.white;
+            return pressed;
+        }
+
+        private float SettingSlider(int index, string label, float value, float min, float max, float step, float y)
         {
             if (_sliderValues[index] != value)
             {
                 _sliderValues[index] = value;
-                _sliderLabels[index] = label + "  " + value.ToString("0.00");
+                _sliderLabels[index] = value.ToString("0.00");
             }
-            GUILayout.Label(_sliderLabels[index], Style(OverlayTextRole.Label, OverlayAlign.Left));
-            var next = GUILayout.HorizontalSlider(value, min, max);
+            GUI.Label(new Rect(24, y, 290, 26), label, _menuLabel);
+            GUI.Label(new Rect(338, y, 90, 26), _sliderLabels[index], _menuSmall);
+            GUI.backgroundColor = Rgb(0x50DDBB);
+            var next = GUI.HorizontalSlider(new Rect(24, y + 35, 396, 22), value, min, max);
+            GUI.backgroundColor = Color.white;
             return Mathf.Approximately(next, value) ? value : Mathf.Clamp(Mathf.Round(next / step) * step, min, max);
+        }
+
+        private bool SettingToggle(float y, string label, bool value)
+        {
+            GUI.Label(new Rect(24, y, 320, 32), label, _menuLabel);
+            return MenuButton(new Rect(350, y, 70, 32), value ? "开启" : "关闭", value) ? !value : value;
         }
 
         private SettingsSnapshot PanelValues(SettingsPanel panel)
@@ -104,49 +135,86 @@ namespace Ac.Boot
         {
             var panel = layer.SettingsPanel;
             if (panel == null) return;
-            var previousFont = GUI.skin.font;
-            if (_fonts != null && _fonts[(int)OverlayTextRole.Label] != null) GUI.skin.font = _fonts[(int)OverlayTextRole.Label];
+            if (!panel.Visible)
+            {
+                if (_settingsHintKey != GameBootstrap.SettingsKeyCode)
+                {
+                    _settingsHintKey = GameBootstrap.SettingsKeyCode;
+                    _settingsHint = "设置 " + _settingsHintKey + " / Esc";
+                }
+                if (Cursor.lockState == CursorLockMode.Locked)
+                    GUI.Label(new Rect(16, 12, 260, 32), _settingsHint, Style(OverlayTextRole.Feed, OverlayAlign.Left));
+                else if (MenuButton(SettingsButtonRect(Screen.width, Screen.height), "设置")) layer.ToggleSettings();
+                if (layer.Flow.LobbyVisible)
+                {
+                    int x, y, w, h;
+                    OverlayModel.LobbyActionArea(Screen.width, Screen.height, out x, out y, out w, out h);
+                    var sampler = GameBootstrap.Loop == null ? null : GameBootstrap.Loop.Sampler;
+                    GUI.enabled = sampler != null && layer.Flow.Lobby.IsNameValid;
+                    if (MenuButton(new Rect(x, y, w, h), sampler != null && sampler.ReadyHeld ? "已准备  /  点击取消" : "准备出战  →", true)) sampler.SetReadyHeld(!sampler.ReadyHeld);
+                    GUI.enabled = true;
+                }
+                return;
+            }
+            var previousMatrix = GUI.matrix;
+            var scale = Mathf.Min(Screen.width / 1000f, Screen.height / 720f);
+            GUI.color = new Color(0.015f, 0.025f, 0.04f, 0.94f);
+            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), _pixel);
+            GUI.color = Color.white;
+            GUI.matrix = Matrix4x4.TRS(new Vector3((Screen.width - 960 * scale) / 2, (Screen.height - 660 * scale) / 2, 0), Quaternion.identity, new Vector3(scale, scale, 1));
             try
             {
-                if (!panel.Visible)
-                {
-                    if (_settingsHintKey != GameBootstrap.SettingsKeyCode)
-                    {
-                        _settingsHintKey = GameBootstrap.SettingsKeyCode;
-                        _settingsHint = "设置：" + _settingsHintKey + " / Esc 解锁";
-                    }
-                    if (Cursor.lockState == CursorLockMode.Locked)
-                        GUI.Label(new Rect(12, 12, 240, 32), _settingsHint, Style(OverlayTextRole.Feed, OverlayAlign.Left));
-                    else if (GUI.Button(SettingsButtonRect(Screen.width, Screen.height), "设置")) layer.ToggleSettings();
-                    return;
-                }
-                GUI.color = new Color(0f, 0f, 0f, 0.85f);
-                GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), _pixel);
-                GUI.color = Color.white;
-                var width = Mathf.Max(1f, Mathf.Min(620f, Screen.width - 24f));
-                var height = Mathf.Max(1f, Mathf.Min(680f, Screen.height - 24f));
-                GUILayout.BeginArea(new Rect((Screen.width - width) * 0.5f, (Screen.height - height) * 0.5f, width, height), GUI.skin.box);
-                _settingsScroll = GUILayout.BeginScrollView(_settingsScroll);
-                GUILayout.Label("设置 · 修改立即生效", Style(OverlayTextRole.Label, OverlayAlign.Left));
+                Fill(new Rect(0, 0, 960, 660), 0x0D1824);
+                Fill(new Rect(0, 0, 4, 660), 0x50DDBB);
+                GUI.Label(new Rect(32, 22, 500, 24), "ANGRY CHEN  /  FIELD SETTINGS", _menuSmall);
+                GUI.Label(new Rect(32, 57, 600, 52), "调整你的作战方式", _menuTitle);
+                GUI.Label(new Rect(32, 114, 740, 28), "修改即时生效并自动保存  /  联机对局不会暂停", _menuSmall);
+                Fill(new Rect(32, 160, 896, 1), 0x293D50);
+                for (var i = 0; i < SettingsTabs.Length; i++)
+                    if (MenuButton(new Rect(32, 187 + i * 58, 146, 46), SettingsTabs[i], _settingsTab == i)) { _settingsTab = i; _settingsScroll = Vector2.zero; }
+                GUI.Label(new Rect(32, 415, 145, 100), "FIELD KIT\n个人作战配置\n\nESC  返回", _menuSmall);
+                Fill(new Rect(198, 184, 452, 350), 0x122131);
+                _settingsScroll = GUI.BeginScrollView(new Rect(198, 184, 452, 350), _settingsScroll, new Rect(0, 0, 432, _settingsTab == 1 ? 402 : 330));
                 var values = PanelValues(panel);
-                panel.SetSensitivity(SettingSlider(0, "鼠标灵敏度", values.Sensitivity, SettingsDefaults.SensitivityMin, SettingsDefaults.SensitivityMax, 0.05f));
-                panel.SetCrosshairScale(SettingSlider(1, "准星大小", values.CrosshairScale, SettingsDefaults.CrosshairScaleMin, SettingsDefaults.CrosshairScaleMax, 0.05f));
-                panel.SetCrosshairThickness(SettingSlider(2, "准星粗细（像素）", values.CrosshairThickness, SettingsDefaults.CrosshairThicknessMin, SettingsDefaults.CrosshairThicknessMax, 1f));
-                panel.SetCrosshairGap(SettingSlider(3, "准星间距（像素）", values.CrosshairGap, SettingsDefaults.CrosshairGapMin, SettingsDefaults.CrosshairGapMax, 1f));
-                panel.SetCrosshairDynamic(GUILayout.Toggle(values.CrosshairDynamic, "动态准星（随武器散布变化）"));
-                if (GUILayout.Button("切换准星颜色")) panel.CycleCrosshairColor();
-                panel.SetColorblindSafe(GUILayout.Toggle(values.ColorblindSafe, "色盲安全配色（覆盖所选颜色）"));
+                if (_settingsTab == 0)
+                {
+                    panel.SetSensitivity(SettingSlider(0, "鼠标灵敏度", values.Sensitivity, SettingsDefaults.SensitivityMin, SettingsDefaults.SensitivityMax, 0.05f, 22));
+                    GUI.Label(new Rect(24, 109, 400, 195), "W A S D   移动      Shift   冲刺\nSpace   跳跃          鼠标左键   开火\nR   换弹                 Q   循环切枪\n1 / 2 / 3   直接选择枪械\nE   交互                 F   怒气技能", _menuLabel);
+                }
+                else if (_settingsTab == 1)
+                {
+                    panel.SetCrosshairScale(SettingSlider(1, "准星大小", values.CrosshairScale, SettingsDefaults.CrosshairScaleMin, SettingsDefaults.CrosshairScaleMax, 0.05f, 16));
+                    panel.SetCrosshairThickness(SettingSlider(2, "线条粗细", values.CrosshairThickness, SettingsDefaults.CrosshairThicknessMin, SettingsDefaults.CrosshairThicknessMax, 1f, 88));
+                    panel.SetCrosshairGap(SettingSlider(3, "中心间距", values.CrosshairGap, SettingsDefaults.CrosshairGapMin, SettingsDefaults.CrosshairGapMax, 1f, 160));
+                    panel.SetCrosshairDynamic(SettingToggle(237, "动态散布反馈", values.CrosshairDynamic));
+                    panel.SetColorblindSafe(SettingToggle(285, "色盲安全配色", values.ColorblindSafe));
+                    if (MenuButton(new Rect(24, 337, 396, 40), "切换准星颜色")) panel.CycleCrosshairColor();
+                }
+                else
+                {
+                    var sampler = GameBootstrap.Loop == null ? null : GameBootstrap.Loop.Sampler;
+                    GUI.enabled = sampler != null;
+                    for (var i = 0; i < WeaponNames.Length; i++)
+                    {
+                        if (MenuButton(new Rect(24, 16 + i * 90, 396, 46), WeaponNames[i], sampler != null && sampler.CurrentSwitchTo == i)) sampler.RequestWeaponSlot(i);
+                        GUI.Label(new Rect(28, 66 + i * 90, 390, 26), WeaponNotes[i], _menuSmall);
+                    }
+                    GUI.enabled = true;
+                    GUI.Label(new Rect(24, 289, 400, 30), "选择装备后，返回战场继续作战", _menuSmall);
+                }
+                GUI.EndScrollView();
+                Fill(new Rect(672, 184, 256, 350), 0x09121C);
+                GUI.Label(new Rect(694, 204, 215, 30), "LIVE PREVIEW", _menuSmall);
+                Fill(new Rect(694, 348, 212, 1), 0x203345);
+                Fill(new Rect(800, 256, 1, 184), 0x203345);
                 values = PanelValues(panel);
                 _preview.ApplySettings(values);
                 var hud = layer.Sources().Hud;
                 _preview.SetSpread(hud == null ? Crosshair.MinSpreadDeg : hud.Crosshair.SpreadDeg);
-                var previewRect = GUILayoutUtility.GetRect(160f, 100f);
-                GUI.Box(previewRect, GUIContent.none);
                 if (Event.current.type == EventType.Repaint)
                 {
                     var item = default(OverlayItem);
-                    item.X = (int)previewRect.center.x;
-                    item.Y = (int)previewRect.center.y;
+                    item.X = 800; item.Y = 349;
                     item.SpreadPx = _preview.SizePx;
                     item.ThicknessPx = _preview.ThicknessPx;
                     item.GapPx = _preview.GapPx;
@@ -154,15 +222,13 @@ namespace Ac.Boot
                     DrawCrosshair(item);
                     GUI.color = Color.white;
                 }
-                GUILayout.Label("预览与实战共用准星绘制；联机对局不会暂停。", Style(OverlayTextRole.Feed, OverlayAlign.Left));
-                if (panel.Store.ReadOnlyFile) GUILayout.Label("配置来自更高版本：本次修改仅在当前运行有效。");
-                if (!string.IsNullOrEmpty(panel.Hint)) GUILayout.Label(panel.Hint);
-                if (GUILayout.Button("恢复默认设置")) panel.RestoreDefaults();
-                if (GUILayout.Button("关闭（Esc）")) layer.ToggleSettings();
-                GUILayout.EndScrollView();
-                GUILayout.EndArea();
+                GUI.Label(new Rect(694, 475, 214, 45), "实战准星 · 实时预览", _menuSmall);
+                var hint = panel.Store.ReadOnlyFile ? "配置版本较新：修改仅本次有效" : panel.Hint;
+                GUI.Label(new Rect(32, 548, 890, 32), string.IsNullOrEmpty(hint) ? "让视野更清晰，让每一次射击更准确。" : hint, _menuSmall);
+                if (MenuButton(new Rect(32, 598, 210, 40), "恢复默认设置")) panel.RestoreDefaults();
+                if (MenuButton(new Rect(672, 590, 256, 48), "返回  /  ESC", true)) layer.ToggleSettings();
             }
-            finally { GUI.skin.font = previousFont; GUI.color = Color.white; }
+            finally { GUI.matrix = previousMatrix; GUI.color = Color.white; GUI.enabled = true; }
         }
 
         // 模型的口径 → IMGUI 的矩形（两者必须在这里对齐，否则"居中"会画到屏幕外）：
@@ -252,6 +318,7 @@ namespace Ac.Boot
             var scale = Hud.ScaleFor(Screen.height);
             if (_styles != null && Mathf.Approximately(_stylesScale, scale)) return;
 
+            ReleaseStyles();
             _defaultStyle = GUI.skin.label;
             _content.text = string.Empty;
             _styles = new GUIStyle[RoleCount * AlignCount];
@@ -277,6 +344,13 @@ namespace Ac.Boot
                     _styles[role * AlignCount + align] = style;
                 }
             }
+            _menuLabel = new GUIStyle(Style(OverlayTextRole.Label, OverlayAlign.Left)) { fontSize = 17, wordWrap = true };
+            _menuSmall = new GUIStyle(_menuLabel) { fontSize = 13 };
+            _menuSmall.normal.textColor = Rgb(0x91A9BC);
+            _menuTitle = new GUIStyle(_menuLabel) { fontSize = 34, fontStyle = FontStyle.Bold };
+            _menuButton = new GUIStyle(_menuLabel) { alignment = TextAnchor.MiddleCenter, fontSize = 16 };
+            _menuButton.hover.textColor = Color.white;
+            _menuButton.active.textColor = Color.white;
         }
 
         // 动态字体是运行期造的，视口变化重建时要把旧的销毁，否则每换一次分辨率就漏一批。

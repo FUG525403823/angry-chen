@@ -12,6 +12,8 @@ namespace Ac.Tests
     {
         public static void Register()
         {
+            SelfTest.Add("input.weapon_slots", ChecksWeaponSlots);
+            SelfTest.Add("input.weapon_request_suspended", ChecksWeaponRequestSuspended);
             SelfTest.Add("input.rate_30hz", ChecksRate30Hz);
             SelfTest.Add("input.backlog_merge", ChecksBacklogMerge);
             SelfTest.Add("input.lock_flush", ChecksLockFlush);
@@ -21,6 +23,73 @@ namespace Ac.Tests
             SelfTest.Add("camera.recoil_punch", ChecksRecoilPunch);
             SelfTest.Add("sim.local_step", ChecksLocalStep);
             SelfTest.Add("sim.predictor_fractional_time", ChecksPredictorFractionalTime);
+        }
+
+        private static void ChecksWeaponSlots()
+        {
+            var sampler = new InputSampler();
+            InputIntent intent;
+            for (var i = 1; i <= 3; i++)
+            {
+                sampler.SetKey(KeyCode.Q, true);
+                sampler.Update(1);
+                sampler.Update(1);
+                SelfTest.Equal(i % 3, (long)sampler.CurrentSwitchTo);
+                sampler.SetKey(KeyCode.Q, false);
+                sampler.Update(1);
+                SelfTest.Equal(i % 3, (long)sampler.CurrentSwitchTo);
+                sampler.Flush();
+                SelfTest.True(sampler.TryTakeCommand(out intent), "switch command", "missing");
+                SelfTest.Equal(i % 3, (long)intent.SwitchTo);
+                SelfTest.True((intent.Buttons & InputSampler.ButtonSwitchWeapon) != 0, "latched short tap", "lost");
+                SelfTest.True((sampler.CurrentButtons & InputSampler.ButtonSwitchWeapon) != 0, "same-frame prediction after dequeue", "lost");
+                sampler.Update(0);
+                SelfTest.Equal(0, (long)(sampler.CurrentButtons & InputSampler.ButtonSwitchWeapon));
+            }
+            sampler.SetKey(KeyCode.Alpha3, true);
+            sampler.Update(1);
+            SelfTest.Equal(2, (long)sampler.CurrentSwitchTo);
+            sampler.Update(1);
+            SelfTest.Equal(2, (long)sampler.CurrentSwitchTo);
+            sampler.SetKey(KeyCode.Alpha3, false);
+            sampler.SetKey(KeyCode.Alpha1, true);
+            sampler.Update(1);
+            SelfTest.Equal(0, (long)sampler.CurrentSwitchTo);
+            sampler.SetKey(KeyCode.Alpha1, false);
+            sampler.SetKey(KeyCode.Alpha2, true);
+            sampler.Update(1);
+            SelfTest.Equal(1, (long)sampler.CurrentSwitchTo);
+            SelfTest.True(!sampler.RequestWeaponSlot(-1) && !sampler.RequestWeaponSlot(3), "invalid slots rejected", "accepted");
+        }
+
+        private static void ChecksWeaponRequestSuspended()
+        {
+            var sampler = new InputSampler();
+            sampler.SetKey(KeyCode.Mouse0, true);
+            sampler.SetKey(KeyCode.W, true);
+            sampler.Suspend();
+            SelfTest.True(sampler.RequestWeaponSlot(2), "settings selection accepted", "rejected");
+            sampler.Suspend();
+            sampler.Flush();
+            InputIntent intent;
+            sampler.TryTakeCommand(out intent);
+            SelfTest.True(sampler.TryTakeCommand(out intent), "selection queued", "missing");
+            SelfTest.Equal(InputSampler.ButtonSwitchWeapon, (long)intent.Buttons);
+            SelfTest.Equal(2, (long)intent.SwitchTo);
+            SelfTest.Equal(0, (long)intent.MoveX);
+            SelfTest.Equal(0, (long)intent.MoveY);
+            sampler.RequestWeaponSlot(1);
+            sampler.Resume();
+            sampler.Update(0);
+            sampler.Flush();
+            SelfTest.True(sampler.TryTakeCommand(out intent), "selection survives immediate settings close", "missing");
+            SelfTest.Equal(1, (long)intent.SwitchTo);
+            SelfTest.Equal(InputSampler.ButtonSwitchWeapon, (long)intent.Buttons);
+            SelfTest.Equal(0, (long)intent.MoveX);
+            sampler.OnFocusChanged(false);
+            SelfTest.True(!sampler.RequestWeaponSlot(1), "unfocused request rejected", "accepted");
+            sampler.TryTakeCommand(out intent);
+            SelfTest.Equal(0, (long)intent.Buttons);
         }
 
         // C09 §5 的后坐注入面：开火当帧顶视角（0.35° 俯仰 + ±0.2° 偏航交替），按 7.5°/s 回正。

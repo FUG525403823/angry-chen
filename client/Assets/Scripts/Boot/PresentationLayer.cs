@@ -80,6 +80,10 @@ namespace Ac.Boot
         private double _weaponSwayMs;
         private float _weaponKick01;          // 1 = 刚开火，随时间衰减到 0
         private int _weaponSlotBuilt = -1;
+        private readonly Mesh[] _weaponBodies = new Mesh[WeaponMesh.SlotCount];
+        private readonly Mesh[] _weaponAccents = new Mesh[WeaponMesh.SlotCount];
+        public int VisibleWeaponSlot { get { return _weaponSlotBuilt; } }
+        public TracerRenderer TracerView { get; private set; }
         private float _bobPhase;
 
         private Material _emblemMaterial;   // 保留：旧路径的单份引用（用于就绪判定）
@@ -383,8 +387,9 @@ namespace Ac.Boot
                 Effects.SetAmmoGate(gateLoop.Weapon.ActiveMag + (gateLoop.LocalShotFired ? 1 : 0));
                 Effects.SetFireIntervalMs(WeaponTable.FireIntervalMs(gateLoop.Weapon.Slot, 1.0f));
             }
-            UpdateWeaponView(dtMs);
             Effects.Tick((float)dtMs);
+            UpdateWeaponView(dtMs);
+            TracerView.Sync(Effects.Tracers, gateLoop != null && gateLoop.CombatVisible);
         }
 
         public bool TickOverlay(double dtMs)
@@ -528,6 +533,12 @@ namespace Ac.Boot
             if (_textures != null) for (var i = 0; i < _textures.Length; i++) Kill(_textures[i]);
             for (var i = 0; i < _arenaParts.Length; i++) Kill(_arenaParts[i]);
             for (var i = 0; i < _sheepMeshes.Length; i++) { Kill(_sheepMeshes[i]); Kill(_emblemMeshes[i]); }
+            TracerView.Dispose();
+            for (var i = 0; i < WeaponMesh.SlotCount; i++)
+            {
+                Kill(_weaponBodies[i]);
+                Kill(_weaponAccents[i]);
+            }
             Kill(_root);
             // 适配层是与根一起被销毁的（OnDestroy 里回收它自己建的纹理）：这里把引用也断掉，
             // 免得用例拿到一个"Unity 假 null"的组件。
@@ -814,6 +825,12 @@ namespace Ac.Boot
             _weaponRenderer.sharedMaterial = material;
             _weaponRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             _weaponRenderer.receiveShadows = false;
+            for (var slot = 0; slot < WeaponMesh.SlotCount; slot++)
+            {
+                _weaponBodies[slot] = WeaponMesh.BuildBody(slot);
+                _weaponAccents[slot] = WeaponMesh.BuildAccent(slot);
+            }
+            TracerView = new TracerRenderer(_root.transform);
             SetWeaponSlot(0);
 
             // 枪口火花：一个小方块，平时隐藏，开火那几帧亮起来
@@ -847,17 +864,17 @@ namespace Ac.Boot
             return mesh;
         }
 
-        // 切换当前武器的网格（与 MatchState 行里的 weapon 字节同步）
+        // 切换预建网格，跟随已接受权威校正的本地预测武器。
         private void SetWeaponSlot(int slot)
         {
             if (slot < 0 || slot >= WeaponMesh.SlotCount) slot = 0;
             if (slot == _weaponSlotBuilt || _weaponFilter == null) return;
             _weaponSlotBuilt = slot;
-            _weaponFilter.sharedMesh = WeaponMesh.BuildBody(slot);
-            if (_weaponAccentFilter != null) _weaponAccentFilter.sharedMesh = WeaponMesh.BuildAccent(slot);
+            _weaponFilter.sharedMesh = _weaponBodies[slot];
+            if (_weaponAccentFilter != null) _weaponAccentFilter.sharedMesh = _weaponAccents[slot];
         }
 
-        // 每帧：待机摆动 + 行走摆动 + 开火坐力（弹匣变小 = 真的打了一枪，不另开一条信号）
+        // 每帧：待机摆动 + 行走摆动 + 本地开火信号驱动坐力。
         private void UpdateWeaponView(double dtMs)
         {
             if (_weaponObject == null) return;
@@ -898,20 +915,7 @@ namespace Ac.Boot
             if (_muzzleLight != null) _muzzleLight.intensity = flashOn ? 3.2f : 0f;
             UpdateShell(dtMs);
 
-            // 武器槽位：从本地玩家那行 MatchState 读（同一条权威来源）
-            if (loop != null)
-            {
-                var players = loop.LastMatchState.Players;
-                if (players != null)
-                {
-                    for (var i = 0; i < players.Length; i++)
-                    {
-                        if (players[i].Pid != loop.LocalPlayerId) continue;
-                        SetWeaponSlot(players[i].Weapon);
-                        break;
-                    }
-                }
-            }
+            if (loop != null) SetWeaponSlot(loop.Weapon.Slot);
         }
 
         // 开火当帧的曳光：起点 = 枪口挂点（**不是眼位**，C09 §5(c) 要修的 v1 缺陷），方向 = 当前视线，
@@ -921,8 +925,8 @@ namespace Ac.Boot
         {
             if (MainCamera == null) return;
             ViewModel.OnFire();   // 刷新枪口挂点（相机空间的挂点，帧内相机刚动过）
-            Effects.SpawnTracerFromMuzzle(ViewModel, MainCamera.transform.forward, false, Vector3.zero);
-            LocalTracerSpawns += 1;
+            if (Effects.SpawnTracerFromMuzzle(ViewModel, MainCamera.transform.forward, false, Vector3.zero))
+                LocalTracerSpawns += 1;
         }
 
         // 视图模型基座：锚点的横向偏移按 0.55 收进去（实测：直接用 0.17m 会把整枪顶到右缘外），

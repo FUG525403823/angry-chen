@@ -18,6 +18,8 @@ namespace Ac.Tests
     {
         public static void Register()
         {
+            SelfTest.Add("presentation.predicted_weapon_model", ChecksPredictedWeaponModel);
+            SelfTest.Add("presentation.tracer_renderer_pool", ChecksTracerRendererPool);
             SelfTest.Add("presentation.assembles", ChecksAssembles);
             SelfTest.Add("presentation.screen_flow_phases", ChecksScreenFlowPhases);
             SelfTest.Add("presentation.match_state_drives_flow", ChecksMatchStateDrivesFlow);
@@ -34,6 +36,66 @@ namespace Ac.Tests
             SelfTest.Add("presentation.fire_same_frame", ChecksFireSameFrame);
             SelfTest.Add("presentation.hit_uses_authoritative_point", ChecksHitUsesAuthoritativePoint);
             SelfTest.Add("presentation.ammo_optimistic_then_authority", ChecksAmmoOptimisticThenAuthority);
+        }
+
+        private static void ChecksPredictedWeaponModel()
+        {
+            var rig = new Rig(SettingsDefaults.Default());
+            try
+            {
+                rig.WireSeams();
+                rig.Loop.Sampler = new InputSampler();
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStatePayloadBytes(Hud.PhasePlaying, 1, 0, 12, 0));
+                StepDt(rig, 0, 1, 16);
+                var filter = rig.Layer.Root.transform.Find("Ac.MainCamera/Ac.WeaponView").GetComponent<MeshFilter>();
+                var pistol = filter.sharedMesh;
+                rig.Loop.Sampler.RequestWeaponSlot(2);
+                StepDt(rig, 0, 2, 16);
+                SelfTest.Equal(2, (long)rig.Layer.VisibleWeaponSlot);
+                SelfTest.True(filter.sharedMesh != pistol, "predicted mesh replaces cached authority slot", "unchanged");
+                rig.Loop.Sampler.RequestWeaponSlot(0);
+                StepDt(rig, 0, 3, 16);
+                SelfTest.True(filter.sharedMesh == pistol, "slot meshes reused", "rebuilt");
+            }
+            finally { rig.Dispose(); }
+        }
+
+        private static void ChecksTracerRendererPool()
+        {
+            var root = new GameObject("TracerPoolTest");
+            var renderer = new TracerRenderer(root.transform);
+            try
+            {
+                var pool = new Tracer();
+                var first = renderer.LineAt(0);
+                pool.Spawn(new Vector3(1, 2, 3), new Vector3(1, 2, 30));
+                renderer.Sync(pool, true);
+                SelfTest.Equal(1, renderer.VisibleCount);
+                SelfTest.True(first.enabled && first.sharedMaterial != null, "visible line with material", "missing");
+                SelfTest.True(first.GetPosition(0) == pool.Segments[0].From, "muzzle position", "wrong");
+                pool.RetargetNewest(new Vector3(4, 5, 6));
+                renderer.Sync(pool, true);
+                SelfTest.True(first.GetPosition(1) == new Vector3(4, 5, 6), "authority endpoint rendered", "stale");
+                pool.Tick(Tracer.LifetimeMs * 0.5f);
+                renderer.Sync(pool, true);
+                SelfTest.True(first.GetPosition(0) == Vector3.Lerp(pool.Segments[0].From, pool.Segments[0].To, 0.5f), "tail advances along trajectory", "static tail");
+                SelfTest.True(first.startWidth < TracerRenderer.WidthM, "trail tapers with age", "unchanged width");
+                renderer.Sync(pool, false);
+                SelfTest.Equal(0, renderer.VisibleCount);
+                pool.Tick(Tracer.LifetimeMs);
+                renderer.Sync(pool, true);
+                SelfTest.True(!first.enabled, "expired renderer disabled", "still visible");
+                pool.Reset();
+                pool.Spawn(Vector3.zero, Vector3.forward);
+                renderer.Sync(pool, true);
+                SelfTest.True(renderer.LineAt(0) == first && first.enabled, "line reused", "reallocated");
+            }
+            finally
+            {
+                renderer.Dispose();
+                renderer.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
         }
 
         // 一直按住左键的采样器（注入路径：不走引擎的 Input）
@@ -62,6 +124,7 @@ namespace Ac.Tests
                 SelfTest.Equal(1, (long)rig.Loop.ShotCount);
                 SelfTest.Equal(1, (long)rig.Layer.LocalTracerSpawns);
                 SelfTest.Equal(1, rig.Layer.Effects.Tracers.LiveCount);
+                SelfTest.Equal(1, rig.Layer.TracerView.VisibleCount);
                 SelfTest.Equal(0, (long)rig.Layer.Effects.RejectedShots);   // 闸门（此前恒 0 ⇒ 每发都被拒）
                 SelfTest.True(rig.Layer.Effects.MuzzleFlashRemainingMs > 0, "枪口火焰要亮起来",
                     rig.Layer.Effects.MuzzleFlashRemainingMs.ToString());

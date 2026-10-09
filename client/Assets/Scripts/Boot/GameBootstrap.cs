@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using Ac.Core;
 using Ac.Net;
@@ -446,7 +446,7 @@ namespace Ac.Boot
                     && Input.GetMouseButtonDown(0) && OverlayRenderer.SettingsButtonContains(Input.mousePosition, Screen.width, Screen.height))
                     presentation.ToggleSettings();
                 if (Input.GetKeyDown(settingsKey) && (chat == null || !chat.Focused)) presentation.ToggleSettings();
-                else if (presentation.SettingsPanel != null && presentation.SettingsPanel.Visible && Input.GetKeyDown(KeyCode.Escape)) presentation.ToggleSettings();
+                else if (presentation.SettingsPanel != null && Input.GetKeyDown(KeyCode.Escape) && (chat == null || !chat.Focused)) presentation.ToggleSettings();
                 if (!presentation.SettingsInputBlocked)
                 {
                     if (Input.GetKeyDown(GameBootstrap.DebugPanelKey)) presentation.ToggleDebugPanel();

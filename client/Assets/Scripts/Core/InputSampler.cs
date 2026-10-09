@@ -45,7 +45,7 @@ namespace Ac.Core
         private int _pendingCount;
 
         private bool _injected;
-        private readonly bool[] _keys = new bool[12];
+        private readonly bool[] _keys = new bool[15];
         private double _mouseDx;
         private double _mouseDy;
         private bool _confirmDown;
@@ -72,7 +72,7 @@ namespace Ac.Core
         // 本帧的**当前**按钮位（不消耗待发队列、不推进 seq）：本地武器镜像按它逐帧决定"响没响"。
         // 它必须和上行命令的按钮位同源同值，否则会出现"画面上开火了、服务端那一格没有 Fire 位"
         // （上行按 30Hz 采样，本地按帧判定）。
-        public byte CurrentButtons { get { return SampleButtons(); } }
+        public byte CurrentButtons { get { return (byte)(SampleButtons() | (Focused && (_switchPending || _switchThisFrame) ? ButtonSwitchWeapon : 0)); } }
         public byte CurrentSwitchTo { get { return _switchTo; } }
 
         // 后坐注入面（C09 §5：俯仰 0.35°/发、偏航 ±0.2°/发、衰减 7.5/s）。开火当帧把视角顶上去
@@ -118,6 +118,17 @@ namespace Ac.Core
         private double _sinceLastSendMs;
         private byte _switchTo;
         private bool _switchWasDown;
+        private readonly bool[] _slotWasDown = new bool[3];
+        private bool _switchPending;
+        private bool _switchThisFrame;
+
+        public bool RequestWeaponSlot(int slot)
+        {
+            if (slot < 0 || slot >= 3 || !Focused) return false;
+            _switchTo = (byte)slot;
+            _switchPending = true;
+            return true;
+        }
         // §5.6：失焦清理之后，按键位与鼠标增量一律按 0 处理，直到重新获得焦点。
         // 不能只清注入的 _keys：真实播放态读的是引擎 Input，按键仍然是按住的。
         private bool _intentCleared;
@@ -206,6 +217,11 @@ namespace Ac.Core
             intent = default(InputIntent);
             if (_pendingCount == 0) return false;
             intent = _pending[0];
+            if ((intent.Buttons & ButtonSwitchWeapon) != 0 && intent.SwitchTo == _switchTo)
+            {
+                _switchThisFrame = true;
+                _switchPending = false;
+            }
             _pending[0] = _pending[1];
             _pendingCount -= 1;
             return true;
@@ -217,6 +233,7 @@ namespace Ac.Core
             if (Application.isPlaying && !Application.isFocused) OnFocusChanged(false);
             if (!Focused) return false;
             if (dtMs < 0.0) dtMs = 0.0;
+            _switchThisFrame = false;
             Sample();
             DecayRecoil(dtMs);
             _sinceLastSendMs += dtMs;
@@ -259,10 +276,16 @@ namespace Ac.Core
             if (PitchRad > PitchLimitRad) PitchRad = PitchLimitRad;
             if (PitchRad < -PitchLimitRad) PitchRad = -PitchLimitRad;
             YawRad = WrapRadians(YawRad);
-            // §5.1 的 switchTo 槽：Q 的按下沿才翻槽，按住不重复翻。槽值域与 WeaponSlot 对齐（0/1）。
+            // §5.1 的 switchTo 槽：Q 的按下沿才翻槽，按住不重复翻。槽值域与 WeaponSlot 对齐（0/1/2）。
             var switchDown = KeyDown(KeyCode.Q);
-            if (switchDown && !_switchWasDown) _switchTo = (byte)(_switchTo == 0 ? 1 : 0);
+            if (switchDown && !_switchWasDown) RequestWeaponSlot((_switchTo + 1) % 3);
             _switchWasDown = switchDown;
+            for (var slot = 0; slot < 3; slot++)
+            {
+                var down = KeyDown((KeyCode)((int)KeyCode.Alpha1 + slot));
+                if (down && !_slotWasDown[slot]) RequestWeaponSlot(slot);
+                _slotWasDown[slot] = down;
+            }
             // 大厅准备键的按下沿。引擎路径读真实按键（键位由 ConfirmKey 给，默认表的 ActionReady）；注入路径用 SetConfirm。
             var confirmDown = _injected ? _confirmDown : Input.GetKey(ConfirmKey);
             ConfirmPressed = confirmDown && !_confirmWasDown;
@@ -290,7 +313,15 @@ namespace Ac.Core
             // 是玩家在大厅做出的承诺，重获焦点前撤销它会让大厅永远开不了局。服务端只在大厅相位采用它。
             if (ReadyHeld) intent.Buttons |= ButtonReady;
             // 失焦清理之后一律零意图：引擎路径读的是真实按键，不能只看 _keys。
-            if (_intentCleared) return intent;
+            if (_intentCleared)
+            {
+                if (Focused && _switchPending)
+                {
+                    intent.Buttons |= ButtonSwitchWeapon;
+                    intent.SwitchTo = _switchTo;
+                }
+                return intent;
+            }
             // §5.1 采样源：移动轴走 Input.GetAxisRaw("Vertical"/"Horizontal")，按钮走 Input.GetKey；
             // 注入路径（用例与回放）用 SetKey 的键位表代替轴，语义同为 ±1。
             intent.MoveX = _injected
@@ -303,6 +334,7 @@ namespace Ac.Core
             intent.Pitch = QuantizeRadians(PitchRad);
             // 与 ReadyHeld 相或：准备位是状态，不随按键采样消失（见 BuildIntent 顶部）。
             intent.Buttons = (byte)((SampleButtons() | intent.Buttons) & 0xff);
+            if (_switchPending) intent.Buttons |= ButtonSwitchWeapon;
             intent.SwitchTo = _switchTo;
             return intent;
         }
@@ -319,7 +351,6 @@ namespace Ac.Core
             if (KeyDown(KeyCode.R)) buttons |= ButtonReload;
             if (KeyDown(KeyCode.E)) buttons |= ButtonInteract;
             if (KeyDown(KeyCode.F)) buttons |= ButtonRage;
-            if (KeyDown(KeyCode.Q)) buttons |= ButtonSwitchWeapon;
             return (byte)buttons;
         }
 
@@ -346,6 +377,11 @@ namespace Ac.Core
         private void ClearIntentInternal()
         {
             for (var i = 0; i < _keys.Length; i++) _keys[i] = false;
+            for (var i = 0; i < _slotWasDown.Length; i++) _slotWasDown[i] = false;
+            _switchWasDown = false;
+            _switchPending = false;
+            _switchThisFrame = false;
+            _pendingCount = 0;
             _mouseDx = 0.0;
             _mouseDy = 0.0;
         }
@@ -405,6 +441,9 @@ namespace Ac.Core
                 case KeyCode.E: return 9;
                 case KeyCode.F: return 10;
                 case KeyCode.Q: return 11;      // 换武器：漏了它 SetKey(Q) 会被静默丢弃，switchTo 在注入/回放路径永不可达
+                case KeyCode.Alpha1: return 12;
+                case KeyCode.Alpha2: return 13;
+                case KeyCode.Alpha3: return 14;
                 default: return -1;
             }
         }
