@@ -69,6 +69,8 @@ namespace Ac.Boot
         // C06 §5(c)：本地武器镜像（射速/换弹/弹匣/散布）+ 弹药本地账（未确认开火）。
         private readonly LocalWeapon _weapon = new LocalWeapon();
         private readonly AmmoLedger _ammo = new AmmoLedger();
+        // S16：本地预测的移动配置（随 MatchState 的移速升级等级刷新 SpeedMultiplier）。
+        private MoveConfig _moveConfig = MoveConfig.Default();
         private bool _ammoDataReady;
         private byte _phase = Hud.PhaseLobby;
         private int _wave;
@@ -276,24 +278,37 @@ namespace Ac.Boot
                 {
                     MatchStatePayload state;
                     if (MatchStateCodec.Decode(payload, out state) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
+                    var previousPhase = _phase;
                     _phase = state.Phase;
                     _wave = state.Wave;
                     _intermissionMs = state.IntermissionMs;
                     LastMatchState = state;
                     MatchStateCount += 1;
+                    // S16：服务端在清波进波间时把全员 ready 重置为 false（见 match_controller 的
+                    // handleWaveCleared）。客户端本地的 ReadyHeld 是持久状态，不跟着清的话 ready 位
+                    // 会随下一条命令立刻把服务端又置回 true ⇒ "必须重按准备"形同虚设。
+                    // 只在 playing→intermission 这一跳清一次：波间买完升级再点准备，与服务端同拍。
+                    if (previousPhase == Hud.PhasePlaying && _phase == Hud.PhaseIntermission)
+                    {
+                        if (Sampler != null) Sampler.SetReadyHeld(false);
+                    }
                     // 相位/成员变化都在这一拍里：本地身份也在这里重解析（换房、重连、中途进出对局）。
                     var previousPid = LocalPlayerId;
                     ResolveLocalPlayer();
-                    if (previousPid != LocalPlayerId) { _weapon.Reset(); _ammo.Reset(); }
-                    _ammoDataReady = false;
+                    // 只有换到**另一个已在表的玩家**才重开武器/弹药账（换房/重连/重进对局）。
+                    // localPid=0（本表里暂时没有我，例如他人视角/准备阶段）不清账：不是本地玩家
+                    // 那一行的 MatchState 不许把 HUD 打回 0（boot.hud_ammo_rage 的口径）。
+                    if (previousPid != LocalPlayerId && LocalPlayerId != 0) { _weapon.Reset(); _ammo.Reset(); }
                     if (state.Players != null && LocalPlayerId != 0)
                     {
+                        _ammoDataReady = false;
                         for (var i = 0; i < state.Players.Length; i++)
                         {
                             var player = state.Players[i];
                             if (player.Pid != LocalPlayerId) continue;
                             _weapon.SyncAuthority(player.Mag, player.Reserve, player.Weapon, player.ReloadLeft10Ms, _nowMs);
                             _ammo.Reconcile(player.Mag, player.Reserve, player.Weapon, (int)_nowMs);
+                            ApplyUpgradeLevels(player);
                             _ammoDataReady = true;
                             break;
                         }
@@ -336,6 +351,32 @@ namespace Ac.Boot
             if (handler != null) handler(hudEvent);
         }
 
+        // S16：把本地玩家的升级等级落到本地模拟（预测移速 + 武器换弹时长）。
+        // 等级 0 时乘数 = 1.0（x*1.0==x，与无升级路径位等价）。权威值每 1Hz MatchState 刷新一次。
+        private void ApplyUpgradeLevels(in MatchStatePlayer player)
+        {
+            _moveConfig.SpeedMultiplier = Sim.UpgradeTable.SpeedMultiplier(player.UpgradeSpeed);
+            _predictor.SetConfig(_moveConfig);
+            _weapon.SetReloadTimeMultiplier(Sim.UpgradeTable.ReloadTimeMultiplier(player.UpgradeReload));
+            _reserveUpgradeLevel = player.UpgradeReserve;
+        }
+
+        // S16 波间购买升级：把 upgradeId 上行（type 12 UpgradeSelect，可靠 C→S）。
+        // 只做载荷合法性与连接检查；"能不能买"（点数/等级上限）由服务端裁决。未连接/载荷非法
+        // 返回 false，调用方（乐观面板）由下一帧权威 MatchState 拉回。
+        public bool BuyUpgrade(int upgradeId)
+        {
+            byte[] payload;
+            if (!UpgradeCodec.TryEncode(upgradeId, out payload)) { UpgradeSendFailures += 1; return false; }
+            var transport = Transport;
+            if (transport == null || transport.State != ConnectionState.Connected) { UpgradeSendFailures += 1; return false; }
+            if (!transport.Send(PacketType.UpgradeSelect, payload)) { UpgradeSendFailures += 1; return false; }
+            UpgradesSent += 1;
+            return true;
+        }
+        public int UpgradesSent { get; private set; }
+        public int UpgradeSendFailures { get; private set; }
+
         // C05 §5.1/§5.2 的产品接线：键鼠 → 30Hz 命令 → ①真发 type=4 ②同一条命令进本地预测。
         // 两条路用**同一份量化载荷**：不重新采样，避免"发出去的和本地预测的不是一条"（本地会漂）。
         private void PumpInput(double dtMs)
@@ -346,8 +387,12 @@ namespace Ac.Boot
             // 预支或滞后一样整批丢掉（联调里战绩 `aliveMs: 0` 的根因）。来源 = 最近一条已应用快照的 tick。
             sampler.SetClientTick(_view != null ? (uint)_view.AppliedTick : 0u);
             sampler.Update(dtMs);
-            // 大厅的准备位（ADR-013）：确认键一次翻转一次。服务端只在大厅相位采用这一位。
-            if (sampler.ConfirmPressed && _phase == Hud.PhaseLobby) sampler.SetReadyHeld(!sampler.ReadyHeld);
+            // 大厅/波间的准备位（ADR-013）：确认键一次翻转一次。服务端在大厅与波间两相都采用这一位
+            //（波间相位见 S16：清波时服务端重置 ready，玩家要重按准备才能提前开波）。
+            if (sampler.ConfirmPressed && (_phase == Hud.PhaseLobby || _phase == Hud.PhaseIntermission))
+            {
+                sampler.SetReadyHeld(!sampler.ReadyHeld);
+            }
 
             InputIntent intent;
             while (sampler.TryTakeCommand(out intent))
@@ -631,6 +676,7 @@ namespace Ac.Boot
             _sample.Phase = _phase;
             _sample.Wave = _wave;
             _sample.IntermissionMs = _intermissionMs;
+            SampleAmmoCrateProximity();
 
             _sample.AmmoDataReady = _ammoDataReady;
             _sample.Rage = 0;
@@ -644,7 +690,8 @@ namespace Ac.Boot
                 _sample.Reloading = _weapon.IsReloading;
                 var remaining = _weapon.ReloadRemainingMs(_nowMs);
                 _sample.ReloadLeft10Ms = (int)System.Math.Ceiling(remaining / 10.0);
-                _sample.ReloadProgress = _weapon.IsReloading ? 1f - (float)(remaining / WeaponTable.ReloadMs[_weapon.Slot]) : 0f;
+                // S16：分母用含升级乘数的实际换弹时长，进度条才跟服务端同拍。
+                _sample.ReloadProgress = _weapon.IsReloading ? 1f - (float)(remaining / _weapon.CurrentReloadMs) : 0f;
                 _sample.SpreadDeg = WeaponTable.CrosshairSpreadDeg(Ammo.Slot, (float)_weapon.SpreadDeg);
             }
             else
@@ -664,6 +711,37 @@ namespace Ac.Boot
                 _sample.Rage = players[i].Rage;
                 _sample.RageLeft100Ms = players[i].RageLeft100Ms;
                 return;
+            }
+        }
+
+        // S16 本地玩家的备弹升级等级（补给箱"弹药未满"判据：备弹低于 120 + 40×等级 也要提示）。
+        private int _reserveUpgradeLevel;
+
+        // S16：补给箱提示（本地玩家在交互半径内）。半径取服务端 kAmmoCrateRangeM(1.8) + 玩家半径(0.4)
+        // 略放宽，让提示比交互早一拍出现；弹匣/备弹都到顶时不提示（服务端对满仓交互也是空转）。
+        private const float AmmoCrateHintRangeM = 2.2f;
+        private void SampleAmmoCrateProximity()
+        {
+            _sample.NearAmmoCrate = false;
+            if (_phase != Hud.PhasePlaying || LocalPlayerId == 0) return;
+            var ammoFull = _weapon.ActiveMag >= WeaponTable.MagSizeOf(_weapon.Slot)
+                && _weapon.Reserve >= WeaponTable.ReserveAmmoInitial + Sim.UpgradeTable.ReserveBonus(_reserveUpgradeLevel);
+            if (ammoFull) return;
+            EntityView local;
+            if (!_views.TryGet(LocalPlayerId, out local) || local == null || !local.Visible) return;
+            for (var i = 0; i < _views.ActiveCount; i++)
+            {
+                EntityView candidate;
+                if (!_views.TryGet(_views.ActiveIdAt(i), out candidate) || candidate == null) continue;
+                if (!candidate.Visible || candidate.Kind != Ac.View.CrateVisuals.KindPickup) continue;
+                var dx = candidate.RenderX - local.RenderX;
+                var dy = candidate.RenderY - local.RenderY;
+                var dz = candidate.RenderZ - local.RenderZ;
+                if (dx * dx + dy * dy + dz * dz <= AmmoCrateHintRangeM * AmmoCrateHintRangeM)
+                {
+                    _sample.NearAmmoCrate = true;
+                    return;
+                }
             }
         }
     }

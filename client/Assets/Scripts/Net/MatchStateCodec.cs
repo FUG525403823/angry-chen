@@ -18,6 +18,12 @@ namespace Ac.Net
         public byte RageLeft100Ms;
         public bool Downed;
         public byte ReviveRatio255;
+        // S16：波次升级（0..5 / points 0..255）。
+        public byte UpgradePoints;
+        public byte UpgradeDamage;
+        public byte UpgradeSpeed;
+        public byte UpgradeReload;
+        public byte UpgradeReserve;
     }
 
     public struct MatchStatePayload
@@ -36,8 +42,9 @@ namespace Ac.Net
         public const int MinNameBytes = 1;
         public const int MaxNameBytes = 12;
         // 名称之外的定长部分：pid u16 + nameLen u8 + ready/weapon/hp/kills/mag/reserve/reload/rage/rageLeft/downed/revive
-        // 与 server/src/net/codec.hpp 的 kMatchStatePlayerFixedBytes 同值（16），两侧必须一起改。
-        public const int FixedRecordBytes = 16;
+        // + 升级段（points + damage/speed/reload/reserve 等级，S16）。
+        // 与 server/src/net/codec.hpp 的 kMatchStatePlayerFixedBytes 同值（21），两侧必须一起改。
+        public const int FixedRecordBytes = 21;
 
         private static readonly UTF8Encoding _strictUtf8 = new UTF8Encoding(false, true);
 
@@ -94,6 +101,17 @@ namespace Ac.Net
                 player.Downed = downed != 0;
 
                 if (!reader.TryReadU8(out player.ReviveRatio255)) return DecodeFailure.Truncated;
+                // S16：升级段 5 字节（points + 4 个等级），等级上限与 kUpgradeMaxLevel 一致。
+                if (!reader.TryReadU8(out player.UpgradePoints)) return DecodeFailure.Truncated;
+                if (!reader.TryReadU8(out player.UpgradeDamage)) return DecodeFailure.Truncated;
+                if (!reader.TryReadU8(out player.UpgradeSpeed)) return DecodeFailure.Truncated;
+                if (!reader.TryReadU8(out player.UpgradeReload)) return DecodeFailure.Truncated;
+                if (!reader.TryReadU8(out player.UpgradeReserve)) return DecodeFailure.Truncated;
+                if (player.UpgradeDamage > Sim.UpgradeTable.MaxLevel || player.UpgradeSpeed > Sim.UpgradeTable.MaxLevel ||
+                    player.UpgradeReload > Sim.UpgradeTable.MaxLevel || player.UpgradeReserve > Sim.UpgradeTable.MaxLevel)
+                {
+                    return DecodeFailure.BadValue;
+                }
                 players[i] = player;
             }
 

@@ -9,3 +9,11 @@
 /ac-runtime-test-data/
 # 运行时数据目录（工具在任意 cwd 运行时都会生成）
 **/ac-*-data/
+
+# 本地工具与临时产物（不提交）：
+#  Codely/团结引擎配套工具下载的包（重装工程会重新生成，不是工程源码）
+client/.codely-cli/
+client/.codely.packages/
+# 一次性上传/截图留档
+server-src-upload.tar
+tools/*.png

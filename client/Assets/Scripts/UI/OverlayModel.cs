@@ -36,6 +36,7 @@ namespace Ac.UI
         public Hud Hud;
         public Lobby Lobby;
         public Intermission Intermission;
+        public UpgradeModel Upgrades;
         public Results Results;
         public DebugPanel Debug;
         // 局内聊天：可见性由 GameLoop 按 MatchState 相位驱动（本层不推相位），这里只读它的行与输入缓冲
@@ -106,15 +107,50 @@ namespace Ac.UI
             x = margin + panelWidth + gap + padding;
             y = h - margin - padding - height;
         }
+
+        // S16 升级卡片的几何（绘制与点击共用同一份，渲染侧不得另算一套）：2×2 网格，
+        // 中心在屏宽 3/4、面板顶在屏高 28%。index = 0..3（行优先）。
+        public static void UpgradeCardArea(int index, int w, int h, out int x, out int y, out int width, out int height)
+        {
+            var col = index & 1;
+            var row = index >> 1;
+            var gridW = UpgradeCardWidthPx * 2 + UpgradeCardGapPx;
+            var left = w / 2 + w / 4 - gridW / 2;
+            var top = (int)(h * 0.28f);
+            x = left + col * (UpgradeCardWidthPx + UpgradeCardGapPx);
+            y = top + row * (UpgradeCardHeightPx + UpgradeCardGapPx);
+            width = UpgradeCardWidthPx;
+            height = UpgradeCardHeightPx;
+        }
+
+        // S16 波间"准备出战"按钮：卡片网格正下方。
+        public static void UpgradeReadyArea(int w, int h, out int x, out int y, out int width, out int height)
+        {
+            var gridW = UpgradeCardWidthPx * 2 + UpgradeCardGapPx;
+            var top = (int)(h * 0.28f) + 2 * (UpgradeCardHeightPx + UpgradeCardGapPx);
+            width = gridW;
+            height = 44;
+            x = w / 2 + w / 4 - gridW / 2;
+            y = top + 12;
+        }
         public const string RosterHeader = "队伍";
         public const string NameValidText = "昵称合法";
         public const string NameInvalidText = "昵称必须是 1..12 个字节（UTF-8）";
         public const string ReloadText = "换弹中";
         public const string DownedText = "倒地";
         public const string ChargeText = "冲锋警戒";
+        public const string AmmoCrateHintText = "按住 E 补充弹药";   // S16 补给箱提示
         public const string IntermissionTitle = "波间";
         public const string SkipEnabledText = "可跳过：全员准备立即开波";
         public const string SkipDisabledText = "不可跳过（剩余时间 > 15s）";
+        // S16 波间升级面板（右侧 2×2 卡片网格）。
+        public const int UpgradeCardWidthPx = 232;
+        public const int UpgradeCardHeightPx = 78;
+        public const int UpgradeCardGapPx = 12;
+        public const string UpgradeTitlePrefix = "波次升级";
+        public const string UpgradeMaxSuffix = "（MAX）";
+        public const string UpgradeReadyText = "准备出战";
+        public const string UpgradeReadyDoneText = "已准备  /  点击取消";
         public const string ResultsTitle = "结算";
         public const string StaleBannerText = "榜单暂不可用（本地摘要）";
         // 与服务器失联时的可见横幅（断线不能静默：实跑事故就是界面继续显示过期花名册 + 按键无反应）
@@ -180,6 +216,20 @@ namespace Ac.UI
         private int _chatLineCount = -1;
         private string _chatInputLine = string.Empty;
         private string _chatInputCache;
+        // S16 波间升级面板的缓存（按"剩余点数 / 卡片等级"脏检查，值不变时零分配）。
+        // 等级缓存以 -1 起步：初始 0 级卡片必须首帧就生成文案（0 == 0 的"没变化"判据
+        // 会让首帧拿到 null 行 —— render.upgrade_panel_items 抓的就是这条）。
+        private static int[] EmptyUpgradeLevelCache()
+        {
+            var cache = new int[UpgradeModel.Count];
+            for (var i = 0; i < cache.Length; i++) cache[i] = -1;
+            return cache;
+        }
+
+        private int _upgradePointsCache = int.MinValue;
+        private string _upgradePointsLine = string.Empty;
+        private readonly string[] _upgradeLines = new string[UpgradeModel.Count];
+        private readonly int[] _upgradeLevelCache = EmptyUpgradeLevelCache();
 
         public OverlayItem[] Items { get { return _items; } }
         public int Count { get { return _count; } }
@@ -406,6 +456,12 @@ namespace Ac.UI
             AddText(OverlayTextRole.Label, OverlayAlign.Left, inset, bottom - fontLabel - 26, Hud.ScaledPx(260, h), rage.Color, 1f, _rageLine);
             AddBar(inset, bottom - Hud.ScaledPx(12, h), Hud.ScaledPx(140, h), barH, rage.Color, 1f, rage.Fill01);
 
+            // S16：补给箱交互提示（本地玩家在箱子半径内；"弹药是否打空"由 GameLoop 采样，这里只画）。
+            if (hud.NearAmmoCrate)
+            {
+                AddText(OverlayTextRole.Label, OverlayAlign.Center, w / 2, bottom - fontLabel - 72, w, Hud.ColorTarget, 1f, AmmoCrateHintText);
+            }
+
             // 准星（四段十字 + 扩散），中心固定在视口中心
             var crosshair = hud.Crosshair;
             if (crosshair != null && crosshair.Visible)
@@ -544,7 +600,50 @@ namespace Ac.UI
                 skip ? SkipEnabledText : SkipDisabledText);
             y += Hud.ScaledFontPx("label", h) + 16;
 
+            // S16：波间升级面板（points + 4 卡），画在右侧独立几何里，不挤占左侧花名册。
+            if (sources.Upgrades != null && sources.Upgrades.Visible) BuildUpgradePanel(sources, w, h);
+
             BuildRosterRows(sources, inset, y, w - inset);
+        }
+
+        // S16：升级面板的绘制项（标题/点数 + 4 张卡片的名称与等级/效果）。
+        // 卡片的**点击**由渲染侧按同一份几何处理（OverlayRenderer.DrawIntermissionActions），
+        // 本层只负责"画出来"，与大厅准备按钮的分工一致。
+        private void BuildUpgradePanel(in OverlaySources sources, int w, int h)
+        {
+            var upgrades = sources.Upgrades;
+            int x;
+            int y;
+            int cw;
+            int ch;
+            UpgradeCardArea(0, w, h, out x, out y, out cw, out ch);
+            if (upgrades.Points != _upgradePointsCache)
+            {
+                _upgradePointsCache = upgrades.Points;
+                _upgradePointsLine = UpgradeTitlePrefix + "  ·  剩余 " + upgrades.Points + " 点";
+            }
+            var titleY = y - Hud.ScaledFontPx("label", h) - 10;
+            AddText(OverlayTextRole.Label, OverlayAlign.Left, x, titleY, cw * 2 + UpgradeCardGapPx,
+                Hud.ColorTarget, 1f, _upgradePointsLine);
+
+            for (var i = 0; i < UpgradeModel.Count; i++)
+            {
+                UpgradeCardArea(i, w, h, out x, out y, out cw, out ch);
+                var level = upgrades.LevelOf(i);
+                if (level != _upgradeLevelCache[i])
+                {
+                    _upgradeLevelCache[i] = level;
+                    _upgradeLines[i] = UpgradeModel.Names[i] + "  Lv " + level
+                        + (level >= UpgradeModel.MaxLevel ? UpgradeMaxSuffix : "");
+                }
+                // 可买卡片给描边高亮，不可买（没点/满级）用暗色衬底。
+                var color = upgrades.CanAfford(i) ? Hud.ColorTarget : PanelShadeRgb;
+                AddBar(x, y, cw, ch, PanelShadeRgb, PanelShadeAlpha, 1f);
+                if (upgrades.CanAfford(i)) AddBar(x, y, cw, 3, Hud.ColorTarget, 1f, 1f);
+                AddText(OverlayTextRole.Label, OverlayAlign.Left, x + 10, y + 8, cw - 20, color, 1f, _upgradeLines[i]);
+                AddText(OverlayTextRole.Feed, OverlayAlign.Left, x + 10, y + ch - Hud.ScaledFontPx("feed", h) - 8,
+                    cw - 20, Hud.ColorNormal, 1f, UpgradeModel.Effects[i]);
+            }
         }
 
         private void BuildResults(in OverlaySources sources, int w, int h, int inset)

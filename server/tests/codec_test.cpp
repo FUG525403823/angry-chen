@@ -642,7 +642,7 @@ AC_TEST(codec_command_bad_type) {
   const auto wrongType = net::decodeCommand(buffer, sizeof buffer);
   AC_CHECK(!wrongType.isOk);
   AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
-  buffer[1] = 12u;  // 尚未分配的类型码（11 = Join，见 codec_join_roundtrip）
+  buffer[1] = 13u;  // 尚未分配的类型码（11 = Join，12 = UpgradeSelect（S16），13 空闲）
   const auto badType = net::decodePacket(buffer, sizeof buffer);
   AC_CHECK(!badType.isOk);
   AC_CHECK(badType.failure == DecodeFailure::kBadType);
@@ -994,6 +994,29 @@ AC_TEST(codec_join_decode_rejects_malformed) {
   AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
 }
 
+// S16 type 12 UpgradeSelect：可靠 C→S，载荷 1 字节 upgradeId。
+AC_TEST(codec_upgrade_select_roundtrip) {
+  uint8_t buffer[64] = {};
+  const PacketHeader header = makeHeader(PacketType::kUpgradeSelect, net::kFlagReliable, 0x23u, 3u);
+  const net::UpgradeSelectPayload payload{2u};
+  const auto encoded =
+      net::encodeUpgradeSelect(header, makeExt(7u, 0u, 0u), payload, buffer, sizeof buffer);
+  AC_CHECK(encoded.isOk);
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + net::kUpgradeSelectPayloadBytes);
+  const auto decoded = net::decodeUpgradeSelect(buffer, encoded.bytes);
+  AC_CHECK(decoded.isOk);
+  AC_CHECK_EQ(decoded.value.upgradeId, 2u);
+  // 载荷 2 字节 → kBadLength（不静默截断）。
+  const auto bad = net::decodeUpgradeSelect(buffer, encoded.bytes + 1u);
+  AC_CHECK(!bad.isOk);
+  AC_CHECK(bad.failure == DecodeFailure::kBadLength);
+  // 类型不符 → kBadType。
+  buffer[1] = static_cast<uint8_t>(PacketType::kJoin);
+  const auto wrongType = net::decodeUpgradeSelect(buffer, encoded.bytes);
+  AC_CHECK(!wrongType.isOk);
+  AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
+}
+
 // ---------- §5.5 字节级 fixture（--filter=hex）----------
 
 AC_TEST(hex_hello) { AC_CHECK(runHexFixture("hello")); }
@@ -1310,7 +1333,7 @@ AC_TEST(match_local_pid_tail_boundaries_and_membership) {
   Fixture fixture;
   AC_CHECK(loadFixture("matchstate_local_pid", fixture));
   const auto& bytes = fixture.bytes;
-  AC_CHECK_EQ(bytes.size(), 67u);
+  AC_CHECK_EQ(bytes.size(), 77u);
   for (std::size_t missing = 1u; missing <= 2u; ++missing) {
     const auto decoded = net::decodeMatchState(bytes.data(), bytes.size() - missing);
     AC_CHECK(!decoded.isOk);
@@ -1322,12 +1345,12 @@ AC_TEST(match_local_pid_tail_boundaries_and_membership) {
   AC_CHECK(!decoded.isOk);
   AC_CHECK(decoded.failure == DecodeFailure::kBadLength);
   bad = bytes;
-  bad[65] = 3u;
+  bad[75] = 3u;  // localPid（76 字节帧的尾两字节）设为不存在的 pid → kBadValue
   decoded = net::decodeMatchState(bad.data(), bad.size());
   AC_CHECK(!decoded.isOk);
   AC_CHECK(decoded.failure == DecodeFailure::kBadValue);
   bad = bytes;
-  bad[25] = 2u;
+  bad[25] = 2u;  // 玩家 1 的 pid 改成 2 → 与玩家 2 重复 → kBadValue
   decoded = net::decodeMatchState(bad.data(), bad.size());
   AC_CHECK(!decoded.isOk);
   AC_CHECK(decoded.failure == DecodeFailure::kBadValue);
@@ -1363,10 +1386,11 @@ AC_TEST(match_local_pid_tail_contract) {
     writer.writeU16(pid);
     writer.writeU8(4u);
     writer.writeBytes("same", 4u);
-    for (int i = 0; i < 13; ++i) writer.writeU8(0u);
+    // S16：固定段 16 → 21（追加 points + 4 个升级等级），每行 18 字节零。
+    for (int i = 0; i < 18; ++i) writer.writeU8(0u);
   }
   writer.writeU16(2u);
-  AC_CHECK_EQ(writer.size(), 67u);
+  AC_CHECK_EQ(writer.size(), 77u);
   const auto decoded = net::decodeMatchState(buffer, writer.size());
   AC_CHECK(decoded.isOk);
   uint8_t encodedBytes[128] = {};
@@ -1374,9 +1398,9 @@ AC_TEST(match_local_pid_tail_contract) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 0u),
       makeExt(1u, 0u, 0u), decoded.value, encodedBytes, sizeof(encodedBytes));
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 67u);
-  AC_CHECK_EQ(encodedBytes[65], 2u);
-  AC_CHECK_EQ(encodedBytes[66], 0u);
+  AC_CHECK_EQ(encoded.bytes, 77u);
+  AC_CHECK_EQ(encodedBytes[75], 2u);
+  AC_CHECK_EQ(encodedBytes[76], 0u);
   AC_CHECK(std::memcmp(buffer, encodedBytes, encoded.bytes) == 0);
 }
 
@@ -1389,7 +1413,7 @@ AC_TEST(match_roundtrip_two_players) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 0x123u, 4u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (16u + 5u) + (16u + 3u));
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (21u + 5u) + (21u + 3u));
   AC_CHECK_EQ(encoded.bytes, matchStateFrameBytes(state));
   // `kMatchStateMaxBytes` 是**载荷**预算：包头那 20 字节不算在里面（拿整帧去比它会平白砍掉 20 字节，
   // 满员 4 行必然被判超限 —— 那正是联调里"服务端 4 个人、客户端只有 1 行"的根因）。
@@ -1406,9 +1430,9 @@ AC_TEST(match_roundtrip_two_players) {
   AC_CHECK_EQ(decoded.value.players[1].reviveRatio255, 255u);
 }
 
-// 满员最坏情形：4 行 + 每行 12 字节昵称 = 载荷正好顶到 `kMatchStateMaxBytes`（5 + 4*(16+12) = 117）。
-// 这条用例是联调根因的回归锚点：修好之前 `encodeMatchState` 拿**整帧**去比 117，满员帧必被判超限，
-// 于是"房间 4 个人、客户端只看到自己那一行"（MatchState 整条广播静默消失）。
+// 满员最坏情形：4 行 + 每行 12 字节昵称 = 载荷正好顶到 `kMatchStateMaxBytes`（5 + 4*(21+12) + localPid 2 = 139，
+// 含 S16 追加的 5 字节升级）。这条用例是联调根因的回归锚点：修好之前 `encodeMatchState` 拿**整帧**去比
+// 预算，满员帧必被判超限，于是"房间 4 个人、客户端只看到自己那一行"（MatchState 整条广播静默消失）。
 AC_TEST(match_full_room_four_twelve_byte_names) {
   const char* const twelve = "123456789012";
   net::MatchState state{0u, 2u, 0u, {}};
@@ -1446,7 +1470,7 @@ AC_TEST(match_name_one_byte_boundary) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 1u, 1u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + 16u + 1u);
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + 21u + 1u);
   const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
   AC_CHECK(decoded.isOk);
   AC_CHECK(decoded.value == state);
@@ -1481,7 +1505,7 @@ AC_TEST(match_name_twelve_byte_boundary) {
       makeHeader(PacketType::kMatchState, net::kFlagReliable, 1u, 1u), makeExt(1u, 0u, 0u), state,
       buffer, sizeof buffer);
   AC_CHECK(encoded.isOk);
-  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (16u + 12u) + (16u + 12u));
+  AC_CHECK_EQ(encoded.bytes, 8u + 12u + 7u + (21u + 12u) + (21u + 12u));
   const auto decoded = net::decodeMatchState(buffer, encoded.bytes);
   AC_CHECK(decoded.isOk);
   AC_CHECK(decoded.value == state);
@@ -1546,6 +1570,12 @@ AC_TEST(match_bad_weapon_rejected) {
   writer.writeU16(1u);
   writer.writeU8(10u);
   writer.writeU16(20u);
+  writer.writeU8(0u);
+  writer.writeU8(0u);
+  writer.writeU8(0u);
+  writer.writeU8(0u);
+  writer.writeU8(0u);  // reviveRatio255
+  // S16：固定段 16 → 21，追加 5 字节升级段（points + damage/speed/reload/reserve 等级）。
   writer.writeU8(0u);
   writer.writeU8(0u);
   writer.writeU8(0u);

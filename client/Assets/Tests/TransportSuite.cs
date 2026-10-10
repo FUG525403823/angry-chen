@@ -210,7 +210,7 @@ namespace Ac.Tests
 
         private static bool IsCommandDatagram(byte[] datagram)
         {
-            return datagram.Length >= 8 && datagram[0] == 1 && datagram[1] == (byte)PacketType.Command;
+            return datagram.Length >= 8 && datagram[0] == PacketHeader.ProtocolVersion && datagram[1] == (byte)PacketType.Command;
         }
 
         // ADR-009「握手时序」的 type 11（昵称上报）：载荷必须是 nameLen u8 + UTF-8 字节，
@@ -236,19 +236,20 @@ namespace Ac.Tests
             SelfTest.Equal((long)ConnectionState.Connected, (long)client.State);
 
             // 上界回归：NewType 之前这里写死成 MatchState，新增 type 11 后收包侧把 Join 判成 BadType
-            // ——发送侧"成功"、接收侧"未知类型"。上界必须与码表同一步走，且 12 仍须被拒。
-            SelfTest.Equal((long)PacketType.Join, (long)PacketHeader.MaxPacketType);
+            // ——发送侧"成功"、接收侧"未知类型"。上界必须与码表同一步走（S16 追加 12=UpgradeSelect），
+            // 且 13 仍须被拒。
+            SelfTest.Equal((long)PacketType.UpgradeSelect, (long)PacketHeader.MaxPacketType);
             PacketHeader probe;
             var joinFrame = new byte[22];              // 8 通用包头 + 12 可靠扩展头 + nameLen + 1 字节名
-            joinFrame[0] = 1;
+            joinFrame[0] = PacketHeader.ProtocolVersion;
             joinFrame[1] = (byte)PacketType.Join;
             joinFrame[2] = 1;                          // reliable
             joinFrame[20] = 5;
             joinFrame[21] = (byte)'a';
             SelfTest.Equal((long)DecodeFailure.Ok, (long)PacketHeader.Read(new PacketReader(joinFrame), out probe));
             var unknownFrame = new byte[22];
-            unknownFrame[0] = 1;
-            unknownFrame[1] = 12;                      // 尚未分配的类型码
+            unknownFrame[0] = PacketHeader.ProtocolVersion;
+            unknownFrame[1] = 13;                      // 尚未分配的类型码
             unknownFrame[2] = 1;
             SelfTest.Equal((long)DecodeFailure.BadType, (long)PacketHeader.Read(new PacketReader(unknownFrame), out probe));
 

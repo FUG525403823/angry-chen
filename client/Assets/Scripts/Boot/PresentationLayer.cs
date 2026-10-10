@@ -60,6 +60,16 @@ namespace Ac.Boot
         private int _rateWindowApplied;
         private float _lastRateHz;
         private Material _sheepMaterial;
+        // S16：弹药补给箱的渲染（实体 kind==3 驱动的静态立方体池，见 SyncCrates）。
+        public CrateVisuals Crates { get; private set; }
+        public int CrateCount { get { return Crates == null ? 0 : Crates.Count; } }
+        private const string CrateRootName = "Ac.Crates";
+        private const string CratePartName = "Ac.Crate";
+        public const byte WireKindPickup = 3;   // EntityKind::kPickup 的线上 kind 码
+        // 箱子视觉尺寸（与服务端 kPickupRadiusM=0.35 的交互半径同尺度）：0.7m 立方，底贴地。
+        private const float CrateSizeM = 0.7f;
+        private readonly GameObject[] _crateObjects = new GameObject[CrateVisuals.MaxCrates];
+        private Material _crateMaterial;
         // 视图模型（C09）：此前 ViewModel 只有锚点、没有网格，所以“手里没有枪”。
         // 锚点 ViewModelAnchor.OffsetZ 是 -0.02（几乎贴在眼位），而横向偏移是 0.17m：在 z≈0 的深度上
         // 这个横向偏移会被投影到屏幕右外侧（实测：枪完全看不见）。把整枪沿 +Z 前推，
@@ -237,6 +247,23 @@ namespace Ac.Boot
                 _emblemMaterials[form] = emblem;
             }
 
+            // ④b 弹药补给箱（S16）：程序化立方体池，实体（kind==3）进视图就摆、离场就收。
+            Crates = new CrateVisuals();
+            var crateRoot = new GameObject(CrateRootName);
+            crateRoot.transform.SetParent(_root.transform, false);
+            _crateMaterial = ArenaMaterials.CreateInstanced("Ac/Crate", ArtPalette.Hex(0x9A7B4F));
+            var crateMesh = BuiltinCubeMesh();
+            for (var i = 0; i < CrateVisuals.MaxCrates; i++)
+            {
+                var part = new GameObject(CratePartName + i);
+                part.transform.SetParent(crateRoot.transform, false);
+                part.AddComponent<MeshFilter>().sharedMesh = crateMesh;
+                var renderer = part.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = _crateMaterial;
+                renderer.enabled = false;
+                _crateObjects[i] = part;
+            }
+
             // ⑤ 特效与视图模型：Effects 的池在构造期分配，帧内不再分配
             Effects = new Effects();
             ViewModel = new ViewModel();
@@ -282,10 +309,19 @@ namespace Ac.Boot
             // 先减后加：Attach 可以重复调用（Start 不是一次性的），订阅只许留一条。
             Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
             Flow.Lobby.OnNameChanged += OnLobbyNameChanged;
+            // S16：波间升级面板的乐观购买 → 上行 UpgradeSelect（发送/失败计数在 GameLoop 上）。
+            Flow.Upgrades.OnUpgrade -= OnUpgradeSelected;
+            Flow.Upgrades.OnUpgrade += OnUpgradeSelected;
             // 空名字不许覆盖：GameBootstrap 在 Attach 之后补默认昵称，而 Attach 会被重复调用（Start 不是一次性的）
             if (!string.IsNullOrEmpty(Flow.Lobby.Name)) loop.LocalName = Flow.Lobby.Name;
             _seenMatchStates = loop.MatchStateCount;
             if (loop.MatchStateCount > 0) Flow.Apply(loop.LastMatchState, loop.LocalPlayerId);
+        }
+
+        // S16：升级面板买了一张卡 → 帧回路上行 UpgradeSelect（发送失败由权威 MatchState 拉回）。
+        private void OnUpgradeSelected(int upgradeId)
+        {
+            if (_loop != null) _loop.BuyUpgrade(upgradeId);
         }
 
         public void ApplySettings(in SettingsSnapshot settings)
@@ -343,6 +379,7 @@ namespace Ac.Boot
             sources.Hud = loop == null ? null : loop.Hud;
             sources.Lobby = flow == null ? null : flow.Lobby;
             sources.Intermission = flow == null ? null : flow.Intermission;
+            sources.Upgrades = flow == null ? null : flow.Upgrades;
             sources.Results = flow == null ? null : flow.Results;
             sources.Debug = DebugPanel;
             sources.Chat = flow == null ? null : flow.Chat;      // 局内聊天（显隐由 GameLoop 按相位驱动）
@@ -390,6 +427,7 @@ namespace Ac.Boot
             Effects.Tick((float)dtMs);
             UpdateWeaponView(dtMs);
             TracerView.Sync(Effects.Tracers, gateLoop != null && gateLoop.CombatVisible);
+            SyncCrates();
         }
 
         public bool TickOverlay(double dtMs)
@@ -525,8 +563,10 @@ namespace Ac.Boot
             if (Fps != null) Fps.ReleasePointerLock();
             Flow.Lobby.OnPhaseChanged -= OnPhaseChanged;
             Flow.Lobby.OnNameChanged -= OnLobbyNameChanged;
+            Flow.Upgrades.OnUpgrade -= OnUpgradeSelected;
             Batching.SetQualityTier(_savedTier);
             Kill(_sheepMaterial);
+            Kill(_crateMaterial);
             Kill(_emblemMaterial);
             for (var form = 0; form < _emblemMaterials.Length; form++) Kill(_emblemMaterials[form]);
             if (_arenaMaterials != null) for (var i = 0; i < _arenaMaterials.Length; i++) Kill(_arenaMaterials[i]);
@@ -676,6 +716,53 @@ namespace Ac.Boot
                 _scratch.YawRad = view.YawRad;
                 Sheep.Write(_scratch, _nowMs);
             }
+        }
+
+        // S16：把实体视图里的补给箱（kind==3）收进纯模型，再摆 Unity 立方体池（跟随权威快照生灭）。
+        private void SyncCrates()
+        {
+            var crates = Crates;
+            if (crates == null) return;
+            crates.BeginFrame();
+            var views = _loop == null ? null : _loop.Views;
+            if (views != null)
+            {
+                for (var i = 0; i < views.ActiveCount; i++)
+                {
+                    EntityView view;
+                    if (!views.TryGet(views.ActiveIdAt(i), out view) || view == null) continue;
+                    crates.Write(view);
+                }
+            }
+            for (var i = 0; i < CrateVisuals.MaxCrates; i++)
+            {
+                var part = _crateObjects[i];
+                if (part == null) continue;
+                var renderer = part.GetComponent<MeshRenderer>();
+                if (i < crates.Count)
+                {
+                    var instance = crates.Instances[i];
+                    // 服务端拾取物实体在 y=0；0.7m 立方底贴地 ⇒ 中心抬高半高。
+                    part.transform.SetPositionAndRotation(
+                        new Vector3(instance.X, instance.Y + CrateSizeM / 2f, instance.Z),
+                        Quaternion.identity);
+                    renderer.enabled = true;
+                }
+                else
+                {
+                    renderer.enabled = false;
+                }
+            }
+        }
+
+        // 内置单位立方体网格（CreatePrimitive 的共享内置资产，销毁临时 GameObject 不动网格本体）。
+        private static Mesh BuiltinCubeMesh()
+        {
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var mesh = cube.GetComponent<MeshFilter>().sharedMesh;
+            if (Application.isPlaying) UnityEngine.Object.Destroy(cube);
+            else UnityEngine.Object.DestroyImmediate(cube);
+            return mesh;
         }
 
         // 线上 kind 只有「1 = 羊」这一档，羊形（grunt/ram/elite/king）根本不在快照里，而 C08 的

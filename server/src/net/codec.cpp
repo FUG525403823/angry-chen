@@ -746,6 +746,33 @@ DecodeResult<JoinPayload> decodeJoin(const uint8_t* bytes, std::size_t size) noe
   return decodedOk(payload);
 }
 
+EncodeResult encodeUpgradeSelect(const PacketHeader& header, const ReliableExt& ext,
+                                 const UpgradeSelectPayload& payload, uint8_t* out,
+                                 std::size_t capacity) noexcept {
+  if (out == nullptr || !isEncodeHeaderValid(header, PacketType::kUpgradeSelect)) return encodeFail();
+  const std::size_t total = kCommonHeaderBytes + kReliableExtBytes + kUpgradeSelectPayloadBytes;
+  if (total > capacity) return encodeFail();
+  ByteWriter writer = reliableWriter(header, ext, out, capacity);
+  writer.writeU8(payload.upgradeId);
+  if (writer.isOverflow || writer.size() != total) return encodeFail();
+  return encodeOk(writer.size());
+}
+
+DecodeResult<UpgradeSelectPayload> decodeUpgradeSelect(const uint8_t* bytes, std::size_t size) noexcept {
+  auto packet = decodePacket(bytes, size);
+  if (!packet.isOk) return decodedFail<UpgradeSelectPayload>(packet.failure);
+  DecodeFailure failure = DecodeFailure::kOk;
+  if (!checkPayload(packet, PacketType::kUpgradeSelect, kUpgradeSelectPayloadBytes, failure)) {
+    return decodedFail<UpgradeSelectPayload>(failure);
+  }
+  ByteReader reader = payloadReader(packet.value, bytes, size);
+  UpgradeSelectPayload payload{};
+  payload.upgradeId = reader.readU8();
+  if (reader.isTruncated) return decodedFail<UpgradeSelectPayload>(DecodeFailure::kTruncated);
+  if (reader.remaining() != 0u) return decodedFail<UpgradeSelectPayload>(DecodeFailure::kBadLength);
+  return decodedOk(payload);
+}
+
 std::size_t matchStatePlayerBytes(const MatchStatePlayer& player) noexcept {
   return kMatchStatePlayerFixedBytes + player.name.size();
 }
@@ -754,7 +781,13 @@ namespace {
 
 bool isValidMatchStatePlayer(const MatchStatePlayer& player) noexcept {
   if (player.name.size() < kNameMinBytes || player.name.size() > kNameMaxBytes) return false;
-  return player.weapon <= 2u;
+  if (player.weapon > 2u) return false;
+  // S16：升级等级上限 5（与 config/upgrades.hpp 的 kUpgradeMaxLevel 一致）。
+  if (player.upgradeDamage > 5u || player.upgradeSpeed > 5u || player.upgradeReload > 5u ||
+      player.upgradeReserve > 5u) {
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -806,6 +839,12 @@ EncodeResult encodeMatchState(const PacketHeader& header, const ReliableExt& ext
     writer.writeU8(player.rageLeft100Ms);
     writer.writeU8(player.downed);
     writer.writeU8(player.reviveRatio255);
+    // S16：波次升级（5 字节，与 kMatchStatePlayerFixedBytes 同步）。
+    writer.writeU8(player.upgradePoints);
+    writer.writeU8(player.upgradeDamage);
+    writer.writeU8(player.upgradeSpeed);
+    writer.writeU8(player.upgradeReload);
+    writer.writeU8(player.upgradeReserve);
   }
   writer.writeU16(localPid);
   if (writer.isOverflow || writer.size() != total) return encodeFail();
@@ -851,8 +890,18 @@ DecodeResult<MatchState> decodeMatchState(const uint8_t* bytes, std::size_t size
     player.rageLeft100Ms = reader.readU8();
     player.downed = reader.readU8();
     player.reviveRatio255 = reader.readU8();
+    // S16：波次升级（5 字节，与 kMatchStatePlayerFixedBytes 同步）。
+    player.upgradePoints = reader.readU8();
+    player.upgradeDamage = reader.readU8();
+    player.upgradeSpeed = reader.readU8();
+    player.upgradeReload = reader.readU8();
+    player.upgradeReserve = reader.readU8();
     if (reader.isTruncated) return decodedFail<MatchState>(DecodeFailure::kTruncated);
     if (player.weapon > 2u) return decodedFail<MatchState>(DecodeFailure::kBadValue);
+    if (player.upgradeDamage > 5u || player.upgradeSpeed > 5u || player.upgradeReload > 5u ||
+        player.upgradeReserve > 5u) {
+      return decodedFail<MatchState>(DecodeFailure::kBadValue);
+    }
     state.players.push_back(std::move(player));
   }
   state.localPid = reader.readU16();

@@ -87,7 +87,8 @@ AC_TEST(world_create_initializes_defaults) {
   // S08 在 Entity 末尾追加武器/倒地/怒气/交互/羊形（96 -> 232），S09 再追加击退与羊群 AI
   // 状态（仇恨槽 8 + 邻居槽 12 + 计时/冲锋方向）→ 232 -> 960 字节（README §12 的字节账；两轴评审后
   // 删掉了与 S08 `Entity::sheepKind` 重复的 `ai.sheepKind` 镜像，故由 968 回落到 960）。
-  AC_CHECK_EQ(sizeof(sim::Entity), 960u);
+  // S16 追加 UpgradeState（5×u8 + double ammoRefillMs，按 8 对齐 = 16 字节）→ 960 -> 976。
+  AC_CHECK_EQ(sizeof(sim::Entity), 976u);
   AC_CHECK_EQ(sizeof(sim::Entity::id), 2u);
   AC_CHECK_EQ(sizeof(sim::Entity::aliveMs), 4u);
 

@@ -73,12 +73,12 @@ bool tryFire(WeaponState& state, double nowMs, double fireRateMultiplier) noexce
   return true;
 }
 
-bool tryStartReload(WeaponState& state, double nowMs) noexcept {
+bool tryStartReload(WeaponState& state, double nowMs, double reloadTimeMultiplier) noexcept {
   if (state.reloadEndsAtMs != 0.0) return false;
   const ac::config::WeaponDef& def = activeWeaponDef(state);
   if (state.magInSlot[state.activeSlot] >= def.mag) return false;
   if (state.reserveAmmo <= 0) return false;
-  state.reloadEndsAtMs = nowMs + def.reloadMs;
+  state.reloadEndsAtMs = nowMs + def.reloadMs * reloadTimeMultiplier;
   return true;
 }
 

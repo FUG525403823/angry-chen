@@ -26,6 +26,9 @@ namespace Ac.Sim
         public double BarnMinZ;
         public double BarnMaxZ;
         public double BarnMaxY;
+        // S16：波次移速升级乘数（1.0 = 无升级）。与服务端 applyCommands 的
+        // `upgradeSpeedMultiplier(entity.upgrade.speedLevel)` 同源；1.0 时 x*1.0==x 位等价。
+        public double SpeedMultiplier;
 
         public static MoveConfig Default()
         {
@@ -40,6 +43,7 @@ namespace Ac.Sim
             config.BarnMinZ = -4.0;
             config.BarnMaxZ = 4.0;
             config.BarnMaxY = 5.0;
+            config.SpeedMultiplier = 1.0;
             return config;
         }
     }
@@ -75,6 +79,7 @@ namespace Ac.Sim
             var moveX = Quantize.DequantizeAxis(command.MoveX);
             var moveY = Quantize.DequantizeAxis(command.MoveY);
             var speed = (command.Buttons & ButtonSprint) != 0 ? config.SprintSpeedMps : config.MoveSpeedMps;
+            speed *= config.SpeedMultiplier;  // S16：移速升级乘数（1.0 时恒等）
 
             var yawUnits = Quantize.QuantizeAngle(state.YawRad);
             var fx = TrigTable.Shared.Sin(yawUnits);

@@ -4,6 +4,7 @@
 #include <span>
 
 #include "config/player.hpp"
+#include "config/upgrades.hpp"
 #include "config/waves.hpp"
 #include "core/clock.hpp"
 #include "core/log.hpp"
@@ -252,6 +253,10 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
       // 收它，所以必须在这里被处置，否则会落到 default 计成丢弃帧。
       handleJoin(info.header.session, bytes, size);
       break;
+    case ac::net::PacketType::kUpgradeSelect:
+      // S16 type 12：波间购买升级。同样在方向白名单里，必须在此处置（否则计成丢弃帧）。
+      handleUpgradeSelect(info.header.session, bytes, size);
+      break;
     case ac::net::PacketType::kKeepAlive: {
       const ac::net::SessionValidation validation =
           handshake_.validateSession(info.header.session);
@@ -452,10 +457,13 @@ void Runtime::handleCommand(std::uint16_t session, const std::uint8_t* frame,
   }
   ac::security::ClampReport report{};
   const ac::sim::Command command = ac::security::sanitizeCommand(toSimCommand(decoded.value), report);
-  // ADR-013：大厅就绪来自**客户端命令里的 Ready 位**（config::kButtonReady = 0x80）。此前服务端从不读它，
+  // ADR-013：就绪位来自客户端命令里的 Ready 位（config::kButtonReady = 0x80）。此前服务端从不读它，
   // 只靠 `--auto-ready` 强制就绪，于是"大厅里按准备 → 房主开局"这条产品路径根本不存在（联调实测红）。
-  // 只在 kLobby 相位收（对局中置 ready 无意义），且必须已在房内；`roomSetReady` 幂等且只在真变化时广播。
-  if (room_->phase == ac::room::MatchPhase::kLobby && ac::room::isInRoom(client->session)) {
+  // kLobby 收（大厅开局）；S16 起 kIntermission 也收：清波进波间时 ready 已重置，重按准备可提前开波
+  // （5s 最短停留保留）。`roomSetReady` 幂等且只在真变化时广播。
+  if ((room_->phase == ac::room::MatchPhase::kLobby ||
+       room_->phase == ac::room::MatchPhase::kIntermission) &&
+      ac::room::isInRoom(client->session)) {
     const bool wantReady = (command.buttons & ac::config::kButtonReady) != 0u;
     // 武器预览沿用大厅口径：只在带 SwitchWeapon 位时把 switchTo 当选择，否则传越界值让 roomSetReady 不碰武器。
     const std::uint8_t weapon = (command.buttons & ac::config::kButtonSwitchWeapon) != 0u
@@ -493,6 +501,54 @@ void Runtime::handleJoin(std::uint16_t session, const std::uint8_t* frame, std::
     ac::room::joinMatchRecord(*room_, client->session.pid, client->session.name,
                               client->session.nameBytes);
   }
+}
+
+// S16 type 12 UpgradeSelect：波间购买升级（可靠 C→S，载荷 1 字节 upgradeId）。
+// 语义校验（缺一即拒收，不广播）：phase==intermission、upgradeId 合法、有剩余升级点、
+// 目标等级未满。成功：points−1、level+1、立即广播 MatchState。
+void Runtime::handleUpgradeSelect(std::uint16_t session, const std::uint8_t* frame, std::size_t size) {
+  // §5.2：非 Hello 包必须带在册 session。
+  if (!handshake_.validateSession(session).isAccepted) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  const ac::net::DecodeResult<ac::net::UpgradeSelectPayload> decoded =
+      ac::net::decodeUpgradeSelect(frame, size);
+  if (!decoded.isOk) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  Client* client = findClientByTransport(session);
+  if (client == nullptr || room_ == nullptr || room_->world == nullptr ||
+      !ac::room::isInRoom(client->session)) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  const std::uint8_t id = decoded.value.upgradeId;
+  if (room_->phase != ac::room::MatchPhase::kIntermission || id >= ac::config::kUpgradeCount) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  ac::sim::Entity* entity = ac::room::playerEntityAt(*room_, client->session.pid);
+  if (entity == nullptr || entity->upgrade.points == 0u) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  std::uint8_t* level = nullptr;
+  switch (id) {
+    case ac::config::kUpgradeDamage: level = &entity->upgrade.damageLevel; break;
+    case ac::config::kUpgradeSpeed: level = &entity->upgrade.speedLevel; break;
+    case ac::config::kUpgradeReload: level = &entity->upgrade.reloadLevel; break;
+    case ac::config::kUpgradeReserve: level = &entity->upgrade.reserveLevel; break;
+    default: break;
+  }
+  if (level == nullptr || *level >= ac::config::kUpgradeMaxLevel) {
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
+  entity->upgrade.points -= 1u;
+  *level += 1u;
+  (void)ac::room::broadcastMatchState(*room_, deps_);
 }
 
 void Runtime::pollOnce(std::uint64_t nowMs) {

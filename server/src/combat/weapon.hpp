@@ -24,7 +24,8 @@ bool isReloading(const WeaponState& state) noexcept;
 double reloadRemainingMs(const WeaponState& state, double nowMs) noexcept;
 bool updateWeapon(WeaponState& state, double nowMs, double dtMs, double fireRateMultiplier = 1.0) noexcept;
 bool tryFire(WeaponState& state, double nowMs, double fireRateMultiplier = 1.0) noexcept;
-bool tryStartReload(WeaponState& state, double nowMs) noexcept;
+// S16：reloadTimeMultiplier（升级换弹乘数，默认 1.0）：reloadEndsAtMs = nowMs + def.reloadMs × mult。
+bool tryStartReload(WeaponState& state, double nowMs, double reloadTimeMultiplier = 1.0) noexcept;
 void cancelReload(WeaponState& state) noexcept;
 bool switchSlot(WeaponState& state, uint8_t slot, double nowMs) noexcept;
 

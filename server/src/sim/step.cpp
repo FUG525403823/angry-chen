@@ -4,6 +4,7 @@
 #include "combat/rage.hpp"
 #include "combat/resolve.hpp"
 #include "config/combat.hpp"
+#include "config/upgrades.hpp"
 
 namespace ac::sim {
 namespace {
@@ -48,10 +49,12 @@ void applyCommands(World& world, const Command* commands, uint32_t commandCount)
         (commands != nullptr && cursor < commandCount) ? &commands[cursor] : nullptr;
     ++cursor;
     // S08 §5.7：狂暴期移速 ×1.15（v1 sim.ts 在同一个调用点传 RAGE.moveSpeedMultiplier）。
+    // S16：再乘升级移速乘数（默认 1.0 位等价）。
     const double speedMultiplier =
-        ac::combat::isRageActive(entity.rage, static_cast<double>(world.timeMs))
-            ? ac::config::kRageMoveSpeedMultiplier
-            : 1.0;
+        (ac::combat::isRageActive(entity.rage, static_cast<double>(world.timeMs))
+             ? ac::config::kRageMoveSpeedMultiplier
+             : 1.0) *
+        ac::config::upgradeSpeedMultiplier(entity.upgrade.speedLevel);
     MoveState state = moveStateOf(entity);
     applyCommandToState(state, command, speedMultiplier);
     // S08 §5.7：倒地玩家不移动（v1 sim.ts 在同处把速度清零并 continue）。
@@ -127,6 +130,8 @@ bool stepWorld(World& world, const Command* commands, uint32_t commandCount, uin
   // 阶段 10/11：战斗、羊群攻击、投射物、羊王（updateKings 遍历本 tick 存活的羊王，逐个走冻结的
   // updateKing(World&, Entity&, uint32_t)；召唤出的咩咩兵按 activeIds 升序插入，遍历按 v1 逐字重读当前下标）。
   resolveCombat(world, commands, commandCount, dtMs, nullptr);
+  // S16：补给箱补弹（阶段 10 后；无 pickup 实体时零开销，fixture 零回归）。
+  resolveAmmoCrates(world, dtMs);
   resolveSheepAttacks(world, playerIds, playerCount);
   resolveEliteFire(world, playerIds, playerCount);
   advanceProjectiles(world, dtMs, playerIds, playerCount);

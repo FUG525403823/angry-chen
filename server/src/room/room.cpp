@@ -9,6 +9,7 @@
 #include "combat/resolve.hpp"
 #include "combat/weapon.hpp"
 #include "config/player.hpp"
+#include "config/upgrades.hpp"
 #include "config/weapons.hpp"
 #include "core/quantize.hpp"
 #include "room/rooms.hpp"
@@ -84,7 +85,8 @@ uint32_t collectDirectorPlayerIds(Room& room, uint16_t* out, uint32_t capacity) 
 }
 
 // §5.7-3：组队 → 每 tick 生成/清波判定；清波走 handleWaveCleared，否则查结束判定。
-void driveDirector(Room& room, uint64_t nowMs) noexcept {
+// S16：返回「本 tick 是否清波进入波间」——roomTick 据此立即广播 MatchState（升级点/ready 即时可见）。
+bool driveDirector(Room& room, uint64_t nowMs) noexcept {
   ac::sim::World& world = *room.world;
   if (room.director.wave != room.wave && !room.director.isFinished) {
     ac::waves::planWave(room.director, room.wave, static_cast<int32_t>(activePlayerCount(room)));
@@ -97,9 +99,10 @@ void driveDirector(Room& room, uint64_t nowMs) noexcept {
                                 world.rng.spawn, ids, idCount);
   if (tick.isWaveClear) {
     handleWaveCleared(room, nowMs);
-    return;
+    return true;
   }
   checkMatchEnd(room, nowMs);
+  return false;
 }
 
 double hpRatioOf(const ac::sim::Entity& entity) noexcept {
@@ -152,6 +155,29 @@ uint8_t quantizePercent(double ratio) noexcept {
 }
 
 }  // namespace
+
+// S16：loading→playing 时生成弹药补给箱（kind=pickup，id 在玩家之后，pid==EntityId 不变）。
+void spawnAmmoCrates(Room& room) noexcept {
+  if (room.world == nullptr) return;
+  ac::sim::World& world = *room.world;
+  room.ammoCrateCount = 0u;
+  for (int32_t i = 0; i < ac::config::kAmmoCrateCount; ++i) {
+    const ac::Vec3 pos = ac::config::kAmmoCratePositions[static_cast<std::size_t>(i)];
+    const ac::sim::SpawnResult spawned = ac::sim::spawnEntity(world, ac::sim::EntityKind::kPickup, pos);
+    if (!spawned.isOk) continue;  // 实体池满：跳过，不影响开局
+    room.ammoCrateIds[room.ammoCrateCount] = spawned.id;
+    room.ammoCrateCount += 1u;
+  }
+}
+
+// S16：resetMatchForRestart 回收补给箱（按实际生成数）。
+void despawnAmmoCrates(Room& room) noexcept {
+  if (room.world == nullptr) return;
+  for (uint8_t i = 0u; i < room.ammoCrateCount; ++i) {
+    ac::sim::despawnEntity(*room.world, room.ammoCrateIds[i]);
+  }
+  room.ammoCrateCount = 0u;
+}
 
 // §5.3 可靠事件通道的确认侧（S03 §5.3「超出部分走 EventChannel 可靠通道补发」的房间侧落地）：
 // 复制侧把本代帧**真的发出去**之后调用一次，sentCount = 该帧带出的条目数。被跳过的 tick（档位降档、
@@ -420,6 +446,12 @@ std::size_t buildMatchState(Room& room) noexcept {
     player.downed = alive && entity->downed.downed ? 1u : 0u;
     player.reviveRatio255 =
         alive ? ac::quantizeRatio(ac::combat::reviveRatio(entity->downed)) : 0u;
+    // S16：波次升级（点在实体上，断线重连不丢）。
+    player.upgradePoints = alive ? entity->upgrade.points : 0u;
+    player.upgradeDamage = alive ? entity->upgrade.damageLevel : 0u;
+    player.upgradeSpeed = alive ? entity->upgrade.speedLevel : 0u;
+    player.upgradeReload = alive ? entity->upgrade.reloadLevel : 0u;
+    player.upgradeReserve = alive ? entity->upgrade.reserveLevel : 0u;
     count += 1u;
   }
   if (state.players.size() > count) state.players.resize(count);
@@ -459,6 +491,7 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
   applyWeaponSelections(room);
   buildCommands(room);
   captureShotBaseline(room);
+  bool waveCleared = false;
   if (room.phase == MatchPhase::kPlaying) {
     // S06 冻结的 stepWorld 是四参数（不带 CombatContext）⇒ S08 的回滚上下文此刻仍整体关闭；
     // world.poseHistory 由 stepWorld 自己每 tick 记录，接上上下文的活儿留给后续相位。
@@ -466,10 +499,12 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
     accumulateMatchEvents(room);
     applyShotDeltas(room);
     accumulateMatchTime(room, ac::config::kStepDtMs);
-    driveDirector(room, nowMs);
+    waveCleared = driveDirector(room, nowMs);
   } else if (room.phase == MatchPhase::kIntermission) {
     accumulateMatchTime(room, ac::config::kStepDtMs);
   }
+  // S16：清波进入波间的那一拍立即广播 MatchState（升级点与 ready 重置即时可见，不等 1Hz 节拍）。
+  if (waveCleared) broadcastMatchState(room, deps);
   // §5.7-5：快照与事件广播（S12 的复制流水线）——先把本 tick 的事件条目舞台化，再交给复制回调。
   stageFrameEvents(room);
   if (deps.replicate != nullptr) deps.replicate(deps.user, room);

@@ -8,6 +8,7 @@
 #include "combat/weapon.hpp"
 #include "config/combat.hpp"
 #include "config/player.hpp"
+#include "config/upgrades.hpp"
 #include "config/weapons.hpp"
 #include "config/waves.hpp"
 #include "room/room.hpp"
@@ -110,9 +111,13 @@ void resetMatchForRestart(Room& room) noexcept {
       }
     }
   }
+  despawnAmmoCrates(room);  // S16：补给箱随比赛结束回收
   for (uint8_t i = 0u; i < room.sessionCount; ++i) {
     Session* const session = room.sessions[i];
     if (session == nullptr || session->pid == 0u) continue;
+    // S16：升级状态随新比赛清零（点在实体上，重开局不残留）。
+    ac::sim::Entity* const entity = playerEntityAt(room, session->pid);
+    if (entity != nullptr) ac::sim::resetUpgradeState(entity->upgrade);
     joinMatchRecord(room, session->pid, session->name, session->nameBytes);
   }
   refillPlayers(room);
@@ -127,6 +132,7 @@ bool updateMatch(Room& room, uint64_t nowMs, uint32_t elapsedMs) noexcept {
       room.wave = 1;
       room.match.startedAtMs = nowMs;
       refillPlayers(room);
+      spawnAmmoCrates(room);  // S16：补给箱随每场比赛生成（id 在玩家之后，pid==EntityId 不变）
       return true;
     }
     return false;
@@ -155,6 +161,15 @@ bool handleWaveCleared(Room& room, uint64_t nowMs) noexcept {
   }
   if (!applyMatchTransition(room, MatchPhase::kIntermission)) return false;
   room.intermissionMs = kIntermissionMs;
+  // S16：全员 +1 升级点；ready 重置为 false —— 波间必须重按准备才能提前开波（5s 最短停留保留）。
+  for (uint8_t i = 0u; i < room.sessionCount; ++i) {
+    Session* const session = room.sessions[i];
+    if (session == nullptr || session->pid == 0u) continue;
+    session->ready = false;
+    ac::sim::Entity* const entity = playerEntityAt(room, session->pid);
+    if (entity == nullptr) continue;
+    entity->upgrade.points += static_cast<uint8_t>(ac::config::kPointsPerWaveClear);
+  }
   return true;
 }
 
@@ -252,7 +267,8 @@ void refillPlayers(Room& room) noexcept {
     for (int32_t slot = 0; slot < ac::config::kWeaponSlotCount; ++slot) {
       entity->weapon.magInSlot[slot] = ac::config::kWeapons[slot].mag;
     }
-    entity->weapon.reserveAmmo = ac::config::kReserveAmmoInitial;
+    entity->weapon.reserveAmmo =
+        ac::config::kReserveAmmoInitial + ac::config::upgradeReserveBonus(entity->upgrade.reserveLevel);
     entity->weapon.reloadEndsAtMs = 0.0;
     entity->weapon.spreadDeg = 0.0;  // §5.2 明写「散布清零」（v1 的全体补给漏了这一项）
     ac::combat::resetDownedState(entity->downed);

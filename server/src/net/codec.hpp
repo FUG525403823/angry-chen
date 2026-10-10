@@ -348,10 +348,24 @@ EncodeResult encodeJoin(const PacketHeader& header, const ReliableExt& ext, cons
                         uint8_t* out, std::size_t capacity) noexcept;
 DecodeResult<JoinPayload> decodeJoin(const uint8_t* bytes, std::size_t size) noexcept;
 
+// ---- S16 type 12 UpgradeSelect：可靠、C→S、无回复，载荷 1 字节 upgradeId（0..3）----
+inline constexpr std::size_t kUpgradeSelectPayloadBytes = 1u;
+
+struct UpgradeSelectPayload {
+  uint8_t upgradeId = 0u;
+};
+
+EncodeResult encodeUpgradeSelect(const PacketHeader& header, const ReliableExt& ext,
+                                 const UpgradeSelectPayload& payload, uint8_t* out,
+                                 std::size_t capacity) noexcept;
+DecodeResult<UpgradeSelectPayload> decodeUpgradeSelect(const uint8_t* bytes, std::size_t size) noexcept;
+
 // ---- §5.7 MatchState（type 10，reliable，单播）----
 inline constexpr std::size_t kMatchStateMaxPlayers = 4u;
-inline constexpr std::size_t kMatchStatePlayerFixedBytes = 16u;  // 3 + nameLen + 13，不含名称
-inline constexpr std::size_t kMatchStateMaxBytes = 119u;         // 5 + 4 * (16 + 12) + localPid:u16
+// S16：固定段 16 → 21（追加 points / 4 个升级等级，各 u8）。两侧（codec.cpp / MatchStateCodec.cs）
+// 必须同步，否则编码/解码按 kBadLength 拒收。
+inline constexpr std::size_t kMatchStatePlayerFixedBytes = 21u;  // 3 + nameLen + 18，不含名称
+inline constexpr std::size_t kMatchStateMaxBytes = 139u;         // 5 + 4 * (21 + 12) + localPid:u16
 
 struct MatchStatePlayer {
   uint16_t pid;
@@ -367,6 +381,12 @@ struct MatchStatePlayer {
   uint8_t rageLeft100Ms;
   uint8_t downed;
   uint8_t reviveRatio255;
+  // S16：波次升级（0..5 / points 0..255）。
+  uint8_t upgradePoints;
+  uint8_t upgradeDamage;
+  uint8_t upgradeSpeed;
+  uint8_t upgradeReload;
+  uint8_t upgradeReserve;
 
   bool operator==(const MatchStatePlayer& other) const noexcept = default;
 };

@@ -11,6 +11,8 @@
 #include "sim/world.hpp"
 #include "waves/director.hpp"
 
+#include "config/pickup.hpp"
+
 namespace ac::room {
 
 struct RoomRegistry;
@@ -86,6 +88,9 @@ struct Room {
   uint32_t eventOverflowCount = 0u;  // 队列也满时才真丢：计入 ac_events_dropped_total（G8）
   uint32_t eventFrameGeneration = 0u;      // 每次舞台化 ++：本代帧的世代戳
   uint32_t eventConfirmedGeneration = 0u;  // 已确认过的代（同一代重复确认无效）
+  // S16：本场比赛的弹药补给箱实体 id（loading→playing 生成，resetMatchForRestart 回收）。
+  uint16_t ammoCrateIds[ac::config::kAmmoCrateCount] = {};
+  uint8_t ammoCrateCount = 0u;
 };
 
 // 建房：世界 = createWorld(seed) 后清掉占位玩家（v1 createWorldForRoom，pid 从 1 起）。
@@ -132,5 +137,9 @@ void confirmFrameEvents(Room& room, uint32_t frameGeneration, std::size_t sentCo
 std::size_t buildMatchState(Room& room) noexcept;
 // §5.8：组装 + 逐个已连接会话调用 deps.sendMatchState；顺带刷新签名（立即补发的判据）。
 bool broadcastMatchState(Room& room, const RoomDeps& deps) noexcept;
+
+// S16：补给箱生命周期（loading→playing 生成 / resetMatchForRestart 回收；失败只跳过，不影响开局）。
+void spawnAmmoCrates(Room& room) noexcept;
+void despawnAmmoCrates(Room& room) noexcept;
 
 }  // namespace ac::room

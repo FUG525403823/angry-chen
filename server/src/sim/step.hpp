@@ -44,4 +44,7 @@ int updateKing(World& world, Entity& king, uint32_t dtMs) noexcept;
 // 阶段 11 的循环入口：遍历存活羊王逐个调 updateKing，返回本 tick 召唤总数。
 int updateKings(World& world, uint32_t dtMs) noexcept;
 
+// S16：阶段 10 后的补给箱补弹阶段（定义在 combat/pickup.cpp；无 pickup 实体时零开销）。
+void resolveAmmoCrates(World& world, uint32_t dtMs) noexcept;
+
 }  // namespace ac::sim

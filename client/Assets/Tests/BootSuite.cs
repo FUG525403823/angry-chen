@@ -30,6 +30,10 @@ namespace Ac.Tests
             SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
             SelfTest.Add("boot.match_start_reanchors_projection", ChecksMatchStartReanchorsProjection);
             SelfTest.Add("boot.reconnect_no_projection_overshoot", ChecksReconnectNoProjectionOvershoot);
+            SelfTest.Add("boot.upgrade_buy_sends_type12", ChecksUpgradeBuySendsType12);
+            SelfTest.Add("boot.upgrade_levels_drive_local_sim", ChecksUpgradeLevelsDriveLocalSim);
+            SelfTest.Add("boot.ready_cleared_on_wave_clear", ChecksReadyClearedOnWaveClear);
+            SelfTest.Add("boot.near_crate_hint", ChecksNearCrateHint);
         }
 
         private static void ChecksLocalMotionIndependentOfSendRate()
@@ -295,6 +299,177 @@ namespace Ac.Tests
             // 归零后不投影，渲染落在出生点附近（重生那一次吸附是合法行为）。
             SelfTest.True(Math.Abs(local.RenderZ - WalkTickMeters) < 1.0,
                 "重连后首帧不得把权威外推数十米（预测步数须随会话归零）", local.RenderZ.ToString("F4"));
+        }
+
+        // S16：波间买升级 → 上行 type=12 UpgradeSelect（可靠 C→S，1 字节 upgradeId）。
+        // 与 Command 走同一条传输（未连接/载荷非法都返回 false，乐观面板由权威 MatchState 拉回）。
+        private static void ChecksUpgradeBuySendsType12()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new Ac.Net.UdpTransport(socket, delegate { return now; });
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.Transport = transport;
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "Connect 返回 false");
+            for (var i = 0; i < 40 && transport.State != Ac.Net.ConnectionState.Connected; i++)
+            {
+                now += 16.6667;
+                loop.Frame(16.6667);
+            }
+            SelfTest.Equal((long)Ac.Net.ConnectionState.Connected, (long)transport.State);
+
+            SelfTest.True(loop.BuyUpgrade(UpgradeTable.Damage), "买伤害升级要受理", "被拒");
+            SelfTest.True(loop.BuyUpgrade(UpgradeTable.Speed), "买移速升级要受理", "被拒");
+            SelfTest.True(loop.BuyUpgrade(UpgradeTable.Reload), "买换弹升级要受理", "被拒");
+            SelfTest.True(loop.BuyUpgrade(UpgradeTable.Reserve), "买备弹升级要受理", "被拒");
+            SelfTest.Equal(4, (long)loop.UpgradesSent);
+            SelfTest.Equal(0, (long)loop.UpgradeSendFailures);
+
+            // 越界 id 不发、只计失败。
+            SelfTest.True(!loop.BuyUpgrade(UpgradeTable.Count), "id=4 越界要拒绝", "发了");
+            SelfTest.True(!loop.BuyUpgrade(255), "id=255 越界要拒绝", "发了");
+            SelfTest.Equal(2, (long)loop.UpgradeSendFailures);
+
+            var ids = socket.UpgradeIds();
+            SelfTest.Equal(4, ids.Count);
+            for (var id = 0; id < 4; id++)
+            {
+                SelfTest.True(ids[id] == id, "上行 id 顺序（应 0 1 2 3）", "第 " + id + " 条 = " + ids[id]);
+            }
+
+            // 未连接不发（断开后清账）。
+            transport.Close();
+            SelfTest.True(!loop.BuyUpgrade(UpgradeTable.Damage), "未连接要拒绝", "发了");
+        }
+
+        // S16：MatchState 的升级等级要真的落到本地模拟 —— 移速乘数进预测、换弹乘数进武器镜像。
+        private static void ChecksUpgradeLevelsDriveLocalSim()
+        {
+            SnapshotFrame frame;
+            var loop = NewLoop(1, out frame);
+            var sampler = new InputSampler();
+            sampler.SetKey(UnityEngine.KeyCode.W, true);
+            loop.Sampler = sampler;
+            SelfTest.True(FeedWalking(loop, ref frame, 1, 0), "初始权威姿态", "被拒");
+
+            // 预热：让采样器先出过命令（_pending 就绪）。此后"2 帧 = 1 个 50ms 子步"，
+            // 且窗口首尾的累加器相位相同 ⇒ 量到的位移正好一个子步（RenderZ 的外推项相消）。
+            for (var i = 0; i < 4; i++) loop.Frame(WalkFrameMs);
+            EntityView local;
+            SelfTest.True(loop.Views.TryGet(1, out local), "本地玩家可见", "缺失");
+
+            // 速度等级 0：一个子步 ≈ 4.5 × 0.05 = 0.225 m。
+            var baseZ = local.RenderZ;
+            for (var i = 0; i < 2; i++) loop.Frame(WalkFrameMs);
+            var stepAtBase = local.RenderZ - baseZ;
+            SelfTest.True(Math.Abs(stepAtBase - 0.225) < 0.001, "基准子步 0.225 m", stepAtBase.ToString("F4"));
+
+            // 速度升到 5 级（×1.4 = 6.3 m/s）。MatchState 在 playing 相位下发。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 2, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1,
+                0, 1, new byte[] { 0, 5, 0, 0 }));
+            // 先跑 2 帧让新移速落下一个子步、把 State.Vz 与累加器都换到 6.3 m/s 的相位
+            // （否则前后两端外推速度不同，"单子步"量不准，见基准段的注释）。
+            for (var i = 0; i < 2; i++) loop.Frame(WalkFrameMs);
+            var fastZ = local.RenderZ;
+            for (var i = 0; i < 2; i++) loop.Frame(WalkFrameMs);
+            var stepAtFast = local.RenderZ - fastZ;
+            SelfTest.True(Math.Abs(stepAtFast - 0.225 * 1.4) < 0.001,
+                "移速等级 5 单子步 = 0.315 m（6.3 m/s）", stepAtFast.ToString("F4") + " vs " + (0.225 * 1.4).ToString("F4"));
+
+            // 换弹等级 4（×0.52）→ 本地镜像的 CurrentReloadMs = 基准 × 0.52（进度条分母同源）。
+            var before = loop.Weapon.CurrentReloadMs;
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 2, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1,
+                0, 1, new byte[] { 0, 0, 4, 0 }));
+            var after = loop.Weapon.CurrentReloadMs;
+            SelfTest.True(Math.Abs(after - before * Sim.UpgradeTable.ReloadTimeMultiplier(4)) < 0.5,
+                "换弹时长要乘 0.52", after.ToString("F2"));
+            SelfTest.True(after < before, "升级后换弹要更快", "更慢了");
+        }
+
+        // S16：服务端在清波进波间时重置全员 ready；客户端在 playing→intermission 那一跳
+        // 同步清掉本地 ReadyHeld（否则下一条命令把服务端又顶回 true，"必须重按准备"形同虚设）。
+        private static void ChecksReadyClearedOnWaveClear()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.LocalPlayerId = 1;
+            var sampler = new InputSampler();
+            sampler.SetReadyHeld(true);
+            loop.Sampler = sampler;
+
+            // playing 相位：ReadyHeld 保持（不误清）。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1));
+            loop.Frame(0.0);
+            SelfTest.True(sampler.ReadyHeld, "playing 相位不许清 ReadyHeld", "被清了");
+
+            // playing → intermission：清。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(3, 3, 5000,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1));
+            loop.Frame(0.0);
+            SelfTest.True(!sampler.ReadyHeld, "清波进波间必须清 ReadyHeld", "还按着");
+
+            // 玩家在波间再按一次准备 → 恢复 true（波间也能 toggle，与 lobby 同拍）。
+            sampler.SetConfirm(true);
+            loop.Frame(0.0);          // PumpInput 读到按下沿 → 翻转 ReadyHeld
+            sampler.SetConfirm(false);
+            SelfTest.True(sampler.ReadyHeld, "波间重按要能再准备", "没按上");
+
+            // intermission → playing（下一波开打）：不许再误清。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 4, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1));
+            loop.Frame(0.0);
+            SelfTest.True(sampler.ReadyHeld, "开打不许清 ReadyHeld", "被清了");
+        }
+
+        // S16：补给箱提示 —— 本地玩家在箱子交互半径内时 Sample.NearAmmoCrate = true。
+        // 箱子实体（kind==3）在 ±10m 的四个角；本地玩家在原点附近（NewLoop 的默认出生）。
+        // 注意镜像按渲染时钟插值（Interpolation.DelayMs=100），每个快照后推进足够帧数，
+        // 等插值收敛到新位置再断言，否则箱子还停在旧位置（6m 外那条会误判成"在 2m 内"）。
+        private static void ChecksNearCrateHint()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.LocalPlayerId = 1;
+            // 弹药打到不满（否则"弹匣满 + 备弹满"不提示）。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 1, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 0 }, new ushort[] { 0 }, new byte[] { 0 }, 1));
+            loop.Frame(0.0);
+            SelfTest.True(!loop.Sample.NearAmmoCrate, "没有箱子不许提示", "提示了");
+
+            // 箱子在 (0,0,2)m —— 本地玩家在原点（权威与预测都在 0）⇒ 1.8m 交互半径内。
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(1u, 0u,
+                new[]
+                {
+                    SnapshotRecord(1, 0, 0, 0, 0, 16384, 0, 255, 0),       // 本地玩家（原点）
+                    SnapshotRecord(50, 3, 0, 0, 200, 0, 0, 255, 0),       // 补给箱 kind=3 @ z=2m
+                },
+                new ushort[0]));
+            for (var f = 0; f < 10; f++) loop.Frame(1000.0 / 60.0);
+            SelfTest.True(loop.Sample.NearAmmoCrate, "箱子 2m 内要提示", "没提示");
+
+            // 箱子移到 (0,0,6)m —— 超出 2.2m 提示半径。
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(2u, 1u,
+                new[] { SnapshotRecord(50, 3, 0, 0, 600, 0, 0, 255, 0) },
+                new ushort[0]));
+            for (var f = 0; f < 10; f++) loop.Frame(1000.0 / 60.0);
+            SelfTest.True(!loop.Sample.NearAmmoCrate, "箱子 6m 外不许提示", "提示了");
+
+            // 弹药补满后即使站在箱子上也不提示（服务端对满仓交互本来就是空转）。
+            loop.OnPacket(SnapshotHeader(), SnapshotPayload(3u, 2u,
+                new[] { SnapshotRecord(50, 3, 0, 0, 200, 0, 0, 255, 0) },
+                new ushort[0]));
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 1, 0,
+                new ushort[] { 1 }, new[] { "p" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 120 }, new byte[] { 0 }, 1));
+            loop.Frame(1000.0 / 60.0);
+            SelfTest.True(!loop.Sample.NearAmmoCrate, "弹药满仓不许提示", "提示了");
         }
 
         // C05 §5.4 的 W 速度：4.5 m/s × 50ms 子步 = 0.225m/tick。权威轨迹按这个值线性前进，
@@ -675,10 +850,10 @@ namespace Ac.Tests
         // mag u8 | reserve u16 | reloadLeft u8 | rage u8 | rageLeft u8 | downed u8 | revive u8）。
         private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids,
             string[] names, bool[] ready, byte[] weapons, byte[] mags, ushort[] reserves, byte[] rages, ushort localPid,
-            byte reloadLeft10Ms = 0)
+            byte reloadLeft10Ms = 0, byte points = 0, byte[] upgradeLevels = null)
         {
             var size = 7;
-            for (var i = 0; i < pids.Length; i++) size += 16 + System.Text.Encoding.UTF8.GetByteCount(names[i]);
+            for (var i = 0; i < pids.Length; i++) size += 21 + System.Text.Encoding.UTF8.GetByteCount(names[i]);
             var bytes = new byte[size];
             var offset = 0;
             bytes[offset++] = phase;
@@ -703,6 +878,10 @@ namespace Ac.Tests
                 bytes[offset++] = 0;                   // rageLeft100Ms
                 bytes[offset++] = 0;                   // downed
                 bytes[offset++] = 0;                   // reviveRatio255
+                // S16：固定段 16 → 21，追加 5 字节升级段（points + 4 级）。
+                bytes[offset++] = points;
+                for (var level = 0; level < 4; level++)
+                    bytes[offset++] = upgradeLevels == null ? (byte)0 : upgradeLevels[level];
             }
             WriteU16(bytes, ref offset, localPid);
             SelfTest.Equal(size, offset);
@@ -1163,6 +1342,24 @@ namespace Ac.Tests
                     names.Add(utf8.GetString(body, 1, body[0]));
                 }
                 return names;
+            }
+
+            // 客户端发出的 type=12 载荷按序解出来（1 字节 upgradeId）。
+            internal System.Collections.Generic.List<int> UpgradeIds()
+            {
+                var ids = new System.Collections.Generic.List<int>();
+                for (var i = 0; i < _sent.Count; i++)
+                {
+                    var reader = new Ac.Net.PacketReader(_sent[i]);
+                    Ac.Net.PacketHeader header;
+                    if (Ac.Net.PacketHeader.Read(reader, out header) != Ac.Net.DecodeFailure.Ok) continue;
+                    if (header.Type != Ac.Net.PacketType.UpgradeSelect) continue;
+                    byte[] body;
+                    if (!reader.TryReadBytes(reader.Remaining, out body)) continue;
+                    if (body.Length != UpgradeCodec.PayloadBytes) continue;
+                    ids.Add(body[0]);
+                }
+                return ids;
             }
         }
     }

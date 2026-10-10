@@ -60,7 +60,7 @@ ValidateResult validatePayloadSize(std::size_t bytes) noexcept {
 
 bool isClientToServerType(uint8_t type) noexcept {
   // ADR-009 §5.1 类型码：1 Hello / 3 Resume / 4 Command / 7 KeepAlive / 8 Disconnect / 9 Fragment /
-  // 11 Join（昵称上报）。
+  // 11 Join（昵称上报）/ 12 UpgradeSelect（S16：波间购买升级）。
   // Hello 只出现在握手层（S04）之前，会话期的白名单见 validateOpcode。
   switch (static_cast<ac::net::PacketType>(type)) {
     case ac::net::PacketType::kHello:
@@ -70,6 +70,7 @@ bool isClientToServerType(uint8_t type) noexcept {
     case ac::net::PacketType::kDisconnect:
     case ac::net::PacketType::kFragment:
     case ac::net::PacketType::kJoin:
+    case ac::net::PacketType::kUpgradeSelect:
       return true;
     case ac::net::PacketType::kHelloAck:
     case ac::net::PacketType::kSnapshot:

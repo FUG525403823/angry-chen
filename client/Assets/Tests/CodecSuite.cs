@@ -682,6 +682,12 @@ namespace Ac.Tests
             writer.U8(0);
             writer.U8(downed);
             writer.U8(0);
+            // S16：固定段 16 → 21，追加 5 字节升级段（points + damage/speed/reload/reserve 等级）。
+            writer.U8(0);
+            writer.U8(0);
+            writer.U8(0);
+            writer.U8(0);
+            writer.U8(0);
             return writer.ToArray();
         }
     }

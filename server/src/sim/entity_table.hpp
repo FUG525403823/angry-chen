@@ -44,6 +44,19 @@ struct SpawnResult {
   SpawnFailure reason = SpawnFailure::kNone;
 };
 
+// S16：波次升级与补给箱蓄力状态（追加在 Entity 末尾，S05 §5.2「字段只追加在末尾」）。
+// 放在实体上：断开重连（实体不回收、置 idle）不丢升级；resetEntity 整体清零。
+struct UpgradeState {
+  uint8_t points = 0u;        // 未消费升级点（每波清波 +1）
+  uint8_t damageLevel = 0u;   // 0..kUpgradeMaxLevel
+  uint8_t speedLevel = 0u;
+  uint8_t reloadLevel = 0u;
+  uint8_t reserveLevel = 0u;
+  double ammoRefillMs = 0.0;  // 补给箱蓄力进度（毫秒）
+};
+
+inline void resetUpgradeState(UpgradeState& state) noexcept { state = UpgradeState{}; }
+
 // §5.2 冻结字段（类型与顺序不得改）。武器/倒地/怒气/羊群 AI 状态由所属模块追加，
 // 追加只能放在本表字段之后。
 struct Entity {
@@ -73,6 +86,8 @@ struct Entity {
   // —— S09 追加 ——
   ac::combat::KnockbackState knock{};  // 击退（S08 只带了武器/怒气/倒地；阶段 6 读它）
   ac::ai::SheepAiState ai{};           // 每只羊的 AI 状态（仇恨槽 / 计时 / 冲锋方向 / 邻居槽）
+  // —— S16 追加 ——
+  UpgradeState upgrade{};              // 波次升级等级 / 升级点 / 补给箱蓄力进度
 };
 
 struct SpawnParams {
@@ -110,6 +125,7 @@ inline void resetEntity(Entity& entity) noexcept {
   entity.sheepKind = 0u;
   ac::combat::resetKnockbackState(entity.knock);
   ac::ai::resetSheepAiState(entity.ai);
+  resetUpgradeState(entity.upgrade);
 }
 
 // 只读视图：查询语义与 EntityTable 完全一致（模拟遍历与只读消费方用它）。

@@ -12,7 +12,10 @@ struct DamageResult {
 };
 
 // §9 稳定接口：纯函数，逐位对齐 v1 combat/damage.ts computeDamage。
+// S16：追加 damageMultiplier（升级乘数，默认 1.0）。乘在 weapon.damage 之后：
+// 乘数为 1.0 时位等价于 v1（x * 1.0 == x），对拍向量不受影响。
 DamageResult computeDamage(const ac::config::WeaponDef& weapon, ac::config::HitPart part, double distanceM,
-                           bool isRage, double victimArmor, DamageResult& out) noexcept;
+                           bool isRage, double victimArmor, DamageResult& out,
+                           double damageMultiplier = 1.0) noexcept;
 
 }  // namespace ac::combat

@@ -255,8 +255,8 @@ AC_TEST(security_malicious_08c_retransmit_burst_applied_once) { expectDuplicateO
 
 // ---- 矩阵 9：未知 opcode ----
 AC_TEST(security_malicious_09a_opcode_zero) { expectUnknownOpcode(0u); }
-// 12 是尚未分配的类型码（11 自 ADR-009「握手时序」起是 Join，见 security_opcode_whitelist）。
-AC_TEST(security_malicious_09b_opcode_twelve) { expectUnknownOpcode(12u); }
+// 13 是尚未分配的类型码（11 = Join、12 = UpgradeSelect（S16），见 security_opcode_whitelist）。
+AC_TEST(security_malicious_09b_opcode_thirteen) { expectUnknownOpcode(13u); }
 AC_TEST(security_malicious_09c_opcode_255) { expectUnknownOpcode(255u); }
 
 // ---- 矩阵 10：越界字段夹取 ----
@@ -346,8 +346,10 @@ AC_TEST(security_opcode_whitelist) {
   AC_CHECK(sec::validateOpcode(7u).isOk);
   AC_CHECK(sec::validateOpcode(8u).isOk);
   AC_CHECK(sec::validateOpcode(9u).isOk);
-  // ADR-009「握手时序」的 type 11 Join（昵称上报）也是会话期的合法 C→S 报文
+  // ADR-009「握手时序」的 type 11 Join（昵称上报）与 S16 的 type 12 UpgradeSelect（波间购买升级）
+  // 都是会话期的合法 C→S 报文
   AC_CHECK(sec::validateOpcode(11u).isOk);
+  AC_CHECK(sec::validateOpcode(12u).isOk);
   AC_CHECK(!sec::validateOpcode(1u).isOk);  // Hello 属握手层
   AC_CHECK(!sec::isClientToServerType(2u));
   AC_CHECK(!sec::isClientToServerType(5u));

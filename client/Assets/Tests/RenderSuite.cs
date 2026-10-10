@@ -32,6 +32,7 @@ namespace Ac.Tests
             SelfTest.Add("render.no_viewport_no_items", ChecksNoViewportNoItems);
             SelfTest.Add("render.steady_state_zero_alloc", ChecksSteadyStateZeroAlloc);
             SelfTest.Add("render.overlay_in_bounds", ChecksOverlayInBounds);
+            SelfTest.Add("render.upgrade_panel_items", ChecksUpgradePanelItems);
         }
 
         private static void ChecksSettingsModal()
@@ -112,6 +113,55 @@ namespace Ac.Tests
 
         private const int ViewW = 1280;
         private const int ViewH = 720;
+
+        // S16：波间升级面板的绘制项 —— 点数标题 + 4 张卡片（名称/等级 + 效果）与可买描边。
+        // 卡片/准备按钮的**点击**在渲染侧（OverlayRenderer.DrawIntermissionActions），这里只钉绘制。
+        private static void ChecksUpgradePanelItems()
+        {
+            using (var rig = new Rig())
+            {
+                // 2 点、移速 1 级：自选面板数据走 type=10 权威 MatchState（与生产同一条路）。
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStateBytes(Hud.PhaseIntermission, 3, 5000,
+                    new ushort[] { 1 }, new[] { "牧羊人" }, new[] { true }, 1,
+                    2, new byte[] { 0, 1, 0, 0 }));
+                rig.Loop.Frame(1000.0 / 60.0);
+                SelfTest.True(rig.Layer.Flow.IntermissionVisible, "波间可见", "不可见");
+                SelfTest.True(rig.Layer.Flow.Upgrades.Visible, "升级面板可见", "不可见");
+                SelfTest.Equal(2, (long)rig.Layer.Flow.Upgrades.Points);
+
+                var model = Build(rig);
+                // 点数标题（缓存行，含"剩余 N 点"）。
+                SelfTest.True(HasText(model, "波次升级  ·  剩余 2 点"), "点数标题", "没有");
+                // 4 张卡片：名称 + 等级行、效果行。
+                for (var i = 0; i < UpgradeModel.Count; i++)
+                {
+                    var level = i == 1 ? 1 : 0;
+                    var nameLine = UpgradeModel.Names[i] + "  Lv " + level
+                        + (level >= UpgradeModel.MaxLevel ? OverlayModel.UpgradeMaxSuffix : "");
+                    SelfTest.True(HasText(model, nameLine), "卡片 " + i + " 名称/等级", "没有");
+                    SelfTest.True(HasText(model, UpgradeModel.Effects[i]), "卡片 " + i + " 效果文案", "没有");
+                }
+                // 可买卡片（2 点、移速 1 级未满）要有描边高亮条；满级卡没有。
+                var topBars = 0;
+                var items = model.Items;
+                for (var i = 0; i < model.Count; i++)
+                {
+                    if (items[i].Kind != OverlayItemKind.Bar) continue;
+                    if (items[i].ColorRgb == Hud.ColorTarget && items[i].H <= 4) topBars += 1;
+                }
+                SelfTest.True(topBars >= 4, "2 点可买 4 张卡（都未满级）要有 4 条描边", topBars.ToString());
+
+                // 满级卡不可买：把伤害升到 5 级 → 该卡不再给描边，其余照旧。
+                rig.Loop.OnPacket(MatchStateHeader(), MatchStateBytes(Hud.PhaseIntermission, 3, 5000,
+                    new ushort[] { 1 }, new[] { "牧羊人" }, new[] { true }, 1,
+                    1, new byte[] { 5, 0, 0, 0 }));
+                rig.Loop.Frame(1000.0 / 60.0);
+                model = Build(rig);
+                SelfTest.True(HasText(model, UpgradeModel.Names[0] + "  Lv 5（MAX）"), "满级卡要标 MAX", "没有");
+                SelfTest.True(!rig.Layer.Flow.Upgrades.CanAfford(0), "满级卡不可买", "可买");
+                SelfTest.True(rig.Layer.Flow.Upgrades.CanAfford(1), "其余卡仍可买", "不可买");
+            }
+        }
 
         // 装配 + 帧回路的最小组合（与 PresentationSuite 的 Rig 同形）：Dispose 里两条一起丢掉，
         // 并把 LightingRig 改过的 RenderSettings 放回去（不给后面的用例留"上一局的天光"）。
@@ -806,14 +856,17 @@ namespace Ac.Tests
 
         // type=10 的载荷（phase u8 | wave u8 | intermissionMs u16 | count u8 | 玩家块，见 MatchStateCodec.Decode）。
         // 生产侧没有 match state 编码器（该包只有服务端→客户端一个方向），所以用例自带一个小写入器。
-        private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names, bool[] ready, ushort localPid)
+        // points/upgradeLevels（S16 升级段）可选：默认 0。
+        private static byte[] MatchStateBytes(byte phase, byte wave, ushort intermissionMs, ushort[] pids, string[] names, bool[] ready, ushort localPid,
+            int points = 0, byte[] upgradeLevels = null)
         {
-            var bytes = new List<byte>(40);
+            var bytes = new List<byte>(48);
             bytes.Add(phase);
             bytes.Add(wave);
             PutU16(bytes, intermissionMs);
             bytes.Add((byte)pids.Length);
-            for (var i = 0; i < pids.Length; i++) WritePlayer(bytes, pids[i], names[i], ready[i]);
+            for (var i = 0; i < pids.Length; i++)
+                WritePlayer(bytes, pids[i], names[i], ready[i], points, upgradeLevels);
             PutU16(bytes, localPid);
             return bytes.ToArray();
         }
@@ -825,6 +878,11 @@ namespace Ac.Tests
         }
 
         private static void WritePlayer(List<byte> bytes, ushort pid, string name, bool ready)
+        {
+            WritePlayer(bytes, pid, name, ready, 0, null);
+        }
+
+        private static void WritePlayer(List<byte> bytes, ushort pid, string name, bool ready, int points, byte[] upgradeLevels)
         {
             PutU16(bytes, pid);
             var nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
@@ -841,6 +899,10 @@ namespace Ac.Tests
             bytes.Add(0);        // rageLeft100Ms
             bytes.Add(0);        // downed
             bytes.Add(0);        // reviveRatio255
+            // S16：固定段 16 → 21，追加 5 字节升级段（points + 4 级）。
+            bytes.Add((byte)points);
+            for (var level = 0; level < 4; level++)
+                bytes.Add(upgradeLevels == null ? (byte)0 : upgradeLevels[level]);
         }
 
         private static void PutU16(List<byte> bytes, ushort value)

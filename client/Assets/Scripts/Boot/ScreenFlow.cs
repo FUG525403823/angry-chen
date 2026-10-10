@@ -13,6 +13,8 @@ namespace Ac.Boot
         public readonly Lobby Lobby = new Lobby();
         public readonly Results Results = new Results();
         public readonly Intermission Intermission = new Intermission();
+        // S16：波间升级面板（points + 4 级，数据来自 MatchState 本地玩家行）。
+        public readonly UpgradeModel Upgrades = new UpgradeModel();
         // 昵称键入捕获：GameLoopDriver 把本帧的 Input.inputString 交进来的落点（C12 §4）。
         public readonly NameInput NameInput = new NameInput();
         // 局内聊天（C12 §5）：规则与输入缓冲都在 Ac.UI.Chat 里；显隐由 GameLoop 按相位驱动，
@@ -52,6 +54,10 @@ namespace Ac.Boot
             Lobby.Apply(state, selfPid);
             Results.ApplyPhase(state.Phase);
             Intermission.Apply(state, selfPid);
+            // S16：升级面板只认本地玩家行；波间之外或表里没有自己就隐藏。
+            var self = Roster.Self(state.Players, selfPid);
+            if (self.HasValue) Upgrades.Apply(self.Value);
+            else Upgrades.Hide();
         }
 
         public bool LobbyVisible { get { return Lobby.LobbyVisible; } }

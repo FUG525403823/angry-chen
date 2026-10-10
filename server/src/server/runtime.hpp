@@ -164,6 +164,8 @@ class Runtime {
                      std::size_t payloadBytes, std::uint64_t nowMs);
   // type 11 Join：昵称上报（ADR-009「握手时序」）。无回复；pid 由 MatchState 的下行认领。
   void handleJoin(std::uint16_t session, const std::uint8_t* frame, std::size_t size);
+  // type 12 UpgradeSelect（S16）：波间购买升级（可靠 C→S，载荷 1 字节 upgradeId）。
+  void handleUpgradeSelect(std::uint16_t session, const std::uint8_t* frame, std::size_t size);
   void purgeReleasedClients();
   void ensureMatchRunning(std::uint64_t nowMs);
   void topUpSheep() noexcept;

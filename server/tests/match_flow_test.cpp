@@ -464,7 +464,9 @@ AC_TEST(match_intermission_skip_needs_min_time_and_all_ready) {
   harness.startMatch(0u, 2u);
   room::Room& room = *harness.room;
   AC_CHECK(room::handleWaveCleared(room, harness.nowMs));
-  AC_CHECK(room.phase == MatchPhase::kIntermission);
+  // S16：清波进波间时 ready 已重置为 false，需重按准备才能提前开波。
+  harness.setReady(0u, true);
+  harness.setReady(1u, true);
   harness.advance(99u);
   AC_CHECK(room.phase == MatchPhase::kIntermission);
   AC_CHECK(room.intermissionMs > 0);
@@ -481,6 +483,8 @@ AC_TEST(match_intermission_skip_blocked_when_anyone_not_ready) {
   harness.startMatch(0u, 2u);
   room::Room& room = *harness.room;
   AC_CHECK(room::handleWaveCleared(room, harness.nowMs));
+  // S16：清波重置 ready；让玩家 1 保持不准备 → 全员准备的跳过被阻止。
+  harness.setReady(0u, true);
   harness.setReady(1u, false);
   harness.advance(100u);
   AC_CHECK(room.phase == MatchPhase::kIntermission);

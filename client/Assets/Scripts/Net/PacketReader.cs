@@ -16,7 +16,8 @@ namespace Ac.Net
         DuplicateEventId = 8,
     }
 
-    // C02 §5.1 / S03 §5.1 的 type 码表。11 = Join（昵称上报，ADR-009「握手时序」）。
+    // C02 §5.1 / S03 §5.1 的 type 码表。11 = Join（昵称上报，ADR-009「握手时序」）；
+    // 12 = UpgradeSelect（S16：波间购买升级，可靠 C→S）。
     public enum PacketType
     {
         Hello = 1,
@@ -30,6 +31,7 @@ namespace Ac.Net
         Fragment = 9,
         MatchState = 10,
         Join = 11,
+        UpgradeSelect = 12,
     }
 
     [Flags]
@@ -140,7 +142,7 @@ namespace Ac.Net
         public const byte ProtocolVersion = 2;
         // 码表上界（= 最后一个已分配的 type）。新增类型时与 wire.hpp 的 kMaxPacketType 一起改，
         // 否则收包路径会把新类型判成 BadType（见 Read 里的注释）。
-        public const byte MaxPacketType = (byte)PacketType.Join;
+        public const byte MaxPacketType = (byte)PacketType.UpgradeSelect;
         public const int CommonHeaderSize = 8;
         public const int ReliableHeaderSize = 12;
         public const int FragmentHeaderSize = 4;

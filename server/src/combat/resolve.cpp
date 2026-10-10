@@ -8,6 +8,7 @@
 #include "combat/rage.hpp"
 #include "combat/weapon.hpp"
 #include "config/player.hpp"
+#include "config/upgrades.hpp"
 #include "config/weapons.hpp"
 #include "core/math.hpp"
 #include "sim/arena.hpp"
@@ -72,7 +73,9 @@ void applyHit(World& world, Entity& shooter, const ShotTrace& trace, const ac::c
 
   const bool wasDowned = target.kind == EntityKind::kPlayer && target.downed.downed;
   ac::combat::DamageResult damage{};
-  ac::combat::computeDamage(def, trace.part, trace.distanceM, rage, target.armor, damage);
+  // S16：射手升级伤害乘数（默认 1.0 位等价）。
+  const double damageMultiplier = ac::config::upgradeDamageMultiplier(shooter.upgrade.damageLevel);
+  ac::combat::computeDamage(def, trace.part, trace.distanceM, rage, target.armor, damage, damageMultiplier);
   const double total = damage.hpDamage + damage.armorDamage;
   if (counters != nullptr) {
     counters->hits += 1u;
@@ -353,7 +356,9 @@ void resolveCombat(World& world, const Command* commands, uint32_t commandCount,
     if ((raw.buttons & ac::config::kButtonSwitchWeapon) != 0u) {
       ac::combat::switchSlot(entity.weapon, raw.switchTo, nowMs);
     }
-    if ((raw.buttons & ac::config::kButtonReload) != 0u) ac::combat::tryStartReload(entity.weapon, nowMs);
+    if ((raw.buttons & ac::config::kButtonReload) != 0u)
+      ac::combat::tryStartReload(entity.weapon, nowMs,
+                                 ac::config::upgradeReloadTimeMultiplier(entity.upgrade.reloadLevel));
     if ((raw.buttons & ac::config::kButtonRage) != 0u && ac::combat::activateRage(entity.rage, nowMs)) {
       pushEvent(world, kEventRageActivated, 0u, entity.id, entity.id, entity.pos.x, entity.pos.y, entity.pos.z,
                 ac::config::kRageDurationMs);

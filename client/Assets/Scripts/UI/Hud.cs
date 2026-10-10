@@ -44,6 +44,7 @@ namespace Ac.UI
         public bool Charging;
         public bool TargetInSight;     // 准星可命中目标
         public float SpreadDeg;        // 准星散布输入（度）= WeaponTable 基线 + 射击累计；夹取由 Crosshair 负责
+        public bool NearAmmoCrate;     // S16：本地玩家在补给箱交互半径内（显示"按住 E 补充弹药"）
     }
 
     // C10 §5(d)：字号四档 + 安全区 + 系统字体回退链；§5(a)/§5(e) 的时长常量也在这里。
@@ -209,8 +210,14 @@ namespace Ac.UI
             // 而事件通道写的是正在被救的队友的进度。无条件用采样覆盖，会让事件通道形同虚设（审计 A4）。
             if (sample.Downed) _revive.SetFromRatio255(sample.ReviveRatio255);
 
+            // S16：补给箱提示（本地玩家在箱子交互半径内且弹药未满）。
+            NearAmmoCrate = sample.NearAmmoCrate;
+
             if (sample.Charging && ChargeWarningRemainingMs <= 0f) ChargeWarningRemainingMs = ChargeWarningMs;
         }
+
+        // S16：本帧是否在补给箱提示半径内（来自 GameLoop 采样，OverlayModel 按它画"按住 E 补充弹药"）。
+        public bool NearAmmoCrate { get; private set; }
 
         // §5(b)：状态类事件立即刷新（命中/击杀/波次/救援），不等 100ms 窗口
         public bool PushEvent(in HudEvent hudEvent)

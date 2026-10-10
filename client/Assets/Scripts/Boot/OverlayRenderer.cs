@@ -70,6 +70,7 @@ namespace Ac.Boot
                 _drawnFrames += 1;
             }
             DrawSettings(layer);
+            DrawIntermissionActions(layer);
         }
 
         public static Rect SettingsButtonRect(int width, int height)
@@ -80,6 +81,22 @@ namespace Ac.Boot
         public static bool SettingsButtonContains(Vector3 mousePosition, int width, int height)
         {
             return SettingsButtonRect(width, height).Contains(new Vector2(mousePosition.x, height - mousePosition.y));
+        }
+
+        // S16：升级卡片点击区（与 OverlayModel.UpgradeCardArea 同一份几何）。
+        public static bool UpgradeCardContains(Vector3 mousePosition, int index, int width, int height)
+        {
+            int x, y, w, h;
+            OverlayModel.UpgradeCardArea(index, width, height, out x, out y, out w, out h);
+            return new Rect(x, y, w, h).Contains(new Vector2(mousePosition.x, height - mousePosition.y));
+        }
+
+        // S16：波间"准备出战"按钮点击区。
+        public static bool UpgradeReadyContains(Vector3 mousePosition, int width, int height)
+        {
+            int x, y, w, h;
+            OverlayModel.UpgradeReadyArea(width, height, out x, out y, out w, out h);
+            return new Rect(x, y, w, h).Contains(new Vector2(mousePosition.x, height - mousePosition.y));
         }
 
         private void Fill(Rect rect, int rgb)
@@ -229,6 +246,48 @@ namespace Ac.Boot
                 if (MenuButton(new Rect(672, 590, 256, 48), "返回  /  ESC", true)) layer.ToggleSettings();
             }
             finally { GUI.matrix = previousMatrix; GUI.color = Color.white; GUI.enabled = true; }
+        }
+
+        // S16 波间升级面板的输入侧：卡片点击 → 乐观购买（UpgradeModel.TryBuy，成功后 OnUpgrade
+        // 交给帧回路上行 UpgradeSelect）；准备按钮 → 翻转 ReadyHeld（与服务端清波重置同拍）。
+        // 卡片**绘制**由布局模型完成（可无头断言），这里只负责悬停高亮与点击，与大庭准备按钮同分工。
+        private void DrawIntermissionActions(PresentationLayer layer)
+        {
+            if (layer.SettingsInputBlocked) return;
+            var flow = layer.Flow;
+            if (flow == null || !flow.IntermissionVisible) return;
+            var upgrades = flow.Upgrades;
+            if (upgrades == null || !upgrades.Visible) return;
+            var mouse = Event.current.mousePosition;
+            var click = Event.current.type == EventType.MouseDown && Event.current.button == 0;
+            for (var i = 0; i < UpgradeModel.Count; i++)
+            {
+                if (!UpgradeCardContains(mouse, i, Screen.width, Screen.height)) continue;
+                if (click)
+                {
+                    upgrades.TryBuy(i);
+                    Event.current.Use();
+                }
+                else if (upgrades.CanAfford(i))
+                {
+                    // 悬停高亮描边（可买卡片本体由模型画；这里只在悬停时叠一层亮边提示可点）
+                    int x, y, w, h;
+                    OverlayModel.UpgradeCardArea(i, Screen.width, Screen.height, out x, out y, out w, out h);
+                    GUI.color = Rgb(0x50DDBB);
+                    GUI.DrawTexture(new Rect(x, y + h - 3, w, 3), _pixel);
+                    GUI.color = Color.white;
+                }
+            }
+            if (!UpgradeReadyContains(mouse, Screen.width, Screen.height)) return;
+            var sampler = GameBootstrap.Loop == null ? null : GameBootstrap.Loop.Sampler;
+            int rx, ry, rw, rh;
+            OverlayModel.UpgradeReadyArea(Screen.width, Screen.height, out rx, out ry, out rw, out rh);
+            if (MenuButton(new Rect(rx, ry, rw, rh),
+                    sampler != null && sampler.ReadyHeld ? OverlayModel.UpgradeReadyDoneText : OverlayModel.UpgradeReadyText, true)
+                && sampler != null)
+            {
+                sampler.SetReadyHeld(!sampler.ReadyHeld);
+            }
         }
 
         // 模型的口径 → IMGUI 的矩形（两者必须在这里对齐，否则"居中"会画到屏幕外）：

@@ -949,6 +949,12 @@ namespace Ac.Tests
             bytes.Add(0);        // rageLeft100Ms
             bytes.Add(0);        // downed
             bytes.Add(0);        // reviveRatio255
+            // S16：固定段 16 → 21，追加 5 字节升级段（points + 4 级，这里全 0）。
+            bytes.Add(0);        // upgradePoints
+            bytes.Add(0);        // upgradeDamage
+            bytes.Add(0);        // upgradeSpeed
+            bytes.Add(0);        // upgradeReload
+            bytes.Add(0);        // upgradeReserve
         }
 
         // type=6 事件帧载荷：tick u32 | count u8 | 条目块（见 EventCodec.DecodeFrame）。

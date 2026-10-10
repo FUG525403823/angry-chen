@@ -20,6 +20,9 @@ namespace Ac.Sim
         private double _reloadEndsAtMs;
         private double _nextFireAllowedAtMs;
         private double _spreadDeg;
+        // S16：换弹时长乘数（1.0 = 无升级）。服务端按 upgradeReloadTimeMultiplier(level) 起换弹，
+        // 客户端镜像同一乘数，换弹进度条才不会比服务端快/慢半拍。
+        private double _reloadTimeMultiplier = 1.0;
 
         public LocalWeapon()
         {
@@ -35,6 +38,13 @@ namespace Ac.Sim
             _reloadEndsAtMs = 0.0;
             _nextFireAllowedAtMs = 0.0;
             _spreadDeg = 0.0;
+            _reloadTimeMultiplier = 1.0;
+        }
+
+        // S16：随 MatchState 的本地玩家升级段刷新换弹乘数（等级 0 = 1.0）。
+        public void SetReloadTimeMultiplier(float multiplier)
+        {
+            _reloadTimeMultiplier = multiplier > 0f ? multiplier : 1f;
         }
 
         public int Slot { get { return _activeSlot; } }
@@ -48,6 +58,12 @@ namespace Ac.Sim
             if (_reloadEndsAtMs == 0.0) return 0.0;
             var remaining = _reloadEndsAtMs - nowMs;
             return remaining > 0.0 ? remaining : 0.0;
+        }
+
+        // S16：本次换弹的总时长（含升级乘数），HUD 进度条的分母要跟它走，不能再用裸 ReloadMs。
+        public double CurrentReloadMs
+        {
+            get { return WeaponTable.ReloadMs[WeaponTable.ClampSlot(_activeSlot)] * _reloadTimeMultiplier; }
         }
 
         // updateWeapon：换弹到点就补弹（从备弹取），散布在"距上次开火 ≥ kSpreadDecayDelayMs"后按
@@ -96,7 +112,7 @@ namespace Ac.Sim
             if (_reloadEndsAtMs != 0.0) return false;
             if (_magInSlot[_activeSlot] >= WeaponTable.MagSizeOf(_activeSlot)) return false;
             if (_reserveAmmo <= 0) return false;
-            _reloadEndsAtMs = nowMs + WeaponTable.ReloadMs[WeaponTable.ClampSlot(_activeSlot)];
+            _reloadEndsAtMs = nowMs + WeaponTable.ReloadMs[WeaponTable.ClampSlot(_activeSlot)] * _reloadTimeMultiplier;
             return true;
         }
 
