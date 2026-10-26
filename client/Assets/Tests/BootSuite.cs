@@ -30,6 +30,7 @@ namespace Ac.Tests
             SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
             SelfTest.Add("boot.match_start_reanchors_projection", ChecksMatchStartReanchorsProjection);
             SelfTest.Add("boot.reconnect_no_projection_overshoot", ChecksReconnectNoProjectionOvershoot);
+            SelfTest.Add("boot.reconnect_resets_render_history_and_clock", ChecksReconnectResetsRenderHistoryAndClock);
             SelfTest.Add("boot.upgrade_buy_sends_type12", ChecksUpgradeBuySendsType12);
             SelfTest.Add("boot.upgrade_levels_drive_local_sim", ChecksUpgradeLevelsDriveLocalSim);
             SelfTest.Add("boot.ready_cleared_on_wave_clear", ChecksReadyClearedOnWaveClear);
@@ -299,6 +300,61 @@ namespace Ac.Tests
             // 归零后不投影，渲染落在出生点附近（重生那一次吸附是合法行为）。
             SelfTest.True(Math.Abs(local.RenderZ - WalkTickMeters) < 1.0,
                 "重连后首帧不得把权威外推数十米（预测步数须随会话归零）", local.RenderZ.ToString("F4"));
+        }
+
+        private static void ChecksReconnectResetsRenderHistoryAndClock()
+        {
+            var now = 0.0;
+            var socket = new ScriptedSocket();
+            var transport = new UdpTransport(socket, delegate { return now; });
+            transport.AutoReconnect = true;
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.Transport = transport;
+            SelfTest.True(transport.Connect("mem", 0), "Connect 成功", "连接失败");
+            for (var i = 0; i < 40 && transport.State != ConnectionState.Connected; i++)
+            {
+                now += 50.0;
+                loop.Frame(0);
+            }
+            SelfTest.Equal((long)ConnectionState.Connected, (long)transport.State);
+            var frame = new SnapshotFrame
+            {
+                Tick = 100, ServerTimeMs = 1400, EntityCount = 1,
+                Entities = new[] { new FrameEntity { Id = 7, XCm = 900, HpRatioUnits = 255 } },
+                RemovedIds = new ushort[0]
+            };
+            SelfTest.True(loop.ApplySnapshot(frame), "旧会话快照", "被拒");
+            loop.Frame(0);
+            SelfTest.Equal(1, loop.Views.ActiveCount);
+
+            transport.Machine.OnDisconnect(DisconnectReason.Timeout, now);
+            socket.HelloSession = 1235;
+            // 只推进网络退避时间，不推进渲染时钟，确保新旧时间差小于自动跳钟阈值。
+            now += 2000.0;
+            loop.Frame(0); // Poll 内 BeginReconnect 增加计数；下一帧才消费重连复位。
+            SelfTest.Equal(1, transport.ReconnectAttempts);
+            loop.Frame(0);
+            SelfTest.Equal((long)ConnectionState.Connected, (long)transport.State);
+            SelfTest.Equal(0, loop.Views.ActiveCount);
+            SelfTest.Equal(0, (long)loop.View.AppliedTick);
+
+            EntityView remote = null;
+            for (uint tick = 1; tick <= 3; tick++)
+            {
+                frame.Tick = tick;
+                frame.BaselineTick = tick == 1 ? 0u : tick - 1;
+                frame.ServerTimeMs = 1100u + (tick - 1) * 50u;
+                frame.Entities[0] = new FrameEntity { Id = 8, XCm = (short)(tick * 100), HpRatioUnits = 255 };
+                SelfTest.True(loop.ApplySnapshot(frame), "新会话低 tick 快照", tick.ToString());
+                now += 50.0;
+                loop.Frame(50.0);
+                SelfTest.True(loop.Views.TryGet(8, out remote), "新会话远端可见", tick.ToString());
+                if (tick == 1)
+                    SelfTest.True(Math.Abs(remote.X - 1.0) < 0.00001, "首帧使用新会话姿态", remote.X.ToString("R"));
+            }
+            // 新时钟从1100-100ms起播；三次50ms后应插值到1150ms，而非沿旧1300ms播放头吸附最新帧。
+            SelfTest.True(Math.Abs(remote.X - 2.0) < 0.00001, "重连后恢复100ms延迟插值", remote.X.ToString("R"));
+            SelfTest.True(!loop.Views.TryGet(7, out remote), "旧会话实体不可残留", "仍然活跃");
         }
 
         // S16：波间买升级 → 上行 type=12 UpgradeSelect（可靠 C→S，1 字节 upgradeId）。

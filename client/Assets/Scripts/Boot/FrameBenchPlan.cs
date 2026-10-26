@@ -732,12 +732,12 @@ namespace Ac.Boot
             BenchJson.Meta(sb, 4, "gc0Delta", "GC.CollectionCount(0) 在同一批逐帧窗口里的差值之和");
             BenchJson.Meta(sb, 4, "drawCalls", useEngine
                 ? "引擎渲染统计（ProfilerCategory.Render/'Draw Calls Count'，逐帧取窗口内最大值）"
-                : "提交计数：PresentationLayer.SubmittedDraws（Graphics.DrawMeshInstanced 次数）+ 场地 MeshRenderer 数（" + _arenaRenderers
-                    + "）；取样本窗口内最大值。引擎侧渲染统计在本进程恒为 0，故不采用");
+                : "提交预算：PresentationLayer.SubmittedDraws（羊 Graphics.DrawMesh/DrawMeshInstanced 次数 + 启用队友模型 MeshRenderer 数）+ 场地 MeshRenderer 数（" + _arenaRenderers
+                    + "）；取样本窗口内最大值。MeshRenderer 是引擎剔除/批处理前口径，不是实测 draw calls；引擎侧统计在本进程恒为 0，故不采用");
             BenchJson.Meta(sb, 4, "triangles", useEngine
                 ? "引擎渲染统计（ProfilerCategory.Render/'Triangles Count'，逐帧取窗口内最大值）"
-                : "提交计数：PresentationLayer.SubmittedTriangles（羊身+额标网格三角形 × 实例数）+ ArenaStats.Triangles（" + _arenaTriangles
-                    + "）；取样本窗口内最大值");
+                : "提交预算：PresentationLayer.SubmittedTriangles（羊身+额标网格三角形 × 实例数 + 启用队友模型真实网格三角形）+ ArenaStats.Triangles（" + _arenaTriangles
+                    + "）；取样本窗口内最大值。MeshRenderer 是引擎剔除前口径，不是实测 GPU 三角形数");
             BenchJson.Meta(sb, 4, "particles", "Ac.View.Particles.LiveCount（特效层活粒子数，每帧 Update 后的实时值）；取样本窗口内最大值");
             BenchJson.Meta(sb, 4, "materials", "装配层实际持有的非空材质数（场地 6 + 羊身 + 额标）");
             BenchJson.TrimLastComma(sb);
@@ -775,7 +775,7 @@ namespace Ac.Boot
             BenchJson.Num(sb, 4, "arenaTriangles", _arenaTriangles);
             BenchJson.Num(sb, 4, "materialsLive", _materialsLive);
             BenchJson.Num(sb, 4, "submittedDrawsMax", _drawCallsMax - _arenaRenderers);
-            BenchJson.Num(sb, 4, "sheepTrianglesMax", _trianglesMax - _arenaTriangles);
+            BenchJson.Num(sb, 4, "submittedTrianglesMax", _trianglesMax - _arenaTriangles);
             BenchJson.Num(sb, 4, "engineDrawCallsMax", _engineDrawsMax);
             BenchJson.Num(sb, 4, "engineTrianglesMax", _engineTrianglesMax);
             BenchJson.Num(sb, 4, "drawnSheepMax", _drawnSheepMax);
@@ -839,6 +839,20 @@ namespace Ac.Boot
 
         private void FeedMatchState(PacketEncoder encoder, byte[] payload, ref PacketHeader header, uint tick)
         {
+            WriteMatchStatePayload(encoder, payload, tick);
+            header.Type = PacketType.MatchState;
+            _loop.OnPacket(header, payload);
+        }
+
+        public static byte[] BuildMatchStatePayload(uint tick)
+        {
+            var payload = BuildMatchStatePayload();
+            WriteMatchStatePayload(new PacketEncoder(), payload, tick);
+            return payload;
+        }
+
+        private static void WriteMatchStatePayload(PacketEncoder encoder, byte[] payload, uint tick)
+        {
             encoder.Begin(payload);
             encoder.U8(2);                          // phase = playing
             encoder.U8((byte)(tick / 20u % 4u + 1u));   // wave
@@ -861,11 +875,14 @@ namespace Ac.Boot
                 encoder.U8(0);                      // rageLeft
                 encoder.U8(0);                      // downed
                 encoder.U8(0);                      // reviveRatio
+                encoder.U8(0);                      // upgradePoints
+                encoder.U8(0);                      // upgradeDamage
+                encoder.U8(0);                      // upgradeSpeed
+                encoder.U8(0);                      // upgradeReload
+                encoder.U8(0);                      // upgradeReserve
             }
             encoder.U16(1);                          // localPid
             encoder.End();
-            header.Type = PacketType.MatchState;
-            _loop.OnPacket(header, payload);
         }
 
         // 昵称必须与 MatchStateCodec 的 MinNameBytes/MaxNameBytes（1..12）相容。
@@ -874,7 +891,7 @@ namespace Ac.Boot
             return index == 0 ? BenchLocalName : "bot" + (index + 1).ToString(CultureInfo.InvariantCulture);
         }
 
-        // MatchState 载荷：u8 phase + u8 wave + u16 intermission + u8 count + 4 × (16 定长 + 昵称字节) + u16 localPid。
+        // MatchState 载荷：u8 phase + u8 wave + u16 intermission + u8 count + 4 × (21 定长 + 昵称字节) + u16 localPid。
         // 解码器要求 Remaining == 0（多余字节 = BadLength），所以缓冲必须**恰好**这么长。
         private static byte[] BuildMatchStatePayload()
         {

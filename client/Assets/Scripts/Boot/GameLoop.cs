@@ -531,6 +531,7 @@ namespace Ac.Boot
                 {
                     _mirrorReconnectCount = reconnects;
                     _view.ResetForNewSession();
+                    _clock.Reset();
                     // 重连换了会话：未确认开火与本地武器镜像一并复位（旧会话的 seq 在新会话里毫无意义，
                     // 留着会让弹药账把新会话的前 20 条命令都当成"已确认"而丢弃）。
                     _weapon.Reset();

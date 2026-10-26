@@ -2,7 +2,7 @@
 //
 // 运行方式：gate **承载服务器运行时**（真 UDP 8788 + 真 HTTP 8787），把 ac_bot 拉成**独立进程**
 // （§8：机器人单独进程，CPU 记账因此只算服务器自己），每秒采样 CPU/RSS 与每客户端出站字节，
-// 跑完按 §5 的阈值表判定并写 build/server-perf.json；任一 fail → 退出码 1。
+// 跑完按 §5 的阈值表判定并写显式 --out 指定的报告；任一 fail → 退出码 1。
 #include <algorithm>
 #include <cstddef>
 #include <chrono>
@@ -62,7 +62,7 @@ constexpr ScenarioDef kScenarios[] = {
 
 struct Options {
   std::string scenario = "gate-4p2min";
-  std::string out = "build/server-perf.json";
+  std::string out;
   std::string botPath = "";
   std::uint16_t portBase = 8788u;
   std::uint32_t seed = 20260101u;
@@ -292,7 +292,7 @@ bool measureSoloServerCpu(const char* argv0, const Options& options, int players
       serverExecutable(argv0), "--serve", "--auto-ready",   // ADR-013：装载场景显式开启自动准备
       "--minutes=" + std::to_string((kPhaseSec + 5.0) / 60.0),
       "--udp-port=" + std::to_string(soloUdp), "--http-port=" + std::to_string(soloHttp),
-      "--data-dir=ac-gate-solo-data", "--seed=" + std::to_string(options.seed)};
+      "--data-dir=" + std::string(std::getenv("AC_DATA_DIR")) + "/solo", "--seed=" + std::to_string(options.seed)};
   if (!spawnChild(serverArgs[0], serverArgs, server, error)) return false;
   Child bots{};
   std::vector<std::string> botArgs{botExecutable(argv0, options), "--players=" + std::to_string(players),
@@ -436,9 +436,10 @@ double measureTimerGranularityMs() {
 }
 
 void printUsage(const char* argv0) {
-  std::printf("usage: %s [--scenario NAME] [--out PATH] [--bot PATH] [--port-base P] [--seed S]"
+  std::printf("usage: %s [--scenario NAME] --out PATH [--bot PATH] [--port-base P] [--seed S]"
               " [--break ID=VALUE]... [--minutes M 调试短跑]\n",
               argv0);
+  std::printf("  Required: AC_DATA_DIR; use absolute paths for --out and AC_DATA_DIR (see server/README.md).\n");
   for (const ScenarioDef& scenario : kScenarios) {
     std::printf("  %-12s players=%d sheep=%d minutes=%.1f%s%s\n", scenario.name, scenario.players,
                 scenario.sheep, scenario.minutes, scenario.isSoak ? " soak" : "",
@@ -500,15 +501,18 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "unknown scenario: %s\n", options.scenario.c_str());
     return 2;
   }
+  const char* dataDir = std::getenv("AC_DATA_DIR");
+  if (options.out.empty() || dataDir == nullptr || dataDir[0] == '\0') {
+    std::fprintf(stderr, "--out PATH and non-empty AC_DATA_DIR are required (see server/README.md)\n");
+    return 2;
+  }
   if (!ac::net::ensureWinsock()) {
     std::fprintf(stderr, "winsock init failed\n");
     return 1;
   }
 
   ac::server::RuntimeConfig config{};
-  // 门禁是工具、不是生产进程：默认不写 AC_DATA_DIR 的平台默认值（CI runner 非 root 建不了
-  // /var/lib/angry-chen）；显式设置了 AC_DATA_DIR 时仍按环境变量走（README §19.2）。
-  if (std::getenv("AC_DATA_DIR") == nullptr) config.dataDir = "ac-gate-data";
+  config.dataDir = dataDir;
   // ADR-013：装载门禁要的是"对局在跑"的流量，而 ac_bot 不发 Ready 位 ⇒ 这里显式开自动准备。
   config.isAutoReady = true;
   config.udpPort = options.portBase;

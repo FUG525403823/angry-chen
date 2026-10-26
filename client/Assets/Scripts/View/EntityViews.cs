@@ -8,6 +8,7 @@ namespace Ac.View
     public sealed class EntityView
     {
         public ushort Id;
+        public uint Lifetime;
         public byte Kind;
         public bool Visible;
         public double X;
@@ -122,7 +123,11 @@ namespace Ac.View
         {
             if (view == null) return 0;
             var count = view.CopyServerTimes(_times);
-            if (count <= 0) return _activeCount;
+            if (count <= 0)
+            {
+                while (_activeCount > 0) Release(_activeIds[_activeCount - 1]);
+                return 0;
+            }
 
             var renderTimeMs = clock == null ? 0.0 : clock.RenderTimeMs;
             int olderIndex;
@@ -131,10 +136,7 @@ namespace Ac.View
             var olderAge = count - 1 - olderIndex;
             var newerAge = count - 1 - newerIndex;
 
-            var older = default(SnapshotFrame);
-            SnapshotFrame newer;
-            var hasOlder = olderIndex != newerIndex && view.TryGetFrame(olderAge, out older);
-            if (!view.TryGetFrame(newerAge, out newer)) return _activeCount;
+            var hasOlder = olderIndex != newerIndex;
 
             _seenToken += 1;
             if (_seenToken == int.MaxValue)
@@ -142,12 +144,18 @@ namespace Ac.View
                 for (var i = 0; i < _seen.Length; i++) _seen[i] = 0;
                 _seenToken = 1;
             }
+            _snapshotSource = view;
             // 最新一帧的可见集合来自镜像本身（只读遍历）：它决定本帧该渲染谁、谁该回收。
             view.ForEachVisible(_visitor);
 
-            for (var i = 0; i < newer.EntityCount; i++)
+            for (var i = 0; i < _activeCount; i++)
             {
-                var record = newer.Entities[i];
+                FrameEntity record;
+                uint lifetime;
+                if (!view.TryGetRenderEntity(newerAge, _activeIds[i], out record, out lifetime)) continue;
+                FrameEntity current;
+                uint currentLifetime;
+                if (!view.TryGetRenderEntity(0, record.Id, out current, out currentLifetime) || lifetime != currentLifetime) continue;
                 if (record.Id >= 1 && record.Id <= Capacity && _seen[record.Id] != _seenToken) continue;  // 已在本帧被移除
                 var target = Get(record.Id);
                 if (target == null) continue;
@@ -171,9 +179,10 @@ namespace Ac.View
                 {
                     var targetPose = ToPose(record);
                     FrameEntity previous;
-                    if (hasOlder && view.TryGetEntityInFrame(olderAge, record.Id, out previous))
+                    uint previousLifetime;
+                    if (hasOlder && view.TryGetRenderEntity(olderAge, record.Id, out previous, out previousLifetime) && previousLifetime == lifetime)
                     {
-                        var alpha = Interpolation.InterpolationAlpha(renderTimeMs, older.ServerTimeMs, newer.ServerTimeMs);
+                        var alpha = Interpolation.InterpolationAlpha(renderTimeMs, _times[olderIndex], _times[newerIndex]);
                         var olderPose = ToPose(previous);
                         x = Interpolation.Lerp(olderPose.X, targetPose.X, alpha);
                         y = Interpolation.Lerp(olderPose.Y, targetPose.Y, alpha);
@@ -226,6 +235,8 @@ namespace Ac.View
 
         // 只读遍历的回调：既标记「本帧可见」（回收判据），也把 §5.3 规定「不插值」的字段
         // （kind/flags/hpRatio/state）直接取自最新帧；本地玩家无预测值时同样按最新帧姿态吸附。
+        private SnapshotView _snapshotSource;
+
         private void MarkVisible(ushort id, in FrameEntity entity)
         {
             if (id < 1 || id > Capacity) return;
@@ -233,16 +244,19 @@ namespace Ac.View
             var target = Get(id);
             if (target == null) return;
             // 本帧是否"新出现"必须在置 Visible 之前取：它决定要不要在这里吸附姿态。
-            var wasVisible = target.Visible;
+            FrameEntity current;
+            uint lifetime;
+            _snapshotSource.TryGetRenderEntity(0, id, out current, out lifetime);
+            var wasVisible = target.Visible && target.Lifetime == lifetime;
+            if (!wasVisible) target.Smoother.Reset();
+            target.Lifetime = lifetime;
             target.Visible = true;
             target.Kind = (byte)(entity.KindFlags & EntityRecord.KindMask);
             target.Flags = entity.KindFlags;
             target.HpRatio = Quantize.DequantizeRatio(entity.HpRatioUnits);
             target.State = entity.State;
             // 姿态只能有两个来源：①本地玩家无预测值 ⇒ 按最新帧吸附（原有语义）；
-            // ②**本帧新出现**的实体 ⇒ 同样必须在这里吸附。最新帧是**差分**帧，没变化过的实体
-            //   根本不在它的记录里，而下面的插值循环只遍历差分记录 ⇒ 不吸附就会以 (0,0,0)
-            //   在场地中心渲染若干帧（100–250ms）才被覆盖（审计 M7）。
+            // ②新出现或复用 ID 的实体从最新权威姿态开始，不插值到上一生命周期。
             var snapFromMirror = id != LocalPlayerId ? !wasVisible : !target.HasPrediction;
             if (!snapFromMirror) return;
             target.X = Quantize.DequantizePosition(entity.XCm);

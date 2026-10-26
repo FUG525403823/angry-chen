@@ -1,7 +1,8 @@
 # 跨语言对拍向量（fixture）
 
 > 冻结契约：S07 §5（口径 / 比较规则 / 再生成纪律）与 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §6、§8。
-> 真值来源：冻结的 v1 实现 `D:\projects\tmp\angry-chen-bak`——**全程只读**，任何补丁与导出只作用于可写派生副本。
+> 当前版本：2026-10-26 ADR-019 已批准 **targeting-v2**，活动14条中10条由真实新C++服务端生成，4条保持冻结TS原产物；旧10条及旧实现保存在 `legacy/targeting-v1/`，不自动重复运行。详见§8。
+> 历史真值来源（下文§1–7保留原批次证据）：冻结的 v1 实现 `D:\projects\tmp\angry-chen-bak`——**全程只读**。旧字节统计与旧TS `--check 14/14` 是历史结果，不代表targeting-v2。
 > 本批口径变更：**存「怎么跑」而不是「跑出来的每一帧」**（种子 + 初态 + 命令脚本 + 每 tick 全量投影的哈希链 + 少量关键帧）。
 > 两侧都**重算**同一份全量投影再比对，逐位强度不变；每 tick 落到盘上的是 8 字节链节点（16 位十六进制），不再是 ~950 B 的投影文本。
 
@@ -210,3 +211,27 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 > 结论（未变）：这是 ADR-010 §8 的**双侧契约变更**，不是"服务端单方面换格式"。服务端保证 v2 向量在盘上自洽
 > （`--check` 14/14、体积门 272 291 B ≤ 524 288 B）；客户端侧的读取与比较按上表通过。缺口与风险照本目录 §6 的口径登记，
 > 本节不放宽任何门限；9 份 `NotReplayable` 是**登记在案的缺口**，不是静默跳过（跳过必须给出理由，理由不成立即红）。
+
+## 8. ADR-019 行为版本 targeting-v2（2026-10-26）
+
+人类已明确批准“版本化更新受影响向量（推荐）”。这不是schema升级，也不是允许迁就实现任意改期望值：只对已证明与多人稳定选敌冲突的10条重建。活动14份总计 **273702 B**，最大 **59115 B**，仍遵守64 KiB/份与512 KiB/批原门限。旧10份逐字节保存在 `legacy/targeting-v1/`；完整SHA256清单和首差异tick见 [server-targeting evidence](../server-targeting-2026-10-26.md)。旧§1字节数/冻结TS检查结论仅属历史批次。
+
+- schema `version=2` / `configHash=19a978ea` / setup / script / keyframe tick集合 / snapshot tick集合均不变；行为版本在本节、ADR和证据中明确记录。
+- 新数据来源是当前C++ `stepWorld` + 外部导演 + 真正快照encode/decode，不是冻结TS。`server/tools/export-targeting-fixtures.cpp`复用现有`fixture_test.cpp`的初态与投影helper；它是独立离线进程，不修改测试比较流程。`tools/update-targeting-fixtures.mjs`复用原export serializer，先算完10份并执行原大小门后才写活动文件；`--check`重新运行真实服务端逐字节校验。
+- `tools/export-fixtures.mjs`仍只代表冻结TS：活动目录存在legacy版本时拒绝默认写入/检查，防止把targeting-v2误覆为旧规则。需要旧TS比较时显式`--out server/build/targeting-frozen-ts`；`--list`只读活动顶层清单。原§5默认写盘/`--check`命令不再适用于活动规则。
+- C++用例按显式名称加载顶层14份；C#两处`Directory.GetFiles(dir,"*.json")`只枚举顶层。`legacy/`不会被当作新活动fixture；没有新增跳过分支。目录递归总字节可包含档案，但活动大小门只按顶层14份判定。
+- C#现状：`FixtureSuite`校验14份shape（含判别性探针）；`FixturePredictSuite`仅对5份重放玩家运动学，9份按既有理由校验。不模拟羊AI，也不重算全量hash；elite的player1关键帧仅末帧HP改变，既有比较只包含位置/朝向，不能把C#通过称为羊AI双实现等价。客户端实际验证由主代理记录，不能新增豁免。
+
+复现（仓库根，使用本机可用的 CMake generator/toolchain；不改gate/CI）：
+
+```text
+cmake -S server -B build/targeting-exporter -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/targeting-exporter --target ac_export_targeting --config Debug
+node tools/update-targeting-fixtures.mjs --build-dir build/targeting-exporter --config Debug --check
+# 仅经批准重生成时去掉 --check；也可指定现有 exporter 的绝对路径：
+node tools/update-targeting-fixtures.mjs --exporter <absolute-path-to-ac_export_targeting> --check
+```
+
+`--build-dir`默认`server/build`；自动适配平台`.exe`后缀及单配置根目录、多配置`Debug`/`Release`等子目录。存在多个产物时必须用`--config`或`--exporter`明确选择；多配置构建用`--config Debug`或`--config Release`，单配置构建用对应的`CMAKE_BUILD_TYPE`。中间JSONL写入`<build-dir>/reports/targeting-fixtures/`（自动创建），缺少binary时先报搜索路径与CMake构建命令，不修改fixture。
+
+历史结果：生成10/10、幂等10/10、`fixture_`21/21 exit0。完整CTest另有runtime.start/vector断言失败，不宣称全量验收通过。`ac_export_targeting`会自动构建并链接`ac_core`和fixture读取依赖，无需先构建`ac_tests`或手工链接本地静态库；此离线工具不接入CTest或CI。

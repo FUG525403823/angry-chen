@@ -27,8 +27,18 @@ namespace Ac.View
         public const double CorpseDarken = 0.62;
 
         private readonly SheepInstancePool _pool;
-        private readonly double[] _deathMs = new double[SheepInstancePool.EntityCapacity];
-        private readonly bool[] _dead = new bool[SheepInstancePool.EntityCapacity];
+        private struct EntityState
+        {
+            public bool Tracked, Seen, Dead;
+            public int ActiveIndex;
+            public uint Lifetime;
+            public double DeathMs, Emblem;
+        }
+        // Wire entity capacity is fixed; state follows identity, not draw order.
+        private readonly EntityState[] _states = new EntityState[EntityViews.Capacity + 1];
+        private readonly ushort[] _active = new ushort[ushort.MaxValue + 1];
+        private int _activeCount;
+        private bool _frameOpen;
 
         public int SkippedCount { get; private set; }
         public int CorpseCount { get; private set; }
@@ -40,6 +50,38 @@ namespace Ac.View
         // 同形态累计到 PerFormCapacity(256) 之后 TryAcquire 恒返 -1，羊会静默消失。
         public void BeginFrame()
         {
+            if (_frameOpen) EndFrame();
+            _frameOpen = true;
+            for (var i = 0; i < _activeCount; i++) _states[_active[i]].Seen = false;
+            _pool.Reset();
+            SkippedCount = 0;
+            CorpseCount = 0;
+        }
+
+        // Call Write for every current sheep, including invisible/pool-overflow sheep.
+        public void EndFrame()
+        {
+            if (!_frameOpen) return;
+            for (var i = _activeCount - 1; i >= 0; i--)
+                if (!_states[_active[i]].Seen) Remove(_active[i]);
+            _frameOpen = false;
+        }
+
+        // Explicit removal also handles an ID removed and reused between render frames.
+        public void Remove(ushort id)
+        {
+            if (id >= _states.Length || !_states[id].Tracked) return;
+            var index = _states[id].ActiveIndex;
+            var moved = _active[--_activeCount];
+            _active[index] = moved;
+            _states[moved].ActiveIndex = index;
+            _states[id] = default(EntityState);
+        }
+
+        public void Clear()
+        {
+            while (_activeCount > 0) Remove(_active[_activeCount - 1]);
+            _frameOpen = false;
             _pool.Reset();
             SkippedCount = 0;
             CorpseCount = 0;
@@ -54,6 +96,12 @@ namespace Ac.View
         public static double SmoothEmblem(double previous, double target)
         {
             return previous + (target - previous) * EmblemSmoothingPerTick;
+        }
+
+        public static double SmoothEmblem(double previous, double target, double dtMs)
+        {
+            if (!(dtMs > 0)) return previous;
+            return previous + (target - previous) * (1.0 - System.Math.Exp(-dtMs / 300.0));
         }
 
         public static SheepAnim MapState(byte state)
@@ -86,38 +134,44 @@ namespace Ac.View
         }
 
         // §9：写一条实例；返回实例下标，剔除或池满返回 -1
-        public int Write(in EntityView view, double nowMs)
-        {
-            if (!view.Visible) { SkippedCount += 1; return -1; }
-            var kind = SheepMesh.KindOf(view.Kind);
-            var form = SheepMesh.Form(kind);
-            int index;
-            if (_pool.TryAcquire((int)kind, out index) < 0) { SkippedCount += 1; return -1; }
+        public int Write(in EntityView view, double nowMs) { return Write(view, nowMs, 50.0); }
 
+        public int Write(in EntityView view, double nowMs, double dtMs)
+        {
+            var id = view.Id;
+            if (id == 0 || id >= _states.Length) { SkippedCount += 1; return -1; }
+            if (_states[id].Tracked && _states[id].Lifetime != view.Lifetime) Remove(id);
+            var state = _states[id];
+            if (!state.Tracked)
+            {
+                state.Tracked = true;
+                state.Lifetime = view.Lifetime;
+                state.ActiveIndex = _activeCount;
+                _active[_activeCount++] = id;
+                state.Emblem = EmblemIntensity(view.HpRatio);
+            }
+            state.Seen = true;
+            state.Emblem = SmoothEmblem(state.Emblem, EmblemIntensity(view.HpRatio), dtMs);
             var anim = MapAnim(view.State, view.Flags);
             var shrink = 1f;
             var sink = 0f;
             var darken = 1f;
+            var expired = false;
             if (anim == SheepAnim.Dead || (view.Flags & FlagFading) != 0)
             {
-                if (!_dead[index]) { _dead[index] = true; _deathMs[index] = nowMs; }
-                var progress = CorpseProgress(nowMs - _deathMs[index]);
+                if (!state.Dead) { state.Dead = true; state.DeathMs = nowMs; }
+                var progress = CorpseProgress(nowMs - state.DeathMs);
                 CorpseParams(progress, out shrink, out sink, out darken);
                 CorpseCount += 1;
-                if (progress >= 1.0)
-                {
-                    var finished = _pool.Instances[index];
-                    finished.Visible = false;
-                    _pool.Instances[index] = finished;
-                    SkippedCount += 1;
-                    return -1;
-                }
+                expired = progress >= 1.0;
             }
-            else if (_dead[index])
-            {
-                _dead[index] = false;
-            }
-
+            else state.Dead = false;
+            _states[id] = state;
+            if (!view.Visible || expired) { SkippedCount += 1; return -1; }
+            var kind = SheepMesh.KindOf(view.Kind);
+            var form = SheepMesh.Form(kind);
+            int index;
+            if (_pool.TryAcquire((int)kind, out index) < 0) { SkippedCount += 1; return -1; }
             // §5(b)：团抖动以 EntityId 为种子，落在逐实例尺寸上（网格按羊形共用一份，装不下逐羊差异）
             var scale = (float)form.Scale * shrink * SheepMesh.WoolJitter(kind, view.Id);
             // 用权威坐标：§4 任务 3 要求写 x/y/z；逐实体误差平滑（C04 的 Smoother）是玩家与近处实体的活，
@@ -134,7 +188,7 @@ namespace Ac.View
             instance.Kind = (byte)kind;
             instance.State = (byte)anim;
             instance.Visible = true;
-            instance.EmblemIntensity = (float)SmoothEmblem(instance.EmblemIntensity, EmblemIntensity(view.HpRatio));
+            instance.EmblemIntensity = (float)state.Emblem;
             _pool.Instances[index] = instance;
             return index;
         }

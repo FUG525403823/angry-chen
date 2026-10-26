@@ -9,7 +9,7 @@
     player  窗口化出包 player 跑正式判定：引擎自己的帧循环渲染（无手动 Camera.Render）。
     editor  -batchmode 编辑器路径，保留为**诊断口径**：它那份数字照旧打印，但不参与判定
             （batchmode 里引擎不做任何渲染，帧时间是手动 Camera.Render() 的地板）。
-    auto    默认：有 <Project>/Build/Windows64/*.exe 就用 player，否则退回 editor。
+    auto    默认：仅用 release/latest.txt 成功发布所对应的 stage player，否则退回 editor。
   Usage: pwsh -File client/tools/frame-bench.ps1 [-Runs 3] [-Mechanism auto|editor|player]
   Exit: 0 = PASS, 1 = FAIL (over budget / schema mismatch), 2 = environment unusable, or the
         run's verdict is not PASS (a synthetic load or an unmeasured metric is never a pass).
@@ -41,25 +41,15 @@ if ($Frames -lt 1) { Write-Host "ENV: -Frames must be >= 1"; exit 2 }
 if ($TimeoutSeconds -lt 1) { Write-Host "ENV: -TimeoutSeconds must be >= 1"; exit 2 }
 if ([string]::IsNullOrWhiteSpace($Project) -or -not (Test-Path (Join-Path $Project "ProjectSettings/ProjectVersion.txt"))) { Write-Host "ENV: no Unity project at $Project"; exit 2 }
 
-function Find-PlayerExe([string]$project) {
-    $dir = Join-Path $project "Build/Windows64"
-    if (-not (Test-Path $dir)) { return $null }
-    # Unity 的 player 布局：<name>.exe 旁边有 <name>_Data 目录。不能只按名字取第一个 ——
-    # 同目录里的 TuanjieCrashHandler64.exe 排序在前，取错了就等于拿崩溃处理器当被测进程。
-    $exe = @(Get-ChildItem -Path $dir -Filter *.exe -File -ErrorAction SilentlyContinue)
-    foreach ($candidate in $exe) {
-        if (Test-Path -LiteralPath (Join-Path $dir ($candidate.BaseName + "_Data"))) { return $candidate.FullName }
-    }
-    return $null
-}
-if ([string]::IsNullOrWhiteSpace($Player)) { $Player = Find-PlayerExe $Project }
+. (Join-Path $PSScriptRoot 'lib/player-discovery.ps1')
+$Player = Resolve-PublishedPlayer -Project $Project -Player $Player
 $playerOk = -not [string]::IsNullOrWhiteSpace($Player) -and (Test-Path -LiteralPath $Player)
 $unityOk = -not [string]::IsNullOrWhiteSpace($Unity)
 if ($Mechanism -eq "auto") {
     $Mechanism = if ($playerOk) { "player" } else { "editor" }
     Write-Host ("mechanism auto -> " + $Mechanism)
 }
-if ($Mechanism -eq "player" -and -not $playerOk) { Write-Host "ENV: -Mechanism player but no built player at <Project>/Build/Windows64/*.exe (build it with client/build.ps1, or pass -Player)"; exit 2 }
+if ($Mechanism -eq "player" -and -not $playerOk) { Write-Host "ENV: -Mechanism player but no published player via <Project>/Build/Windows64/release/latest.txt (build it with client/build.ps1, or pass -Player)"; exit 2 }
 if ($Mechanism -eq "editor" -and -not $unityOk) { Write-Host "ENV: no Unity executable (set AC_UNITY or pass -Unity)"; exit 2 }
 if ($Mechanism -eq "player" -and -not $unityOk) { Write-Host "WARN: no Unity executable - the editor diagnostic run is skipped" }
 if ($Mechanism -eq "player") { Write-Host ("player exe: " + $Player) }

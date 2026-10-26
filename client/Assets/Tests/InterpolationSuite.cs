@@ -259,6 +259,7 @@ namespace Ac.Tests
             var second = MakeFrame(2, 1050, 0);
             PutEntity(ref second, 7, 3.0, 0.0, 0.0);
             SelfTest.True(view.ApplyFrame(second), "帧 2 应用", "被丢弃");
+            clock.Advance(50.0);
             clock.OnSnapshot(1050, 50.0);
             clock.Advance(75.0);
 
@@ -282,7 +283,7 @@ namespace Ac.Tests
             SelfTest.True(Math.Abs(views.LastAuthorityX - 3.0) < 1e-9, "权威基线来自只读镜像", views.LastAuthorityX.ToString("R"));
         }
 
-        // §5.1/§5.3：动态延迟 clamp(2*中位数, 100, 250)、单帧修正量 ±50ms、超 500ms 直接重置。
+        // ADR-020：动态延迟、到包不回拨、超 500ms 显式重新锚定。
         private static void ChecksJitter50Ms()
         {
             SelfTest.Equal(Interpolation.DelayMs, Interpolation.DynamicDelayMs(20));
@@ -305,12 +306,13 @@ namespace Ac.Tests
                 SelfTest.True(view.ApplyFrame(frame), "丢包回环帧必须应用", "被丢弃");
                 if (i > 0) clock.Advance(arrivals[i] - arrivals[i - 1]);
                 var before = clock.EstimatedServerTimeMs;
+                var beforeRender = clock.RenderTimeMs;
                 clock.OnSnapshot(serverTimeMs, arrivals[i]);
                 if (i > 0)
                 {
                     var correction = clock.EstimatedServerTimeMs - before;
                     SelfTest.True(correction <= Interpolation.JitterAbsorbMs + 1e-9, "单帧修正量不超过 50ms", correction.ToString("R"));
-                    SelfTest.True(clock.EstimatedServerTimeMs <= serverTimeMs + 1e-9, "估计值不越过目标值", clock.EstimatedServerTimeMs.ToString("R"));
+                    SelfTest.True(clock.RenderTimeMs >= beforeRender, "到包不使播放时间倒退（ADR-020）", clock.RenderTimeMs.ToString("R"));
                 }
                 views.SyncFrame(view, clock, 16.0);
                 EntityView entity;

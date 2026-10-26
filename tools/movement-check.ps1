@@ -13,7 +13,7 @@ if (!$OutFile) { $OutFile = Join-Path $root 'build/movement-stutter/results.json
 if ([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -match '^UnityEngine' }) { throw 'Refusing to load or run with Unity assemblies.' }
 $files = @('Boot/GameLoop.cs','View/EntityViews.cs','View/Interpolation.cs','View/ErrorSmoother.cs','Core/InputSampler.cs','Core/MiniJson.cs','Core/FrameProfiler.cs')
 $files += @(Get-ChildItem (Join-Path $SourceDirectory 'Sim') -Filter '*.cs' | Where-Object { $_.Name -notin @('FixtureLoader.cs','RepoPaths.cs') } | ForEach-Object { 'Sim/' + $_.Name })
-$files += @(Get-ChildItem (Join-Path $SourceDirectory 'Net') -Filter '*.cs' | Where-Object { $_.Name -in @('CommandCodec.cs','EventCodec.cs','EventIdTracker.cs','LocalIdentity.cs','MatchStateCodec.cs','PacketReader.cs','PacketWriter.cs','SnapshotCodec.cs') } | ForEach-Object { 'Net/' + $_.Name })
+$files += @(Get-ChildItem (Join-Path $SourceDirectory 'Net') -Filter '*.cs' | Where-Object { $_.Name -in @('CommandCodec.cs','EventCodec.cs','EventIdTracker.cs','LocalIdentity.cs','MatchStateCodec.cs','PacketReader.cs','PacketWriter.cs','SnapshotCodec.cs','UpgradeCodec.cs') } | ForEach-Object { 'Net/' + $_.Name })
 $sources = @(); $hashes = @(); $usings = @('using System;','using Ac.Boot;','using Ac.Core;','using Ac.Net;','using Ac.Sim;','using Ac.UI;','using Ac.View;')
 foreach ($rel in $files) {
   $path = Join-Path $SourceDirectory $rel
@@ -27,8 +27,9 @@ foreach ($rel in $files) {
 }
 $stubs = @'
 namespace UnityEngine {
+ public static class Debug { public static void Log(object message) {} }
  public enum KeyCode { Alpha1 = 49, Alpha2 = 50, Alpha3 = 51, W,S,A,D,LeftShift,RightShift,Space,Mouse0,R,E,F,Q,Return }
- public static class Application { public static bool isPlaying { get { return false; } } public static bool isFocused { get { return true; } } }
+ public static class Application { public static bool isPlaying { get { return false; } } public static bool isFocused { get { return true; } } public static bool isBatchMode { get { return true; } } }
  public static class Input { public static float GetAxisRaw(string name){throw new System.InvalidOperationException("Use injected input only");} public static bool GetKey(KeyCode code){throw new System.InvalidOperationException("Use injected input only");} }
 }
 namespace Ac.Sim { public static class RepoPaths { public static string Locate(string path) { throw new System.InvalidOperationException("Install real trig JSON explicitly"); } } }
@@ -43,11 +44,12 @@ namespace Ac.Net {
   public void Poll(int limit){throw new System.InvalidOperationException("No network in harness");}
  }
 }
+namespace Ac.View { public static class CrateVisuals { public const byte KindPickup = 3; } }
 namespace Ac.UI {
  public struct HudEvent {public EventType Type;public int HitFlags,TargetId,SubjectId,Wave,ReviveRatio255,WaveSize;public short HitX,HitY,HitZ;}
- public struct HudSample {public int HpRatio255,Mag,MagSize,Reserve,ReloadLeft10Ms,Rage,RageLeft100Ms,ReviveRatio255,Wave,IntermissionMs;public byte Phase;public bool Downed,RageMode,Reloading,Charging,AmmoDataReady,TargetInSight;public float ReloadProgress,NearestAllyDistanceM,SpreadDeg;}
+ public struct HudSample {public int HpRatio255,Mag,MagSize,Reserve,ReloadLeft10Ms,Rage,RageLeft100Ms,ReviveRatio255,Wave,IntermissionMs;public byte Phase;public bool Downed,RageMode,Reloading,Charging,AmmoDataReady,TargetInSight,NearAmmoCrate;public float ReloadProgress,NearestAllyDistanceM,SpreadDeg;}
  public sealed class AmmoCounter { public bool DataReady { get { return false; } } public float ReloadProgress { get { return 0f; } } public bool Reloading { get { return false; } } public int Mag { get { return 0; } } public int MagSize { get { return 1; } } public int Reserve { get { return 0; } } public int ReloadLeft10Ms { get { return 0; } } public float ReloadRingMs { get { return ReloadLeft10Ms * 10f; } } public bool IsLow { get { return false; } } public int Color { get { return 0; } } }
- public sealed class Hud {public const byte PhaseLobby=0;public static bool CombatUiVisible(byte phase){return phase==2||phase==3;}public void Apply(HudSample s){}public void Tick(float dt){}public void PushEvent(HudEvent e){}public AmmoCounter Ammo{get{return new AmmoCounter();}}}
+ public sealed class Hud {public const byte PhaseLobby=0,PhaseLoading=1,PhasePlaying=2,PhaseIntermission=3,PhaseEnded=4;public static bool CombatUiVisible(byte phase){return phase==PhasePlaying;}public void Apply(HudSample s){}public void Tick(float dt){}public void PushEvent(HudEvent e){}public AmmoCounter Ammo{get{return new AmmoCounter();}}}
 }
 '@
 $checks = @'
@@ -113,14 +115,17 @@ $bootPath=$BootSuitePath
 if(!$bootPath){$bootPath=Join-Path $root 'client/Assets/Tests/BootSuite.cs'}
 $boot=[IO.File]::ReadAllText($bootPath)
 $walkStart=$boot.IndexOf('        private static void ChecksLocalMotionIndependentOfSendRate()')
-$walkEnd=$boot.IndexOf('        private static void ChecksHudAmmoRage()')
+$lastWalkStart=$boot.IndexOf('        private static void ChecksNoCameraFlicker()')
+$walkEnd=if($lastWalkStart -ge 0){$boot.IndexOf('        private static void ', $lastWalkStart + 1)}else{-1}
+$walkHelpersStart=$boot.IndexOf('        private const double WalkTickMeters')
+$walkHelpersEnd=if($walkHelpersStart -ge 0){$boot.IndexOf('        private static void ', $walkHelpersStart)}else{-1}
 $newLoopStart=$boot.IndexOf('        private static GameLoop NewLoop(')
 $newLoopEnd=$boot.IndexOf('        private static void Feed(', $newLoopStart)
 $mshStart=$boot.IndexOf('        private static PacketHeader MatchStateHeader()')
 $msbStart=$boot.IndexOf('        private static byte[] MatchStateBytes', $mshStart)
 $msbEnd=$boot.IndexOf('        private static void ChecksCommandUplink()', $msbStart)
-if($walkStart -lt 0 -or $walkEnd -le $walkStart -or $newLoopStart -lt 0 -or $newLoopEnd -le $newLoopStart -or $mshStart -lt 0 -or $msbEnd -le $msbStart){throw 'Existing BootSuite extraction anchors changed.'}
-$existing='namespace MovementOffline { public static class ExistingWalk {'+$boot.Substring($walkStart,$walkEnd-$walkStart)+$boot.Substring($mshStart,$msbEnd-$mshStart)+$boot.Substring($newLoopStart,$newLoopEnd-$newLoopStart)+@'
+if($walkStart -lt 0 -or $walkEnd -le $walkStart -or $walkHelpersStart -lt 0 -or $walkHelpersEnd -le $walkHelpersStart -or $newLoopStart -lt 0 -or $newLoopEnd -le $newLoopStart -or $mshStart -lt 0 -or $msbEnd -le $msbStart){throw 'Existing BootSuite extraction anchors changed.'}
+$existing='namespace MovementOffline { public static class ExistingWalk {'+$boot.Substring($walkStart,$walkEnd-$walkStart)+$boot.Substring($walkHelpersStart,$walkHelpersEnd-$walkHelpersStart)+$boot.Substring($mshStart,$msbEnd-$mshStart)+$boot.Substring($newLoopStart,$newLoopEnd-$newLoopStart)+@'
  public static Result Run(int test) {var names=new[]{"existing-boot.local_pose_from_prediction","existing-boot.no_camera_flicker","boot.remote_motion_render_cadence","boot.local_motion_independent_of_send_rate"};var r=new Result{name=names[test],fps=test<2?40:0};try{if(test==0)ChecksLocalPoseFromPrediction();else if(test==1)ChecksNoCameraFlicker();else if(test==2)ChecksRemoteMotionRenderCadence();else ChecksLocalMotionIndependentOfSendRate();r.passed=true;}catch(Exception e){r.error=e.Message;}return r;}
  }}
  namespace Ac.Core { public static class SelfTest {
@@ -150,7 +155,7 @@ foreach($case in @(0,1,2,3)){$rows += [MovementOffline.ExistingWalk]::Run($case)
 $report=[ordered]@{
  mode='actual-pure-production-with-external-stubs-not-unity';passed=@($rows|Where-Object {!$_.passed}).Count -eq 0
  sourceDirectory=$SourceDirectory;sourceHashes=$hashes
- limitations=@('Actual GameLoop Frame/ApplySnapshot, EntityViews, SnapshotView, Interpolation, Predictor, LocalStep, Reconciler, CommandBuffer and InputSampler are compiled from source unchanged; not a client build.', 'Only injected InputSampler.SetKey is exercised. Unity Input stubs throw if reached; Unity DLLs are neither loaded nor referenced.', 'HUD is no-op and transport is disconnected/throwing; no GUI, audio, game, socket, GPU or Unity runtime validation.', 'Remote constant velocity trace is synthetic, in-order, no loss/jitter; local motion uses one authoritative seed outside barn then real 30Hz input with no subsequent reconciliation.')
+ limitations=@('Actual GameLoop Frame/ApplySnapshot, EntityViews, SnapshotView, Interpolation, Predictor, LocalStep, Reconciler, CommandBuffer and InputSampler are compiled from source unchanged; not a client build.', 'Only injected InputSampler.SetKey is exercised. Unity Input stubs throw if reached; Unity DLLs are neither loaded nor referenced.', 'HUD and Debug.Log are no-op, Application.isBatchMode is true, CrateVisuals supplies only the production pickup kind constant, and transport is disconnected/throwing; no HUD rendering, crate visuals, diagnostic logging, GUI, audio, game, socket, GPU or Unity runtime validation.', 'Remote constant velocity trace is synthetic, in-order, no loss/jitter; local motion uses one authoritative seed outside barn then real 30Hz input with no subsequent reconciliation.')
  tests=$rows
 }
 $dir=Split-Path -Parent $OutFile;if(!(Test-Path $dir)){New-Item -ItemType Directory -Force $dir|Out-Null}

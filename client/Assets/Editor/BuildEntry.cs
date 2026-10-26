@@ -9,7 +9,7 @@ using UnityEngine;
 namespace Ac.Editor
 {
     // C01 §5.3：唯一构建入口，由 client/build.ps1 以 -executeMethod 调用。
-    // 参数：-target <名称>（当前只实现 Windows64）、-output <目录或 .exe 路径>（缺省 Build/Windows64，相对本工程根）。
+    // 参数：-target Windows64、-output <目录>（相对本工程根）；发布脚本传入独立 stage 目录。
     // 退出码：0 = 出包成功；1 = 构建失败。
     public static class BuildEntry
     {
@@ -106,10 +106,13 @@ namespace Ac.Editor
 
         private static string ResolveExecutablePath(string projectRoot, string output)
         {
-            var rooted = Path.IsPathRooted(output) ? output : Path.Combine(projectRoot, output);
-            return output.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-                ? Path.GetFullPath(rooted)
-                : Path.GetFullPath(Path.Combine(rooted, ExecutableName));
+            if (string.IsNullOrWhiteSpace(output) ||
+                output.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    .EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("-output must be a directory, not an exe path", nameof(output));
+            var rooted = Path.GetFullPath(Path.IsPathRooted(output) ? output : Path.Combine(projectRoot, output));
+            if (File.Exists(rooted)) throw new ArgumentException("-output must not be a file", nameof(output));
+            return Path.Combine(rooted, ExecutableName);
         }
 
         private static string GetArgument(string name)

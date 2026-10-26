@@ -21,6 +21,11 @@ namespace Ac.Tests
             SelfTest.Add("sheep.culling", ChecksCulling);
             SelfTest.Add("sheep.pool_reset_multiform", ChecksPoolResetMultiForm);
             SelfTest.Add("sheep.visuals_begin_frame", ChecksVisualsBeginFrame);
+            SelfTest.Add("sheep.entity_state_reorder", ChecksEntityStateReorder);
+            SelfTest.Add("sheep.entity_state_lifecycle", ChecksEntityStateLifecycle);
+            SelfTest.Add("sheep.entity_state_emblem", ChecksEntityStateEmblem);
+            SelfTest.Add("sheep.entity_state_overflow", ChecksEntityStateOverflow);
+            SelfTest.Add("sheep.entity_state_zero_alloc", ChecksEntityStateZeroAlloc);
         }
 
         // 审计 A8：下标是 form*256+cursor，Reset 只清连续前缀会留下跨步区间的幽灵实例。
@@ -48,6 +53,103 @@ namespace Ac.Tests
             SelfTest.True(saturated.OverflowCount > 0, "不复位必然饱和", saturated.OverflowCount.ToString());
         }
 
+        // Offline state checker compiles this same public-boundary regression.
+        private static void ChecksEntityStateReorder()
+        {
+            var pool = new SheepInstancePool();
+            var visuals = new SheepVisuals(pool);
+            var a = new EntityView { Id = 17, Kind = 0, Visible = true, State = 8, HpRatio = 0 };
+            var b = new EntityView { Id = 18, Kind = 0, Visible = true, State = 8, HpRatio = 0 };
+            visuals.BeginFrame(); visuals.Write(a, 0);
+            visuals.BeginFrame(); visuals.Write(a, 750); var fresh = visuals.Write(b, 750);
+            SelfTest.True(Math.Abs(pool.Instances[fresh].Darken - 1f) < 0.00001, "new corpse starts intact", "aged");
+            visuals.BeginFrame(); var moved = visuals.Write(b, 1000); var old = visuals.Write(a, 1000);
+            SelfTest.True(Math.Abs(pool.Instances[moved].Darken - 0.93666667f) < 0.00001, "reordered B keeps 250ms age", pool.Instances[moved].Darken.ToString());
+            SelfTest.True(Math.Abs(pool.Instances[old].Darken - 0.74666667f) < 0.00001, "reordered A keeps 1000ms age", pool.Instances[old].Darken.ToString());
+        }
+        private static void ChecksEntityStateLifecycle()
+        {
+            var pool = new SheepInstancePool(); var visuals = new SheepVisuals(pool);
+            var view = new EntityView { Id = (ushort)EntityViews.Capacity, Kind = 0, Visible = true, State = 8, HpRatio = 0 };
+            visuals.BeginFrame(); visuals.Write(view, 0, 0); visuals.EndFrame();
+            visuals.BeginFrame(); visuals.EndFrame();
+            visuals.BeginFrame(); var index = visuals.Write(view, 2000, 16); visuals.EndFrame();
+            SelfTest.True(index >= 0 && pool.Instances[index].Darken == 1, "absent ID reenters with fresh corpse", "expired");
+            visuals.Remove(view.Id);
+            visuals.BeginFrame(); index = visuals.Write(view, 4000, 16); visuals.EndFrame();
+            SelfTest.True(index >= 0 && pool.Instances[index].Darken == 1, "explicit remove permits immediate ID reuse", "expired");
+            view.Visible = false;
+            visuals.BeginFrame(); visuals.Write(view, 4500, 16); visuals.EndFrame();
+            view.Visible = true; view.Kind = 2;
+            visuals.BeginFrame(); index = visuals.Write(view, 4750, 16); visuals.EndFrame();
+            SelfTest.True(Math.Abs(pool.Instances[index].Darken - 0.81f) < 0.00001, "invisible and form-change retain ID age", "reset");
+            view.State = 0;
+            visuals.BeginFrame(); visuals.Write(view, 4800, 16); visuals.EndFrame();
+            view.State = 8;
+            visuals.BeginFrame(); index = visuals.Write(view, 4900, 16); visuals.EndFrame();
+            SelfTest.True(pool.Instances[index].Darken == 1, "alive-to-dead restarts corpse", "aged");
+            visuals.Clear();
+            visuals.BeginFrame(); index = visuals.Write(view, 9000, 16); visuals.EndFrame();
+            SelfTest.True(index >= 0 && pool.Instances[index].Darken == 1, "world clear discards identity state", "expired");
+        }
+
+        private static void ChecksEntityStateEmblem()
+        {
+            var pool = new SheepInstancePool(); var visuals = new SheepVisuals(pool);
+            var a = new EntityView { Id = 1, Kind = 0, Visible = true, HpRatio = 1 };
+            var b = new EntityView { Id = 2, Kind = 0, Visible = true, HpRatio = 0 };
+            visuals.BeginFrame(); visuals.Write(a, 0, 0); visuals.Write(b, 0, 0); visuals.EndFrame();
+            a.HpRatio = 0;
+            visuals.BeginFrame(); var ib = visuals.Write(b, 150, 150); var ia = visuals.Write(a, 150, 150); visuals.EndFrame();
+            SelfTest.True(Math.Abs(pool.Instances[ia].EmblemIntensity - 0.51477547) < 0.00001, "A smooths its own prior intensity", pool.Instances[ia].EmblemIntensity.ToString());
+            SelfTest.True(pool.Instances[ib].EmblemIntensity == 1, "B retains its own intensity after reorder", "slot inherited");
+            var split = SheepVisuals.SmoothEmblem(SheepVisuals.SmoothEmblem(0.2, 1, 75), 1, 75);
+            SelfTest.True(Math.Abs(split - 0.514775472229893) < 1e-12, "300ms time constant independent of frame partition", split.ToString());
+            SelfTest.True(SheepVisuals.SmoothEmblem(0.2, 1, 0) == 0.2 && SheepVisuals.SmoothEmblem(0.2, 1, -10) == 0.2, "nonpositive delta holds", "changed");
+            visuals.Remove(a.Id); a.HpRatio = 1;
+            visuals.BeginFrame(); ia = visuals.Write(a, 200, 50); visuals.EndFrame();
+            SelfTest.True(Math.Abs(pool.Instances[ia].EmblemIntensity - 0.2) < 0.00001, "reused ID initializes at current target", "stale");
+        }
+
+        private static void ChecksEntityStateOverflow()
+        {
+            var pool = new SheepInstancePool(); var visuals = new SheepVisuals(pool);
+            var view = new EntityView { Id = 42, Kind = 0, Visible = true, State = 8 };
+            visuals.BeginFrame();
+            for (var i = 0; i < SheepInstancePool.PerFormCapacity; i++) { int unused; pool.TryAcquire(0, out unused); }
+            SelfTest.Equal(-1, visuals.Write(view, 0, 0)); visuals.EndFrame();
+            visuals.BeginFrame(); var index = visuals.Write(view, 750, 50); visuals.EndFrame();
+            SelfTest.True(index >= 0 && Math.Abs(pool.Instances[index].Darken - 0.81f) < 0.00001, "overflow does not delay death observation", "fresh");
+            visuals.BeginFrame(); SelfTest.Equal(-1, visuals.Write(view, 1500, 50)); visuals.EndFrame();
+            visuals.BeginFrame(); SelfTest.Equal(-1, visuals.Write(view, 2000, 50)); visuals.EndFrame();
+        }
+        private static void ChecksEntityStateZeroAlloc()
+        {
+            var pool = new SheepInstancePool(); var visuals = new SheepVisuals(pool);
+            var view = new EntityView { Kind = 0, Visible = true, HpRatio = 0.5 };
+            for (var frame = 0; frame < 2; frame++)
+            {
+                visuals.BeginFrame();
+                for (var i = 0; i < 64; i++) { view.Id = (ushort)(frame * 64 + i + 1); visuals.Write(view, frame * 16, 16); }
+                visuals.EndFrame();
+            }
+            visuals.Remove(view.Id); visuals.Clear();
+            var before = AllocMeter.Begin();
+            for (var frame = 0; frame < 1000; frame++)
+            {
+                visuals.BeginFrame();
+                for (var i = 0; i < 64; i++)
+                {
+                    view.Id = (ushort)((frame % 2) * 64 + i + 1);
+                    view.State = (byte)(i % 13); view.Visible = i % 3 != 0;
+                    visuals.Write(view, frame * 16, 16);
+                }
+                visuals.EndFrame();
+                visuals.Remove(view.Id);
+            }
+            visuals.Clear();
+            AllocMeter.AssertZero(before);
+        }
         private static void ChecksPoolResetMultiForm()
         {
             var pool = new SheepInstancePool();
@@ -224,14 +326,16 @@ namespace Ac.Tests
             for (var frame = 0; frame < 3; frame++) indexes[frame] = new int[views.Length];
             // 预热一整轮同样的调用：第一次调用会 JIT 编译 pool.Reset/visuals.Write，那次编译自身要分配
             // 托管内存（探针实测首轮 200 B，之后每轮 0 B）。稳态的定义不含首次编译。
-            pool.Reset();
-            for (var i = 0; i < views.Length; i++) visuals.Write(views[i], 0.0);
+            visuals.BeginFrame();
+            for (var i = 0; i < views.Length; i++) visuals.Write(views[i], 0.0, 50.0);
+            visuals.EndFrame();
             var instancesBefore = pool.Instances;
             var before = AllocMeter.Begin();
             for (var frame = 0; frame < 3; frame++)
             {
-                pool.Reset();
-                for (var i = 0; i < views.Length; i++) indexes[frame][i] = visuals.Write(views[i], frame * 50.0);
+                visuals.BeginFrame();
+                for (var i = 0; i < views.Length; i++) indexes[frame][i] = visuals.Write(views[i], frame * 50.0, 50.0);
+                visuals.EndFrame();
             }
             AllocMeter.AssertZero(before);
             SelfTest.True(ReferenceEquals(instancesBefore, pool.Instances), "三帧之后实例数组还是同一个", "换了");

@@ -12,7 +12,9 @@
 | 技术前提（语言/版本/依赖白名单）     | [docs/03-技术选型-v2.md](../docs/03-技术选型-v2.md)          |
 | 协议与传输契约                       | [ADR-009](../docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md)  |
 | 跨语言确定性契约                     | [ADR-010](../docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md) |
-| 旧 TypeScript 服务器（冻结对照实现） | `packages/server/`                      |
+| 旧 TypeScript 服务器（仓库外冻结对照实现） | `D:\projects\tmp\angry-chen-bak\packages\server\`（不在本仓库） |
+
+文中的 `packages/**` 均为历史 v1 路径，相对于仓库外只读备份 `D:\projects\tmp\angry-chen-bak`；不表示本仓库仍包含这些目录。
 
 ## 1. 构建与测试（S01 冻结的三条命令）
 
@@ -1205,8 +1207,8 @@ $env:AC_DATA_DIR="$env:TEMP\ac-s13-store"; server/build/ac_server.exe --selftest
 | G8 | 事件丢弃 / 未捕获异常 / tick 跳过 | = 0 | 三者取最大值 | 同上 |
 
 - 退出码：任一 `fail` → 1；只有 `not-measured` → 0（报告头如实标注「本跑次不拦人」）；场景级检查失败同样 1。
-- 反向自检：`ac_gate --scenario=gate-4p2min --break=G3=0` 必须退出码 1（阈值可被打破才算真门禁）。
-- 报告 JSON（`--out`，默认 `build/server-perf.json`）字段：`tool/version/scenario/seed/buildType/compiler/host/startedAt/durationSec/verdict/exitCode/note/thresholds[{id,label,measured,limit,unit,status}]/metrics{cpuMeanPct,cpuP95Pct,bytesPerClientMaxKbps,snapshotBytesP95,snapshotBytesMax,hardCorrectPerMinPerClient,scheduleErrorP95Ms,simDriftMsMax,rssSlopeMbPerMin,eventsDropped,tickSkips,uncaughtExceptions}`。
+- 反向自检：按 §19.2.1 设置独立的 `AC_DATA_DIR` 与 `--out`，运行 `ac_gate --scenario=gate-4p2min --break=G3=0 --out=<绝对报告路径>`，必须退出码 1（阈值可被打破才算真门禁）。
+- 报告 JSON（`--out` 必传，目录约定见 §19.2.1）字段：`tool/version/scenario/seed/buildType/compiler/host/startedAt/durationSec/verdict/exitCode/note/thresholds[{id,label,measured,limit,unit,status}]/metrics{cpuMeanPct,cpuP95Pct,bytesPerClientMaxKbps,snapshotBytesP95,snapshotBytesMax,hardCorrectPerMinPerClient,scheduleErrorP95Ms,simDriftMsMax,rssSlopeMbPerMin,eventsDropped,tickSkips,uncaughtExceptions}`。
 
 ### 15.2 场景与实测
 
@@ -1851,8 +1853,27 @@ S15 把非 Windows 的数据目录默认值定为 `/var/lib/angry-chen`（部署
 而同一套件在云服务器上以 **root** 跑是 468/468 —— 这就是"root 假象"。修法（不牺牲部署契约）：
 
 1. 生产默认值保持冻结（§18）；**测试显式注入** `RuntimeConfig::dataDir`（构建目录下相对路径，并自己建目录）；
-2. `ac_gate` 是工具不是生产进程：未显式设置 `AC_DATA_DIR` 时用构建目录下的相对路径 `ac-gate-data`；
+2. `ac_gate` 是工具不是生产进程：必须显式设置非空 `AC_DATA_DIR` 并传 `--out`，不回退生产目录或 cwd 下的数据目录（当前约定见 §19.2.1）；
 3. 结论入判据：**任何依赖"默认绝对路径可写"的用例都是环境依赖**，必须在测试里注入。
+
+### 19.2.1 本地与 CI 的产物目录约定
+
+- 编译仍在 `server/build/`；报告统一到根 `build/reports/<scenario>/`，战绩及运行时诊断统一到根 `build/runtime/<scenario>/`，solo CPU 子进程使用其中的 `solo/` 子目录。
+- CI shell 的 cwd 是仓库根，逐步骤显式注入 `AC_DATA_DIR=build/runtime/<scenario>`；反向自检用独立的 `gate-4p2min-break` 目录，上传根 `build/reports/`。
+- 本地不从 exe 推测仓库根：现有实现只切分 `argv[0]` 定位兄弟程序，PATH 调用、外置构建目录均不能可靠定位源码根。因此 `--out` 与非空 `AC_DATA_DIR` 必传；使用绝对路径可避免 cwd 依赖。报告父目录须预先创建，兄弟 `ac_server`/`ac_bot` 须与 `ac_gate` 同目录（或用 `--bot` 覆盖机器人路径）。
+
+PowerShell 示例（把第一行改为本机仓库的绝对路径，之后可从任意 cwd 执行）：
+
+```powershell
+$repo = 'D:\projects\tmp\angry-chen'
+$scenario = 'gate-4p2min'
+$reportDir = Join-Path $repo "build/reports/$scenario"
+$env:AC_DATA_DIR = Join-Path $repo "build/runtime/$scenario"
+New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+& "$repo/server/build/ac_gate.exe" --scenario $scenario --out "$reportDir/server-perf.json"
+```
+
+旧产物保持原位，不自动搬移。上述仅约束开发/CI 产物，不改变 §18 的生产目录、部署模板或 `cmake --install` 的 `bin/angry-chen-server` 契约；CI 额外安装到临时 prefix 并运行已支持的 `--version` 作烟测。
 
 ### 19.3 G1 口径改造（已实施：单独起服务器进程，只采它）
 

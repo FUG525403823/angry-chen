@@ -1,0 +1,271 @@
+{
+  "name": "downed-revive-140t",
+  "version": 2,
+  "seed": 31,
+  "dtMs": 50,
+  "configHash": "19a978ea",
+  "ticks": 140,
+  "setup": {
+    "players": [
+      { "id": 1, "hp": 8, "armor": 0 }
+    ],
+    "sheep": [
+      { "kind": "grunt", "x": -4.5, "z": 5.7999999999999998 }
+    ]
+  },
+  "director": { "startWave": 0 },
+  "script": [
+    {
+      "from": 1,
+      "to": 8,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 2, "moveX": 1, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    },
+    {
+      "from": 9,
+      "to": 28,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 2, "moveX": 0, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 16, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    },
+    {
+      "from": 29,
+      "to": 33,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 2, "moveX": 0, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    },
+    {
+      "from": 34,
+      "to": 140,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 2, "moveX": 0, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 16, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "tick": 1,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 8, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-1.7250000000000001, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-4.5, 0, 5.7999999999999998], "yaw": 0, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 683129968, "spawn": 683129969, "fx": 683129970 }
+    },
+    {
+      "tick": 35,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-4.5054677040133635, 0, 7.0097332635155505], "yaw": 3.1415926535897931, "pitch": 0, "hp": 0, "flags": 1 },
+        { "id": 2, "kind": "player", "pos": [-3.1942217561885085, 0, 7.6872664682785103], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-2.5690783401635566, 0, 6.9329151440060564], "yaw": 1.554210159525883, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 683129968, "spawn": 683129969, "fx": 683129970 }
+    },
+    {
+      "tick": 70,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-4.5054677040133635, 0, 7.0097332635155505], "yaw": 3.1415926535897931, "pitch": 0, "hp": 0, "flags": 1 },
+        { "id": 2, "kind": "player", "pos": [-3.2773507936949939, 0, 7.7538066736669489], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-2.394210387590388, 0, 7.5804197563248614], "yaw": 4.9062458024537374, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+        { "tick": 70, "type": "reviveProgress", "flags": 0, "subjectId": 2, "targetId": 1, "x": -4.5054677040133635, "y": 0, "z": 7.0097332635155505, "value": 900 }
+      ],
+      "rngState": { "ai": 683129968, "spawn": 683129969, "fx": 683129970 }
+    },
+    {
+      "tick": 105,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-6.1921886405226774, 0, 6.5433938138212975], "yaw": 3.1415926535897931, "pitch": 0, "hp": 42, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-3.2775561358168077, 0, 7.7538438870520956], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-2.2528612815017488, 0, 7.5894434305276857], "yaw": 1.7267829981630176, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 683129968, "spawn": 683129969, "fx": 683129970 }
+    },
+    {
+      "tick": 140,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-6.1921886405226774, 0, 6.5433938138212975], "yaw": 3.1415926535897931, "pitch": 0, "hp": 42, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-3.277557550821689, 0, 7.7538441130422839], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-2.3885739152924441, 0, 7.6134585875732874], "yaw": 4.869334389745239, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 683129968, "spawn": 683129969, "fx": 683129970 }
+    }
+  ],
+  "snapshot": [
+  ],
+  "hashChain": [
+    "1a0e7335943abb1c",
+    "2f495bd14c442df3",
+    "18ad855b8a85d8f0",
+    "7b797cc40f9cd0aa",
+    "75bef5a06f8b69d8",
+    "acea90b677896cb0",
+    "f28fb9cb27a4b48e",
+    "cbefe15623cfba2a",
+    "ed39b24091c1437d",
+    "8cddcb4601c8a209",
+    "0462945100f0a408",
+    "2fb1c4efb8ceed55",
+    "9cbaca02c01330cb",
+    "ec1123d89272e9f9",
+    "963f1d71f711ddd5",
+    "995688af3039d52e",
+    "d690f1955b973d13",
+    "ace8eed5aeb825bf",
+    "dad7b5ac9bbbfe8d",
+    "f37552e8c0f91950",
+    "80a65f70d6646b00",
+    "c3aa8d366ca0fc6e",
+    "5d4eff7fa303008f",
+    "7335ad33aae2bf77",
+    "f19b80369c06317d",
+    "8f584c5bb61c4d57",
+    "6e5c64adcad5df5d",
+    "8d13c020088518e8",
+    "3e6980c4745e7bd2",
+    "872cd6538371b317",
+    "1d56137842853579",
+    "06ba834a76493e9a",
+    "046dceee50b378f2",
+    "29230540397c082d",
+    "19b2c7e4b83ba7c5",
+    "c38b4306f5d068a5",
+    "4cc43afc7d8aba84",
+    "ebd50a06b5a6488b",
+    "81bb739f1390db6b",
+    "b5bec8c5de96eca1",
+    "d9b91baf9c3b88c5",
+    "e6321608793c18e0",
+    "50f1b94ca2ff5646",
+    "4dccbcaeb72c87ed",
+    "f0e522d4e4592516",
+    "ac7432e2dbd59dfa",
+    "27598f7f4c29b945",
+    "13bdb9258152deff",
+    "e949eac96e9a5c6f",
+    "b85cc9ff324f1dc0",
+    "c6d688a1f1d4bbea",
+    "d7668d638c417f60",
+    "9023b776df576952",
+    "9d5826b9e26ac4b6",
+    "051877c0465a5e74",
+    "4c5b67b64d85a604",
+    "06b64573e8da5ebe",
+    "516ec600bab88b3f",
+    "dde4b7269bae648f",
+    "68d5c2a1ea94ce6d",
+    "a718363ace14750b",
+    "b48746a177c907c8",
+    "d7db679fc1b565eb",
+    "c3b65051e34d66c2",
+    "9bca0962210cd801",
+    "12e58b52e601b20f",
+    "2fbf695ed0fb1e21",
+    "7be3af49b6623fca",
+    "31f192128a12ef61",
+    "f711046ddca68365",
+    "33abd7a2948fb103",
+    "f04b568391cf6c88",
+    "2d2ccfe65dd14a02",
+    "c456604a79e4ac3e",
+    "942de8f8a1b5c474",
+    "9a9966840cda6fe8",
+    "88ad4accc517a32c",
+    "9547082d6ad16106",
+    "aa46e5e705108d87",
+    "5aa39028bcbb5127",
+    "4438808b6b67116e",
+    "8f11f02c54deb1a7",
+    "b43173c240e50188",
+    "20561b6a20008cdf",
+    "c1086aa366c82d5d",
+    "9117f8b53a795e2f",
+    "51b26d1955bd0e9c",
+    "29c93f95a5b57791",
+    "217c429a04ac9070",
+    "d635d520014f7e50",
+    "52824a09e51cd36d",
+    "e9df353355e480b0",
+    "dce74aa7870e412c",
+    "7b7342822b55331c",
+    "5264372081cbb98f",
+    "46bfe41bbb2cd5b5",
+    "8b2186afa509c540",
+    "396def01ff63a263",
+    "69051e10d8f6d1a4",
+    "1f3a6d99fe4358d4",
+    "071e4860d85d3106",
+    "18985f0246974174",
+    "89de4cfab4bcad71",
+    "8de70f56355773b0",
+    "1cffddf373864339",
+    "1ba42431828c8574",
+    "c2d2e75e7a2be516",
+    "86d7cbcdbb88e133",
+    "f79bfa310fc35924",
+    "e7ecd748582ece7d",
+    "1cc9144fd58c338a",
+    "0683b2d89dc44e1b",
+    "67955ae4c2b0e3c3",
+    "b80d36b3ffe2bab2",
+    "f007945594b1f594",
+    "9c10783518394418",
+    "d8472cb49a1796fd",
+    "ea739a5477925b18",
+    "98eaace575383693",
+    "3845ed72a8c705b1",
+    "6200ae5d518c38ef",
+    "b72c4df519e48cf2",
+    "7121a8d6b004dd7d",
+    "265c0cf9053cb01f",
+    "10e29b947fde3936",
+    "bdd3e4c9c5784df9",
+    "29abfb6bde701484",
+    "cdef21a0a42cdc1d",
+    "f806cf29bde63ade",
+    "4677a18445e8dc6e",
+    "558ddd3553bd03b3",
+    "be6212894b8bc1d1",
+    "1246bc144e758af7",
+    "70e917027d610085",
+    "e451ebbb04722c51",
+    "c227610b90fadda7",
+    "b5cf85e0f720217c",
+    "3ee217302f85590b",
+    "a529025b917b6bf5",
+    "efcdd4376b8c9e0e"
+  ]
+}

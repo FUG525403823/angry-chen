@@ -87,8 +87,7 @@ namespace Ac.View
             return count;
         }
 
-        // §5.3 的渲染时间估计：每帧向「最新快照 serverTimeMs + 自该帧到达以来的本地经过时间」修正，
-        // 单帧修正量钳在 ±50ms；偏差绝对值超过 500ms（重连、长时间丢包）直接重置估计值。
+        // ADR-020：到包只更新目标，播放速率在 0.9..1.1 倍之间吸收偏差；超过 500ms 显式重新锚定。
         public sealed class RenderClock
         {
             private readonly int[] _arrivals = new int[ArrivalSampleCount];
@@ -105,24 +104,30 @@ namespace Ac.View
                 RenderDelayMs = Interpolation.DelayMs;
             }
 
-            public double RenderTimeMs { get { return EstimatedServerTimeMs - RenderDelayMs; } }
+            private double _renderTimeMs;
+            private double _targetServerTimeMs;
+            public double RenderTimeMs { get { return _renderTimeMs; } }
 
             public void OnSnapshot(uint serverTimeMs, double localNowMs)
             {
-                // 到达瞬间的修正目标就是该帧的 serverTimeMs；帧间外推由 Advance 负责，
-                // 于是晚到/早到的帧只体现为一次被 ±50ms 钳住的修正（§5.1 的抖动吸收）。
+                // 目标可以后退，实际播放时间仅在 Advance 中受控前进。
                 var target = (double)serverTimeMs;
                 if (!HasEstimate)
                 {
                     EstimatedServerTimeMs = target;
                     HasEstimate = true;
+                    _renderTimeMs = target - RenderDelayMs;
                 }
                 else
                 {
                     var delta = target - EstimatedServerTimeMs;
-                    if (Math.Abs(delta) > ResetEstimateThresholdMs) EstimatedServerTimeMs = target;
-                    else EstimatedServerTimeMs += Interpolation.Clamp(delta, -JitterAbsorbMs, JitterAbsorbMs);
+                    if (Math.Abs(delta) > ResetEstimateThresholdMs)
+                    {
+                        EstimatedServerTimeMs = target;
+                        _renderTimeMs = target - RenderDelayMs;
+                    }
                 }
+                _targetServerTimeMs = target;
                 if (_hasArrival) PushArrival((int)Math.Round(localNowMs - _lastArrivalLocalMs));
                 _hasArrival = true;
                 _lastArrivalLocalMs = localNowMs;
@@ -131,14 +136,21 @@ namespace Ac.View
 
             public void Advance(double localDeltaMs)
             {
-                if (!HasEstimate || localDeltaMs <= 0.0) return;
-                EstimatedServerTimeMs += localDeltaMs;
+                if (!HasEstimate || localDeltaMs <= 0.0 || double.IsNaN(localDeltaMs) || double.IsInfinity(localDeltaMs)) return;
+                _targetServerTimeMs += localDeltaMs;
+                var target = _targetServerTimeMs - RenderDelayMs;
+                var nominal = _renderTimeMs + localDeltaMs;
+                var correction = Interpolation.Clamp(target - nominal, -localDeltaMs * 0.1, localDeltaMs * 0.1);
+                _renderTimeMs = nominal + correction;
+                EstimatedServerTimeMs = _renderTimeMs + RenderDelayMs;
             }
 
             public void Reset()
             {
                 HasEstimate = false;
                 EstimatedServerTimeMs = 0.0;
+                _renderTimeMs = 0.0;
+                _targetServerTimeMs = 0.0;
                 _arrivalCount = 0;
                 _arrivalNext = 0;
                 _hasArrival = false;

@@ -18,6 +18,8 @@ namespace Ac.Tests
     {
         public static void Register()
         {
+            SelfTest.Add("presentation.remote_player_models", ChecksRemotePlayerModels);
+            SelfTest.Add("presentation.remote_player_draw_chain", ChecksRemotePlayerDrawChain);
             SelfTest.Add("presentation.predicted_weapon_model", ChecksPredictedWeaponModel);
             SelfTest.Add("presentation.tracer_renderer_pool", ChecksTracerRendererPool);
             SelfTest.Add("presentation.assembles", ChecksAssembles);
@@ -36,6 +38,112 @@ namespace Ac.Tests
             SelfTest.Add("presentation.fire_same_frame", ChecksFireSameFrame);
             SelfTest.Add("presentation.hit_uses_authoritative_point", ChecksHitUsesAuthoritativePoint);
             SelfTest.Add("presentation.ammo_optimistic_then_authority", ChecksAmmoOptimisticThenAuthority);
+        }
+
+        private static void ChecksRemotePlayerModels()
+        {
+            var root = new GameObject("RemoteTest");
+            var visuals = new RemotePlayerVisuals(root.transform);
+            var views = new EntityViews();
+            try
+            {
+                var local = views.Get(1); local.Visible = true; local.Kind = 0;
+                var remote = views.Get(2); remote.Visible = true; remote.Kind = 0;
+                remote.X = 3; remote.YawRad = Math.PI / 2; remote.PitchRad = .3;
+                var sheep = views.Get(3); sheep.Visible = true; sheep.Kind = 1;
+                SelfTest.Equal(1, visuals.SyncFrame(views, 1, 16));
+                SelfTest.Equal(1, visuals.CreatedCount);
+                var model = visuals.Root.transform.GetChild(0);
+                var body = model.Find("Body");
+                var leg = body.Find("LeftLeg");
+                SelfTest.True(model.position.x == 3 && Vector3.Dot(model.forward, Vector3.right) > .99f, "render position/yaw", "wrong");
+                SelfTest.True(Quaternion.Angle(body.Find("HeadAim").localRotation, Quaternion.identity) > 10f, "pitch applied", "wrong");
+                SelfTest.True(body.Find("Aim/Rifle").GetComponent<MeshFilter>().sharedMesh.vertexCount > 0, "procedural gun", "missing");
+                SelfTest.Equal(0, visuals.Root.GetComponentsInChildren<Collider>().Length);
+                remote.X += .1;
+                visuals.SyncFrame(views, 1, 16);
+                SelfTest.True(Quaternion.Angle(leg.localRotation, Quaternion.identity) > 1f, "displacement stride", "static");
+                visuals.SyncFrame(views, 1, 16);
+                SelfTest.True(Quaternion.Angle(leg.localRotation, Quaternion.identity) < .01f, "standing pose", "walking");
+                remote.Flags = EntityRecord.DownedFlag;
+                visuals.SyncFrame(views, 1, 16);
+                SelfTest.True(Quaternion.Angle(body.localRotation, Quaternion.identity) > 80f, "downed pose", "standing");
+                views.Release(2);
+                SelfTest.Equal(0, visuals.SyncFrame(views, 1, 16));
+                SelfTest.True(!model.gameObject.activeSelf, "removed model hidden", "ghost");
+                remote = views.Get(2); remote.Visible = true; remote.Kind = 0; remote.Flags = 0; remote.X = 20;
+                visuals.SyncFrame(views, 1, 16);
+                SelfTest.Equal(1, visuals.CreatedCount);
+                SelfTest.True(model.position.x == 20 && Quaternion.Angle(leg.localRotation, Quaternion.identity) < .01f, "reused id resets gait", "stale");
+                remote.Kind = 1;
+                SelfTest.Equal(0, visuals.SyncFrame(views, 1, 16));
+                remote.Kind = 0;
+                visuals.SyncFrame(views, 1, 16);
+                SelfTest.Equal(1, visuals.SyncFrame(views, 2, 16)); // identity swap: only former local is now remote
+                SelfTest.Equal(1, visuals.CreatedCount);
+                var before = AllocMeter.Begin();
+                for (var i = 0; i < 100; i++) visuals.SyncFrame(views, 2, 16);
+                AllocMeter.AssertZero(before);
+                var mesh = model.Find("Body/Torso").GetComponent<MeshFilter>().sharedMesh;
+                var material = model.Find("Body/Torso").GetComponent<MeshRenderer>().sharedMaterial;
+                visuals.Dispose(); visuals.Dispose();
+                SelfTest.Equal(0, visuals.RendererCount);
+                SelfTest.Equal(0, visuals.TriangleCount);
+                SelfTest.True(visuals.Root == null && mesh == null && material == null, "owned resources destroyed", "leak");
+                SelfTest.Equal(0, visuals.SyncFrame(views, 1, 16));
+            }
+            finally { visuals.Dispose(); UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        private static void ChecksRemotePlayerDrawChain()
+        {
+            var rig = new Rig(SettingsDefaults.Default());
+            try
+            {
+                rig.WireSeams();
+                var frame = rig.Frame;
+                frame.Tick = 1; frame.ServerTimeMs = 16; frame.EntityCount = 4;
+                frame.Entities[0] = Entity(1, 0, 0, 0, 0);
+                frame.Entities[1] = Entity(2, 0, 1, 0, 5);
+                frame.Entities[2] = Entity(3, 0, -1, 0, 5);
+                frame.Entities[3] = Entity(4, 0, 2, 0, 5);
+                SelfTest.True(rig.Loop.ApplySnapshot(frame), "snapshot accepted", "rejected");
+                rig.Loop.Frame(16);
+                SelfTest.Equal(3, rig.Layer.RemotePlayers.Count);
+                SelfTest.Equal(3, rig.Layer.RemotePlayers.CreatedCount);
+                var renderers = rig.Layer.RemotePlayers.Root.GetComponentsInChildren<MeshRenderer>();
+                var triangles = 0;
+                for (var i = 0; i < renderers.Length; i++)
+                    triangles += renderers[i].GetComponent<MeshFilter>().sharedMesh.triangles.Length / 3;
+                SelfTest.True(renderers.Length > 0 && triangles > 0, "actual model geometry", "empty");
+                SelfTest.Equal(renderers.Length, rig.Layer.RemotePlayers.RendererCount);
+                SelfTest.Equal(triangles, rig.Layer.RemotePlayers.TriangleCount);
+                SelfTest.Equal(renderers.Length, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(triangles, rig.Layer.SubmittedTriangles);
+                rig.UnwireSeams();
+                SelfTest.True(rig.Layer.TickDraw(16), "remote renderers count as draw work", "not drawn");
+                var before = AllocMeter.Begin();
+                for (var i = 0; i < 100; i++) rig.Layer.TickDraw(16);
+                AllocMeter.AssertZero(before);
+                SelfTest.Equal(renderers.Length, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(triangles, rig.Layer.SubmittedTriangles);
+                rig.Loop.Views.Release(2);
+                rig.Layer.TickDraw(16);
+                SelfTest.Equal(2, rig.Layer.RemotePlayers.Count);
+                SelfTest.Equal(renderers.Length * 2 / 3, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(triangles * 2 / 3, rig.Layer.SubmittedTriangles);
+                rig.Loop.Views.Release(3);
+                rig.Loop.Views.Release(4);
+                SelfTest.True(!rig.Layer.TickDraw(16), "no remote draw work after release", "stale work");
+                SelfTest.Equal(0, rig.Layer.RemotePlayers.Count);
+                SelfTest.Equal(0, rig.Layer.RemotePlayers.RendererCount);
+                SelfTest.Equal(0, rig.Layer.RemotePlayers.TriangleCount);
+                SelfTest.Equal(0, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(0, rig.Layer.SubmittedTriangles);
+                rig.Layer.Dispose();
+                SelfTest.Equal(0, rig.Layer.RemotePlayers.Count);
+            }
+            finally { rig.Dispose(); }
         }
 
         private static void ChecksPredictedWeaponModel()

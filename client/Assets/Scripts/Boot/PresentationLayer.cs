@@ -126,6 +126,7 @@ namespace Ac.Boot
         public MaterialTable MaterialTable { get; private set; }
         public SheepInstancePool SheepPool { get; private set; }
         public SheepVisuals Sheep { get; private set; }
+        public RemotePlayerVisuals RemotePlayers { get; private set; }
         public Effects Effects { get; private set; }
         public ViewModel ViewModel { get; private set; }
         public DebugPanel DebugPanel { get; private set; }
@@ -153,7 +154,8 @@ namespace Ac.Boot
         public int SubmittedDraws { get; private set; }
         // C14 帧基准的 triangles 度量来源：引擎的渲染统计（ProfilerCategory.Render 的 Draw Calls/Triangles
         // Count 与 UnityEditor.UnityStats）在 -batchmode 下恒为 0（探针实测），所以三角形只能"数提交"。
-        // 这里累加的是本帧真正提交给渲染的网格三角形数（羊身 + 额标 × 实例数），不写凑数常量。
+        // 羊身 + 额标按显式提交计数，队友按本帧启用模型的真实 MeshRenderer/网格预算计数。
+        // 后者与场地相同，是引擎剔除/批处理前口径，不代表 GPU 实际 draw calls/triangles。
         public int SubmittedTriangles { get; private set; }
         public DrawMode LastDrawMode { get; private set; }
 
@@ -229,6 +231,7 @@ namespace Ac.Boot
             // ④ 羊群：四形网格 + 额标网格 + 实例池 + 快照→实例的写入器
             SheepPool = new SheepInstancePool();
             Sheep = new SheepVisuals(SheepPool);
+            RemotePlayers = new RemotePlayerVisuals(_root.transform);
             for (var form = 0; form < SheepMesh.FormCount; form++)
             {
                 _sheepMeshes[form] = SheepMesh.Build((SheepKind)form);
@@ -479,9 +482,11 @@ namespace Ac.Boot
             if (_disposed) return false;
             DrawTicks += 1;
             _nowMs += dtMs;
+            RemotePlayers.SyncFrame(_loop == null ? null : _loop.Views, _loop == null ? (ushort)0 : _loop.LocalPlayerId, dtMs);
 
             Sheep.BeginFrame();            // 池的"每帧复位"契约：漏掉它，同形累计满 256 之后羊会静默消失
-            WriteSheepInstances();
+            WriteSheepInstances(dtMs);
+            Sheep.EndFrame();
             WrittenSheepCount = SheepPool.Count;
 
             var culled = Culling.Filter(MainCamera, SheepPool, _visible);
@@ -540,10 +545,10 @@ namespace Ac.Boot
                 }
             }
             DrawnSheepCount = drawn;
-            SubmittedDraws = submitted;
-            SubmittedTriangles = triangles;
-            // 没有提交就不返回 true ⇒ GameLoop 不给 draw 打点（见 IFrameWorkSink）
-            return submitted > 0;
+            SubmittedDraws = submitted + RemotePlayers.RendererCount;
+            SubmittedTriangles = triangles + RemotePlayers.TriangleCount;
+            // The stage return value denotes work, not the number of draw calls.
+            return SubmittedDraws > 0;
         }
 
         public void Dispose()
@@ -573,6 +578,7 @@ namespace Ac.Boot
             if (_textures != null) for (var i = 0; i < _textures.Length; i++) Kill(_textures[i]);
             for (var i = 0; i < _arenaParts.Length; i++) Kill(_arenaParts[i]);
             for (var i = 0; i < _sheepMeshes.Length; i++) { Kill(_sheepMeshes[i]); Kill(_emblemMeshes[i]); }
+            RemotePlayers.Dispose();
             TracerView.Dispose();
             for (var i = 0; i < WeaponMesh.SlotCount; i++)
             {
@@ -694,7 +700,7 @@ namespace Ac.Boot
             CameraPoseUpdates += 1;
         }
 
-        private void WriteSheepInstances()
+        private void WriteSheepInstances(double dtMs)
         {
             var views = _loop == null ? null : _loop.Views;
             if (views == null) return;
@@ -705,6 +711,7 @@ namespace Ac.Boot
                 if (!view.Visible) continue;
                 if ((view.Flags & EntityRecord.KindMask) != WireKindSheep) continue;   // 玩家/弹丸/拾取物不进羊群池
                 _scratch.Id = view.Id;
+                _scratch.Lifetime = view.Lifetime;
                 _scratch.Kind = (byte)SheepFormOf(view.State);
                 _scratch.Visible = true;
                 _scratch.Flags = view.Flags;
@@ -714,7 +721,7 @@ namespace Ac.Boot
                 _scratch.Y = view.RenderY;
                 _scratch.Z = view.RenderZ;
                 _scratch.YawRad = view.YawRad;
-                Sheep.Write(_scratch, _nowMs);
+                Sheep.Write(_scratch, _nowMs, dtMs);
             }
         }
 

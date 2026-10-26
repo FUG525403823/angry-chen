@@ -1187,6 +1187,11 @@ async function main() {
     usage();
     return;
   }
+  const outDir = path.resolve(REPO_ROOT, opts.out);
+  if (outDir === path.join(REPO_ROOT, DEFAULT_OUT) &&
+      existsSync(path.join(outDir, 'legacy/targeting-v1')) && !opts.list) {
+    throw new Error('ADR-019: active vectors use targeting-v2, not frozen TS. Use tools/update-targeting-fixtures.mjs --check; frozen TS export requires --out <separate-directory>.');
+  }
   assertCrcSelfTest();
   assertG17SelfTest();
   assertFnvSelfTest();
@@ -1206,7 +1211,6 @@ async function main() {
   } else {
     console.log('[export] 派生副本与只读源一致（packages/shared/src，' + listFiles(sourceTree).length + ' 个文件）');
   }
-  const outDir = path.resolve(REPO_ROOT, opts.out);
   const trig = makeTrig(JSON.parse(readFileSync(path.join(REPO_ROOT, TRIG_TABLE_PATH), 'utf8')));
   patchMath(trig);
 
@@ -1366,7 +1370,11 @@ s09 = {
   console.log('[export] 只读源未写入：packages/shared/src ' + after.files + ' 文件 / ' + after.bytes + ' B / mtime ' + after.newest);
 }
 
-main().catch((error) => {
-  console.error('[export] 失败：' + (error && error.message ? error.message : String(error)));
-  process.exitCode = 1;
-});
+export { serializeFixture };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error('[export] 失败：' + (error && error.message ? error.message : String(error)));
+    process.exitCode = 1;
+  });
+}

@@ -14,6 +14,7 @@ namespace Ac.Tests
             ContractSuite.Register();
             TransportSuite.Register();
             InterpolationSuite.Register();
+            RemotePoseChecks.Register();
             InputCameraSuite.Register();
             ReconcileSuite.Register();
             FixturePredictSuite.Register();

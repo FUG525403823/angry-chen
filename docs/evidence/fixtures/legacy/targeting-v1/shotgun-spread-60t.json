@@ -1,0 +1,168 @@
+{
+  "name": "shotgun-spread-60t",
+  "version": 2,
+  "seed": 29,
+  "dtMs": 50,
+  "configHash": "19a978ea",
+  "ticks": 60,
+  "setup": {
+    "players": [
+    ],
+    "sheep": [
+      { "kind": "grunt", "x": -4.5, "z": -2 },
+      { "kind": "grunt", "x": -7, "z": -3 }
+    ]
+  },
+  "director": { "startWave": 0 },
+  "script": [
+    {
+      "from": 1,
+      "to": 1,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "buttons": 64, "switchTo": 2 },
+        { "id": 2, "moveX": 1, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 2, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    },
+    {
+      "from": 2,
+      "to": 60,
+      "commands": [
+        { "id": 1, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "buttons": 1, "switchTo": 0 },
+        { "id": 2, "moveX": 1, "moveY": 0, "yaw": -1.5707963267948966, "pitch": 0, "buttons": 2, "switchTo": 0 },
+        { "id": 3, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 },
+        { "id": 4, "moveX": 0, "moveY": 0, "yaw": 3.1415926535897931, "pitch": 0, "buttons": 0, "switchTo": 0 }
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "tick": 1,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "hp": 100, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-1.8149999999999999, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 5, "kind": "sheep", "pos": [-4.5, 0, -2], "yaw": 0, "pitch": 0, "hp": 60, "flags": 0 },
+        { "id": 6, "kind": "sheep", "pos": [-7, 0, -3], "yaw": 0, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 3964193038, "spawn": 3964193039, "fx": 3964193040 }
+    },
+    {
+      "tick": 15,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-5.7625000000000011, 0, 7], "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "hp": 100, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-4.9625000000000012, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 6, "kind": "sheep", "pos": [-6.7508111110075637, 0, -1.9274236977331305], "yaw": 0.2144696889062612, "pitch": 0, "hp": 60, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 3964193038, "spawn": 3964193039, "fx": 3964193040 }
+    },
+    {
+      "tick": 30,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-8.1250000000000036, 0, 7], "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "hp": 100, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-7.3250000000000037, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 3964193038, "spawn": 3964193039, "fx": 3964193040 }
+    },
+    {
+      "tick": 45,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-10.487500000000002, 0, 7], "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "hp": 100, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-9.6875000000000018, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 3964193038, "spawn": 3964193039, "fx": 3964193040 }
+    },
+    {
+      "tick": 60,
+      "entities": [
+        { "id": 1, "kind": "player", "pos": [-12.849999999999998, 0, 7], "yaw": 3.1415926535897931, "pitch": -0.050000000000000003, "hp": 100, "flags": 0 },
+        { "id": 2, "kind": "player", "pos": [-12.049999999999999, 0, 7], "yaw": -1.5707963267948966, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 3, "kind": "player", "pos": [1.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 },
+        { "id": 4, "kind": "player", "pos": [4.5, 0, 7], "yaw": 3.1415926535897931, "pitch": 0, "hp": 100, "flags": 0 }
+      ],
+      "events": [
+      ],
+      "rngState": { "ai": 3964193038, "spawn": 3964193039, "fx": 3964193040 }
+    }
+  ],
+  "snapshot": [
+  ],
+  "hashChain": [
+    "5569a64e2dd5bb14",
+    "c2408bc30a8799b0",
+    "c22f620b0d27ca90",
+    "dc5396fa5fd83dba",
+    "d8adbd36b5dc6073",
+    "66e3525ee9f9fcfa",
+    "c3f0e8b4ce2a6090",
+    "c49a6172831a3432",
+    "15d7a1ef54e9e9c9",
+    "fd3edbc5ddb61522",
+    "bce9a23cc0849be1",
+    "aaf6fd021040d156",
+    "181e691cad4f9df1",
+    "912995ae9aac077a",
+    "3c3e9ea3186e6f83",
+    "35ce310a46403648",
+    "f7dfe5a55359e07c",
+    "a8b8841fbfd7826a",
+    "8c831f316994bcf8",
+    "afc63d7acd75c600",
+    "1cca3dd6b0fa920b",
+    "cfff317d9a395f4d",
+    "1bace31cdb05c230",
+    "4f25585d32282746",
+    "50f8aa5862187ddf",
+    "55726c81daeb6854",
+    "55a71dc6bbc90f7b",
+    "51ad723b64380943",
+    "6343d06e9b5db6a6",
+    "3a25771a159f429e",
+    "d5e2d01bbf7846d4",
+    "8c2a06193c9a00f2",
+    "e7c11403f9eab8a6",
+    "353d86f0f5c27fdf",
+    "59de53cb74ef52ac",
+    "af098a4671f46f23",
+    "90a09ca6f7c36549",
+    "a8cc316f54c15690",
+    "35a9e88e0671f6a8",
+    "f4c001f9f0b17c80",
+    "c4ff9f172ecef5c8",
+    "50c490ceebe4b624",
+    "3ed5ba688fde90aa",
+    "bd69bcb87f6413ea",
+    "9eef82eab3380901",
+    "9c5951b41400e3d1",
+    "160acf950a23cb62",
+    "a7f9c1b1e4cfc072",
+    "cdf7d2b79488984d",
+    "e90875ecddf5c755",
+    "d5588babe7c31b9a",
+    "b89fd918258db292",
+    "4f662d6c88cb5b2a",
+    "3b8f37669fe1d529",
+    "ee604cddee27ee8b",
+    "5dbc56bd835fca1c",
+    "cc2f4d8be59fedd2",
+    "3771bcb0b8c54f3a",
+    "cc090510a44731e1",
+    "8fdd582b48e22a9f"
+  ]
+}

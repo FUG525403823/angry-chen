@@ -16,6 +16,18 @@ jobs:
       - run: node tools/check-docs.mjs
       - run: node tools/check-assets.mjs
 
+  client-scripts:
+    name: client release script contracts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify isolated release packaging
+        shell: powershell
+        run: ./client/tools/test-build.ps1
+      - name: Verify successful release player discovery
+        shell: powershell
+        run: ./client/tools/test-player-discovery.ps1
+
   server:
     name: server (cmake + ninja + ctest)
     runs-on: ubuntu-latest
@@ -37,6 +49,13 @@ jobs:
         run: cmake -S server -B server/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAC_WERROR=ON
       - name: Build
         run: cmake --build server/build
+      - name: Install smoke test
+        run: |
+          prefix=$(mktemp -d)
+          trap 'rm -rf "$prefix"' EXIT
+          cmake --install server/build --prefix "$prefix"
+          test -x "$prefix/bin/angry-chen-server"
+          "$prefix/bin/angry-chen-server" --version
       - name: Test
         run: ctest --test-dir server/build --output-on-failure
 
@@ -55,23 +74,31 @@ jobs:
       - name: Build
         run: cmake --build server/build
       - name: Run performance gate (4 players, 2 min)
-        run: ./server/build/ac_gate --scenario=gate-4p2min --out=server/build/server-perf.json
+        env:
+          AC_DATA_DIR: build/runtime/gate-4p2min
+        run: |
+          mkdir -p build/reports/gate-4p2min
+          ./server/build/ac_gate --scenario=gate-4p2min --out=build/reports/gate-4p2min/server-perf.json
       # §6-3：反向自检必须让整跑次变红（把 G3 的上限压到 0），否则门禁本身不可信。
       - name: Reverse self-check (must fail)
+        env:
+          AC_DATA_DIR: build/runtime/gate-4p2min-break
         run: |
-          if ./server/build/ac_gate --scenario=gate-4p2min --break=G3=0 --out=server/build/server-perf-break.json; then
+          mkdir -p build/reports/gate-4p2min-break
+          if ./server/build/ac_gate --scenario=gate-4p2min --break=G3=0 --out=build/reports/gate-4p2min-break/server-perf.json; then
             echo "reverse self-check must exit non-zero" >&2
             exit 1
           fi
       - name: Run soak gate (4 players, 5 min)
-        run: ./server/build/ac_gate --scenario=soak-4p5min --out=server/build/server-perf-soak.json
+        env:
+          AC_DATA_DIR: build/runtime/soak-4p5min
+        run: |
+          mkdir -p build/reports/soak-4p5min
+          ./server/build/ac_gate --scenario=soak-4p5min --out=build/reports/soak-4p5min/server-perf.json
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: server-perf-report
-          path: |
-            server/build/server-perf.json
-            server/build/server-perf-break.json
-            server/build/server-perf-soak.json
+          path: build/reports/
           if-no-files-found: warn

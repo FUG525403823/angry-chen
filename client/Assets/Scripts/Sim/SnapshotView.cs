@@ -44,6 +44,13 @@ namespace Ac.Sim
         public delegate void EntityVisitor(ushort id, in FrameEntity entity);
 
         private readonly FrameEntity[][] _ringEntities = new FrameEntity[HistoryFrames][];
+        private readonly FrameEntity[][] _renderEntities = new FrameEntity[HistoryFrames][];
+        private readonly bool[][] _renderPresent = new bool[HistoryFrames][];
+        private readonly uint[][] _renderLife = new uint[HistoryFrames][];
+        private readonly uint[] _life = new uint[MaxEntities + 1];
+        private uint _nextLife;
+        private readonly bool[] _previousPresent = new bool[MaxEntities + 1];
+        private readonly byte[] _previousKind = new byte[MaxEntities + 1];
         private readonly ushort[][] _ringRemoved = new ushort[HistoryFrames][];
         private readonly uint[] _ringTick = new uint[HistoryFrames];
         private readonly uint[] _ringServerTimeMs = new uint[HistoryFrames];
@@ -58,9 +65,13 @@ namespace Ac.Sim
         private int _visibleCount;
 
         public SnapshotView()
-        {            for (var i = 0; i < HistoryFrames; i++)
+        {
+            for (var i = 0; i < HistoryFrames; i++)
             {
                 _ringEntities[i] = new FrameEntity[MaxRecordsPerFrame];
+                _renderEntities[i] = new FrameEntity[MaxEntities + 1];
+                _renderPresent[i] = new bool[MaxEntities + 1];
+                _renderLife[i] = new uint[MaxEntities + 1];
                 _ringRemoved[i] = new ushort[MaxRemovedPerFrame];
             }
         }
@@ -91,6 +102,7 @@ namespace Ac.Sim
             AppliedTick = 0u;
             _serverTimeMs = 0u;
             FrameCount = 0;
+            Array.Clear(_life, 0, _life.Length);
             _newestSlot = -1;
             BaselineMismatch = 0;
             InvalidSnapshots = 0;
@@ -102,15 +114,36 @@ namespace Ac.Sim
             // 旧帧哪怕是坏帧也不该把 invalidSnapshots 推上去。
             if (frame.Tick <= AppliedTick) return false;                       // 旧帧与重复帧：整帧丢弃，不改状态
             if (frame.BaselineTick > frame.Tick) { BaselineMismatch += 1; return false; }
-            if (frame.BaselineTick != 0 && frame.BaselineTick > AppliedTick) { BaselineMismatch += 1; return false; }
+            var baselineSlot = frame.BaselineTick == 0 ? -1 : FindTickSlot(frame.BaselineTick);
+            if (frame.BaselineTick != 0 && baselineSlot < 0) { BaselineMismatch += 1; return false; }
             if (frame.Entities == null || frame.RemovedIds == null) { InvalidSnapshots += 1; return false; }
-            if (frame.EntityCount < 0 || frame.EntityCount > MaxRecordsPerFrame) { InvalidSnapshots += 1; return false; }
-            if (frame.RemovedCount < 0 || frame.RemovedCount > MaxRemovedPerFrame) { InvalidSnapshots += 1; return false; }
+            if (frame.EntityCount < 0 || frame.EntityCount > MaxRecordsPerFrame || frame.EntityCount > frame.Entities.Length) { InvalidSnapshots += 1; return false; }
+            if (frame.RemovedCount < 0 || frame.RemovedCount > MaxRemovedPerFrame || frame.RemovedCount > frame.RemovedIds.Length) { InvalidSnapshots += 1; return false; }
 
-            if (frame.BaselineTick == 0) ClearMirror();                        // 全量帧
+            for (var i = 0; i < frame.EntityCount; i++)
+                if (frame.Entities[i].Id < 1 || frame.Entities[i].Id > MaxEntities) { InvalidSnapshots += 1; return false; }
+            for (var i = 0; i < frame.RemovedCount; i++)
+                if (frame.RemovedIds[i] < 1 || frame.RemovedIds[i] > MaxEntities) { InvalidSnapshots += 1; return false; }
+
+            Array.Copy(_present, _previousPresent, _present.Length);
+            for (var i = 0; i < _visibleCount; i++)
+            {
+                var id = _visibleIds[i];
+                _previousKind[id] = (byte)(_entities[id].KindFlags & 3);
+            }
+            ClearMirror();
+            if (baselineSlot >= 0)
+                for (var id = 1; id <= MaxEntities; id++)
+                    if (_renderPresent[baselineSlot][id]) StoreEntity(_renderEntities[baselineSlot][id]);
 
             for (var i = 0; i < frame.RemovedCount; i++) RemoveEntity(frame.RemovedIds[i]);
             for (var i = 0; i < frame.EntityCount; i++) StoreEntity(frame.Entities[i]);
+            for (var i = 0; i < _visibleCount; i++)
+            {
+                var id = _visibleIds[i];
+                if (!_previousPresent[id] || _previousKind[id] != (_entities[id].KindFlags & 3))
+                    _life[id] = ++_nextLife;
+            }
 
             PushRing(frame);
             AppliedTick = frame.Tick;
@@ -193,6 +226,28 @@ namespace Ac.Sim
             }
         }
 
+        public bool TryGetRenderEntity(int age, ushort id, out FrameEntity entity, out uint lifetime)
+        {
+            entity = default(FrameEntity);
+            lifetime = 0;
+            if (age < 0 || age >= FrameCount || id < 1 || id > MaxEntities) return false;
+            var slot = RingSlot(age);
+            if (!_renderPresent[slot][id]) return false;
+            entity = _renderEntities[slot][id];
+            lifetime = _renderLife[slot][id];
+            return true;
+        }
+
+        private int FindTickSlot(uint tick)
+        {
+            for (var age = 0; age < FrameCount; age++)
+            {
+                var slot = RingSlot(age);
+                if (_ringTick[slot] == tick) return slot;
+            }
+            return -1;
+        }
+
         private int RingSlot(int age) { return (_newestSlot - age + HistoryFrames * 2) % HistoryFrames; }
 
         private int _newestSlot;
@@ -208,6 +263,14 @@ namespace Ac.Sim
             _ringBaselineTick[slot] = frame.BaselineTick;
             _ringEntityCount[slot] = frame.EntityCount;
             _ringRemovedCount[slot] = frame.RemovedCount;
+            Array.Clear(_renderPresent[slot], 0, _renderPresent[slot].Length);
+            for (var i = 0; i < _visibleCount; i++)
+            {
+                var id = _visibleIds[i];
+                _renderPresent[slot][id] = true;
+                _renderEntities[slot][id] = _entities[id];
+                _renderLife[slot][id] = _life[id];
+            }
             Array.Copy(frame.Entities, _ringEntities[slot], frame.EntityCount);
             Array.Copy(frame.RemovedIds, _ringRemoved[slot], frame.RemovedCount);
         }
@@ -221,6 +284,8 @@ namespace Ac.Sim
                 _visibleIds[_visibleCount] = entity.Id;
                 _visibleCount += 1;
             }
+            if (_life[entity.Id] == 0)
+                _life[entity.Id] = ++_nextLife;
             _entities[entity.Id] = entity;
         }
 
@@ -229,6 +294,7 @@ namespace Ac.Sim
             if (id < 1 || id > MaxEntities) return;
             if (!_present[id]) return;
             _present[id] = false;
+            _life[id] = 0;
             for (var i = 0; i < _visibleCount; i++)
             {
                 if (_visibleIds[i] != id) continue;

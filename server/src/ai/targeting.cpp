@@ -58,15 +58,18 @@ bool isVisible(double fromX, double fromY, double fromZ, const ac::sim::Entity& 
 
 uint16_t selectTarget(TargetState& state, const ac::sim::World& world, const ac::sim::Entity& self,
                       const uint16_t* playerIds, uint32_t playerCount) noexcept {
+  const bool multiplayer = playerCount > 1u;
   const ac::sim::Entity* current =
       state.targetId != 0u ? ac::sim::entityById(world, state.targetId) : nullptr;
+  const bool retainSingle = !multiplayer && current != nullptr && current->active &&
+                            current->kind == ac::sim::EntityKind::kPlayer && current->hp > 0.0;
   const int32_t currentIndex = aggroIndexOf(playerIds, playerCount, state.targetId);
   const double currentAggro = currentIndex < 0 ? 0.0 : state.aggro[currentIndex];
-  const bool currentValid = current != nullptr && current->active &&
-                            current->kind == ac::sim::EntityKind::kPlayer && current->hp > 0.0;
-  uint16_t bestId = currentValid ? state.targetId : 0u;
-  double bestScore = currentValid ? currentAggro * ac::config::kSheepAi.targetSwitchRatio : -1.0;
-  double bestDistance = state.targetDistanceM;
+  uint16_t bestId = retainSingle ? state.targetId : 0u;
+  double bestScore = retainSingle ? currentAggro * ac::config::kSheepAi.targetSwitchRatio : -1.0;
+  double bestDistance = multiplayer ? 0.0 : state.targetDistanceM;
+  double currentScore = -1.0;
+  double currentDistance = 0.0;
   const double eyeY = self.pos.y + ac::config::kTargetEyeHeightM;
 
   for (uint32_t i = 0; i < playerCount; ++i) {
@@ -81,18 +84,26 @@ uint16_t selectTarget(TargetState& state, const ac::sim::World& world, const ac:
     const double distance = std::sqrt(dx * dx + dz * dz);
     if (distance > ac::config::kSheepAi.sightM) continue;
     if (pid != state.targetId && !isVisible(self.pos.x, eyeY, self.pos.z, *player)) continue;
-    if (pid == state.targetId) {
+    if (!multiplayer && pid == state.targetId) {
       bestDistance = distance;
       continue;
     }
     const double aggro = i < static_cast<uint32_t>(ac::config::kSheepAggroSlots) ? state.aggro[i] : 0.0;
     const double score = aggro + 1.0 / (1.0 + distance);
+    if (pid == state.targetId) {
+      currentScore = score;
+      currentDistance = distance;
+    }
     if (score <= bestScore) continue;
     bestScore = score;
     bestId = pid;
     bestDistance = distance;
   }
 
+  if (currentScore >= 0.0 && bestScore <= currentScore * ac::config::kSheepAi.targetSwitchRatio) {
+    bestId = state.targetId;
+    bestDistance = currentDistance;
+  }
   state.targetId = bestId;
   state.targetDistanceM = bestDistance;
   return bestId;

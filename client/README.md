@@ -9,7 +9,7 @@
 | 技术前提（引擎/版本/依赖白名单）     | [docs/03-技术选型-v2.md](../docs/03-技术选型-v2.md)              |
 | 零外部素材与问界额标策略             | [ADR-003](../docs/00-共识/ADR/ADR-003-美术素材与问界标识策略.md) |
 | 跨语言确定性契约                     | [ADR-010](../docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md)     |
-| 旧 TypeScript 客户端（冻结对照实现） | `packages/client/`                          |
+| 旧 TypeScript 客户端（已移出） | 备份仓库 `angry-chen-bak`                          |
 
 **当前状态**：C01（MC01）已交付工程基线与构建链（程序集边界、URP 管线资产、零素材门、唯一构建入口）；C02（MC02）在其上落地确定性数学（`Vec3`、mulberry32 三流、量化/反量化、共享角度表）、v2 协议解码（命令/快照/事件/MatchState）与批处理自检框架。渲染、玩法与表现由 C03 起落地。实测记录见 `docs/evidence/client-c01-acceptance.md` 与 `docs/evidence/client-c02-acceptance.md`。
 
@@ -22,7 +22,7 @@
 | 目的 | 命令 | 期望 |
 |---|---|---|
 | 打开工程 | `& $env:AC_UNITY -projectPath client` | 编辑器打开 `client/` |
-| 构建 Windows x64 | `powershell -NoProfile -File client/build.ps1 -Target Windows64` | 末行 `Build succeeded`，退出码 `0`（`1` 构建失败、`2` 编辑器缺失）；产物 `client/Build/Windows64/angry-chen.exe`，引擎日志 `client/Logs/build.log` |
+| 构建 Windows x64 | `powershell -NoProfile -File client/build.ps1 -Target Windows64` | 末行 `BUILD OK <归档名>`，退出码 `0`（`1` 构建失败、`2` 编辑器缺失）；发布指针 `client/Build/Windows64/release/latest.txt`，引擎日志 `client/Logs/build/<run-id>/build.log` |
 | 分组自检 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll -logFile -` | 首行 `SELFTEST START cases=<n>`，每条用例一行 `PASS <用例 id>`，末行 `SELFTEST OK cases=<n>`，退出码 `0`；有失败时逐行 `FAIL <用例 id> expected=<e> actual=<a>`，末行 `SELFTEST FAIL failures=<n> cases=<n>`，退出码 `1` |
 | 核心自检 | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Core.SelfTest.Run -logFile -` | 末行 `SELFTEST OK cases=<n>`，退出码 `0`（只覆盖 Core 层的受限 JSON 读取器） |
 | 角度表校验（共享产物） | `node tools/export-trig-table.mjs --check` | `trig-table.json OK (65536 entries) sin=0x8BD9F737 atan=0x197C3A8D asin=0xAD2BD35E`，退出码 `0` |
@@ -30,7 +30,9 @@
 | URP 管线资产（幂等） | `& $env:AC_UNITY -batchmode -quit -nographics -projectPath client -executeMethod Ac.Editor.RenderPipelineSetup.Run -logFile -` | `[urp] pipeline=Assets/Settings/UniversalRenderPipeline.asset` |
 | 仓库门禁 | `node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` | 两条都 `OK`，退出码 `0` |
 
-> Tuanjie.exe 是 GUI 子系统程序：PowerShell 的 `&` 不会等它结束（`$LASTEXITCODE` 为空），`Start-Process -Wait` 会连它的后代进程一起等而挂死，`Start-Process -PassThru` 的 `ExitCode` 实测取不到值。`client/build.ps1` 因此把命令行写进 `client/Logs/build.cmd` 交给 `cmd /c` 代跑（cmd 会等 GUI 程序结束并原样传回退出码）；手工跑批处理也请用 `cmd /c`。
+> Tuanjie.exe 是 GUI 子系统程序：PowerShell 的 `&` 不会等它结束（`$LASTEXITCODE` 为空），`Start-Process -Wait` 会连它的后代进程一起等而挂死，`Start-Process -PassThru` 的 `ExitCode` 实测取不到值。`client/build.ps1` 因此把命令行写进 `client/Logs/build/<run-id>/build.cmd` 交给 `cmd /c` 代跑（cmd 会等 GUI 程序结束并原样传回退出码）；手工跑批处理也请用 `cmd /c`。
+
+`-Output` 只接受目录，相对路径以 `client/` 为根（例：`-Output Build/Windows64`，不要重复加 `client/`），拒绝 `.exe` 路径。每次构建只打包独立 stage，排除真实 `server.txt` 与 DoNotShip 目录，并附 `server.txt.example`。BuildInfo.g.cs 构建前保存、finally 按原始字节恢复。发布指针只在归档与清单通过校验后原子更新；失败保留旧指针和旧归档。脚本级回归（无需 Unity）：`powershell -NoProfile -File client/tools/test-build.ps1` 与 `powershell -NoProfile -File client/tools/test-player-discovery.ps1`。帧基准默认只使用 `release/latest.txt` 对应且哈希有效的成功发布 stage，不扫描失败 stage 或遗留 exe；显式 `-Player` 参数优先。
 
 ## 验证（C01 §6 六条命令）
 
@@ -39,7 +41,7 @@
 1. 素材门：`powershell -NoProfile -File client/tools/verify-assets.ps1` → 期望 `OK：client 零外部素材`。
 2. 版本、序列化与依赖白名单：`Get-Content client/ProjectSettings/ProjectVersion.txt` 首行为 `m_EditorVersion: 2022.3.62t16`，第二行的 changeset 与 `(Get-Item $env:AC_UNITY).VersionInfo.ProductVersion` 一致；`Select-String -Path client/ProjectSettings/EditorSettings.asset -Pattern "m_SerializationMode: 2"` 命中；`client/Packages/manifest.json` 的 `dependencies` 全部命中 `tools/check-assets.mjs` 的 `UNITY_ALLOWED` 白名单。
 3. 程序集图：`Get-ChildItem client/Assets -Recurse -Filter *.asmdef | ForEach-Object { $_.Name; (Get-Content -Raw $_ | ConvertFrom-Json).references }` → 每份 `references` 是 C01 §5.2 允许集合的子集。
-4. 构建：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`（`1` = 构建失败、`2` = 编辑器缺失），末行 `Build succeeded`，在 `client/` 下 `Test-Path Build/Windows64/angry-chen.exe` 为 `True`。
+4. 构建：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`（`1` = 构建失败、`2` = 编辑器缺失），末行 `BUILD OK <归档名>`，`Test-Path client/Build/Windows64/release/latest.txt` 为 `True`。
 5. 生成目录不入库：`git status --porcelain -uall client` → 逐个列出的都是 C01 §3 的文件；出现 `Library/`、`Temp/`、`Logs/`、`Build/`、`UserSettings/` 下任何文件即失败。
 6. 仓库质量门：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
 
@@ -54,7 +56,7 @@
 3. 禁超越函数扫描：`Get-ChildItem client/Assets/Scripts/Sim, client/Assets/Scripts/Net -Recurse -Include *.cs | Select-String -Pattern '(Math|MathF)\.(Sin|Cos|Tan|Sinh|Cosh|Tanh|Asin|Acos|Atan|Atan2|Exp|ExpM1|Log|Log2|Log10|Log1p|Pow|Cbrt|Hypot)'` → 无输出；`client/Assets/Scripts/Sim/` 与 `Net/` 内角度只能经 `TrigTable`。
 4. 分组自检：第 2 条的 `-executeMethod` 换成 `Ac.Tests.SuiteRegistry.RunAll` → 含 `PASS codec.roundtrip`、`PASS quantize.edge`、`PASS rng.streams`、`PASS fixtures.loader` 与末行 `SELFTEST OK cases=<n>`。
 5. 仓库门禁：`node tools/check-docs.mjs` 与 `node tools/check-assets.mjs` 全绿。
-6. 构建不回归：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`、末行 `Build succeeded`。
+6. 构建不回归：`powershell -NoProfile -File client/build.ps1 -Target Windows64` → 退出码 `0`、末行 `BUILD OK <归档名>`。
 
 ## 目录约定（C01 §5.3）
 
@@ -71,7 +73,7 @@
 
 ## 生成目录与入库规则
 
-- `Library/`、`Temp/`、`Obj/`、`Logs/`、`Build/`、`Builds/`、`UserSettings/` 由编辑器生成，**不入库**（见 `.gitignore`）：构建产物在 `Build/Windows64/`，引擎与批处理日志在 `Logs/`。
+- `Library/`、`Temp/`、`Obj/`、`Logs/`、`Build/`、`Builds/`、`UserSettings/` 由编辑器生成，**不入库**（见 `.gitignore`）：构建临时播放器在 `Build/Windows64/stage/<run-id>/`，发布归档与清单在 `Build/Windows64/release/<run-id>/`，最新指针在 `release/latest.txt`，引擎与批处理日志在 `Logs/build/<run-id>/`。
 - `ProjectSettings/*.asset`、`Packages/manifest.json`、`Packages/packages-lock.json`、`Assets/**`（含 `*.meta`）全部纯文本入库（ForceText + Visible Meta Files）。
 - 零外部素材：网格、材质、shader、音频、字体一律代码生成或用系统字体；图片/音频/模型/字体文件放不进仓库（`client/tools/verify-assets.ps1` 与 `node tools/check-assets.mjs` 双重判定）。
 

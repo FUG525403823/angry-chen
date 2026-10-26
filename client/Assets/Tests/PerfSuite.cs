@@ -10,6 +10,7 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("perf.constants", ChecksConstants);
+            SelfTest.Add("perf.plan_match_state_payload", ChecksPlanMatchStatePayload);
             SelfTest.Add("perf.ring_wrap", ChecksRingWrap);
             SelfTest.Add("perf.percentile_index", ChecksPercentileIndex);
             SelfTest.Add("perf.stage_accumulate", ChecksStageAccumulate);
@@ -24,6 +25,44 @@ namespace Ac.Tests
             SelfTest.Add("batch.pool_reuse", ChecksPoolReuse);
             SelfTest.Add("batch.pool_zero_alloc", ChecksPoolZeroAlloc);
             SelfTest.Add("batch.frozen_api", ChecksFrozenApi);
+        }
+
+        private static void ChecksPlanMatchStatePayload()
+        {
+            foreach (var tick in new uint[] { 1, 20, 60, 80 })
+            {
+                var payload = Ac.Boot.PlanBench.BuildMatchStatePayload(tick);
+                SelfTest.Equal(108, payload.Length);
+                Ac.Net.MatchStatePayload state;
+                SelfTest.Equal((long)Ac.Net.DecodeFailure.Ok, (long)Ac.Net.MatchStateCodec.Decode(payload, out state));
+                SelfTest.Equal(2, state.Phase);
+                SelfTest.Equal(tick / 20u % 4u + 1u, (long)state.Wave);
+                SelfTest.Equal(3000, state.IntermissionMs);
+                SelfTest.Equal(1, state.LocalPid);
+                SelfTest.Equal(4, state.Players.Length);
+                var names = new[] { "bench", "bot2", "bot3", "bot4" };
+                for (var i = 0; i < state.Players.Length; i++)
+                {
+                    var player = state.Players[i];
+                    SelfTest.Equal(i + 1, player.Pid);
+                    SelfTest.Equal(names[i], player.Name);
+                    SelfTest.True(player.Ready && !player.Downed, "玩家已准备且未倒地", player.Name);
+                    SelfTest.Equal(0, player.Weapon);
+                    SelfTest.Equal(255, player.HpRatio);
+                    SelfTest.Equal(i * 3, player.Kills);
+                    SelfTest.Equal(12, player.Mag);
+                    SelfTest.Equal(60, player.Reserve);
+                    SelfTest.Equal(0, player.ReloadLeft10Ms);
+                    SelfTest.Equal(0, player.Rage);
+                    SelfTest.Equal(0, player.RageLeft100Ms);
+                    SelfTest.Equal(0, player.ReviveRatio255);
+                    SelfTest.Equal(0, player.UpgradePoints);
+                    SelfTest.Equal(0, player.UpgradeDamage);
+                    SelfTest.Equal(0, player.UpgradeSpeed);
+                    SelfTest.Equal(0, player.UpgradeReload);
+                    SelfTest.Equal(0, player.UpgradeReserve);
+                }
+            }
         }
 
         // C14 标准轴必改项 1：面板的 20/33ms 告警阈值曾经是第二份硬编码。

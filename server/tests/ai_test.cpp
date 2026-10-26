@@ -381,6 +381,56 @@ AC_TEST(ai_aggro_decay_and_hit_bonus) {
   AC_CHECK_EQ(ai::aggroIndexOf(players, 2, 5u), -1);
 }
 
+AC_TEST(ai_target_single_player_preserves_legacy_distance_and_retention) {
+  std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+  const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
+  const uint16_t player = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 25.0);
+  const sim::EntityId ids[1] = {player};
+  ai::TargetState state;
+  ai::resetTargetState(state);
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 1u), player);
+  AC_CHECK_EQ(bitsOf(state.targetDistanceM), bitsOf(5.0));
+  entityAt(*world, player).pos.z = 60.0;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 1u), player);
+  AC_CHECK_EQ(bitsOf(state.targetDistanceM), bitsOf(5.0));
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), nullptr, 0u), player);
+  AC_CHECK_EQ(bitsOf(state.targetDistanceM), bitsOf(5.0));
+  entityAt(*world, player).hp = 0.0;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 1u), 0u);
+  AC_CHECK_EQ(bitsOf(state.targetDistanceM), bitsOf(5.0));
+
+  entityAt(*world, player).hp = 100.0;
+  entityAt(*world, player).pos.z = 25.0;
+  AC_CHECK(ac::test::stepEmpty(*world));
+  AC_CHECK_EQ(entityAt(*world, sheep).state, ac::config::sheepStateCode(SheepState::kAlert));
+  const uint64_t retainedDistance = bitsOf(entityAt(*world, sheep).ai.target.targetDistanceM);
+  entityAt(*world, sheep).pos.z = -35.0;
+  entityAt(*world, player).pos.z = 35.0;
+  for (int tick = 0; tick < 10; ++tick) AC_CHECK(ac::test::stepEmpty(*world));
+  AC_CHECK_EQ(entityAt(*world, sheep).ai.target.targetId, player);
+  AC_CHECK_EQ(bitsOf(entityAt(*world, sheep).ai.target.targetDistanceM), retainedDistance);
+  AC_CHECK_EQ(entityAt(*world, sheep).state, ac::config::sheepStateCode(SheepState::kChase));
+}
+
+AC_TEST(ai_target_keeps_stationary_nearest_player_without_aggro_across_ticks) {
+  std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+  const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
+  const uint16_t nearPlayer = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 25.0);
+  const uint16_t farPlayer = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 30.0);
+  const sim::EntityId ids[2] = {nearPlayer, farPlayer};
+  ai::TargetState state;
+  ai::resetTargetState(state);
+
+  for (int tick = 0; tick < 20; ++tick) {
+    ai::decayAggro(state, 2);
+    AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), nearPlayer);
+    AC_CHECK_EQ(state.targetId, nearPlayer);
+    AC_CHECK_EQ(state.targetDistanceM, 5.0);
+    AC_CHECK_EQ(state.aggro[0], 0.0);
+    AC_CHECK_EQ(state.aggro[1], 0.0);
+  }
+}
+
 AC_TEST(ai_target_selects_highest_score_past_ratio) {
   std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
   const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
@@ -397,11 +447,98 @@ AC_TEST(ai_target_selects_highest_score_past_ratio) {
   AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), farPlayer);
   AC_CHECK_NEAR(state.targetDistanceM, 10.0, 1e-12);
 
-  state.aggro[0] = 1.2;  // 1.2 + 1/6 = 1.3667 < 1.0 * 1.5 → 不切换
+  state.aggro[0] = 1.2;  // 1.2 + 1/6 < (1.0 + 1/11) * 1.5 → 不切换
   AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), farPlayer);
-  state.aggro[0] = 2.0;  // 2.1667 > 1.5 → 切换回近处玩家
+  state.aggro[0] = 2.0;  // 2 + 1/6 > (1.0 + 1/11) * 1.5 → 切换回近处玩家
   AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), nearPlayer);
   AC_CHECK_EQ(state.targetId, nearPlayer);
+}
+
+AC_TEST(ai_target_keeps_current_on_equal_score_and_switch_threshold) {
+  std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+  const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
+  const uint16_t challenger = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 23.0);
+  const uint16_t current = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 23.0);
+  const sim::EntityId ids[2] = {challenger, current};
+  ai::TargetState state;
+  ai::resetTargetState(state);
+  state.targetId = current;
+  state.targetDistanceM = 99.0;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), current);
+  AC_CHECK_EQ(state.targetDistanceM, 3.0);
+
+  // Current score 0.25; challenger score 0.375 equals the 1.5 switch threshold exactly.
+  state.aggro[0] = 0.125;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), current);
+  state.aggro[0] = 0.126;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), challenger);
+}
+
+AC_TEST(ai_target_reselects_immediately_when_current_is_invalid) {
+  for (int invalid = 0; invalid < 6; ++invalid) {
+    std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+    const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
+    const uint16_t current = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 25.0);
+    const uint16_t replacement = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 30.0);
+    const sim::EntityId ids[2] = {current, replacement};
+    ai::TargetState state;
+    ai::resetTargetState(state);
+    state.targetId = current;
+    state.targetDistanceM = 5.0;
+    state.aggro[0] = 100.0;
+    sim::Entity& old = entityAt(*world, current);
+    if (invalid == 0) old.hp = 0.0;
+    if (invalid == 1) old.active = false;
+    if (invalid == 2) old.kind = sim::EntityKind::kSheep;
+    if (invalid == 3) old.pos.z = 60.0;
+    if (invalid == 4) {
+      state.targetId = 0xFFFFu;
+      old.hp = 0.0;
+    }
+    const sim::EntityId missingCurrent[2] = {replacement, 0u};
+    const sim::EntityId* listed = invalid == 5 ? missingCurrent : ids;
+    AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), listed, 2u), replacement);
+    AC_CHECK_EQ(state.targetDistanceM, 10.0);
+    const sim::EntityId noCandidates[2] = {0u, 0u};
+    AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), noCandidates, 2u), 0u);
+    AC_CHECK_EQ(state.targetDistanceM, 0.0);
+  }
+}
+
+AC_TEST(ai_target_hit_aggro_transfers_to_highest_candidate_in_either_order) {
+  for (int reverse = 0; reverse < 2; ++reverse) {
+    std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+    const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 20.0);
+    const uint16_t current = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 25.0);
+    const uint16_t first = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 28.0);
+    const uint16_t strongest = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 30.0);
+    const sim::EntityId ids[3] = {current, reverse ? strongest : first, reverse ? first : strongest};
+    ai::TargetState state;
+    ai::resetTargetState(state);
+    AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 3u), current);
+    ai::noteHit(state, ids, 3u, first);
+    ai::noteHit(state, ids, 3u, strongest);
+    state.aggro[reverse ? 1 : 2] += 1.0;
+    AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 3u), strongest);
+    AC_CHECK_EQ(state.targetDistanceM, 10.0);
+  }
+}
+
+AC_TEST(ai_target_keeps_occluded_current_but_rejects_occluded_challenger) {
+  std::unique_ptr<sim::World> world = sim::createWorld(kSeed);
+  const uint16_t sheep = spawnAt(*world, sim::EntityKind::kSheep, 0.0, 10.0);
+  const uint16_t behind = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, -10.0);
+  const uint16_t front = spawnAt(*world, sim::EntityKind::kPlayer, 0.0, 6.0);
+  const sim::EntityId ids[2] = {behind, front};
+  ai::TargetState state;
+  ai::resetTargetState(state);
+  state.targetId = behind;
+  state.aggro[0] = 20.0;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), behind);
+  AC_CHECK_EQ(state.targetDistanceM, 20.0);
+  state.targetId = front;
+  AC_CHECK_EQ(ai::selectTarget(state, *world, entityAt(*world, sheep), ids, 2u), front);
+  AC_CHECK_EQ(state.targetDistanceM, 4.0);
 }
 
 AC_TEST(ai_target_skips_player_behind_barn) {

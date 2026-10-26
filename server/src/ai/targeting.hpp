@@ -24,7 +24,9 @@ void noteHit(TargetState& state, const uint16_t* playerIds, uint32_t playerCount
 // 非玩家目标恒可见（v1 targeting.ts 的 kind !== 'player' 分支）。
 bool isVisible(double fromX, double fromY, double fromZ, const ac::sim::Entity& target) noexcept;
 
-// 目标选择：旧目标按 aggro * 切换比续期，新目标按 aggro + 1/(1+distance) 打分（严格大于才替换）。
+// 多人统一按 aggro + 1/(1+distance) 打分；候选严格超过当前完整分数 × 切换比才替换。
+// 多人失效重选、无目标距离归零；零/单玩家保留旧目标续期与缓存距离数值路径（ADR-019）。
+// 仅新目标需要可见。
 uint16_t selectTarget(TargetState& state, const ac::sim::World& world, const ac::sim::Entity& self,
                       const uint16_t* playerIds, uint32_t playerCount) noexcept;
 
