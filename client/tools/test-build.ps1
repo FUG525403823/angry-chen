@@ -80,7 +80,6 @@ exit 0
     $env:AC_UNITY = Join-Path $root 'missing-editor.exe'
     $result = Run-Build $out
     Assert ($result.Code -eq 2) 'missing editor exit code mismatch'
-    Write-Output 'BUILD SCRIPT TEST OK (isolation, packaging, restoration, failure preservation, paths)'
 } finally {
     $env:AC_UNITY = $oldEditor
     $env:AC_FAKE_MODE = $oldMode
@@ -88,3 +87,6 @@ exit 0
     if ((Split-Path -Parent $resolved).TrimEnd('\') -ne ([IO.Path]::GetTempPath()).TrimEnd('\') -or (Split-Path -Leaf $resolved) -notlike 'ac-build-test-*') { throw 'unsafe fixture cleanup path' }
     if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
+# Actions forwards LASTEXITCODE; expected failure probes must not leak their status.
+$global:LASTEXITCODE = 0
+Write-Output 'BUILD SCRIPT TEST OK (isolation, packaging, restoration, failure preservation, paths)'
