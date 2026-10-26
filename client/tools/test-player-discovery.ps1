@@ -52,9 +52,11 @@ try {
     $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'frame-bench.ps1') -Raw
     Assert ($source.Contains('$Player = Resolve-PublishedPlayer -Project $Project -Player $Player')) 'frame bench must use resolver with explicit override'
     Assert (-not $source.Contains('function Find-PlayerExe')) 'legacy scanner must be removed'
-    Write-Output 'PASS player discovery: published stage, failed-stage exclusion, explicit override, malformed/missing/corrupt release'
 } finally {
     if ([IO.Path]::GetFullPath($root) -ne (Join-Path ([IO.Path]::GetTempPath()) (Split-Path $root -Leaf)) -or
         (Split-Path $root -Leaf) -notlike 'ac-player-discovery-*') { throw 'unexpected fixture cleanup target' }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
+# Actions forwards LASTEXITCODE; expected failure probes must not leak their status.
+$global:LASTEXITCODE = 0
+Write-Output 'PASS player discovery: published stage, failed-stage exclusion, explicit override, malformed/missing/corrupt release'
