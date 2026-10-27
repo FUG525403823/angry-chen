@@ -144,6 +144,8 @@ namespace Ac.Net
         private readonly FragmentReassembler _reassembler = new FragmentReassembler();
         private readonly Dictionary<int, ReliabilityChannel> _channels = new Dictionary<int, ReliabilityChannel>();
         private readonly Queue<byte[]> _backlog = new Queue<byte[]>();
+        private readonly List<ReliabilityChannel> _channelSnapshot = new List<ReliabilityChannel>();
+        private readonly Action<uint, byte[]> _resend;
         private readonly byte[] _receiveBuffer = new byte[Fragmenter.MaxDatagramBytes * 2];
 
         private int _backlogBytes;
@@ -160,6 +162,7 @@ namespace Ac.Net
         {
             if (socket == null) throw new ArgumentNullException("socket");
             _socket = socket;
+            _resend = ResendDatagram;
             _clockMs = clockMs ?? DefaultClock;
             Stats = new NetStats();
             _session = new SessionStateMachine(this);
@@ -564,11 +567,12 @@ namespace Ac.Net
         private void TickChannels(double now)
         {
             // 先复制一份再遍历：失联回调会经状态机新开一条可靠流（Resume），不能边遍历边改字典。
-            var channels = new List<ReliabilityChannel>(_channels.Values);
-            foreach (var channel in channels)
+            _channelSnapshot.Clear();
+            foreach (var channel in _channels.Values) _channelSnapshot.Add(channel);
+            foreach (var channel in _channelSnapshot)
             {
                 bool exhausted;
-                var resent = channel.Tick(now, ResendDatagram, out exhausted);
+                var resent = channel.Tick(now, _resend, out exhausted);
                 for (var i = 0; i < resent; i++) Stats.OnRetransmit();
                 if (exhausted) _session.OnRetransmitExhausted(now);
             }

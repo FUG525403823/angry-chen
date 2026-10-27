@@ -38,6 +38,9 @@ namespace Ac.Boot
         private readonly EntityViews _views;
         private readonly Hud _hud;
         private readonly FrameProfiler _profiler;
+        private readonly MatchStateDecoder _matchDecoder = new MatchStateDecoder();
+        private readonly PacketReader _eventReader = new PacketReader(null);
+        private readonly EventEntry[] _eventEntries = new EventEntry[EventCodec.MaxEventsPerFrame];
         private readonly Predictor _predictor = new Predictor();
         private readonly Reconciler _reconciler = new Reconciler();
         private readonly CommandBuffer _commands = new CommandBuffer();
@@ -139,6 +142,8 @@ namespace Ac.Boot
         {
             LastMatchState = default(MatchStatePayload);
             MatchStateCount = 0;
+            _sample.Rage = 0;
+            _sample.RageLeft100Ms = 0;
             _ammoDataReady = false;
             _weapon.Reset();
             _ammo.Reset();
@@ -226,6 +231,15 @@ namespace Ac.Boot
         // 且重放了几步"的判据：少了它们，那些"位置平滑/误差很小"的断言在没有和解时也会真空通过。
         public int Reconciles { get; private set; }
         public int LastReplayed { get; private set; }
+        public bool TraceReconciliation { get; set; }
+        public Action<FrameStage> DiagnosticStageMarked;
+        public Action DiagnosticFrameBegin;
+
+        private void MarkStage(FrameStage stage)
+        {
+            _profiler.Mark(stage);
+            if (DiagnosticStageMarked != null) DiagnosticStageMarked(stage);
+        }
         // 本地武器镜像与弹药账（C06 §5(c)）：`LocalShotFired` 是**当帧**开火信号——枪口火焰、曳光、
         // 后坐、准星散布都跟它走（权威命中要等一个 RTT，MatchState 的弹匣要等 1Hz，都不能用来驱动反馈）。
         // 用例靠 ShotCount / LastShotSeq / AmmoRejectedTotal 判断"真的响过"，而不是断言一个恒 false 的位。
@@ -277,7 +291,7 @@ namespace Ac.Boot
                 case PacketType.MatchState:
                 {
                     MatchStatePayload state;
-                    if (MatchStateCodec.Decode(payload, out state) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
+                    if (_matchDecoder.Decode(payload, LastMatchState, out state) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
                     var previousPhase = _phase;
                     _phase = state.Phase;
                     _wave = state.Wave;
@@ -317,15 +331,10 @@ namespace Ac.Boot
                 }
                 case PacketType.Event:
                 {
-                    EventFrame frame;
-                    if (EventCodec.DecodeFrame(payload, Events, out frame) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
-                    if (frame.Entries == null) return;
-                    for (var i = 0; i < frame.Entries.Length; i++)
-                    {
-                        // 只认冻结事件域里的条目：解码器的数组可能带未用槽位，未知类型直接跳过。
-                        if (!EventCodec.IsKnownEvent(frame.Entries[i].Type)) continue;
-                        ApplyEvent(frame.Entries[i]);
-                    }
+                    int count;
+                    if (EventCodec.DecodeFrameInto(payload, Events, _eventReader, _eventEntries, out count) != DecodeFailure.Ok)
+                    { DecodeFailures += 1; return; }
+                    for (var i = 0; i < count; i++) ApplyEvent(_eventEntries[i]);
                     return;
                 }
             }
@@ -598,8 +607,8 @@ namespace Ac.Boot
                 if (result.HardCorrect) HardCorrects += 1;
                 // 实机排障观测：节流记录每次和解的时钟对齐与误差（大厅/对局 tick 冻结、漂移、
                 // 硬纠频次都能从这里看出来）。HardCorrect 单独记（不节流），其他每 25 次记一条。
-                // 批处理自检（isBatchMode）跳过：Debug.Log 会分配，破坏 steady-state 零分配用例。
-                if (!UnityEngine.Application.isBatchMode
+                // 显式诊断开关；默认生产与测试均不创建日志字符串。
+                if (TraceReconciliation
                     && (result.HardCorrect || (Reconciles % 25) == 0))
                 {
                     UnityEngine.Debug.Log("Ac.Boot: 和解 tick=" + authority.Tick
@@ -680,8 +689,6 @@ namespace Ac.Boot
             SampleAmmoCrateProximity();
 
             _sample.AmmoDataReady = _ammoDataReady;
-            _sample.Rage = 0;
-            _sample.RageLeft100Ms = 0;
             if (_ammoDataReady)
             {
                 Ammo = new AmmoView { Mag = _weapon.ActiveMag, Reserve = _weapon.Reserve, Slot = _weapon.Slot, GateMag = _weapon.ActiveMag };

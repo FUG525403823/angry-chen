@@ -11,6 +11,8 @@ namespace Ac.Tests
         {
             SelfTest.Add("perf.constants", ChecksConstants);
             SelfTest.Add("perf.plan_match_state_payload", ChecksPlanMatchStatePayload);
+            SelfTest.Add("perf.plan_snapshot_generation_zero_alloc", ChecksPlanSnapshotGenerationZeroAlloc);
+            SelfTest.Add("perf.plan_tick_zero_alloc", ChecksPlanTickZeroAlloc);
             SelfTest.Add("perf.ring_wrap", ChecksRingWrap);
             SelfTest.Add("perf.percentile_index", ChecksPercentileIndex);
             SelfTest.Add("perf.stage_accumulate", ChecksStageAccumulate);
@@ -25,6 +27,45 @@ namespace Ac.Tests
             SelfTest.Add("batch.pool_reuse", ChecksPoolReuse);
             SelfTest.Add("batch.pool_zero_alloc", ChecksPoolZeroAlloc);
             SelfTest.Add("batch.frozen_api", ChecksFrozenApi);
+        }
+
+        private static void ChecksPlanTickZeroAlloc()
+        {
+            var options = new Ac.Boot.FrameBenchPlanOptions { Warmup = 120, Sample = 600 };
+            var bench = new Ac.Boot.PlanBench(options);
+            bench.ManualRender = false;
+            var previousVsync = UnityEngine.QualitySettings.vSyncCount;
+            var previousTarget = UnityEngine.Application.targetFrameRate;
+            try
+            {
+                SelfTest.True(bench.Prepare(), "benchmark prepared", bench.EnvError);
+                for (var i = 0; i < 180; i++) bench.Tick();
+                var start = AllocMeter.Begin();
+                for (var i = 0; i < 100; i++) bench.Tick();
+                AllocMeter.AssertZero(start);
+            }
+            finally
+            {
+                UnityEngine.QualitySettings.vSyncCount = previousVsync;
+                UnityEngine.Application.targetFrameRate = previousTarget;
+                if (bench.Presentation != null) bench.Presentation.Dispose();
+                var driver = UnityEngine.GameObject.Find(Ac.Boot.GameBootstrap.RootName);
+                if (driver != null) UnityEngine.Object.DestroyImmediate(driver);
+            }
+        }
+
+        private static void ChecksPlanSnapshotGenerationZeroAlloc()
+        {
+            var frame = default(Ac.Sim.SnapshotFrame);
+            for (uint tick = 1; tick <= 120; tick++) Ac.Boot.PlanBench.FillPlanFrame(ref frame, tick);
+            var start = AllocMeter.Begin();
+            for (uint tick = 121; tick <= 220; tick++) Ac.Boot.PlanBench.FillPlanFrame(ref frame, tick);
+            AllocMeter.AssertZero(start);
+            SelfTest.Equal(64, frame.EntityCount);
+            SelfTest.Equal(-800, frame.Entities[0].ZCm);
+            SelfTest.Equal(600, frame.Entities[1].XCm);
+            SelfTest.Equal(-600, frame.Entities[2].XCm);
+            SelfTest.Equal(1000, frame.Entities[3].ZCm);
         }
 
         private static void ChecksPlanMatchStatePayload()

@@ -545,7 +545,7 @@ namespace Ac.Boot
                 }
             }
             DrawnSheepCount = drawn;
-            SubmittedDraws = submitted + RemotePlayers.RendererCount;
+            SubmittedDraws = submitted + RemotePlayers.SubmittedDraws;
             SubmittedTriangles = triangles + RemotePlayers.TriangleCount;
             // The stage return value denotes work, not the number of draw calls.
             return SubmittedDraws > 0;

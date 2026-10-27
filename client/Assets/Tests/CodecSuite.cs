@@ -23,7 +23,104 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("codec.roundtrip", ChecksCodecs);
+#if UNITY_5_3_OR_NEWER
+            SelfTest.Add("codec.event_uplink_zero_alloc", ChecksEventDeliveryZeroAlloc);
+            SelfTest.Add("codec.match_state_steady_zero_alloc", ChecksMatchStateSteadyZeroAlloc);
+            SelfTest.Add("codec.match_state_cache_immutable", ChecksMatchStateCacheImmutable);
+            SelfTest.Add("codec.event_buffer_reuse_and_rejection", ChecksEventBuffer);
+#endif
         }
+
+#if UNITY_5_3_OR_NEWER
+        private static void ChecksEventBuffer()
+        {
+            var reader = new PacketReader(null);
+            var buffer = new EventEntry[EventCodec.MaxEventsPerFrame];
+            var entry = PlayerHitEntry(7u, 3, 17, 25, 5, 120, 100, -250);
+            var payload = BuildEventFrame(100u, entry, entry);
+            var tracker = new EventIdTracker();
+            int count;
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)EventCodec.DecodeFrameInto(payload, tracker, reader, buffer, out count));
+            SelfTest.Equal(1, count);
+            SelfTest.Equal(17, buffer[0].TargetId);
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)EventCodec.DecodeFrameInto(payload, tracker, reader, buffer, out count));
+            SelfTest.Equal(0, count);
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)EventCodec.DecodeFrameInto(payload, null, reader, buffer, out count));
+            SelfTest.Equal(2, count);
+            var shortPacket = Slice(payload, 0);
+            Array.Resize(ref shortPacket, payload.Length - 1);
+            SelfTest.Equal((long)DecodeFailure.Truncated, (long)EventCodec.DecodeFrameInto(shortPacket, null, reader, buffer, out count));
+            SelfTest.Equal(0, count);
+            SelfTest.Equal((long)DecodeFailure.BadLength, (long)EventCodec.DecodeFrameInto(Concat(payload, new byte[] { 0 }), null, reader, buffer, out count));
+            SelfTest.Equal(0, count);
+            SelfTest.Equal((long)DecodeFailure.BadValue, (long)EventCodec.DecodeFrameInto(payload, null, reader, new EventEntry[1], out count));
+            SelfTest.Equal(0, count);
+            SelfTest.Equal((long)DecodeFailure.Truncated, (long)EventCodec.DecodeFrameInto(null, null, reader, buffer, out count));
+            SelfTest.Equal(0, count);
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)EventCodec.DecodeFrameInto(payload, null, reader, buffer, out count));
+            SelfTest.Equal(2, count);
+        }
+
+        private static void ChecksMatchStateCacheImmutable()
+        {
+            var decoder = new MatchStateDecoder();
+            var bytes = Ac.Boot.PlanBench.BuildMatchStatePayload(1);
+            MatchStatePayload first, same, changed, rejected, recovered;
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)decoder.Decode(bytes, default(MatchStatePayload), out first));
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)decoder.Decode(bytes, first, out same));
+            SelfTest.True(object.ReferenceEquals(first.Players, same.Players), "unchanged immutable array reused");
+            bytes[8] = (byte)'X';
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)decoder.Decode(bytes, same, out changed));
+            SelfTest.True(!object.ReferenceEquals(first.Players, changed.Players), "changed array published separately");
+            SelfTest.Equal("bench", first.Players[0].Name);
+            SelfTest.Equal("Xench", changed.Players[0].Name);
+            var bad = new byte[bytes.Length + 1];
+            System.Array.Copy(bytes, bad, bytes.Length);
+            SelfTest.Equal((long)DecodeFailure.BadLength, (long)decoder.Decode(bad, changed, out rejected));
+            SelfTest.Equal("Xench", changed.Players[0].Name);
+            SelfTest.Equal((long)DecodeFailure.Ok, (long)decoder.Decode(bytes, changed, out recovered));
+            SelfTest.True(object.ReferenceEquals(changed.Players, recovered.Players), "malformed decode cannot poison previous state");
+            bytes[8] = 0xff;
+            SelfTest.Equal((long)DecodeFailure.BadValue, (long)decoder.Decode(bytes, recovered, out rejected));
+            SelfTest.Equal("Xench", recovered.Players[0].Name);
+        }
+
+        private static void ChecksMatchStateSteadyZeroAlloc()
+        {
+            var loop = new Ac.Boot.GameLoop(new Ac.Sim.SnapshotView(), new Ac.View.EntityViews(), new Ac.UI.Hud(), new FrameProfiler());
+            var payload = Ac.Boot.PlanBench.BuildMatchStatePayload(1);
+            var header = new PacketHeader { Type = PacketType.MatchState };
+            for (var i = 0; i < 20; i++) loop.OnPacket(header, payload);
+            var before = AllocMeter.Begin();
+            for (var i = 0; i < 100; i++) loop.OnPacket(header, payload);
+            AllocMeter.AssertZero(before);
+            SelfTest.Equal(120, loop.MatchStateCount);
+        }
+
+        private static void ChecksEventDeliveryZeroAlloc()
+        {
+            var loop = new Ac.Boot.GameLoop(new Ac.Sim.SnapshotView(), new Ac.View.EntityViews(),
+                new Ac.UI.Hud(), new FrameProfiler());
+            var payload = BuildEventFrame(100u, PlayerHitEntry(1u, 3, 17, 25, 5, 120, 100, -250));
+            var header = new PacketHeader { Type = PacketType.Event };
+            for (var i = 0; i < 20; i++) loop.OnPacket(header, payload);
+            var applied = loop.EventsApplied;
+            var before = AllocMeter.Begin();
+            for (var i = 0; i < 100; i++) loop.OnPacket(header, payload);
+            AllocMeter.AssertZero(before);
+            SelfTest.Equal(applied + 100, loop.EventsApplied);
+            var delivered = loop.EventsApplied;
+            var failures = loop.DecodeFailures;
+            loop.OnPacket(header, Concat(payload, new byte[] { 0 }));
+            SelfTest.Equal(delivered, loop.EventsApplied);
+            SelfTest.Equal(failures + 1, loop.DecodeFailures);
+            loop.Events = new EventIdTracker();
+            loop.OnPacket(header, payload);
+            loop.OnPacket(header, payload);
+            SelfTest.Equal(delivered + 1, loop.EventsApplied);
+        }
+
+#endif
 
         private static void ChecksCodecs()
         {
@@ -218,9 +315,9 @@ namespace Ac.Tests
             PacketHeader header;
             SelfTest.Equal((long)DecodeFailure.BadVersion,
                 (long)PacketHeader.Read(new PacketReader(new byte[] { 1, (byte)PacketType.Command, 0, 0, 0, 0, 0, 0 }), out header));
-            // 12 = 尚未分配的类型码（11 自 ADR-009「握手时序」起是 Join）。
+            // 255 未分配；12 已分配给 UpgradeSelect，合法性由 UpgradeSuite 验证。
             SelfTest.Equal((long)DecodeFailure.BadType,
-                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, 12, 0, 0, 0, 0, 0, 0 }), out header));
+                (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, 255, 0, 0, 0, 0, 0, 0 }), out header));
             SelfTest.Equal((long)DecodeFailure.Truncated,  // flags 合法但包头的 seq 不完整
                 (long)PacketHeader.Read(new PacketReader(new byte[] { PacketHeader.ProtocolVersion, (byte)PacketType.Command, 1, 0, 0, 0 }), out header));
 
@@ -240,7 +337,7 @@ namespace Ac.Tests
             // `payloadBytes != 14 → BadLength` 判 BadLength——这是两侧唯一没有共享 fixture 覆盖的分歧点
             // （见 docs/evidence/client-c02-acceptance.md §3.4），在这里钉住本端口径。
             var shortPayloadFrame = new byte[20 + 13];
-            shortPayloadFrame[0] = 1;
+            shortPayloadFrame[0] = PacketHeader.ProtocolVersion;
             shortPayloadFrame[1] = (byte)PacketType.Command;
             shortPayloadFrame[2] = 1;  // flags = reliable
             SelfTest.Equal((long)DecodeFailure.Ok, (long)PacketHeader.Read(new PacketReader(shortPayloadFrame), out header));
@@ -256,7 +353,7 @@ namespace Ac.Tests
             SelfTest.Equal((long)DecodeFailure.Ok,
                 (long)PacketHeader.Read(new PacketReader(new byte[]
                 {
-                    1, (byte)PacketType.Fragment, 3, 0, 0, 0, 0, 0,
+                    PacketHeader.ProtocolVersion, (byte)PacketType.Fragment, 3, 0, 0, 0, 0, 0,
                     1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0,
                     9, 0, 1, 2,
                 }), out header));

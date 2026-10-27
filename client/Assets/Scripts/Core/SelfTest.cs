@@ -18,6 +18,16 @@ namespace Ac.Core
     public static class SelfTest
     {
         private static readonly List<Case> _cases = new List<Case>();
+        private static readonly HashSet<string> _ids = new HashSet<string>(StringComparer.Ordinal);
+        private static bool _running;
+
+        public static void RequireGroup(string prefix)
+        {
+            if (string.IsNullOrEmpty(prefix)) throw new ArgumentException("prefix required");
+            for (var i = 0; i < _cases.Count; i++)
+                if (_cases[i].Id.StartsWith(prefix, StringComparison.Ordinal)) return;
+            throw new InvalidOperationException("required test group is empty: " + prefix);
+        }
 
         public static int CaseCount { get { return _cases.Count; } }
 
@@ -40,13 +50,17 @@ namespace Ac.Core
 
         public static void Reset()
         {
+            if (_running) throw new InvalidOperationException("cannot reset running tests");
             _cases.Clear();
+            _ids.Clear();
         }
 
         public static void Add(string caseId, Action body)
         {
             if (string.IsNullOrEmpty(caseId)) throw new ArgumentException("caseId 不能为空");
             if (body == null) throw new ArgumentNullException("body");
+            if (_running) throw new InvalidOperationException("cannot register during execution");
+            if (!_ids.Add(caseId)) throw new InvalidOperationException("duplicate test id: " + caseId);
             _cases.Add(new Case(caseId, body));
         }
 
@@ -54,38 +68,45 @@ namespace Ac.Core
         // （Ac.Core 不能引 UnityEditor，拿不到 EditorApplication.Exit）。
         public static int RunAll(bool throwOnFailure)
         {
-            var total = _cases.Count;
-            var failures = 0;
-            Debug.Log("SELFTEST START cases=" + total);
-            foreach (var testCase in _cases)
+            if (_running) throw new InvalidOperationException("recursive test execution");
+            if (_cases.Count == 0) throw new InvalidOperationException("no tests registered");
+            _running = true;
+            try
             {
-                try
+                var total = _cases.Count;
+                var failures = 0;
+                Debug.Log("SELFTEST START cases=" + total);
+                foreach (var testCase in _cases)
                 {
-                    testCase.Body();
-                    Debug.Log("PASS " + testCase.Id);
+                    try
+                    {
+                        testCase.Body();
+                        Debug.Log("PASS " + testCase.Id);
+                    }
+                    catch (Exception error)
+                    {
+                        failures++;
+                        Debug.Log("FAIL " + testCase.Id + " " + Describe(error));
+                        // 冻结的 FAIL 行只有 expected=/actual= 两个字段，堆栈另起一行（前缀 [selftest] 不属于门的判据）。
+                        // 诊断行默认静默：C02 §5.7 的失败行是冻结契约，多打的行只在排查时用环境变量打开。
+                    if (Environment.GetEnvironmentVariable("AC_SELFTEST_STACK") == "1")
+                    {
+                        Debug.Log("[selftest] stack " + testCase.Id + "\n" + error.StackTrace);
+                    }
+                    }
                 }
-                catch (Exception error)
-                {
-                    failures++;
-                    Debug.Log("FAIL " + testCase.Id + " " + Describe(error));
-                    // 冻结的 FAIL 行只有 expected=/actual= 两个字段，堆栈另起一行（前缀 [selftest] 不属于门的判据）。
-                    // 诊断行默认静默：C02 §5.7 的失败行是冻结契约，多打的行只在排查时用环境变量打开。
-                if (Environment.GetEnvironmentVariable("AC_SELFTEST_STACK") == "1")
-                {
-                    Debug.Log("[selftest] stack " + testCase.Id + "\n" + error.StackTrace);
-                }
-                }
-            }
 
-            if (failures == 0)
-            {
-                Debug.Log("SELFTEST OK cases=" + total);
-                return 0;
-            }
+                if (failures == 0)
+                {
+                    Debug.Log("SELFTEST OK cases=" + total);
+                    return 0;
+                }
 
-            Debug.Log("SELFTEST FAIL failures=" + failures + " cases=" + total);
-            if (throwOnFailure) throw new SelfTestFailure("自检失败 " + failures + "/" + total);
-            return failures;
+                Debug.Log("SELFTEST FAIL failures=" + failures + " cases=" + total);
+                if (throwOnFailure) throw new SelfTestFailure("自检失败 " + failures + "/" + total);
+                return failures;
+            }
+            finally { _running = false; }
         }
 
         public static void Equal(long expected, long actual)

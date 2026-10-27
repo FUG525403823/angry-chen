@@ -85,6 +85,8 @@ namespace Ac.Boot
                         if (delta > 24) different += 1;
                     }
                 }
+                if (!string.IsNullOrEmpty(_options.OutPath))
+                    System.IO.File.WriteAllBytes(_options.OutPath + ".png", texture.EncodeToPNG());
                 UnityEngine.Object.Destroy(texture);
                 _bench.PixelCoverage = total == 0 ? -1.0 : (double)different / total;
                 _bench.PixelNote = "引擎帧循环渲出的窗口截图（ScreenCapture.CaptureScreenshotAsTexture，采样窗口外取一帧）" + width + "x" + height

@@ -154,13 +154,19 @@ namespace Ac.Net
     {
         private static readonly byte[] _empty = new byte[0];
 
-        private readonly byte[] _buffer;
+        private byte[] _buffer;
         private int _position;
 
         // C02 §9：解码入口只返回失败码、不抛异常，null 载荷按空缓冲处理（后续读取一律 Truncated）。
         public PacketReader(byte[] buffer)
         {
             _buffer = buffer ?? _empty;
+        }
+
+        public void Reset(byte[] buffer)
+        {
+            _buffer = buffer ?? _empty;
+            _position = 0;
         }
 
         public int Position { get { return _position; } }

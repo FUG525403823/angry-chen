@@ -469,13 +469,6 @@ namespace Ac.Boot
                 return;
             }
 
-            var tFeed0 = BenchJson.NowMs();
-            _snapshotTick += 1;
-            FeedSnapshot(ref _frame, _snapshotTick);
-            if (_warmupFrames % MatchStateEveryFrames == 0) FeedMatchState(_encoder, _matchPayload, ref _header, (uint)(_warmupFrames + 1));
-            FeedEvents(_encoder, _eventPayload, ref _header, ref _eventId, _eventTick++);
-            var feedCost = BenchJson.NowMs() - tFeed0;
-
             long allocStart = 0;
             var gc0Start = 0;
             if (_measuring)
@@ -483,6 +476,13 @@ namespace Ac.Boot
                 allocStart = AllocWindowStart();
                 gc0Start = GC.CollectionCount(0);
             }
+            var tFeed0 = BenchJson.NowMs();
+            _snapshotTick += 1;
+            FeedSnapshot(ref _frame, _snapshotTick);
+            if (_warmupFrames % MatchStateEveryFrames == 0) FeedMatchState(_encoder, _matchPayload, ref _header, (uint)(_warmupFrames + 1));
+            FeedEvents(_encoder, _eventPayload, ref _header, ref _eventId, _eventTick++);
+            var feedCost = BenchJson.NowMs() - tFeed0;
+
             var tLoop0 = BenchJson.NowMs();
             _loop.Frame(DtMs);
             var tLoop1 = BenchJson.NowMs();
@@ -526,7 +526,7 @@ namespace Ac.Boot
 
         // 逐帧分配窗口的起点。首选引擎计数器（editor 机制与装了 profiler 的进程）；
         // release player 里没有 profiler 计数器（BenchAlloc.CounterAvailable=false），退回 GC.GetTotalMemory(false)：
-        // 同一个窗口、同一个单位（窗口内新分配的托管字节），只是拿不到"本帧分了几次"的分解。
+        // 这里只是净堆增量诊断，不能证明分配量为零；不可作为 AllocMeasured 的精确证据。
         private long AllocWindowStart()
         {
             return BenchAlloc.CounterAvailable ? BenchAlloc.Begin() : BenchAlloc.ReadHeapBytes();
@@ -559,6 +559,10 @@ namespace Ac.Boot
                 var duplicateAccepted = _loop.ApplySnapshot(_frame);
                 _staleTickDropped = !duplicateAccepted && _loop.SnapshotsApplied == appliedBeforeDuplicate;
             }
+            // Exercise measurement-only engine accessors before opening the allocation window.
+            var allocationWarmup = AllocWindowStart();
+            string allocationWarmupReason;
+            AllocWindowBytes(allocationWarmup, GC.CollectionCount(0), out allocationWarmupReason);
             _planGcRawBefore = GC.GetTotalMemory(false);
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -583,7 +587,7 @@ namespace Ac.Boot
             if (_triRecorder.Valid) _triRecorder.Dispose();
 
             var sample = Math.Max(1, _options.Sample);
-            AllocMeasured = _allocUnmeasurable == 0 && _measured > 0;
+            AllocMeasured = BenchAlloc.CounterAvailable && _allocUnmeasurable == 0 && _measured > 0;
             AllocPerFrame = AllocMeasured ? _allocBytes / (double)Math.Max(1, _measured) : -1.0;
 
             var feedFirst = BenchJson.MedianOf(_feedMs, 0, 100);
@@ -609,6 +613,7 @@ namespace Ac.Boot
             // 图形主口径：player 机制下引擎的渲染统计真的可用（引擎帧循环在渲染），优先用它；
             // editor 的 -batchmode 里这两个计数器恒 0（实测），于是回落到"提交了什么"的计数。
             var useEngine = _engineDrawsMax > 0 && _engineTrianglesMax > 0;
+            var graphicsExact = GraphicsMeasured && useEngine;
             DrawCalls = GraphicsMeasured ? (useEngine ? _engineDrawsMax : _drawCallsMax) : -1;
             Triangles = GraphicsMeasured ? (useEngine ? _engineTrianglesMax : _trianglesMax) : -1;
             Particles = GraphicsMeasured ? _particlesMax : -1;
@@ -624,7 +629,7 @@ namespace Ac.Boot
                 || Particles > FrameBudget.ParticleBudget || Materials > FrameBudget.MaterialBudget) overBudget = true;
 
             Verdict = overBudget ? "FAIL"
-                : (GraphicsMeasured && stageMissing == 0 && AllocMeasured) ? "PASS" : "UNVERIFIED";
+                : (graphicsExact && stageMissing == 0 && AllocMeasured) ? "PASS" : "UNVERIFIED";
             ExitCode = Verdict == "PASS" ? 0 : 1;
 
             var json = BuildJson(useEngine, stageMissing, overBudget, feedFirst, feedLast, gapFirst, gapLast, sample);
@@ -725,10 +730,10 @@ namespace Ac.Boot
                 : "Stopwatch 墙钟：相邻两次 Update 起点之间（= 引擎一帧的时间，含本帧渲染与 present），样本 ceil(0.95*n)-1 口径");
             BenchJson.Meta(sb, 4, "frameP99Ms", "同上，ceil(0.99*n)-1");
             BenchJson.Meta(sb, 4, "managedAllocBytesPerFrame", (BenchAlloc.CounterAvailable
-                    ? "BenchAlloc（引擎计数器 Memory/'GC Allocated In Frame'，语义与 Ac.Tests.AllocMeter 一致）"
+                    ? "engine-counter:Memory/" + BenchAlloc.MarkerName
                     : "GC.GetTotalMemory(false) 逐帧窗口（本进程没有 profiler 计数器：release player 里 Memory/'GC Allocated In Frame' 不存在）")
                 + (ManualRender ? "，逐帧窗口 = 合成来件 + GameLoop.Frame + 手动 Camera.Render"
-                    : "，逐帧窗口 = 合成来件 + GameLoop.Frame（窗口必须落在同一个引擎帧内；引擎渲染的分配由 alloc.planWindow* 覆盖）"));
+                    : "，逐帧窗口 = 合成来件 + GameLoop.Frame（窗口必须落在同一个引擎帧内；alloc.planWindow* 只是全窗净堆诊断，不证明引擎渲染零分配）"));
             BenchJson.Meta(sb, 4, "gc0Delta", "GC.CollectionCount(0) 在同一批逐帧窗口里的差值之和");
             BenchJson.Meta(sb, 4, "drawCalls", useEngine
                 ? "引擎渲染统计（ProfilerCategory.Render/'Draw Calls Count'，逐帧取窗口内最大值）"
@@ -888,7 +893,7 @@ namespace Ac.Boot
         // 昵称必须与 MatchStateCodec 的 MinNameBytes/MaxNameBytes（1..12）相容。
         private static string PlayerName(int index)
         {
-            return index == 0 ? BenchLocalName : "bot" + (index + 1).ToString(CultureInfo.InvariantCulture);
+            return index == 0 ? BenchLocalName : index == 1 ? "bot2" : index == 2 ? "bot3" : "bot4";
         }
 
         // MatchState 载荷：u8 phase + u8 wave + u16 intermission + u8 count + 4 × (21 定长 + 昵称字节) + u16 localPid。
@@ -930,7 +935,7 @@ namespace Ac.Boot
         // 计划场景内容：4 玩家（本地 pid 1）+ 60 羊（36 grunt / 12 ram / 8 elite / 4 king）。
         // 羊群聚在相机前方 6m 处的环带（半径 2.5~6.5m）：全体落在视锥与屏幕占比阈值内，
         // 屏幕上的可见数才真的是 60（环带放到 9m 时近侧的羊会被上下视锥切掉，实测只剩 29 只）。
-        private static void FillPlanFrame(ref SnapshotFrame frame, uint tick)
+        public static void FillPlanFrame(ref SnapshotFrame frame, uint tick)
         {
             if (frame.Entities == null || frame.Entities.Length < SnapshotView.MaxRecordsPerFrame)
                 frame.Entities = new FrameEntity[SnapshotView.MaxRecordsPerFrame];
@@ -941,14 +946,12 @@ namespace Ac.Boot
             frame.BaselineTick = 0u;                                // 每帧全量：差分帧会让站着不动的实体从最新帧里消失
             frame.EntityCount = (ushort)(PlayerCount + SheepCount);
             frame.RemovedCount = 0;
-            var playerX = new short[] { 0, 600, -600, 0 };
-            var playerZ = new short[] { -800, 600, 600, 1000 };
             for (var i = 0; i < PlayerCount; i++)
             {
                 var e = default(FrameEntity);
                 e.Id = (ushort)(i + 1);
-                e.XCm = playerX[i];
-                e.ZCm = playerZ[i];
+                e.XCm = (short)(i == 1 ? 600 : i == 2 ? -600 : 0);
+                e.ZCm = (short)(i == 0 ? -800 : i == 3 ? 1000 : 600);
                 e.HpRatioUnits = 255;
                 frame.Entities[i] = e;
             }
@@ -1021,7 +1024,6 @@ namespace Ac.Boot
         private static bool _ready;
         private static string _unavailable;
         private static int _windowFrame = -1;
-
         private static void Ensure()
         {
             if (_ready) return;

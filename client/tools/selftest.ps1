@@ -27,6 +27,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $clientRoot 'ProjectSettings/Project
 }
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+. (Join-Path $PSScriptRoot 'lib/selftest-result.ps1')
+Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
 # Tuanjie.exe 是 GUI 子系统程序：交给 cmd 代跑（cmd 会等 GUI 程序结束并把退出码原样传回），
 # 输出走文件重定向。路径相对仓库根，所以下面把 cmd 的工作目录切到仓库根。
 $engineArgs = '-batchmode -quit -nographics -projectPath client -executeMethod Ac.Tests.SuiteRegistry.RunAll' +
@@ -46,8 +48,9 @@ if (Test-Path -LiteralPath $logPath) {
 }
 
 if ($null -eq $code) { Write-Output '自检失败：编辑器没有返回退出码'; exit 1 }
-if (@(Select-String -LiteralPath $logPath -Pattern '^SELFTEST OK cases=' -ErrorAction SilentlyContinue).Count -eq 0) {
-    Write-Output '自检失败：日志里没有 SELFTEST OK 行（用例没跑完，退出码不作数）'
+$lines = @(Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue)
+if (-not (Test-SelfTestResult $lines)) {
+    Write-Output '自检失败：注册/执行数量、唯一ID或完成标记不一致'
     exit 1
 }
 exit $code

@@ -58,7 +58,7 @@ $serverLine | Out-File -Encoding utf8 (Join-Path $outPath 'server-version.txt')
 
 $serverProc = $null
 $botProc = $null
-$code = 1
+$code = 0
 $summary = New-Object System.Collections.Generic.List[string]
 function Note([string]$text) { Write-Output $text; $summary.Add($text) }
 
@@ -100,6 +100,7 @@ try {
         -ArgumentList @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'selftest.ps1')) `
         -RedirectStandardOutput (Join-Path $outPath 'selftest.out.txt') `
         -RedirectStandardError (Join-Path $outPath 'selftest.err.txt')
+    $null = $selftest.Handle
 
     # 顺序是刚需：客户端必须先在**大厅**里坐定，队友才能进场。ac_bot 一进房就按准备，若它先到，房间会在
     # 本机进房之前就开一局（3 个 bot 全准备 = areAllPlayersReady 成立），本机随后撞上的就是"对局进行中
@@ -113,7 +114,7 @@ try {
         # 两个字段都要成立：connections 是握手在册数，players 是在房连接数。
         if ($h -and $h.connections -ge 1 -and $h.players -ge 1) { $clientInRoom = $true; break }
     }
-    if (-not $clientInRoom) { Note '联调失败：300s 内客户端没有进房（joint.acceptance 没走到第 2 步）' }
+    if (-not $clientInRoom) { Note '联调失败：300s 内客户端没有进房（joint.acceptance 没走到第 2 步）'; $code = 1 }
     else { Note "[joint-acceptance] 客户端已在大厅：$($h | ConvertTo-Json -Compress)" }
 
     # 队友：把房间占满（第 2 步的名额上限、第 3/4 步的对局都需要人）。
@@ -129,7 +130,7 @@ try {
                 if ($h.players -ge ($Bots + 1)) { $roomFull = $true; break }
             } catch { }
         }
-        if (-not $roomFull) { Note '联调失败：队友 30s 内没有进房' }
+        if (-not $roomFull) { Note '联调失败：队友 30s 内没有进房'; $code = 1 }
         else { Note "[joint-acceptance] 满房：$($h | ConvertTo-Json -Compress)" }
     }
 
@@ -138,6 +139,7 @@ try {
     # 并且 `exit $null` 变成 0：摘要说失败、退出码说成功）。必须 Refresh 之后再读。
     $selftest.Refresh()
     $selftestCode = $selftest.ExitCode
+    if ($null -eq $selftestCode -or $selftestCode -ne 0) { $code = 1 }
     Note "[joint-acceptance] 客户端自检退出码 $selftestCode"
     Get-Content -LiteralPath (Join-Path $outPath 'selftest.out.txt') -ErrorAction SilentlyContinue |
         ForEach-Object { Write-Output $_ }
@@ -150,7 +152,8 @@ try {
         $jointLines = @(Select-String -LiteralPath $logPath -Pattern '\[joint\]' | ForEach-Object { $_.Line })
         # 判据以**日志里的 SELFTEST OK 行**为准：Unity 批处理退出码在本机偶发为 0/1 抖动，
         # 只有 `SELFTEST OK cases=N` 才说明用例真的跑完且全绿（原脚本注释里也这么写）。
-        $sawSelftestOk = @(Select-String -LiteralPath $logPath -Pattern 'SELFTEST OK cases=').Count -gt 0
+        . (Join-Path $PSScriptRoot 'lib/selftest-result.ps1')
+        $sawSelftestOk = Test-SelfTestResult @(Get-Content -LiteralPath $logPath)
     }
     $jointLines | Out-File -Encoding utf8 (Join-Path $outPath 'joint-lines.txt')
     foreach ($line in $jointLines) { Write-Output $line }
@@ -222,10 +225,6 @@ try {
     Note "[joint-acceptance] 第 6 步：全部会话断开后宽限期峰值 graceActive=$gracePeak，30s 宽限到期后释放=$(if ($released) { '是' } else { '否' })"
     if (-not $sawGrace -or -not $released) { Note '联调失败：第 6 步的名额释放（ADR-006 的 30s 宽限）没有按预期收尾'; $code = 1 }
 
-    # 到这里六步判据全过才清零（`$code` 初值 1 = "默认失败"，中途任何一条判据都能把它改回去）。
-    # 少了这一行脚本永远打 FAIL：之前它靠 `$code = $selftest.ExitCode` 把初值冲成 $null 才没暴露，
-    # 而 `exit $null` = 0 —— 摘要说失败、退出码说成功，两边都不算判据。
-    $code = 0
 }
 finally {
     if ($botProc -and -not $botProc.HasExited) { Stop-Process -Id $botProc.Id -Force -ErrorAction SilentlyContinue }

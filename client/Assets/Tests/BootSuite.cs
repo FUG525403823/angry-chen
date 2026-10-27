@@ -25,6 +25,7 @@ namespace Ac.Tests
             SelfTest.Add("boot.snapshot_reaches_mirror", ChecksSnapshotReachesMirror);
             SelfTest.Add("boot.command_tick_from_snapshot", ChecksCommandTickFromSnapshot);
             SelfTest.Add("boot.hud_ammo_rage_from_match_state", ChecksHudAmmoRage);
+            SelfTest.Add("boot.hud_rage_cleared_on_transport_change", ChecksHudRageClearedOnTransportChange);
             SelfTest.Add("boot.cached_authority_three_reloads", ChecksCachedAuthorityReloads);
             SelfTest.Add("boot.local_pose_from_prediction", ChecksLocalPoseFromPrediction);
             SelfTest.Add("boot.no_camera_flicker", ChecksNoCameraFlicker);
@@ -703,6 +704,22 @@ namespace Ac.Tests
             SelfTest.True(!loop.Hud.Ammo.Reloading, "authority reload completed", "stuck");
         }
 
+        private static void ChecksHudRageClearedOnTransportChange()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
+                new ushort[] { 3 }, new[] { "self" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 7 }, new ushort[] { 90 }, new byte[] { 42 }, 3));
+            loop.Frame(0.0);
+            SelfTest.Equal(42, loop.Hud.Rage.Rage);
+            loop.Transport = new Ac.Net.UdpTransport(new ScriptedSocket(), delegate { return 0.0; });
+            loop.Frame(0.0);
+            SelfTest.Equal(0, loop.LocalPlayerId);
+            SelfTest.Equal(0, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(0, loop.Hud.Rage.Rage);
+            SelfTest.Equal(0, loop.Hud.Rage.RageLeft100Ms);
+        }
+
         private static void ChecksHudAmmoRage()
         {
             var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
@@ -716,7 +733,7 @@ namespace Ac.Tests
 
             SelfTest.Equal(7, loop.Hud.Ammo.Mag);
             SelfTest.Equal(90, loop.Hud.Ammo.Reserve);
-            SelfTest.Equal(30, loop.Hud.Ammo.MagSize);   // 手枪弹匣 12（WeaponTable 与服务端 kWeapons 同值）
+            SelfTest.Equal(30, loop.Hud.Ammo.MagSize);   // slot 1 步枪弹匣30。
             SelfTest.Equal(42, loop.Hud.Rage.Rage);
 
             // 不是本地玩家那一行就不许串到 HUD 上
@@ -726,6 +743,16 @@ namespace Ac.Tests
             loop.Frame(1000.0 / 60.0);
             SelfTest.Equal(7, loop.Hud.Ammo.Mag);
             SelfTest.Equal(42, loop.Hud.Rage.Rage);
+            loop.Frame(1000.0 / 60.0);
+            SelfTest.Equal(42, loop.Hud.Rage.Rage);
+
+            // 新的权威身份必须替换旧读数。
+            loop.OnPacket(MatchStateHeader(), MatchStateBytes(2, 3, 0,
+                new ushort[] { 9 }, new[] { "b" }, new[] { true },
+                new byte[] { 1 }, new byte[] { 30 }, new ushort[] { 1 }, new byte[] { 99 }, 9));
+            loop.Frame(1000.0 / 60.0);
+            SelfTest.Equal(30, loop.Hud.Ammo.Mag);
+            SelfTest.Equal(99, loop.Hud.Rage.Rage);
         }
 
         // 大厅 ready 这条产品路径的死因（ADR-013）：命令的 clientTick 必须**等于**服务端 tick
@@ -1023,6 +1050,13 @@ namespace Ac.Tests
             ClientLog.Handle("boom-exception", "stack-line-1\nstack-line-2", UnityEngine.LogType.Exception);
             SelfTest.Equal(1, System.IO.Directory.GetFiles(root, "crash-*.log").Length);  // 同一段异常只写一份
 
+            var lockedLines = ClientLog.Sink.WrittenLines;
+            using (var held = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None))
+                ClientLog.Handle("locked-file", "", UnityEngine.LogType.Log);
+            SelfTest.Equal(lockedLines, ClientLog.Sink.WrittenLines);
+            SelfTest.True(ClientLog.WriteFailures > 0, "log IO failure must be observable without escaping callback", "missing failure");
+            ClientLog.Handle("after-unlock", "", UnityEngine.LogType.Log);
+            SelfTest.Equal(lockedLines + 1, ClientLog.Sink.WrittenLines);
             ClientLog.Detach();
             ClientLog.Handle("after-detach", "", UnityEngine.LogType.Log);
             SelfTest.True(!System.IO.File.ReadAllText(path).Contains("after-detach"), "Detach 之后不许再落盘", "还在写");

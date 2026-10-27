@@ -21,7 +21,7 @@ struct Case {
   CaseFn fn;
 };
 
-// 框架容量上限：超限**静默丢用例**（只在 stderr 打一行），所以每加一批用例都要留出余量。
+// 注册错误使整轮测试失败，不能因筛选隐藏重复或遗漏的用例。
 // 256 → 512（S10 那批把 S03/S09 挤出去过）→ 768（联调期新增 MatchState/大厅用例后全量 513 条）。
 constexpr std::size_t kMaxCases = 768;
 
@@ -30,6 +30,7 @@ namespace detail {
 struct Registry {
   Case cases[kMaxCases]{};
   std::size_t count = 0;
+  bool hasRegistrationError = false;
 };
 
 inline Registry& registry() {
@@ -77,9 +78,16 @@ inline CaseState& state() {
 
 inline void registerCase(const char* name, CaseFn fn) {
   detail::Registry& registry = detail::registry();
+  for (std::size_t i = 0; i < registry.count; ++i) {
+    if (std::strcmp(registry.cases[i].name, name) == 0) {
+      registry.hasRegistrationError = true;
+      std::fprintf(stderr, "ac::test: duplicate test: %s\n", name);
+      return;
+    }
+  }
   if (registry.count >= kMaxCases) {
-    // 用例上限是框架自身的容量约束，绝不允许静默丢用例（会让 TESTS 统计撒谎）。
-    std::fprintf(stderr, "ac::test: 用例数已达上限 %zu，%s 未注册\n", kMaxCases, name);
+    registry.hasRegistrationError = true;
+    std::fprintf(stderr, "ac::test: registration capacity exceeded (%zu): %s\n", kMaxCases, name);
     return;
   }
   registry.cases[registry.count].name = name;
@@ -193,7 +201,13 @@ inline int runAll(int argc, char** argv) {
   const char* filter = "";
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] == nullptr ? std::string_view{} : std::string_view(argv[i]);
-    if (arg.rfind("--filter=", 0) == 0) filter = argv[i] + 9;
+    if (arg.rfind("--filter=", 0) == 0) {
+      filter = argv[i] + 9;
+      if (filter[0] == '\0') {
+        std::fprintf(stderr, "ac::test: empty filter\n");
+        return 1;
+      }
+    }
     if (arg == "--report" && i + 1 < argc) setReportPath(argv[++i]);
     if (arg.rfind("--report=", 0) == 0) setReportPath(argv[i] + 9);
     if (arg == "--fixture" && i + 1 < argc) setFixturePath(argv[++i]);
@@ -201,6 +215,7 @@ inline int runAll(int argc, char** argv) {
   }
 
   detail::Registry& registry = detail::registry();
+  if (registry.hasRegistrationError) return 1;
   int passed = 0;
   int total = 0;
   for (std::size_t i = 0; i < registry.count; ++i) {
@@ -222,6 +237,10 @@ inline int runAll(int argc, char** argv) {
   }
   std::printf("%s\n", formatSummaryLine(passed, total).c_str());
   std::fflush(stdout);
+  if (total == 0) {
+    std::fprintf(stderr, "ac::test: no tests selected\n");
+    return 1;
+  }
   return total - passed;
 }
 

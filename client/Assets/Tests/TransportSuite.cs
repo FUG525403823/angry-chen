@@ -14,6 +14,7 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("net.handshake", ChecksHandshake);
+            SelfTest.Add("net.idle_poll_zero_alloc", ChecksIdlePollZeroAlloc);
             SelfTest.Add("net.retransmit_rto", ChecksRetransmitRto);
             SelfTest.Add("net.fragment_1200", ChecksFragment1200);
             SelfTest.Add("net.stats_p99", ChecksStatsP99);
@@ -77,6 +78,17 @@ namespace Ac.Tests
         // 测试不再自带一份套接字实现，避免桩件与生产路径各走一套语义。
 
         // 审计 M8：积压超上限且无快照可丢时，Send 恒 true、积压无限增长（与自己 :470 的注释相反）。
+        private static void ChecksIdlePollZeroAlloc()
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            for (var i = 0; i < 20; i++) client.Poll(64);
+            var start = AllocMeter.Begin();
+            for (var i = 0; i < 100; i++) client.Poll(64);
+            AllocMeter.AssertZero(start);
+        }
+
         private static void ChecksBacklogCap()
         {
             var link = new MemoryLink();

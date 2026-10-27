@@ -92,7 +92,10 @@ namespace Ac.Tests
 
             // 第 2 步（名额上限）：房间被队友占满时，第 5 个会话必须收到明确回执（ADR-012），
             // 且不得进玩家表。此前这里是"静默丢弃准入结果"——客户端挂在"已连接但收不到 MatchState"。
-            ExpectRefused(host, port, "第 2 步：满员房", "第 5 人", link);
+            if (team >= MatchStateCodec.MaxPlayers)
+                ExpectRefused(host, port, "第 2 步：满员房", "第 5 人", link);
+            else
+                Console.WriteLine("[joint] room-full check not applicable: team=" + team + "/" + MatchStateCodec.MaxPlayers + "; mandatory in four-peer run");
 
             // 第 3 步：带 Ready 位的命令把房间推进到 playing；顺带量快照率。
             // 房主是第一个进房的人 —— 上面已经等到齐，现在按准备才是 checklist 第 3 步的场景（4 人同局）。

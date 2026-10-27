@@ -46,21 +46,35 @@ namespace Ac.Net
         // 与 server/src/net/codec.hpp 的 kMatchStatePlayerFixedBytes 同值（21），两侧必须一起改。
         public const int FixedRecordBytes = 21;
 
-        private static readonly UTF8Encoding _strictUtf8 = new UTF8Encoding(false, true);
-
         public static DecodeFailure Decode(byte[] payload, out MatchStatePayload state)
         {
             state = default(MatchStatePayload);
-            var reader = new PacketReader(payload);
+            return new MatchStateDecoder().Decode(payload, default(MatchStatePayload), out state);
+        }
+    }
+
+    // Scratch belongs to the decoder; published player arrays are immutable snapshots.
+    public sealed class MatchStateDecoder
+    {
+        private readonly PacketReader _reader = new PacketReader(null);
+        private readonly MatchStatePlayer[] _scratch = new MatchStatePlayer[MatchStateCodec.MaxPlayers];
+        private readonly char[] _name = new char[MatchStateCodec.MaxNameBytes];
+        private static readonly UTF8Encoding _strictUtf8 = new UTF8Encoding(false, true);
+
+        public DecodeFailure Decode(byte[] payload, MatchStatePayload previous, out MatchStatePayload state)
+        {
+            state = default(MatchStatePayload);
+            var reader = _reader;
+            reader.Reset(payload);
             if (!reader.TryReadU8(out state.Phase)) return DecodeFailure.Truncated;
             if (!reader.TryReadU8(out state.Wave)) return DecodeFailure.Truncated;
             if (!reader.TryReadU16(out state.IntermissionMs)) return DecodeFailure.Truncated;
 
             byte count;
             if (!reader.TryReadU8(out count)) return DecodeFailure.Truncated;
-            if (count > MaxPlayers) return DecodeFailure.BadValue;
+            if (count > MatchStateCodec.MaxPlayers) return DecodeFailure.BadValue;
 
-            var players = new MatchStatePlayer[count];
+            var players = _scratch;
             for (var i = 0; i < count; i++)
             {
                 MatchStatePlayer player;
@@ -68,13 +82,17 @@ namespace Ac.Net
 
                 byte nameLength;
                 if (!reader.TryReadU8(out nameLength)) return DecodeFailure.Truncated;
-                if (nameLength < MinNameBytes || nameLength > MaxNameBytes) return DecodeFailure.BadValue;
+                if (nameLength < MatchStateCodec.MinNameBytes || nameLength > MatchStateCodec.MaxNameBytes) return DecodeFailure.BadValue;
 
-                byte[] nameBytes;
-                if (!reader.TryReadBytes(nameLength, out nameBytes)) return DecodeFailure.Truncated;
+                var nameOffset = reader.Position;
+                if (!reader.TrySkip(nameLength)) return DecodeFailure.Truncated;
                 try
                 {
-                    player.Name = _strictUtf8.GetString(nameBytes);
+                    var length = _strictUtf8.GetChars(payload, nameOffset, nameLength, _name, 0);
+                    var cached = previous.Players != null && i < previous.Players.Length ? previous.Players[i].Name : null;
+                    var same = cached != null && cached.Length == length;
+                    for (var c = 0; same && c < length; c++) same = cached[c] == _name[c];
+                    player.Name = same ? cached : new string(_name, 0, length);
                 }
                 catch (ArgumentException)
                 {
@@ -120,12 +138,40 @@ namespace Ac.Net
             if (state.LocalPid != 0)
             {
                 var matches = 0;
-                for (var i = 0; i < players.Length; i++)
+                for (var i = 0; i < count; i++)
                     if (players[i].Pid == state.LocalPid) matches += 1;
                 if (matches != 1) return DecodeFailure.BadValue;
             }
-            state.Players = players;
+            var unchanged = previous.Players != null && previous.Players.Length == count;
+            for (var i = 0; unchanged && i < count; i++) unchanged = Same(players[i], previous.Players[i]);
+            if (unchanged) state.Players = previous.Players;
+            else
+            {
+                state.Players = new MatchStatePlayer[count];
+                Array.Copy(players, state.Players, count);
+            }
             return DecodeFailure.Ok;
+        }
+        private static bool Same(MatchStatePlayer a, MatchStatePlayer b)
+        {
+            return a.Pid == b.Pid
+                && a.Name == b.Name
+                && a.Ready == b.Ready
+                && a.Weapon == b.Weapon
+                && a.HpRatio == b.HpRatio
+                && a.Kills == b.Kills
+                && a.Mag == b.Mag
+                && a.Reserve == b.Reserve
+                && a.ReloadLeft10Ms == b.ReloadLeft10Ms
+                && a.Rage == b.Rage
+                && a.RageLeft100Ms == b.RageLeft100Ms
+                && a.Downed == b.Downed
+                && a.ReviveRatio255 == b.ReviveRatio255
+                && a.UpgradePoints == b.UpgradePoints
+                && a.UpgradeDamage == b.UpgradeDamage
+                && a.UpgradeSpeed == b.UpgradeSpeed
+                && a.UpgradeReload == b.UpgradeReload
+                && a.UpgradeReserve == b.UpgradeReserve;
         }
     }
 }

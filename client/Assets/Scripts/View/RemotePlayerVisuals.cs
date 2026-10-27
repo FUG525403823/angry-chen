@@ -18,6 +18,8 @@ namespace Ac.View
             internal float Phase;
             internal int Renderers;
             internal int Triangles;
+            internal MeshRenderer[] Parts;
+            internal int[] Groups;
         }
 
         private readonly GameObject _root;
@@ -26,12 +28,15 @@ namespace Ac.View
         private readonly Material[] _materials;
         private readonly Model[] _models = new Model[EntityViews.Capacity];
         private readonly int[] _byId = new int[EntityViews.Capacity + 1];
+        private readonly Matrix4x4[] _batch = new Matrix4x4[1023];
         private int _created;
         private bool _disposed;
 
         public int Count { get; private set; }
         // Enabled model geometry before Unity camera culling/batching, not measured engine draws.
         public int RendererCount { get; private set; }
+        public int SubmittedDraws { get; private set; }
+        public int SubmittedInstances { get; private set; }
         public int TriangleCount { get; private set; }
         public int CreatedCount { get { return _created; } }
         public GameObject Root { get { return _root; } }
@@ -67,6 +72,8 @@ namespace Ac.View
             }
             Count = 0;
             RendererCount = 0;
+            SubmittedDraws = 0;
+            SubmittedInstances = 0;
             TriangleCount = 0;
             if (views == null) return 0;
             for (var i = 0; i < views.ActiveCount; i++)
@@ -95,7 +102,37 @@ namespace Ac.View
                 RendererCount += active.Renderers;
                 TriangleCount += active.Triangles;
             }
+            Submit();
             return Count;
+        }
+
+        private void Submit()
+        {
+            SubmittedDraws = 0;
+            if (!SystemInfo.supportsInstancing) { SubmittedDraws = RendererCount; SubmittedInstances = RendererCount; return; }
+            for (var group = 0; group < 5; group++)
+            {
+                var count = 0;
+                for (var i = 0; i < _created; i++)
+                {
+                    var model = _models[i];
+                    if (!model.Active) continue;
+                    for (var part = 0; part < model.Parts.Length; part++)
+                    {
+                        if (model.Groups[part] != group) continue;
+                        _batch[count++] = model.Parts[part].transform.localToWorldMatrix;
+                        if (count == _batch.Length) { DrawGroup(group, count); count = 0; }
+                    }
+                }
+                if (count > 0) DrawGroup(group, count);
+            }
+        }
+
+        private void DrawGroup(int group, int count)
+        {
+            Graphics.DrawMeshInstanced(group == 4 ? _gun : _cube, 0, _materials[group == 4 ? 2 : group], _batch, count);
+            SubmittedDraws++;
+            SubmittedInstances += count;
         }
 
         private static bool Eligible(EntityView view, ushort localPlayerId)
@@ -149,6 +186,15 @@ namespace Ac.View
             // Model topology is immutable after construction. Mesh.triangles and hierarchy queries
             // allocate, so cache their actual counts here rather than on the frame path.
             var renderers = model.Root.GetComponentsInChildren<MeshRenderer>();
+            model.Parts = renderers;
+            model.Groups = new int[renderers.Length];
+            for (var i = 0; i < renderers.Length; i++)
+            {
+                var renderer = renderers[i];
+                var mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+                model.Groups[i] = mesh == _gun ? 4 : Array.IndexOf(_materials, renderer.sharedMaterial);
+                renderer.forceRenderingOff = SystemInfo.supportsInstancing;
+            }
             model.Renderers = renderers.Length;
             for (var i = 0; i < renderers.Length; i++)
                 model.Triangles += renderers[i].GetComponent<MeshFilter>().sharedMesh.triangles.Length / 3;

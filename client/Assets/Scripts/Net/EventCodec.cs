@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 
 namespace Ac.Net
 {
@@ -93,7 +93,21 @@ namespace Ac.Net
         {
             entries = null;
             droppedDuplicates = 0;
-            var kept = new List<EventEntry>(count);
+            if (count < 0 || count > MaxEventsPerFrame) return DecodeFailure.BadValue;
+            var buffer = new EventEntry[count];
+            int written;
+            var failure = DecodeEntriesInto(reader, count, tracker, buffer, out written, out droppedDuplicates);
+            if (failure != DecodeFailure.Ok) return failure;
+            if (written != buffer.Length) Array.Resize(ref buffer, written);
+            entries = buffer;
+            return DecodeFailure.Ok;
+        }
+
+        private static DecodeFailure DecodeEntriesInto(PacketReader reader, int count, EventIdTracker tracker,
+            EventEntry[] buffer, out int written, out int droppedDuplicates)
+        {
+            written = 0;
+            droppedDuplicates = 0;
             for (var i = 0; i < count; i++)
             {
                 var entry = default(EventEntry);
@@ -117,10 +131,28 @@ namespace Ac.Net
                     droppedDuplicates++;
                     continue;
                 }
-                kept.Add(entry);
+                buffer[written++] = entry;
             }
 
-            entries = kept.ToArray();
+            return DecodeFailure.Ok;
+        }
+
+        // 缓冲属于调用方，仅成功时count有效；下次解码会覆盖内容。
+        public static DecodeFailure DecodeFrameInto(byte[] payload, EventIdTracker tracker, PacketReader reader,
+            EventEntry[] buffer, out int count)
+        {
+            count = 0;
+            if (reader == null || buffer == null) return DecodeFailure.BadValue;
+            reader.Reset(payload);
+            uint tick;
+            byte rawCount;
+            if (!reader.TryReadU32(out tick) || !reader.TryReadU8(out rawCount)) return DecodeFailure.Truncated;
+            if (rawCount > MaxEventsPerFrame || rawCount > buffer.Length) return DecodeFailure.BadValue;
+            int written, dropped;
+            var failure = DecodeEntriesInto(reader, rawCount, tracker, buffer, out written, out dropped);
+            if (failure != DecodeFailure.Ok) return failure;
+            if (reader.Remaining != 0) return DecodeFailure.BadLength;
+            count = written;
             return DecodeFailure.Ok;
         }
 

@@ -14,6 +14,7 @@ jobs:
         with:
           node-version: '24'
       - run: node tools/check-docs.mjs
+      - run: node tools/test-check-assets.mjs
       - run: node tools/check-assets.mjs
 
   client-scripts:
@@ -21,6 +22,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify retained process exit codes
+        shell: powershell
+        run: ./client/tools/test-process-exit.ps1
+      - name: Verify selftest result contract
+        shell: powershell
+        run: ./client/tools/test-selftest-result.ps1
       - name: Verify isolated release packaging
         shell: powershell
         run: ./client/tools/test-build.ps1

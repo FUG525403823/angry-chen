@@ -78,3 +78,9 @@ target_compile_definitions(ac_tests PRIVATE "AC_EVIDENCE_FIXTURE_DIR=\"${CMAKE_C
 
 enable_testing()
 add_test(NAME unit COMMAND ac_tests)
+
+add_executable(ac_test_harness "${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/runner.cpp")
+target_include_directories(ac_test_harness PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+add_test(NAME test_harness_contract
+  COMMAND "${CMAKE_COMMAND}" "-DRUNNER=$<TARGET_FILE:ac_test_harness>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/verify.cmake")

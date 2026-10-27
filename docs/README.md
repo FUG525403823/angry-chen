@@ -1,5 +1,11 @@
 # 文档地图
 
+## 完整增强方案
+
+- [玩法、Roguelite、UI/交互与防回归计划](enhancement-plan.md)
+- [P0基线复测与框架加固证据](evidence/enhancement-p0.md)
+- [P0接续小包：依赖摘要契约与当前复测](evidence/enhancement-resume.md)
+
 本目录是《愤怒的陈sir vs 发疯的羊群》**v2（C++ 权威服务器 + Unity 客户端）**的全部施工依据。按顺序读、按顺序做，不需要额外的口头上下文。
 
 ## 0. 仓库长什么样

@@ -72,7 +72,7 @@ namespace Ac.Editor
                     scenes = scenes,
                     locationPathName = exePath,
                     target = BuildTarget.StandaloneWindows64,
-                    options = BuildOptions.None,
+                    options = GetArgument("-development") == "1" ? BuildOptions.Development : BuildOptions.None,
                 });
                 result = report.summary.result;
                 errors = report.summary.totalErrors;

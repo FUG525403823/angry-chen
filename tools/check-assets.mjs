@@ -48,10 +48,11 @@ function checkDependencies() {
   if (existsSync(manifest)) {
     const json = JSON.parse(readFileSync(manifest, 'utf8'));
     const deps = Object.keys(json.dependencies ?? {});
-    for (const dep of deps) {
-      if (!UNITY_ALLOWED.test(dep)) fail('client/Packages/manifest.json 含白名单外依赖：' + dep);
+    const rejected = deps.filter((dep) => !UNITY_ALLOWED.test(dep));
+    for (const dep of rejected) {
+      fail('client/Packages/manifest.json 含白名单外依赖：' + dep);
     }
-    notes.push('Unity 依赖：' + deps.length + ' 个，全部在官方白名单内');
+    notes.push('Unity 依赖：' + deps.length + ' 个，白名单内 ' + (deps.length - rejected.length) + ' 个，白名单外 ' + rejected.length + ' 个');
   } else {
     notes.push('Unity 工程清单尚未创建（C01 交付）');
   }

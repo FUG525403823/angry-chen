@@ -118,19 +118,27 @@ namespace Ac.Tests
                 SelfTest.True(renderers.Length > 0 && triangles > 0, "actual model geometry", "empty");
                 SelfTest.Equal(renderers.Length, rig.Layer.RemotePlayers.RendererCount);
                 SelfTest.Equal(triangles, rig.Layer.RemotePlayers.TriangleCount);
-                SelfTest.Equal(renderers.Length, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(renderers.Length, rig.Layer.RemotePlayers.SubmittedInstances);
+                if (SystemInfo.supportsInstancing)
+                {
+                    SelfTest.Equal(5, rig.Layer.RemotePlayers.SubmittedDraws);
+                    foreach (var renderer in renderers) SelfTest.True(renderer.forceRenderingOff, "instanced geometry not submitted twice", "renderer still active");
+                }
+                else SelfTest.Equal(renderers.Length, rig.Layer.RemotePlayers.SubmittedDraws);
+                SelfTest.Equal(rig.Layer.RemotePlayers.SubmittedDraws, rig.Layer.SubmittedDraws);
                 SelfTest.Equal(triangles, rig.Layer.SubmittedTriangles);
                 rig.UnwireSeams();
                 SelfTest.True(rig.Layer.TickDraw(16), "remote renderers count as draw work", "not drawn");
                 var before = AllocMeter.Begin();
                 for (var i = 0; i < 100; i++) rig.Layer.TickDraw(16);
                 AllocMeter.AssertZero(before);
-                SelfTest.Equal(renderers.Length, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(SystemInfo.supportsInstancing ? 5 : renderers.Length, rig.Layer.SubmittedDraws);
                 SelfTest.Equal(triangles, rig.Layer.SubmittedTriangles);
                 rig.Loop.Views.Release(2);
                 rig.Layer.TickDraw(16);
                 SelfTest.Equal(2, rig.Layer.RemotePlayers.Count);
-                SelfTest.Equal(renderers.Length * 2 / 3, rig.Layer.SubmittedDraws);
+                SelfTest.Equal(renderers.Length * 2 / 3, rig.Layer.RemotePlayers.SubmittedInstances);
+                SelfTest.Equal(SystemInfo.supportsInstancing ? 5 : renderers.Length * 2 / 3, rig.Layer.SubmittedDraws);
                 SelfTest.Equal(triangles * 2 / 3, rig.Layer.SubmittedTriangles);
                 rig.Loop.Views.Release(3);
                 rig.Loop.Views.Release(4);

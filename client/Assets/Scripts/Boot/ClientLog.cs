@@ -21,6 +21,7 @@ namespace Ac.Boot
 
         public static LogSink Sink { get; private set; }
         public static string RootDirectory { get; private set; }
+        public static int WriteFailures { get; private set; }
 
         // 幂等：编辑器反复 Play（域重载被关掉）时静态字段会残留，重复订阅会让同一行写两遍。
         public static bool Attach(string persistentDataPath)
@@ -71,13 +72,19 @@ namespace Ac.Boot
         {
             var sink = Sink;
             if (sink == null) return;
-            var level = LevelName(type);
-            sink.Write(level, condition);
-            if (type != LogType.Exception && type != LogType.Assert) return;
-            if (CrashSeen.Count >= MaxCrashFiles) return;
-            var key = level + "|" + condition;
-            if (!CrashSeen.Add(key)) return;
-            sink.WriteCrash(condition + "\n" + stackTrace);
+            try
+            {
+                var level = LevelName(type);
+                sink.Write(level, condition);
+                if (type != LogType.Exception && type != LogType.Assert) return;
+                if (CrashSeen.Count >= MaxCrashFiles) return;
+                var key = level + "|" + condition;
+                if (CrashSeen.Contains(key)) return;
+                sink.WriteCrash(condition + "\n" + stackTrace);
+                CrashSeen.Add(key);
+            }
+            catch (System.IO.IOException) { WriteFailures += 1; }
+            catch (UnauthorizedAccessException) { WriteFailures += 1; }
         }
 
         // 折叠成小写短名（与日志里的 level 字段口径一致）。

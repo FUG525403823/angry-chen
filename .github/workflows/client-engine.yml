@@ -1,0 +1,52 @@
+name: client engine acceptance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  engine:
+    name: licensed Windows engine (real execution)
+    runs-on: [self-hosted, Windows, ac-unity-licensed]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require licensed engine installation
+        shell: powershell
+        run: |
+          if (-not $env:AC_UNITY -or -not (Test-Path -LiteralPath $env:AC_UNITY)) {
+            Write-Error "BLOCKED: AC_UNITY must point to the licensed engine on this runner"
+            exit 2
+          }
+      - name: Verify log and child exit contracts
+        shell: powershell
+        run: |
+          ./client/tools/test-selftest-result.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./client/tools/test-process-exit.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify real UDP impairment proxy
+        shell: powershell
+        run: node ./client/tools/test-udp-impairment.mjs
+      - name: Run full engine selftests
+        shell: powershell
+        run: ./client/tools/selftest.ps1
+      - name: Run actual PlayMode bootstrap smoke
+        shell: powershell
+        run: ./client/tools/playmode-smoke.ps1
+      - name: Build actual release player
+        shell: powershell
+        run: ./client/build.ps1 -Backend auto
+      - name: Run real player performance gate
+        shell: powershell
+        run: ./client/tools/frame-bench.ps1 -Mechanism player -Runs 3 -Out build/reports/engine/frame.json -OutDir build/reports/engine/frame-runs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-engine-evidence
+          path: |
+            client/Logs/
+            build/reports/
+          if-no-files-found: error

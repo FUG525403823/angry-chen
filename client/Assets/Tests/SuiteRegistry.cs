@@ -42,6 +42,8 @@ namespace Ac.Tests
             FixtureSuite.Register();
             UpgradeSuite.Register();   // S16：波间升级的纯逻辑层用例
             JointSuite.Register();   // C15 §5 六步联调：无 AC_JOINT_UDP 时自己打印 [joint] skipped
+            foreach (var group in new[] { "codec.", "boot.", "perf.", "render.", "presentation.", "joint." })
+                SelfTest.RequireGroup(group);
             var failures = SelfTest.RunAll(false);
             EditorApplication.Exit(failures == 0 ? 0 : 1);
         }
