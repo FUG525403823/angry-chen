@@ -137,3 +137,20 @@ exit1。P95为4.2464/4.0264/3.8425ms；三轮分配均为-1（不可测），摘
 最终恢复2/4人脚本均exit0且逐一复核results.json通过：每个真实player经历非Connected、同session/playerId恢复、至少20新快照、新MatchState；未处理Exception/Error扫描无命中。2人实际黑洞丢934包，4人黑洞计数见proxy.json，代理errors均0。最终报告players2-recovery-final和players4-recovery-final。注意日志存在额外反复重连，当前仅证明指定5秒断流后能够恢复，不证明长时间稳定、完整权威状态逐字段一致、超宽限重连或完整网络矩阵通过；此项仍需跟进，P0不整体判通过。所有此前失败轮保留。
 
 最终稳定源码完整自检 recovery-final-suite.log exit0，275/275；代理自测再次exit0；docs与diff检查exit0。
+
+
+## 提交后接续：重复ACK与恢复稳定性
+
+基线GitHub提交84e3c37，工作区已有额外模型/Shader/ModelGeometrySuite修改，未覆盖这些改动。本轮限定UdpTransport、TransportSuite、PlayerAcceptance与启动脚本。旧players2-recovery-final日志Connected→Zombie为5/172次，不能以最终恢复成功掩盖异常。
+
+构造真实UdpTransport+MemoryLink最小回归net.duplicate_packet_updates_ack：同一可靠KeepAlive msgId第二次携带新的AckBase=1，必须确认刚发出的Command；duplicate-ack-red.log exit1，279例唯一失败expected0 actual1。原因是Dispatch在处理重复载荷前直接return，丢掉合法包头携带的新ACK。修复仅把本流ACK及心跳RTT确认移到载荷去重之前，不重复投递载荷，不跨通道确认，不放宽重试/超时。
+
+新增可选StableSeconds（默认0，最多30）：恢复后要求连续Connected指定秒数，JSON记录stableSeconds与recoveryInterruptions；非Connected会打断稳定窗口，任何恢复后再次中断最终失败。此项在真实2/4人5秒黑洞、延迟/丢包/乱序/重复场景复测后才记通过。原始红/绿日志与构建日志保持独立。
+
+ACK修复完整套件duplicate-ack-green.log exit0，279/279（含现有新模型测试，非本轮新增全部4例）。稳定性构建stable-recovery-build.log exit0，stage20261029T025704827Z-a8bf1c17，SHA256 c2a66706ad9c67a63939c9f30191d50b813b76c40fb5ab472269a6b649726c19。2/4真实player以StableSeconds15复跑，其他延迟、丢包、乱序、重复、5秒黑洞条件未降低，报告players2-stable/players4-stable。
+
+严格15秒稳定复跑players2-stable/players4-stable均exit1，恢复后重复中断仍存在。ACK修复已证实且279例全绿，但不能宣称是重连风暴完整根因。新增SessionStateMachine计数区分RetransmitExhaustions与ReceiveTimeouts，无额外每帧日志/分配；stable-reason-suite.log再次279/279。诊断构建第一次与自检编辑器冲突失败已保留，等待自检退出后串行重建stable-reason-build-retry.log，不记第一次为成功。
+
+诊断重建stable-reason-build-retry.log exit0，SHA256 bebdc880c507ca99de872515923f661034e38126af765d3eb6a7a7c54c5a5762。players2-reason用相同网络损伤与StableSeconds15复测，将通过JSON的retransmitExhaustions/receiveTimeouts明确归因；此轮尚未收回前不依据猜测改生产超时或重试预算。
+
+players2-reason已结束真实exit1：peer1 retransmitExhaustions340/receiveTimeouts0，peer2为86/1，均已恢复同身份且有330/266新快照，但连续稳定窗口只达2/12秒，仍未达15秒。明确风暴主要由可靠消息重传耗尽驱动，不是收包3秒超时；不能以放宽TimeoutMs解决。后续须检查丢包/高频命令下32位ACK窗口与在途表的退役策略、同会话Resume后旧在途消息处理，不将本次ACK顺序修复宣称完整解决。

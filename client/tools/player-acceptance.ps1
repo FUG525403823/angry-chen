@@ -6,6 +6,7 @@ param(
  [int]$UdpPort = 29788, [int]$HttpPort = 29787,
  [ValidateRange(0,1000)][int]$DelayMs = 0, [ValidateRange(0,100)][int]$LossPct = 0,
  [switch]$Reorder, [switch]$Duplicate, [switch]$Recovery,
+ [ValidateRange(0,30)][int]$StableSeconds = 0,
  [string]$OutDir = "build/reports/player-acceptance"
 )
 $ErrorActionPreference = "Stop"
@@ -48,7 +49,7 @@ try {
  $env:AC_SERVER = "127.0.0.1:$clientPort"
  for ($i=1; $i -le $Players; $i++) {
   $args = @("-screen-fullscreen", "0", "-screen-width", "960", "-screen-height", "540", "-playerAcceptanceOut", "`"$out/peer-$i.json`"", "-playerAcceptanceName", "p0peer$i", "-playerAcceptanceTeam", "$Players", "-logFile", "`"$out/peer-$i.log`"")
-  if ($Recovery) { $args += @("-playerAcceptanceRecovery", "1") }
+  if ($Recovery) { $args += @("-playerAcceptanceRecovery", "1", "-playerAcceptanceStableSeconds", "$StableSeconds") }
   $child = Start-Process -FilePath $playerPath -WorkingDirectory (Split-Path -Parent $playerPath) -ArgumentList $args -PassThru
   $null = $child.Handle
   $children += $child
@@ -71,6 +72,7 @@ try {
   $j = Get-Content -Raw -LiteralPath "$out/peer-$i.json" | ConvertFrom-Json
   if ($j.pass -ne $true -or $j.sawTeam -ne $true -or $j.team -ne $Players -or $j.playerId -le 0 -or $j.session -le 0 -or $j.playingSnapshots -lt 20 -or $j.processId -ne $children[$i-1].Id) { throw "Invalid peer-$i evidence" }
   if ($Recovery -and ($j.recovered -ne $true -or $j.recoverySnapshots -lt 20 -or $j.identityPreserved -ne $true)) { throw "Missing recovery evidence peer-$i" }
+  if ($StableSeconds -gt 0 -and ($j.stableSeconds -lt $StableSeconds -or $j.recoveryInterruptions -ne 0)) { throw "Unstable recovery peer-$i" }
   $j
  })
  foreach ($key in @("processId", "session", "playerId")) {

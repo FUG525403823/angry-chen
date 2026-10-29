@@ -139,9 +139,13 @@ namespace Ac.Net
         }
 
         // §5.3：累计重传达到 MaxRetransmits → 判对端失联 → 进入宽限期（Zombie），随后尝试 Resume。
+        public int RetransmitExhaustions { get; private set; }
+        public int ReceiveTimeouts { get; private set; }
+
         public void OnRetransmitExhausted(double nowMs)
         {
             if (State != ConnectionState.Connected) return;
+            RetransmitExhaustions += 1;
             EnterGrace(nowMs);
         }
 
@@ -169,6 +173,7 @@ namespace Ac.Net
                 case ConnectionState.Connected:
                     if (nowMs - LastRecvMs >= TimeoutMs)
                     {
+                        ReceiveTimeouts += 1;
                         EnterGrace(nowMs);
                         break;
                     }

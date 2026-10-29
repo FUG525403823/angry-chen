@@ -14,6 +14,7 @@ namespace Ac.Tests
         public static void Register()
         {
             SelfTest.Add("net.handshake", ChecksHandshake);
+            SelfTest.Add("net.duplicate_packet_updates_ack", ChecksDuplicatePacketUpdatesAck);
             SelfTest.Add("net.idle_poll_zero_alloc", ChecksIdlePollZeroAlloc);
             SelfTest.Add("net.retransmit_rto", ChecksRetransmitRto);
             SelfTest.Add("net.fragment_1200", ChecksFragment1200);
@@ -718,6 +719,31 @@ namespace Ac.Tests
         }
 
         // ---- 驱动与桩件 ------------------------------------------------------------------------------
+
+        private static void ChecksDuplicatePacketUpdatesAck()
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            link.Create(2);
+            client.Connect("mem", 0);
+            client.Machine.OnHelloAck(7, 100, 123, clock.NowMs);
+            var header = MakeHeader(PacketType.KeepAlive, 7);
+            var bytes = new byte[PacketWriter.Size(header)];
+            PacketWriter.Write(bytes, header, new byte[0], 0, 0);
+            link.Transmit(2, bytes);
+            link.Pump();
+            client.Poll(16);
+            SelfTest.True(client.Send(PacketType.Command, new byte[0]), "send reliable command", "failed");
+            SelfTest.Equal(1, client.OutstandingMessages);
+            header.AckBase = 1;
+            PacketWriter.Write(bytes, header, new byte[0], 0, 0);
+            link.Transmit(2, bytes);
+            link.Pump();
+            client.Poll(16);
+            SelfTest.Equal(0, client.OutstandingMessages);
+            client.Close();
+        }
 
         private sealed class Clock
         {

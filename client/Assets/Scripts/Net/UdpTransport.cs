@@ -382,6 +382,9 @@ namespace Ac.Net
             if (header.IsReliable)
             {
                 var channel = ChannelFor(header.Type);
+                // Payload deduplication must not discard fresh peer acknowledgments.
+                channel.Acknowledge(header.AckBase, header.AckBits);
+                if (StreamOf(header.Type) == PacketType.Command) AcknowledgeControl(header.AckBase, header.AckBits, now);
                 // 分片包不经过这里：它们的 msgId 属于整条消息，靠重组器的 fragIndex 幂等落位，收齐后才登记。
                 if (channel.IsDuplicate(header.MsgId))
                 {
@@ -392,9 +395,6 @@ namespace Ac.Net
                 }
                 if (reassembled) Stats.OnFragmentReassembled();
                 channel.NoteReceived(header.MsgId);
-                channel.Acknowledge(header.AckBase, header.AckBits);
-                // §5.1：ack 位图只描述该包自己那条通道，所以只有命令流的包才能确认本端命令流的心跳。
-                if (StreamOf(header.Type) == PacketType.Command) AcknowledgeControl(header.AckBase, header.AckBits, now);
             }
 
             _session.OnPacket(header.Session, now);
