@@ -195,7 +195,9 @@ namespace Ac.Boot
             get { return _localName; }
             set
             {
-                _localName = value ?? string.Empty;
+                var name = value ?? string.Empty;
+                if (string.Equals(_localName, name, StringComparison.Ordinal)) return;
+                _localName = name;
                 _joinDirty = true;
             }
         }

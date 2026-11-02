@@ -172,7 +172,8 @@ class Runtime {
   void onReplicate(ac::room::Room& room) noexcept;
   void onSendMatchState(ac::room::Session& session, const ac::net::MatchState& state) noexcept;
   // §5.6：KeepAlive（type 7，`reliable|ackOnly`，载荷 0）—— 到点发心跳，顺带把命令流的 ack 带回去。
-  void sendKeepAlive(Client& client) noexcept;
+  void sendKeepAlive(Client& client, const ac::net::ReliableState* receipt = nullptr) noexcept;
+  void acknowledgeCommand(Client& client, std::uint32_t msgId) noexcept;
   void flushHeartbeats(std::uint64_t nowMs) noexcept;
   void publishMetrics(std::uint64_t nowMs);
   void recordSnapshotSize(std::size_t bytes) noexcept;

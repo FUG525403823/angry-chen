@@ -169,6 +169,44 @@ AC_TEST(runtime_completes_handshake_over_real_socket) {
   AC_CHECK_EQ(runtime.roomCount(), static_cast<std::size_t>(0));
 }
 
+AC_TEST(runtime_acknowledges_retransmit_older_than_receive_bitmap) {
+  ac::server::Runtime runtime;
+  std::string error;
+  AC_CHECK(runtime.start(testConfig(), &error));
+  ac::net::UdpSocket client{};
+  AC_CHECK(client.bind(0u));
+  const auto session = handshake(runtime, client, 0x51334455u, 10000u);
+  AC_CHECK(session != 0u);
+  auto send = [&](std::uint32_t id, std::uint64_t now) {
+    ac::net::PacketHeader header{};
+    header.version = ac::net::kProtocolVersion;
+    header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
+    header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
+    header.session = session;
+    ac::net::ReliableExt ext{};
+    ext.msgId = id;
+    std::uint8_t frame[64] = {};
+    const auto encoded = ac::net::encodeKeepAlive(header, ext, frame, sizeof(frame));
+    AC_CHECK(encoded.isOk);
+    AC_CHECK(client.sendTo({kLoopback, runtime.udpPort()}, {frame, encoded.bytes}) > 0);
+    runtime.pollOnce(now);
+  };
+  send(100u, 10010u);
+  ac::net::Endpoint from{};
+  std::uint8_t reply[1200] = {};
+  while (client.poll(0)) (void)client.recvFrom(from, reply);
+  send(1u, 10020u);
+  bool acknowledged = false;
+  while (client.poll(50)) {
+    const int got = client.recvFrom(from, reply);
+    if (got <= 0) break;
+    const auto packet = ac::net::decodePacket(reply, static_cast<std::size_t>(got));
+    if (packet.isOk && packet.value.hasReliableExt && packet.value.reliableExt.ackBase == 1u) acknowledged = true;
+  }
+  AC_CHECK(acknowledged);
+  runtime.stop();
+}
+
 AC_TEST(runtime_advances_round_and_replicates_snapshots) {
   ac::server::Runtime runtime;
   std::string error;

@@ -6,6 +6,7 @@ param(
  [int]$UdpPort = 29788, [int]$HttpPort = 29787,
  [ValidateRange(0,1000)][int]$DelayMs = 0, [ValidateRange(0,100)][int]$LossPct = 0,
  [switch]$Reorder, [switch]$Duplicate, [switch]$Recovery,
+ [switch]$TraceHeaders,
  [ValidateRange(0,30)][int]$StableSeconds = 0,
  [string]$OutDir = "build/reports/player-acceptance"
 )
@@ -35,7 +36,7 @@ try {
  if ($DelayMs -gt 0 -or $LossPct -gt 0 -or $Reorder -or $Duplicate -or $Recovery) {
   $clientPort = $UdpPort + 2
   $node = (Get-Command node -ErrorAction Stop).Source
-  $proxyArgs = @("`"$PSScriptRoot/udp-impairment.mjs`"", "port=$clientPort", "target=$UdpPort", "delay=$DelayMs", "loss=$LossPct", "reorder=$([int]$Reorder.IsPresent)", "duplicate=$([int]$Duplicate.IsPresent)", "`"report=$out/proxy.json`"", "outage=$(if($Recovery){5000}else{0})", "team=$Players", "`"trigger=$out`"")
+  $proxyArgs = @("`"$PSScriptRoot/udp-impairment.mjs`"", "port=$clientPort", "target=$UdpPort", "delay=$DelayMs", "loss=$LossPct", "reorder=$([int]$Reorder.IsPresent)", "duplicate=$([int]$Duplicate.IsPresent)", "`"report=$out/proxy.json`"", "outage=$(if($Recovery){5000}else{0})", "team=$Players", "trace=$([int]$TraceHeaders.IsPresent)", "`"trigger=$out`"")
   $proxy = Start-Process -FilePath $node -ArgumentList $proxyArgs -RedirectStandardOutput "$out/proxy.log" -RedirectStandardError "$out/proxy.err.log" -PassThru
   $null = $proxy.Handle
   $proxyReady = $false

@@ -1313,7 +1313,7 @@ namespace Ac.Tests
             SelfTest.Equal("alpha", joins[0]);
 
             // 稳态：昵称没变，跑 20 帧不许再出现任何 Join。
-            for (var i = 0; i < 20; i++) { now += 50.0; loop.Frame(50.0); }
+            for (var i = 0; i < 20; i++) { loop.LocalName = "alpha"; now += 50.0; loop.Frame(50.0); }
             SelfTest.Equal(1, socket.JoinNames().Count);
 
             // 顺序 B：昵称在大厅里被改了 ⇒ 必须补报一次（否则服务端一直叫旧名字）。

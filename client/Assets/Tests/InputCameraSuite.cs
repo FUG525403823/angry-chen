@@ -255,6 +255,9 @@ namespace Ac.Tests
             InputIntent flushed;
             SelfTest.True(sampler.TryTakeCommand(out flushed), "失焦必须 flush 一条", "没 flush");
             SelfTest.Equal(0, flushed.Buttons);
+            for (var repeat = 0; repeat < 100; repeat++) sampler.OnFocusChanged(false);
+            InputIntent repeatedFocus;
+            SelfTest.True(!sampler.TryTakeCommand(out repeatedFocus), "repeated unfocused notification must not flood commands", "extra command");
             SelfTest.True(sampler.ReadyHeld, "失焦不撤销已准备", sampler.ReadyHeld.ToString());
             sampler.OnFocusChanged(true);
             sampler.Update(40.0);

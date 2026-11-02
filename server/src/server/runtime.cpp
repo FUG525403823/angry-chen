@@ -239,7 +239,7 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
   // retx 一路涨到数千、RTT 恒 0（没有 ack 就没有往返样本）。
   if (info.hasReliableExt) {
     if (Client* sender = findClientByTransport(info.header.session); sender != nullptr) {
-      (void)ac::net::ackOnReceive(sender->commandRecv, info.reliableExt.msgId);
+      acknowledgeCommand(*sender, info.reliableExt.msgId);
       // 收到可靠包就记一笔"该回执了"：本 poll 结束时合并成一帧 KeepAlive 发回去（§5.6）。
       sender->ackDue = true;
     }
@@ -400,7 +400,7 @@ void Runtime::handleResume(const ac::net::Endpoint& from, std::uint16_t session,
   }
   const auto packet = ac::net::decodePacket(frame, size);
   if (packet.isOk && packet.value.hasReliableExt) {
-    (void)ac::net::ackOnReceive(resumed->commandRecv, packet.value.reliableExt.msgId);
+    acknowledgeCommand(*resumed, packet.value.reliableExt.msgId);
     resumed->ackDue = true;
   }
   if (!outcome.isResumed) return;
@@ -836,7 +836,18 @@ void Runtime::onSendMatchState(ac::room::Session& session,
   ac::metrics::addCounter(counters_, ac::metrics::CounterId::kFramesOut, 1u);
 }
 
-void Runtime::sendKeepAlive(Client& client) noexcept {
+void Runtime::acknowledgeCommand(Client& client, std::uint32_t msgId) noexcept {
+  if (msgId != 0u && client.commandRecv.ackBase > msgId &&
+      client.commandRecv.ackBase - msgId > 32u) {
+    // The sliding bitmap cannot represent this receipt; acknowledge it without rewinding the window.
+    ac::net::ReliableState receipt{};
+    receipt.ackBase = msgId;
+    sendKeepAlive(client, &receipt);
+  }
+  (void)ac::net::ackOnReceive(client.commandRecv, msgId);
+}
+
+void Runtime::sendKeepAlive(Client& client, const ac::net::ReliableState* receipt) noexcept {
   const ac::net::PacketHeader header =
       makeHeader(ac::net::PacketType::kKeepAlive, client.transportId, ++client.keepAliveSeq);
   ac::net::ReliableExt ext{};
@@ -844,8 +855,8 @@ void Runtime::sendKeepAlive(Client& client) noexcept {
   // ack，两条流混用会让它把对方当成重复/乱序。**必须逐帧推进** —— 写死一个常数的话每一帧心跳都被
   // 客户端判成重复，连里面的 ack 位图一起丢掉（联调实测：dup 31、rttMs 485 完全等于 MatchState 的 1Hz）。
   ext.msgId = ++client.seq;
-  ext.ackBase = client.commandRecv.ackBase;
-  ext.ackBits = client.commandRecv.ackBits;
+  ext.ackBase = receipt == nullptr ? client.commandRecv.ackBase : receipt->ackBase;
+  ext.ackBits = receipt == nullptr ? client.commandRecv.ackBits : receipt->ackBits;
   std::uint8_t buffer[ac::net::kCommonHeaderBytes + ac::net::kReliableExtBytes] = {};
   const ac::net::EncodeResult encoded =
       ac::net::encodeKeepAlive(header, ext, buffer, sizeof(buffer));

@@ -169,6 +169,7 @@ namespace Ac.Core
         // §5.6：失焦立即清空全部按键位与移动轴，并 flush 一条零意图命令。
         public void OnFocusChanged(bool focused)
         {
+            if (Focused == focused) return;
             Focused = focused;
             if (focused)
             {

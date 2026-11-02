@@ -16,7 +16,14 @@ function blackout(){
  if(Date.now()-blackoutAt<outageMs){stats.blackoutDropped=(stats.blackoutDropped??0)+1;return true;}
  stats.blackoutRecovered=true;return false;
 }
-function forward(socket, packet, port, address) {
+const wire=[];
+function observe(packet, direction) {
+ if(args.trace!=="1" || packet.length<20 || (packet.readUInt16LE(2)&1)===0)return;
+ if(wire.length>=4000)return;
+ wire.push({at:Date.now(),direction,type:packet[1],session:packet.readUInt16LE(4),msgId:packet.readUInt32LE(8),ackBase:packet.readUInt32LE(12),ackBits:packet.readUInt32LE(16)});
+}
+function forward(socket, packet, port, address, direction) {
+ observe(packet,direction);
  stats.received++; const n=stats.received;
  if(blackout()){stats.dropped++;return;}
  if ((n*37)%100 < loss) { stats.dropped++; return; }
@@ -24,12 +31,12 @@ function forward(socket, packet, port, address) {
  const send=(extra)=>{const timer=setTimeout(()=>{timers.delete(timer); if(!stopping) socket.send(packet,port,address,e=>{if(e)stats.errors++;else stats.forwarded++;});},delay+(reorder?delay+25:0)+extra);timers.add(timer);};
  send(0); if(args.duplicate==="1" && n%13===0){stats.duplicated++;send(3);}
 }
-function report(){fs.writeFileSync(args.report,JSON.stringify(stats,null,2));}
+function report(){fs.writeFileSync(args.report,JSON.stringify(stats,null,2));if(args.trace==="1")fs.writeFileSync(args.report+".wire.json",JSON.stringify(wire));}
 front.on("error",e=>{console.error(e.message);process.exitCode=1;stop();});
 front.on("message",(packet,peer)=>{
  const key=peer.address+":"+peer.port; let route=routes.get(key);
- if(!route){route=dgram.createSocket("udp4");routes.set(key,route);stats.peers=routes.size;route.on("error",()=>stats.errors++);route.on("message",p=>forward(front,p,peer.port,peer.address));}
- forward(route,packet,target,"127.0.0.1");
+ if(!route){route=dgram.createSocket("udp4");routes.set(key,route);stats.peers=routes.size;route.on("error",()=>stats.errors++);route.on("message",p=>forward(front,p,peer.port,peer.address,"down"));}
+ forward(route,packet,target,"127.0.0.1","up");
 });
 function stop(){if(stopping)return;stopping=true;clearInterval(pulse);for(const t of timers)clearTimeout(t);report();for(const r of routes.values())r.close();front.close();}
 const pulse=setInterval(report,500);

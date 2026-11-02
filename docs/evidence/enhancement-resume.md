@@ -154,3 +154,35 @@ ACK修复完整套件duplicate-ack-green.log exit0，279/279（含现有新模�
 诊断重建stable-reason-build-retry.log exit0，SHA256 bebdc880c507ca99de872515923f661034e38126af765d3eb6a7a7c54c5a5762。players2-reason用相同网络损伤与StableSeconds15复测，将通过JSON的retransmitExhaustions/receiveTimeouts明确归因；此轮尚未收回前不依据猜测改生产超时或重试预算。
 
 players2-reason已结束真实exit1：peer1 retransmitExhaustions340/receiveTimeouts0，peer2为86/1，均已恢复同身份且有330/266新快照，但连续稳定窗口只达2/12秒，仍未达15秒。明确风暴主要由可靠消息重传耗尽驱动，不是收包3秒超时；不能以放宽TimeoutMs解决。后续须检查丢包/高频命令下32位ACK窗口与在途表的退役策略、同会话Resume后旧在途消息处理，不将本次ACK顺序修复宣称完整解决。
+
+
+## 46f792f推送后：包头追踪定位Join洪泛
+
+上一轮6文件已提交并推送46f792f。新增可选TraceHeaders，代理只记录最多4000条可靠包头（方向/type/session/msgId/ackBase/ackBits/时间，不记录载荷）。players2-wire保留exit1。前7.619秒会话2上行1799个Join、281个Command、167个Resume；命令44首次重传时下行ackBase已84（超过32位窗口），Join33重传时ackBase69，同样超窗。
+
+检查发现PlayerAcceptance.Update每帧设置loop.LocalName；生产setter无相等性检查，每次设置都_joinDirty=true，FlushJoin逐帧发送。因此这轮重连风暴存在验收输入自动化污染，不能代表普通真人输入路径的稳定性。修复方向是让LocalName setter同值幂等，增强boot.join_reported_once_per_name在20帧内每帧重复赋同一昵称仍只报一次；不放宽ACK窗口、重试上限或超时。此前稳定失败证据保留，后续重跑才确认根因是否闭合。
+
+同昵称幂等回归repeated-name-red.log exit1（279例唯一失败boot.join_reported_once_per_name，expected1 actual21）；修复setter同值Ordinal比较后repeated-name-green.log exit0，279/279。name-idempotent-build.log exit0，stage20261029T031033059Z-ff24277c，SHA256097791757ea0fed0de8c24a2d478d2eec3d54ce8f75a66eddc56677ac7b3a32b。原始2/4人损伤＋5秒黑洞＋15秒连续稳定窗口保持原阈值复跑players2-name-stable/players4-name-stable，均启用有限包头追踪确认Join降频。
+
+Join幂等修复后players2-name-stable仍exit1，不能宣称解决风暴；包头显示各会话Join仅2次（含重传），但失焦一端Command仍大量发送，例msgId6首重传时ackBase40已超32位窗。进一步定位InputSampler.Update在引擎失焦时每帧调用OnFocusChanged(false)，后者每次Enqueue零意图，导致绕过30Hz节流。重复100次失焦通知的回归repeated-focus-red.log exit1（input.ready_bit唯一失败），改为焦点状态未变化即返回，保留首次失焦立即零意图以及准备位恢复契约。正在完整自检与串行重建；没有改公网服、ACK窗口、RTO或超时。
+
+重复失焦幂等修复repeated-focus-green.log exit0，279/279；focus-idempotent-build.log exit0，stage20261029T031527354Z-62132179，SHA2561bf7234c17b85011219aa76bba087d724434fc8dd9cf90a287be23aa9dbafdfc。使用此构建复跑players2-focus-stable/players4-focus-stable。代理TraceHeaders新增真实回环测试确认up/down包头字段、载荷原样传递、记录不含载荷；测试曾因合法重复包残留与500ms报告延迟失败，改按目标载荷匹配、等待目标包头真正落盘后通过，未改生产代理转发行为。
+
+
+### 禁止启动客户端后的接续结果
+
+用户明确要求跳过所有可能启动客户端的步骤；后续不运行Unity编辑器、player验收、PlayMode、自检或构建，只读取已结束任务。players2-focus-stable及players4-focus-stable已结束，真实子步骤均exit1：UDP proxy exited during acceptance；4人另记录owned server exit=-1073741510。proxy.err.log均为空，无peer JSON完成报告，无法据此断言代理退出根因或修复后稳定通过。此轮不能替代原15秒稳定门禁，保留未验证。
+
+无客户端检查：Node --check两脚本通过；仅Node+UDP回环test-udp-impairment.mjs通过（未启动游戏）；PowerShell Parser仅解析player-acceptance.ps1通过，未执行；check-docs exit0，git diff --check exit0。现有本地server-clean/ac_tests.exe exit0，561/561；这是既有服务端二进制测试，不代表重新构建。ctest不在PATH，该检查未执行，未计通过。昵称/失焦幂等修复此前引擎279例全绿与构建成功证据继续有效，但完整网络稳定性仍需未来允许启动客户端后复核。GitHub当前已推送46f792f，后续幂等与trace改动尚未提交。
+
+### 无客户端续查：门禁契约与依赖漂移
+
+继续严格不启动客户端。test-selftest-result.ps1仅使用内存日志夹具，8/8通过（中断/缺失执行/重复执行/计数错误均拒绝）；test-process-exit.ps1仅启动PowerShell exit0/7，2/2通过，不是引擎自检。test-check-assets.mjs临时Git仓库夹具0/1/2未准入依赖均通过。真实check-assets.mjs exit1，当前两个拒绝项：cn.tuanjie.codely.bridge=1.0.87，以及cn.tuanjie.ai.generators=file:../.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators。当前未提交manifest由外部工作改变，旧1.0.85内容指纹/Editor-only判断不可自动套用这两项；未覆盖manifest或擅自白名单放行。新增记录只能说明依赖门禁继续诚实阻断，P0不通过。
+
+### 恢复客户端启动授权及窗口外ACK回归
+
+用户重新允许启动客户端并要求继续至P0闭合。players2-resumed真实exit0：两端同session/playerId恢复、stableSeconds15、recoveryInterruptions0；断流/恢复早期仍有23/22次重传耗尽，不是全程零中断。players4-resumed真实exit1，Player33020失败，原始结果保留。这两轮使用修改前服务端，不能证明下述服务端修复已完成真实四人验收。
+
+新增真UDP服务端回归runtime_acknowledges_retransmit_older_than_receive_bitmap：先收msgId100再收msgId1，必须明确回执1。old-ack-red.log exit1，561/562；根因是滑动32位接收位图无法表达窗口外重传的收据。修复对窗口外可靠消息即时发送独立ackOnly回执（ackBase为实际收到的旧msgId），主接收窗口不倒退，不改变消息格式、重试预算或超时；普通接收及Resume均使用该逻辑。重建后old-ack-green.log exit0，562/562。尚待使用新服务端完成2/4真实客户端重跑，不能标P0通过。
+
+GitHub公开API核实：46f792f常规ci实际success；client engine acceptance工作流存在但total_count=0，不以普通ci替代引擎CI。性能精确计数与依赖准入仍未闭合。此次按用户要求提交已验证的小包，保留这些限制。
