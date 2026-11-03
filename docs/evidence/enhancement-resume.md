@@ -186,3 +186,7 @@ Join幂等修复后players2-name-stable仍exit1，不能宣称解决风暴；包
 新增真UDP服务端回归runtime_acknowledges_retransmit_older_than_receive_bitmap：先收msgId100再收msgId1，必须明确回执1。old-ack-red.log exit1，561/562；根因是滑动32位接收位图无法表达窗口外重传的收据。修复对窗口外可靠消息即时发送独立ackOnly回执（ackBase为实际收到的旧msgId），主接收窗口不倒退，不改变消息格式、重试预算或超时；普通接收及Resume均使用该逻辑。重建后old-ack-green.log exit0，562/562。尚待使用新服务端完成2/4真实客户端重跑，不能标P0通过。
 
 GitHub公开API核实：46f792f常规ci实际success；client engine acceptance工作流存在但total_count=0，不以普通ci替代引擎CI。性能精确计数与依赖准入仍未闭合。此次按用户要求提交已验证的小包，保留这些限制。
+
+## 2026-11-03有限P0收尾
+
+上文为逐轮历史，不套用历史未完成结论到新证据。最新逐项结果见[本轮收尾实证](enhancement-p0-closeout.md)。当前已完成新服务端原参数2/4真实恢复稳定复测、dirty工作区冻结投影的完整279项与PlayMode、release三轮帧/图形及同源码development三轮精确主窗口配对、当前开发依赖严格准入和新release/dev实物发布排除。原失败轮保留。最终实现2eca8bb的普通CI41598880499与真实引擎CI41600039035均SUCCESS，真实引擎包含276项clean自检、PlayMode、release/dev三轮配对和原参数2/4独立player损伤恢复验收。P0已通过；失败轮均保留，P1未开始。详见收尾实证中的版本、dirty区别和产物哈希。
