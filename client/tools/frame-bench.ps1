@@ -234,7 +234,7 @@ $summary["mechanismP95"] = [ordered]@{
     player = if ($Mechanism -eq "player") { [double]$summary["frameP95Ms"] } else { $null }
     editor = if ($null -ne $editorDiag) { [double]$editorDiag.frameP95Ms } else { $null }
     editorVerdict = if ($null -ne $editorDiag) { [string]$editorDiag.verdict } else { $null }
-    editorialNote = "editor = -batchmode 诊断口径（引擎不渲染，帧时间是手动 Camera.Render() 的地板）；判定只认当前 -Mechanism"
+    editorialNote = "editor = -batchmode diagnostic only (manual Camera.Render floor, no engine rendering); verdict uses the selected -Mechanism"
 }
 # ADR-014 裁决 4 的第二、三条不变式：同轮的真光栅证据 + 同轮空场景地板，都留在产物里。
 $summary["emptyControl"] = if ($null -ne $emptyControl) { [ordered]@{
@@ -245,7 +245,7 @@ $summary["emptyControl"] = if ($null -ne $emptyControl) { [ordered]@{
     engineFrames = [int]$emptyControl.phaseMs.engineFrames
     pixelCoverage = [double]$emptyControl.graphics.pixelCoverage
     belowBudget = [bool]([double]$emptyControl.frameP95Ms -lt [double]$emptyControl.budget.frameP95Ms)
-    note = "同轮空场（-frameBenchEmpty 1，只关来件与帧回路、停用场地网格）的地板：判 PASS 的机制不变式之一"
+    note = "Same-round empty scene (-frameBenchEmpty 1, gameplay and scene meshes disabled); below-budget floor is a PASS invariant"
 } } else { $null }
 $summary["rasterEvidence"] = [ordered]@{
     planScenePixelCoverage = [double]$results[0].graphics.pixelCoverage

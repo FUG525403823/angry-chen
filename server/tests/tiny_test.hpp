@@ -143,7 +143,12 @@ inline bool writeReportFile(const char* json) noexcept {
     std::error_code ignored;
     std::filesystem::create_directories(target.parent_path(), ignored);
   }
-  std::FILE* file = std::fopen(path, "wb");
+  std::FILE* file = nullptr;
+#ifdef _MSC_VER
+  if (fopen_s(&file, path, "wb") != 0) return false;
+#else
+  file = std::fopen(path, "wb");
+#endif
   if (file == nullptr) return false;
   const std::size_t length = std::strlen(json);
   const bool isOk = std::fwrite(json, 1u, length, file) == length;

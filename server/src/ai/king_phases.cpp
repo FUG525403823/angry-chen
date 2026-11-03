@@ -34,7 +34,7 @@ int32_t summonGrunts(ac::sim::World& world, ac::sim::Entity& king) noexcept {
   const int32_t count = ac::config::kSheepAi.kingSummonCount;
   for (int32_t i = 0; i < count; ++i) {
     const double angle = ac::kTwoPi * static_cast<double>(i) / static_cast<double>(count);
-    const double units = ac::quantizeAngle(angle);
+    const auto units = ac::quantizeAngle(angle);
     // 抽取顺序与 v1 逐字一致：先 x 抖动，再 z 抖动（JS 的实参从左到右求值）。
     const double jitterX = ac::rngRange(world.rng.spawn, -ac::config::kKingSummonJitterM,
                                         ac::config::kKingSummonJitterM);
