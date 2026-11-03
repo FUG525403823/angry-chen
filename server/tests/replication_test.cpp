@@ -473,12 +473,12 @@ AC_TEST(replication_report_writes_json_file) {
 
   AC_CHECK_EQ(budget.eventsQueued, kTicks);
   AC_CHECK_EQ(budget.droppedSnapshots, 0u);  // 健康阶段（稳态）一帧不丢
-  const uint32_t eventsDropped = kTicks - budget.eventsQueued;
+  const std::size_t eventsDropped = kTicks - budget.eventsQueued;
 
   // §7 DoD：报告必须同时给出「丢过快照」与「事件一条没丢」。背压爆发段：先把队列顶到
   // 64 KiB 预算之上（事件通道不受预算约束，照常排队），再连编 5 帧 —— 快照全丢、事件全留。
-  const uint32_t dropsBefore = budget.droppedSnapshots;
-  const uint32_t eventsBefore = budget.eventsQueued;
+  const std::size_t dropsBefore = budget.droppedSnapshots;
+  const std::size_t eventsBefore = budget.eventsQueued;
   for (int i = 0; i < 40; ++i) {
     bp::enqueueEvent(budget, 2000u);
   }
@@ -537,12 +537,12 @@ AC_TEST(replication_report_writes_json_file) {
   std::snprintf(json, sizeof(json),
                 "{\"suite\":\"replication\",\"seed\":%u,\"ticks\":%u,\"snapshotBytesMax\":%llu,"
                 "\"snapshotBytesP95\":%llu,\"steadyMeanBytes\":%.3f,\"droppedSnapshots\":%u,"
-                "\"eventsDropped\":%u,\"rateLevelsVisited\":[%u,%u,%u,%u,%u],\"scheduleErrorP95Ms\":%.3f,"
+                "\"eventsDropped\":%llu,\"rateLevelsVisited\":[%u,%u,%u,%u,%u],\"scheduleErrorP95Ms\":%.3f,"
                 "\"simDriftMsMax\":%lld}",
                 kReportSeed, kTicks, static_cast<unsigned long long>(maxBytes),
                 static_cast<unsigned long long>(p95), steadyMean,
                 static_cast<unsigned>(budget.droppedSnapshots),
-                eventsDropped, levels[0], levels[1], levels[2], levels[3], levels[4],
+                static_cast<unsigned long long>(eventsDropped), levels[0], levels[1], levels[2], levels[3], levels[4],
                 ac::core::tickScheduleErrorP95Ms(scheduler), static_cast<long long>(driftWorstMs));
 
   AC_CHECK(maxBytes <= bp::kMaxSnapshotBytes);

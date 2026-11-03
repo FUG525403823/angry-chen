@@ -80,7 +80,12 @@ inline double interpolatePose(double older, double newer, double alpha) noexcept
 // 返回 true 表示 out.isOk（可用回滚姿态）；ms > kRewindLimitMs 越限时不回滚（out.clamped 仅诊断）。
 inline bool samplePoseAgo(const PoseHistory& history, uint32_t ms, uint16_t entityId,
                           SampledPose& out) noexcept {
-  out = SampledPose{};
+  // Explicit member reset preserves the status flags on optimized MSVC builds
+  // when callers reuse the output after an over-limit (clamped) sample.
+  out.isOk = false;
+  out.found = false;
+  out.clamped = false;
+  out.x = out.y = out.z = out.yaw = out.pitch = 0.0;
   if (ms > kRewindLimitMs) {
     out.clamped = true;
     return false;

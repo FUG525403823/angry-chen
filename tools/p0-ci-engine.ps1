@@ -6,6 +6,10 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 if (-not $Unity -or -not (Test-Path -LiteralPath $Unity -PathType Leaf)) { throw 'Licensed AC_UNITY installation required' }
 $env:AC_UNITY = $Unity
+. "$PSScriptRoot/p0-ci-cmake.ps1"
+$cmake = Resolve-P0CMake
+& $cmake --version
+if ($LASTEXITCODE -ne 0) { throw 'Resolved CMake failed version preflight' }
 if (Test-Path -LiteralPath $Scratch) { throw 'Fresh scratch directory required; do not reuse prior build evidence' }
 if (Test-Path -LiteralPath $OutDir) { throw 'Fresh evidence directory required' }
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
@@ -63,8 +67,8 @@ foreach ($role in @('release', 'allocation')) {
 }
 Native node @('client/tools/frame-bench-pair.mjs', "$OutDir/release.json", "$OutDir/allocation.json", "$OutDir/paired.json")
 if (@($codes | Where-Object { $_ -ne 0 }).Count) { throw 'Scoped benchmark failed' }
-Native cmake @('-S', 'server', '-B', "$Scratch/server", '-DAC_WERROR=ON')
-Native cmake @('--build', "$Scratch/server", '--config', 'Release', '--parallel', '4')
+Native $cmake @('-S', 'server', '-B', "$Scratch/server", '-DAC_WERROR=ON')
+Native $cmake @('--build', "$Scratch/server", '--config', 'Release', '--parallel', '4')
 # Finite P0: frozen two/four-peer impairment+recovery cases only, not a P4 matrix.
 Run 'client/tools/player-acceptance.ps1' @('-Player', $releasePlayer, '-ServerExe', "$Scratch/server/Release/ac_server.exe", '-Players', '2', '-DelayMs', '50', '-LossPct', '5', '-Reorder', '-Duplicate', '-Recovery', '-StableSeconds', '15', '-OutDir', "$OutDir/network-2-recovery")
 Run 'client/tools/player-acceptance.ps1' @('-Player', $releasePlayer, '-ServerExe', "$Scratch/server/Release/ac_server.exe", '-Players', '4', '-DelayMs', '100', '-LossPct', '10', '-Reorder', '-Duplicate', '-Recovery', '-StableSeconds', '15', '-OutDir', "$OutDir/network-4-recovery")

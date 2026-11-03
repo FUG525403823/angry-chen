@@ -219,10 +219,10 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
     handleHello(from, bytes, size, nowMs);
     return;
   }
-  const Client* sender = findClientByTransport(info.header.session);
-  const auto validation = handshake_.validateSession(info.header.session);
-  if (sender == nullptr || sender->endpoint != from || !validation.isAccepted ||
-      validation.isGracePeriod) {
+  const Client* packetSender = findClientByTransport(info.header.session);
+  const auto packetValidation = handshake_.validateSession(info.header.session);
+  if (packetSender == nullptr || packetSender->endpoint != from || !packetValidation.isAccepted ||
+      packetValidation.isGracePeriod) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;
   }

@@ -12,7 +12,8 @@ option(AC_WERROR "把编译警告当错误（CI 恒为 ON）" ON)
 set(AC_SERVER_VERSION "0.1.0" CACHE STRING "服务端语义化版本（MAJOR.MINOR.PATCH，无前缀）")
 
 if(MSVC)
-  add_compile_options(/W4 /permissive- /fp:strict)
+  # Sources contain UTF-8 comments/text; do not interpret them using the host ANSI code page.
+  add_compile_options(/W4 /permissive- /fp:strict /utf-8)
   if(AC_WERROR)
     add_compile_options(/WX)
   endif()
@@ -34,9 +35,17 @@ list(REMOVE_ITEM AC_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 add_library(ac_core STATIC ${AC_CORE_SOURCES})
 target_include_directories(ac_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(ac_core PUBLIC AC_SERVER_VERSION="${AC_SERVER_VERSION}")
+if(MSVC)
+  # Keep portable standard C APIs (fopen/getenv/strerror) in core and its consumers.
+  # Only opt out of Microsoft's CRT-specific deprecation annotations; /W4 /WX
+  # and other C4996 deprecations remain enabled.
+  target_compile_definitions(ac_core PUBLIC _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # S04 §5.7：WinSock2 需要显式链接 ws2_32（POSIX 侧无需额外库）。
 if(WIN32)
+  # Windows headers must not replace standard C++ min/max calls with macros.
+  target_compile_definitions(ac_core PUBLIC NOMINMAX)
   target_link_libraries(ac_core PUBLIC ws2_32)
 endif()
 
