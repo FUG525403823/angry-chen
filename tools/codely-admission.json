@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "scope": "development-only-excluded-from-player",
+  "review": "docs/evidence/codely-dependency-review.md",
+  "packages": [
+    {
+      "name": "cn.tuanjie.codely.bridge",
+      "version": "1.0.87",
+      "path": "client/Library/PackageCache/cn.tuanjie.codely.bridge@1.0.87",
+      "manifestValue": "1.0.87",
+      "lockSource": "registry",
+      "registry": "https://packages.tuanjie.cn",
+      "files": 435,
+      "treeSha256": "594116ac4f65997d451615df203eaad78bc2a81257e98d884e93ad090fbfcda4",
+      "archive": {
+        "url": "https://download-packages.unity.cn/cn.tuanjie.codely.bridge/-/cn.tuanjie.codely.bridge-1.0.87.tgz",
+        "sha256": "439f185b01f24ac6f57869ff695d34bfe85e9fa7f2eb73900c06f8f0ed20e810",
+        "subdirectory": "package",
+        "kind": "tgz"
+      },
+      "dependencies": {
+        "com.unity.ext.nunit": "1.0.6",
+        "com.unity.ugui": "1.0.0"
+      }
+    },
+    {
+      "name": "cn.tuanjie.ai.generators",
+      "version": "1.0.27",
+      "path": "client/.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators",
+      "manifestValue": "file:../.codely-cli/extensions/TJGenerators/Packages/cn.tuanjie.ai.generators",
+      "lockSource": "local",
+      "files": 705,
+      "treeSha256": "8af2389f32fe2cb3bc36225dab09d45d7e546a4709305cef76faeb0f3dc2b528",
+      "observedLocalTree": {
+        "files": 757,
+        "sha256": "5b0a91fb2e640e40489dbd7aaca84fb4f8a3152300ea2cf53c31ee2f934f9d9a"
+      },
+      "optionalGeneratedMetadata": {
+        "extension/experience/templates/generator-async-pattern.md.meta": "fdf9a45aa588253f5d205918312ef146d6328bc09b49148ec80990c5a835fed0",
+        "extension/experience/templates.meta": "54b7a289b192e43c3d00d795a16fa7fa6836e49e7f8482d7dfcfa17cef04e661",
+        "extension/experience.meta": "1373832e993604f899f3b28407b703885032ce6741d5057850af0e342c47f64f",
+        "extension/gemini-extension.json.meta": "37c34842acd20db2b48ed5b89b2d73081a0d2cc8580729156c280c5ad9fa542a",
+        "extension/manifest.json.meta": "c783567f83d32ee745eedbf132ec22e39baa67bb5a81d04f85171b0815e276f5",
+        "extension/skills/generate_3d_model/generators/import-recipe.md.meta": "2afdfe7d7868f1a1fc63cb392f47482d7a87be345a9e85c49c2123f501a93842",
+        "extension/skills/generate_3d_model/generators/mcp.md.meta": "314581d404efeb029d5080a341b853d41e47833561bfaa69df406d0528f0a255",
+        "extension/skills/generate_3d_model/generators/rodin.md.meta": "d480adc6e56ee92a16a025e68b794c4b76938998b3b0f43e472ac071104a8f16",
+        "extension/skills/generate_3d_model/generators/tripo-p1.md.meta": "afeee0c90fc41a1525758a6919484c79f8a6c3189cd557e3438053f71c3b14c7",
+        "extension/skills/generate_3d_model/generators.meta": "b80cce0b05c5bf29c661275f9b89527cb914ae936b5b69248387a96a4bb1a1d3",
+        "extension/skills/generate_3d_model/SKILL.md.meta": "158164d334edbc4eda574cddb696c912ceb017b53c2630cc964f84d4a3bfda83",
+        "extension/skills/generate_3d_model.meta": "b913b3cc93fc3a081b84004e8509f1a7d1d073ee9444c384268c7e88eae80d0a",
+        "extension/skills/generate_animated_character/generators/hunyuan-motion.md.meta": "4ed7c4af063c596bdfb9d2d70cc43d3500b7d824ad6fbc80a56fb11a1d1231ab",
+        "extension/skills/generate_animated_character/generators/unirig.md.meta": "eaf63a0e025bc9f146f86b69cca09d169e70783cc6c79da2c00f0651c71cca83",
+        "extension/skills/generate_animated_character/generators.meta": "2816168791299a134db6b13b9a7b8a47300af80519e2681cea4c58cd0c39fe95",
+        "extension/skills/generate_animated_character/SKILL.md.meta": "aa3cdc130cb530663756b6323ad76985d27a47d423e6b6826b15217195418960",
+        "extension/skills/generate_animated_character.meta": "e901175f0bb37e7efebdac6b079c031c584969889b8d1086557b1de241d1b2cc",
+        "extension/skills/generate_audio_clip/SKILL.md.meta": "075cb6d1c40c0adee84aaf8354230248e4cd54bc4df7f279ff749f016594c29b",
+        "extension/skills/generate_audio_clip.meta": "b68137c3062e80360cc652713ea0ab84cac051d21540212bfae5a31ba4878471",
+        "extension/skills/generate_effect_video/SKILL.md.meta": "b72d43aac78651fd0779c772f29622935d04abcf42c77dbc8355fe004c19b059",
+        "extension/skills/generate_effect_video.meta": "f848c2b60c0396b57c3a05b343d5d764320b8c374ea046cf98b60a1356e3a529",
+        "extension/skills/generate_game_ui_kit/SKILL.md.meta": "72205a99827a63fc873e5693ee067a7fee65f5f70c8edaf8fe2d219a34c073f2",
+        "extension/skills/generate_game_ui_kit.meta": "d5aa896ff35ec4ad278ad33078ce657073043f18b501677a2546686db4690a4f",
+        "extension/skills/generate_image/SKILL.md.meta": "651c50ae8b9e71fc6a7524fa6f25cac34d64011e96b99839338747fb32bbc010",
+        "extension/skills/generate_image.meta": "c846abe4a697a27804d9cd4b058f027d5587c847b93bb23158b175ebbafffe38",
+        "extension/skills/generate_image_layers/SKILL.md.meta": "59cdadd8ae673961786264647bf3be5e828d8f0ea3f23c6bff7df72f526ccfb0",
+        "extension/skills/generate_image_layers.meta": "a26a15963b2e1dd2dd923d1cf0c39ae8aeae95e81ddb6b9f3ebe8febeb937264",
+        "extension/skills/generate_material/SKILL.md.meta": "bf73dec90258d9765203881768a9039bebba4a57feecd72dbbed01daebebc944",
+        "extension/skills/generate_material.meta": "8b7d9ba4b4488d587310b14da353da3907a24a7b4badde45014df17a63a2a82b",
+        "extension/skills/generate_skybox/SKILL.md.meta": "1acdc27484d145028882ebf61ca1b0b282d846a61c1bcd59278199983cbd28f6",
+        "extension/skills/generate_skybox.meta": "90b34ec8c4ada9a9adf5b4ec3b9e1469e0416fc6594b331886eb24c071509caa",
+        "extension/skills/generate_sound_effect/SKILL.md.meta": "57bfcd5ed3feb6071decc5a95368b4cf7b6915b26fa948fb7f9b76f5091dcdb2",
+        "extension/skills/generate_sound_effect.meta": "7023229694def33b22766a7a052712d6b2a44211d49a3e33e49ffc96e604ee60",
+        "extension/skills/generate_sprite/SKILL.md.meta": "cc62c859164a98ce566c5f5a3f282568c6ca858b12123f490fc4bec155315b6e",
+        "extension/skills/generate_sprite.meta": "628dfb9262e07e104860fb3f8d610a70a27f609dd6117500de3738a4dd234cbd",
+        "extension/skills/generate_terrain/SKILL.md.meta": "b2e307d007b79eb2136b4ac415654a0f18f10c4b9b72acf6df6b4877c1f0347d",
+        "extension/skills/generate_terrain.meta": "bfc1e3eba1b23a55466c6ffb009872e044d81106cf6a22909416fc6e4a72c8f6",
+        "extension/skills/generate_tripo_texture_model/SKILL.md.meta": "a216a1d885bc48a933b9423009ddbc560c75da6e1d31bb1127a07e4f0ada4c1a",
+        "extension/skills/generate_tripo_texture_model.meta": "1f530f9371d0d6a7ffb0d6e27102220951804743b92f68aa721fd3a273676831",
+        "extension/skills/generate_tts/SKILL.md.meta": "2107c40664a8a9b61617b9a8b25874c2895b731680dcccd072c52a936c18ef44",
+        "extension/skills/generate_tts.meta": "d48c2590d799d35c95eebbd647a2eee536981c4705479c2585ecb4d88ac7a34a",
+        "extension/skills/generate_video/SKILL.md.meta": "df8b8fa9862bc31cff09a0089c799d047e34462b35c52991421c4bfcd592a02c",
+        "extension/skills/generate_video.meta": "207121d59abcb25cbdb2fdd5af01818a85648d25ad8ced675076adf06c5163b8",
+        "extension/skills/place_assets_in_scene/SKILL.md.meta": "5f179516e4a59dcc2a6b574440805d71d6d84a9786555898e666d20591243fcf",
+        "extension/skills/place_assets_in_scene.meta": "f48dfc99721705e65014b8c06a471fbc7b0fbae05fd9c4e275d85b7043e0754d",
+        "extension/skills/tjgenerators_version/SKILL.md.meta": "2004af258db16827563d732d3ea79fbd36f22887b22eb2b7198fe59739880bc0",
+        "extension/skills/tjgenerators_version.meta": "5f0ff5e15927eee827b9e65d95452c871a6e66e754e5853c60750b70fc3382db",
+        "extension/skills/upscale_image/SKILL.md.meta": "c52a3eb4c865bf86a92135d92a126fcb3174c270aeac2c289b71336c27c0b5af",
+        "extension/skills/upscale_image.meta": "c2629174a18824d1ee0cdd097586a49cded4c8305b53d11c3cf26758273a1c3a",
+        "extension/skills/voice_clone/SKILL.md.meta": "ba305f94dcce277f1b9921e4a4917ec4223738141b211680716292c4d27b5d78",
+        "extension/skills/voice_clone.meta": "3fd8528b8f03ee46aecebbde9503a44babb30c05d586533cc74488bcf3029522",
+        "extension/skills.meta": "6dba227a0a92268e952b1f22b46718615fc4e271d9d36ccccf8801cec4c400aa"
+      },
+      "archive": {
+        "url": "https://codely.tuanjie.cn/skills/download/f3f76746-78d0-4e83-9fc0-83e550e9ba62/TJGenerators.zip",
+        "sha256": "6f910aff63696cd240023fe56a9faf3715822b5db3533bd9360bebe6cfcec589",
+        "subdirectory": "TJGenerators/Packages/cn.tuanjie.ai.generators",
+        "kind": "zip"
+      },
+      "dependencies": {
+        "cn.tuanjie.codely.bridge": "1.0.76",
+        "com.unity.modules.jsonserialize": "1.0.0",
+        "com.unity.modules.unitywebrequest": "1.0.0",
+        "com.unity.modules.video": "1.0.0",
+        "com.unity.editorcoroutines": "1.0.1"
+      }
+    }
+  ],
+  "additionalLock": {
+    "com.unity.editorcoroutines": {
+      "version": "1.0.1",
+      "registry": "https://packages.tuanjie.cn"
+    },
+    "com.unity.ext.nunit": {
+      "version": "1.0.6",
+      "registry": "https://packages.tuanjie.cn"
+    }
+  },
+  "forbiddenPlayerNames": [
+    "TJGenerators.Runtime.dll",
+    "TJGenerators.Editor.dll",
+    "UnityTcp.Editor.dll",
+    "UnityTcp.CustomTool.dll",
+    "Codely.Common.dll",
+    "Cn.Tuanjie.Codely.Editor.dll",
+    "Codely.Newtonsoft.Json.dll",
+    "Codely.Roslyn.dll",
+    "NativeWindowBridge.dll",
+    "datachannel.dll",
+    "libcrypto-3-x64.dll",
+    "libssl-3-x64.dll",
+    "NativeTcpBridge.dll",
+    "WebViewPlugin",
+    "libNativeWindowBridge.dylib",
+    "libdatachannel.dylib",
+    "libcrypto.3.dylib",
+    "libssl.3.dylib"
+  ]
+}

@@ -15,6 +15,15 @@ jobs:
           node-version: '24'
       - run: node tools/check-docs.mjs
       - run: node tools/test-check-assets.mjs
+      - run: node tools/p0-ci-test-project.mjs
+      - run: node client/tools/test-frame-bench-pair.mjs
+      - name: Detect optional development tool manifest declarations
+        id: codely
+        run: node -e "const fs=require('node:fs');const d=JSON.parse(fs.readFileSync('client/Packages/manifest.json')).dependencies;fs.appendFileSync(process.env.GITHUB_OUTPUT,'present='+['cn.tuanjie.codely.bridge','cn.tuanjie.ai.generators'].some(k=>Object.hasOwn(d,k))+'\n')"
+      - name: Fetch and verify exact official development tool archives (no credentials)
+        if: steps.codely.outputs.present == 'true'
+        run: node tools/codely-fetch.mjs build/scratch/codely-ci-staging --install-missing .
+      - run: node tools/test-codely-dependencies.mjs
       - run: node tools/check-assets.mjs
 
   client-scripts:
@@ -22,6 +31,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Compile and execute offline production client checks
+        shell: powershell
+        run: ./tools/p0-ci-offline-client.ps1
       - name: Verify retained process exit codes
         shell: powershell
         run: ./client/tools/test-process-exit.ps1
@@ -65,6 +77,18 @@ jobs:
           "$prefix/bin/angry-chen-server" --version
       - name: Test
         run: ctest --test-dir server/build --output-on-failure
+
+  server-windows:
+    name: server Windows (MSVC + ctest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Release with warnings as errors
+        run: cmake -S server -B build/server-windows -DAC_WERROR=ON
+      - name: Build Release
+        run: cmake --build build/server-windows --config Release --parallel 4
+      - name: Execute complete server and harness contract tests
+        run: ctest --test-dir build/server-windows -C Release --output-on-failure
 
   # S14 §4-7：同 job 依次跑 gate-4p2min、反向自检（必须红）、soak-4p5min；任一阈值 fail → 作业红。
   server-perf:

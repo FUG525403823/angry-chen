@@ -1,0 +1,34 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { project, fingerprint } from './p0-project.mjs';
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-p0-project-'));
+try {
+  const source = path.join(temp, 'source');
+  for (const name of ['Assets/Scripts/Core', 'Packages', 'ProjectSettings', 'tools']) fs.mkdirSync(path.join(source, name), { recursive: true });
+  const put = (p, s) => fs.writeFileSync(path.join(source, p), s);
+  put('Assets/game.cs', 'same-source'); put('Assets/Scripts/Core/BuildInfo.g.cs', 'generated');
+  put('Packages/manifest.json', JSON.stringify({ dependencies: { 'com.unity.ugui': '1.0.0', 'cn.tuanjie.codely.bridge': 'file:../Vendor/bridge', 'cn.tuanjie.ai.generators': '1.0.0' } }));
+  put('Packages/packages-lock.json', '{"original":true}'); put('ProjectSettings/ProjectVersion.txt', 'version');
+  put('tools/selftest.ps1', 'test'); put('build.ps1', 'build'); put('server.txt.example', 'example');
+  fs.mkdirSync(path.join(temp, 'docs')); fs.writeFileSync(path.join(temp, 'docs/context.md'), 'suite-context');
+  fs.mkdirSync(path.join(temp, 'server/tests/fixtures'), { recursive: true }); fs.writeFileSync(path.join(temp, 'server/tests/fixtures/packet.bin'), 'packet');
+  const before = fingerprint(source), manifest = fs.readFileSync(path.join(source, 'Packages/manifest.json')), lock = fs.readFileSync(path.join(source, 'Packages/packages-lock.json'));
+  const r = project(source, path.join(temp, 'release/client')), d = project(source, path.join(temp, 'development/client'));
+  assert.equal(r.sourceFingerprint, d.sourceFingerprint);
+  assert.equal(fs.readFileSync(path.join(temp, 'release/docs/context.md'), 'utf8'), 'suite-context');
+  assert.equal(fs.readFileSync(path.join(temp, 'development/server/tests/fixtures/packet.bin'), 'utf8'), 'packet');
+  assert.deepEqual(fs.readFileSync(path.join(source, 'Packages/manifest.json')), manifest);
+  assert.deepEqual(fs.readFileSync(path.join(source, 'Packages/packages-lock.json')), lock);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(r.projection, 'Packages/manifest.json'))).dependencies, { 'com.unity.ugui': '1.0.0' });
+  assert.equal(fs.existsSync(path.join(r.projection, 'Packages/packages-lock.json')), false);
+  assert.equal(fs.readFileSync(path.join(r.projection, 'tools/selftest.ps1'), 'utf8'), 'test');
+  assert.throws(() => project(source, r.projection), /overwrite/);
+  assert.throws(() => project(source, path.join(source, 'nested')), /Unsafe/);
+  put('Assets/Scripts/Core/BuildInfo.g.cs', 'other generated'); assert.equal(fingerprint(source), before);
+  put('Assets/game.cs', 'changed'); assert.notEqual(fingerprint(source), before);
+  put('Packages/manifest.json', JSON.stringify({ dependencies: { malicious: 'file:evil' } }));
+  assert.throws(() => project(source, path.join(temp, 'bad')), /Unreviewed/);
+  console.log('P0 PROJECT CONTRACT PASS: isolation, same-source pair, copy tools, no original manifest/lock edits, fail-closed paths/dependencies');
+} finally { fs.rmSync(temp, { recursive: true, force: true }); }

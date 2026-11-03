@@ -35,10 +35,12 @@ namespace Ac.Boot
         // 空场对照：只让引擎渲染一个空场景（不喂来件、不驱动帧回路），用来量机制地板。
         public bool Empty;
         public string Mechanism = PlanBench.MechanismEditor;
+        public string EvidenceRole = "full";
 
         public static FrameBenchPlanOptions FromArgs(string[] args, string mechanism)
         {
             var options = new FrameBenchPlanOptions { Mechanism = mechanism };
+            options.EvidenceRole = BenchJson.Arg(args, "-frameBenchEvidenceRole", "full");
             options.Scene = BenchJson.Arg(args, "-frameBenchScene", PlanBench.PlanSceneFragment);
             options.OutPath = BenchJson.Arg(args, "-frameBenchOut", "");
             options.Warmup = BenchJson.ArgInt(args, "-frameBenchWarmup", FrameBudget.WarmupFrames);
@@ -273,6 +275,13 @@ namespace Ac.Boot
 
         private ProfilerRecorder _drawRecorder;
         private ProfilerRecorder _triRecorder;
+        private int _graphicsSamples;
+        private int _graphicsMissing;
+        private int _pendingSample = -1;
+        private int _pendingEngineFrame = -1;
+        private int _sampleGcStart;
+        private bool _sampleStarted;
+        private bool _sampleClosed;
 
         public PlanBench(FrameBenchPlanOptions options)
         {
@@ -416,9 +425,9 @@ namespace Ac.Boot
 
         private void StartRecorders()
         {
-            try { _drawRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count", 256, ProfilerRecorderOptions.SumAllSamplesInFrame); }
+            try { _drawRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count", 256, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); }
             catch (Exception) { _drawRecorder = default(ProfilerRecorder); }
-            try { _triRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Triangles Count", 256, ProfilerRecorderOptions.SumAllSamplesInFrame); }
+            try { _triRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Triangles Count", 256, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); }
             catch (Exception) { _triRecorder = default(ProfilerRecorder); }
         }
 
@@ -441,6 +450,7 @@ namespace Ac.Boot
         public void Tick()
         {
             if (_done || SampleComplete) return;
+            if (!ManualRender) CompleteRenderedSample();
             var tickStart = BenchJson.NowMs();            // 相邻两次 Update 起点之间的墙钟：player 机制下这就是引擎帧时间（含本帧渲染与 present）。
             var interval = _prevTickStart < 0.0 ? -1.0 : tickStart - _prevTickStart;
             _prevTickStart = tickStart;
@@ -449,6 +459,15 @@ namespace Ac.Boot
             {
                 _finishedWarmup = true;
                 AfterWarmup();
+                // Forced pre-sample GC is outside both the wall-clock and GC windows.
+                _prevTickStart = BenchJson.NowMs();
+                return;
+            }
+            if (_measuring && !_sampleStarted)
+            {
+                _sampleStarted = true;
+                _sampleGcStart = GC.CollectionCount(0);
+                _engineFramesStart = Time.frameCount;
             }
 
             if (_options.Empty)
@@ -462,6 +481,7 @@ namespace Ac.Boot
                     _renderMs[_measured] = -1.0;
                     _workMs[_measured] = 0.0;
                     _gapMs[_measured] = interval;
+                    if (!ManualRender) { _pendingSample = _measured; _pendingEngineFrame = Time.frameCount; }
                     _measured += 1;
                 }
                 _warmupFrames += 1;
@@ -507,7 +527,7 @@ namespace Ac.Boot
             var bytes = AllocWindowBytes(allocStart, gc0Start, out reason);
             if (bytes < 0) { _allocUnmeasurable += 1; if (_allocReason == null) _allocReason = reason; }
             else _allocBytes += bytes;
-            _gc0Delta += GC.CollectionCount(0) - gc0Start;
+            // Whole-sampling-interval GC is closed after the last rendered sample, not per Tick.
 
             var draws = _pres.SubmittedDraws + _arenaRenderers;
             var tris = _pres.SubmittedTriangles + _arenaTriangles;
@@ -518,35 +538,48 @@ namespace Ac.Boot
             if (_pres.DrawnSheepCount > _drawnSheepMax) _drawnSheepMax = _pres.DrawnSheepCount;
             if (_pres.CulledSheepCount > _visibleSheepMax) _visibleSheepMax = _pres.CulledSheepCount;
             if (_pres.Sheep.SkippedCount > _skippedSheepMax) _skippedSheepMax = _pres.Sheep.SkippedCount;
-            if (_drawRecorder.Valid && _drawRecorder.CurrentValue > _engineDrawsMax) _engineDrawsMax = (int)_drawRecorder.CurrentValue;
-            if (_triRecorder.Valid && _triRecorder.CurrentValue > _engineTrianglesMax) _engineTrianglesMax = (int)_triRecorder.CurrentValue;
+            if (!ManualRender) { _pendingSample = _measured; _pendingEngineFrame = Time.frameCount; }
             _measured += 1;
             if (_measured >= _options.Sample) SampleComplete = true;
         }
 
-        // 逐帧分配窗口的起点。首选引擎计数器（editor 机制与装了 profiler 的进程）；
-        // release player 里没有 profiler 计数器（BenchAlloc.CounterAvailable=false），退回 GC.GetTotalMemory(false)：
-        // 这里只是净堆增量诊断，不能证明分配量为零；不可作为 AllocMeasured 的精确证据。
-        private long AllocWindowStart()
-        {
-            return BenchAlloc.CounterAvailable ? BenchAlloc.Begin() : BenchAlloc.ReadHeapBytes();
-        }
-
-        // 逐帧分配窗口的读数（窗口 = Begin 到这里的这段代码：合成来件 + GameLoop.Frame，与 editor 机制同窗口）。
-        // 退回 GC 堆大小时，窗口里只要跑过一次 GC 就分不出"分配"和"回收"，那一帧记为不可测而不是猜一个数。
+        // Missing exact counters stay unmeasured. Net heap differences are only whole-window diagnostics.
+        private long AllocWindowStart() { return BenchAlloc.CounterAvailable ? BenchAlloc.Begin() : -1L; }
         private long AllocWindowBytes(long start, int gc0Start, out string reason)
         {
             if (BenchAlloc.CounterAvailable) return BenchAlloc.BytesSince(start, out reason);
-            if (start < 0) { reason = "GC heap size unavailable"; return -1L; }
-            if (GC.CollectionCount(0) != gc0Start)
+            reason = "Exact allocation counter unavailable in this build";
+            return -1L;
+        }
+
+        // Called at the next Update, before screenshot/JSON allocations. LastValue belongs to the
+        // completed engine frame; CurrentValue may still be zero before render has flushed counters.
+        public void CompleteRenderedSample()
+        {
+            if (_pendingSample < 0 || Time.frameCount <= _pendingEngineFrame) return;
+            _frameMs[_pendingSample] = BenchJson.NowMs() - _prevTickStart;
+            _gapMs[_pendingSample] = _frameMs[_pendingSample] - _workMs[_pendingSample];
+            _engineDeltaMs[_pendingSample] = Time.unscaledDeltaTime * 1000.0;
+            _engineFramesEnd = Time.frameCount;
+            if (!_options.Empty)
             {
-                reason = "GC ran inside the frame window (GC.GetTotalMemory fallback): allocation and collection cannot be separated";
-                return -1L;
+                var draws = _drawRecorder.Valid && _drawRecorder.Count > 0 ? _drawRecorder.LastValue : -1L;
+                var tris = _triRecorder.Valid && _triRecorder.Count > 0 ? _triRecorder.LastValue : -1L;
+                if (Time.frameCount != _pendingEngineFrame + 1 || draws <= 0 || tris <= 0) _graphicsMissing++;
+                else _graphicsSamples++;
+                if (draws > _engineDrawsMax) _engineDrawsMax = (int)draws;
+                if (tris > _engineTrianglesMax) _engineTrianglesMax = (int)tris;
             }
-            var now = BenchAlloc.ReadHeapBytes();
-            if (now < start) { reason = "GC heap shrank inside the frame window (" + start + " -> " + now + ")"; return -1L; }
-            reason = null;
-            return now - start;
+            _pendingSample = -1;
+            if (SampleComplete) CloseSampleWindow();
+        }
+
+        private void CloseSampleWindow()
+        {
+            if (_sampleClosed || !_sampleStarted) return;
+            _gc0Delta = GC.CollectionCount(0) - _sampleGcStart;
+            _planGcRawAfter = GC.GetTotalMemory(false);
+            _sampleClosed = true;
         }
 
         // 预热结束：开测量窗（§5 法则 2 的 GC.GetTotalMemory 基线）、陈旧 tick 探针、渲染证据。
@@ -576,7 +609,7 @@ namespace Ac.Boot
         {
             if (_done) return;
             _done = true;
-            _planGcRawAfter = GC.GetTotalMemory(false);
+            CloseSampleWindow();
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
@@ -609,28 +642,37 @@ namespace Ac.Boot
             GapP95 = BenchJson.Quantile(_gapMs, 0.95);
             RenderP95 = ManualRender ? BenchJson.Quantile(_renderMs, 0.95) : -1.0;
 
-            GraphicsMeasured = _pixelCoverage != 0.0 && _drawCallsMax > 0;
+            GraphicsMeasured = _pixelCoverage > 0.0 && _drawCallsMax > 0;
             // 图形主口径：player 机制下引擎的渲染统计真的可用（引擎帧循环在渲染），优先用它；
             // editor 的 -batchmode 里这两个计数器恒 0（实测），于是回落到"提交了什么"的计数。
-            var useEngine = _engineDrawsMax > 0 && _engineTrianglesMax > 0;
+            var useEngine = _graphicsSamples == _measured && _graphicsMissing == 0 && _measured > 0;
             var graphicsExact = GraphicsMeasured && useEngine;
-            DrawCalls = GraphicsMeasured ? (useEngine ? _engineDrawsMax : _drawCallsMax) : -1;
-            Triangles = GraphicsMeasured ? (useEngine ? _engineTrianglesMax : _trianglesMax) : -1;
+            // Partial engine maxima remain evidence of an actual excess, but never prove coverage.
+            // Submitted counts stay in graphics.* diagnostics; never substitute them as measured values.
+            DrawCalls = _engineDrawsMax > 0 ? _engineDrawsMax : -1;
+            Triangles = _engineTrianglesMax > 0 ? _engineTrianglesMax : -1;
             Particles = GraphicsMeasured ? _particlesMax : -1;
             Materials = GraphicsMeasured ? _materialsLive : -1;
 
             var stageMissing = 0;
             for (var i = 0; i < FrameProfiler.StageCount; i++) if (!(_loop.Profiler.P95Ms(i) > 0f)) stageMissing += 1;
 
-            var overBudget = FrameP95 > FrameBudget.FrameP95BudgetMs || FrameP99 > FrameBudget.FrameP99BudgetMs
-                || (AllocMeasured && AllocPerFrame > FrameBudget.ManagedAllocBudgetBytes) || _gc0Delta > FrameBudget.Gc0DeltaBudget;
-            for (var i = 0; i < FrameProfiler.StageCount; i++) if (_loop.Profiler.P95Ms(i) > FrameBudget.StageBudgetMs[i]) overBudget = true;
-            if (DrawCalls > FrameBudget.DrawCallBudget || Triangles > FrameBudget.TriangleBudget
-                || Particles > FrameBudget.ParticleBudget || Materials > FrameBudget.MaterialBudget) overBudget = true;
-
-            Verdict = overBudget ? "FAIL"
-                : (graphicsExact && stageMissing == 0 && AllocMeasured) ? "PASS" : "UNVERIFIED";
-            ExitCode = Verdict == "PASS" ? 0 : 1;
+            var releaseRole = _options.EvidenceRole == "release";
+            var allocationRole = _options.EvidenceRole == "allocation";
+            var roleValid = _options.EvidenceRole == "full" || releaseRole || allocationRole;
+            var buildValid = (!releaseRole || !Debug.isDebugBuild) && (!allocationRole || Debug.isDebugBuild);
+            var overBudget = (!allocationRole && (FrameP95 > FrameBudget.FrameP95BudgetMs || FrameP99 > FrameBudget.FrameP99BudgetMs))
+                || (!releaseRole && AllocMeasured && AllocPerFrame > FrameBudget.ManagedAllocBudgetBytes)
+                || _gc0Delta > FrameBudget.Gc0DeltaBudget;
+            if (!releaseRole)
+                for (var i = 0; i < FrameProfiler.StageCount; i++)
+                    if (_loop.Profiler.P95Ms(i) > FrameBudget.StageBudgetMs[i]) overBudget = true;
+            if (!allocationRole && (DrawCalls > FrameBudget.DrawCallBudget || Triangles > FrameBudget.TriangleBudget
+                || Particles > FrameBudget.ParticleBudget || Materials > FrameBudget.MaterialBudget)) overBudget = true;
+            var measured = roleValid && buildValid && _measured == _options.Sample
+                && (allocationRole || graphicsExact) && (releaseRole || (stageMissing == 0 && AllocMeasured));
+            Verdict = overBudget ? "FAIL" : measured ? "PASS" : "UNVERIFIED";
+            ExitCode = Verdict == "PASS" ? 0 : Verdict == "FAIL" ? 1 : 2;
 
             var json = BuildJson(useEngine, stageMissing, overBudget, feedFirst, feedLast, gapFirst, gapLast, sample);
             BenchJson.WriteOut(_options.OutPath, json);
@@ -664,6 +706,14 @@ namespace Ac.Boot
             BenchJson.Meta(sb, "driver", BenchJson.Safe(delegate { return SystemInfo.graphicsDeviceVersion; }, "none"));
             BenchJson.Meta(sb, "unityVersion", Application.unityVersion);
             BenchJson.Meta(sb, "mechanism", Mechanism);
+            BenchJson.Meta(sb, "evidenceRole", _options.EvidenceRole);
+            BenchJson.Meta(sb, "buildKind", Debug.isDebugBuild ? "development" : "release");
+#if ENABLE_IL2CPP
+            BenchJson.Meta(sb, "scriptingBackend", "il2cpp");
+#else
+            BenchJson.Meta(sb, "scriptingBackend", "mono");
+#endif
+            BenchJson.Meta(sb, "allocationScope", "synthetic incoming packets + GameLoop.Frame, same engine frame; NOT whole engine frame");
             // 照实报 Screen：player 机制里它真的会是 1920x1080（窗口），-batchmode 里恒 640x480。
             BenchJson.Meta(sb, "resolution", Screen.width > 0 ? Screen.width + "x" + Screen.height : "headless");
             BenchJson.Meta(sb, "qualityTier", Batching.QualityTier.ToString(CultureInfo.InvariantCulture));
@@ -693,7 +743,7 @@ namespace Ac.Boot
                 : "frameP95Ms/frameP99Ms = 相邻两次 Update 起点之间的墙钟（含引擎本帧渲染与 present，VSync off、targetFrameRate -1）。"
                     + "phaseMs.workP95 = 合成来件 + GameLoop.Frame（客户端每帧做功），phaseMs.gapP95 = 帧时间减客户端做功（引擎渲染 + present + 余量）");
             BenchJson.Meta(sb, "verdictNote", Verdict == "PASS"
-                ? "plan-scene（mechanism=" + Mechanism + "）：图形/分配/分段全部实测且在预算内"
+                ? "Scoped evidence PASS: " + _options.EvidenceRole + "; full P0 requires paired release/development report"
                 : "plan-scene（mechanism=" + Mechanism + "）：非 PASS。overBudget=" + overBudget + " stageMissing=" + stageMissing
                     + " graphicsMeasured=" + GraphicsMeasured + " allocMeasured=" + AllocMeasured
                     + " pixelCoverage=" + _pixelCoverage.ToString("R", CultureInfo.InvariantCulture)
@@ -731,10 +781,10 @@ namespace Ac.Boot
             BenchJson.Meta(sb, 4, "frameP99Ms", "同上，ceil(0.99*n)-1");
             BenchJson.Meta(sb, 4, "managedAllocBytesPerFrame", (BenchAlloc.CounterAvailable
                     ? "engine-counter:Memory/" + BenchAlloc.MarkerName
-                    : "GC.GetTotalMemory(false) 逐帧窗口（本进程没有 profiler 计数器：release player 里 Memory/'GC Allocated In Frame' 不存在）")
+                    : "UNMEASURED: exact allocation counter absent")
                 + (ManualRender ? "，逐帧窗口 = 合成来件 + GameLoop.Frame + 手动 Camera.Render"
                     : "，逐帧窗口 = 合成来件 + GameLoop.Frame（窗口必须落在同一个引擎帧内；alloc.planWindow* 只是全窗净堆诊断，不证明引擎渲染零分配）"));
-            BenchJson.Meta(sb, 4, "gc0Delta", "GC.CollectionCount(0) 在同一批逐帧窗口里的差值之和");
+            BenchJson.Meta(sb, 4, "gc0Delta", "GC.CollectionCount(0): first sampled work through final completed render; screenshot and forced GC excluded");
             BenchJson.Meta(sb, 4, "drawCalls", useEngine
                 ? "引擎渲染统计（ProfilerCategory.Render/'Draw Calls Count'，逐帧取窗口内最大值）"
                 : "提交预算：PresentationLayer.SubmittedDraws（羊 Graphics.DrawMesh/DrawMeshInstanced 次数 + 启用队友模型 MeshRenderer 数）+ 场地 MeshRenderer 数（" + _arenaRenderers
@@ -767,7 +817,7 @@ namespace Ac.Boot
             BenchJson.Num(sb, 4, "unmeasurableWindows", _allocUnmeasurable);
             BenchJson.Meta(sb, 4, "source", BenchAlloc.CounterAvailable
                 ? "engine-counter:Memory/" + BenchAlloc.MarkerName
-                : "gc-heap:GC.GetTotalMemory(false) per-frame window");
+                : "unmeasured: exact counter absent");
             if (_allocReason != null) BenchJson.Meta(sb, 4, "unmeasurableReason", _allocReason);
             BenchJson.Num(sb, 4, "planWindowRawBytesPerFrame", PlanWindow(raw: true));
             BenchJson.Num(sb, 4, "planWindowRetainedBytesPerFrame", PlanWindow(raw: false));
@@ -782,6 +832,9 @@ namespace Ac.Boot
             BenchJson.Num(sb, 4, "submittedDrawsMax", _drawCallsMax - _arenaRenderers);
             BenchJson.Num(sb, 4, "submittedTrianglesMax", _trianglesMax - _arenaTriangles);
             BenchJson.Num(sb, 4, "engineDrawCallsMax", _engineDrawsMax);
+            BenchJson.Num(sb, 4, "completedSamples", _graphicsSamples);
+            BenchJson.Num(sb, 4, "missingSamples", _graphicsMissing);
+            BenchJson.Meta(sb, 4, "counterRead", "ProfilerRecorder.LastValue at following Update; positive draw+triangle per completed sampled frame");
             BenchJson.Num(sb, 4, "engineTrianglesMax", _engineTrianglesMax);
             BenchJson.Num(sb, 4, "drawnSheepMax", _drawnSheepMax);
             BenchJson.Num(sb, 4, "visibleSheepMax", _visibleSheepMax);
@@ -1030,7 +1083,7 @@ namespace Ac.Boot
             _ready = true;
             try
             {
-                _recorder = ProfilerRecorder.StartNew(ProfilerCategory.Memory, MarkerName, 1024, ProfilerRecorderOptions.SumAllSamplesInFrame);
+                _recorder = ProfilerRecorder.StartNew(ProfilerCategory.Memory, MarkerName, 1024, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame);
             }
             catch (Exception error)
             {

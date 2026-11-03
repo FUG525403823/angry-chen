@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // 素材与依赖门禁（v2）：仓库零外部素材（NFR-07）+ 双端依赖白名单。
 // 素材：按扩展名黑名单与二进制嗅探检查所有受版本控制的文件。
-// 依赖：v2 只允许自研代码与官方 SDK —— 不允许 v1 的 Node 工具链回归，不允许 C++/Unity 引入第三方包。
+// 依赖：自研与官方SDK；仅ADR-021登记的精确开发工具例外，发布另行审计。禁止Node工程与未知第三方包。
 import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyAdmission } from './codely-dependencies.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
@@ -48,7 +49,14 @@ function checkDependencies() {
   if (existsSync(manifest)) {
     const json = JSON.parse(readFileSync(manifest, 'utf8'));
     const deps = Object.keys(json.dependencies ?? {});
-    const rejected = deps.filter((dep) => !UNITY_ALLOWED.test(dep));
+    let admitted = new Set();
+    if (deps.some(dep => dep === 'cn.tuanjie.codely.bridge' || dep === 'cn.tuanjie.ai.generators')) {
+      try {
+        admitted = verifyAdmission(ROOT, json, JSON.parse(readFileSync(join(ROOT, 'client/Packages/packages-lock.json'), 'utf8')));
+        notes.push('开发工具精确准入：' + [...admitted].join(', ') + '；禁止进入player，发布须独立audit-release');
+      } catch (error) { fail('开发工具准入失败：' + error.message); }
+    }
+    const rejected = deps.filter((dep) => !UNITY_ALLOWED.test(dep) && !admitted.has(dep));
     for (const dep of rejected) {
       fail('client/Packages/manifest.json 含白名单外依赖：' + dep);
     }

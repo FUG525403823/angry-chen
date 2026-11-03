@@ -3,11 +3,20 @@ name: client engine acceptance
 on:
   workflow_dispatch:
 
+# Deliberately not pull_request: this runner has a licensed interactive engine.
+# Dispatch only reviewed main; never execute untrusted fork code on the host.
+permissions:
+  contents: read
+concurrency:
+  group: licensed-engine-p0
+  cancel-in-progress: false
+
 jobs:
   engine:
     name: licensed Windows engine (real execution)
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Windows, ac-unity-licensed]
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Require licensed engine installation
@@ -30,23 +39,16 @@ jobs:
       - name: Verify real UDP impairment proxy
         shell: powershell
         run: node ./client/tools/test-udp-impairment.mjs
-      - name: Run full engine selftests
+      - name: Execute serial real P0 engine, paired performance and finite network acceptance
         shell: powershell
-        run: ./client/tools/selftest.ps1
-      - name: Run actual PlayMode bootstrap smoke
+        run: ./tools/p0-ci-engine.ps1
+      - name: Prepare sanitized evidence copies (never publish raw runner logs)
+        if: always()
         shell: powershell
-        run: ./client/tools/playmode-smoke.ps1
-      - name: Build actual release player
-        shell: powershell
-        run: ./client/build.ps1 -Backend auto
-      - name: Run real player performance gate
-        shell: powershell
-        run: ./client/tools/frame-bench.ps1 -Mechanism player -Runs 3 -Out build/reports/engine/frame.json -OutDir build/reports/engine/frame-runs
+        run: ./tools/p0-ci-evidence-copy.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: client-engine-evidence
-          path: |
-            client/Logs/
-            build/reports/
+          path: build/ci-artifacts/p0-engine/
           if-no-files-found: error

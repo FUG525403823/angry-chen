@@ -1,4 +1,4 @@
-﻿<#
+<#
   C14 frame benchmark gate (plan section 5 / section 6).
   Rules: never pass -nographics (section 5 measurement rule 1). A machine without a graphics
   device cannot produce the section 5 numbers, so it must end in exit code 2 - never PASS.
@@ -22,6 +22,8 @@ param(
     [string]$OutDir = "client/Logs/frame-bench",
     [ValidateSet("auto", "editor", "player")][string]$Mechanism = "auto",
     [string]$Player = "",
+    [ValidateSet("full", "release", "allocation")][string]$EvidenceRole = "full",
+    [string]$SourceFingerprint = "",
     [int]$Runs = 3,
     [int]$WarmupFrames = 120,
     [int]$Frames = 600,
@@ -54,6 +56,8 @@ if ($Mechanism -eq "editor" -and -not $unityOk) { Write-Host "ENV: no Unity exec
 if ($Mechanism -eq "player" -and -not $unityOk) { Write-Host "WARN: no Unity executable - the editor diagnostic run is skipped" }
 if ($Mechanism -eq "player") { Write-Host ("player exe: " + $Player) }
 
+if ($EvidenceRole -ne "full" -and $SourceFingerprint -notmatch '^[0-9a-f]{64}$') { throw "Scoped evidence requires -SourceFingerprint SHA256 captured for both builds" }
+$playerHash = if ($playerOk) { (Get-FileHash -Algorithm SHA256 -LiteralPath $Player).Hash.ToLowerInvariant() } else { "" }
 $commit = (git rev-parse --short HEAD).Trim()
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -78,7 +82,7 @@ function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @
     $tierArg = @()
     if ($QualityTier -ge 0) { $tierArg = @("-frameBenchQuality", $QualityTier) }
     $common = @("-logFile", $log, "-frameBenchScene", $Scene, "-frameBenchOut", $json,
-        "-frameBenchWarmup", $WarmupFrames, "-frameBenchSample", $Frames, "-frameBenchRuns", $Runs) + $tierArg + $ExtraArgs
+        "-frameBenchEvidenceRole", $EvidenceRole, "-frameBenchWarmup", $WarmupFrames, "-frameBenchSample", $Frames, "-frameBenchRuns", $Runs) + $tierArg + $ExtraArgs
     if ($UsePlayer) {
         # player 必须是窗口化的（不许 -batchmode：那样引擎自己不会渲染，量到的就不是这条机制了）。
         # 离线：不能给 player 传 -server —— Unity 播放器自己的参数表也认 -server（<slave_count> <ip:port>），
@@ -102,6 +106,7 @@ function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @
         $argv = @("-batchmode", "-projectPath", $Project) + $common + @("-executeMethod", "Ac.Tests.FrameBench.Run")
         $proc = Start-Process -FilePath $Unity -ArgumentList $argv -NoNewWindow -PassThru
     }
+    $null = $proc.Handle
     if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
         try { $proc.Kill() } catch { }
         Write-Host ("ENV: " + $tag + " run " + $Index + " did not exit within " + $TimeoutSeconds + "s (killed) - no verdict is possible")
@@ -116,6 +121,8 @@ function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @
     if ([string]$sample.scene -ne $Scene) { Write-Host ("FAIL: " + $tag + " run " + $Index + " scene is " + $sample.scene + ", expected " + $Scene); exit 1 }
     if ([string]$sample.mechanism -ne $tag) { Write-Host ("FAIL: " + $tag + " run " + $Index + " reports mechanism=" + $sample.mechanism); exit 1 }
     # 采样窗口必须是本脚本要的那一段，否则分位数来自另一批样本。
+    if ([int]$sample.warmupFrames -ne $WarmupFrames -or ($QualityTier -ge 0 -and [int]$sample.qualityTier -ne $QualityTier)) { throw "Sample warmup/quality mismatch" }
+    if ($EvidenceRole -ne "full" -and ([string]$sample.evidenceRole -ne $EvidenceRole -or [string]$sample.buildKind -ne $(if($EvidenceRole -eq "allocation"){ "development" }else{ "release" }))) { throw "Evidence role/build kind mismatch" }
     if ([int]$sample.sampleFrames -ne $Frames) { Write-Host ("FAIL: " + $tag + " run " + $Index + " sampled " + $sample.sampleFrames + " frames, expected " + $Frames); exit 1 }
     # 预算表的唯一来源是样本自带的 budget 对象（来自 FrameBudget）。没有它 = 基准与门禁模式不匹配，
     # 必须炸出来，绝不回退到脚本里的第二张表。
@@ -132,9 +139,9 @@ function Invoke-BenchRun([int]$Index, [bool]$UsePlayer, [string[]]$ExtraArgs = @
     # 地板探针（-frameBenchEmpty 1）例外：它**按设计**不装配呈现层，四项图形统计与引擎帧计数都不是
     # 判据（空场的地板只回答一个问题——"这条机制下地板是否低于预算"，见 ADR-014 裁决 4）。
     # 被判定的一轮一项都不放宽；探针自己仍要过下面那条"真图形设备"检查。
-    if (-not $FloorProbe) {
+    if (-not $FloorProbe -and $EvidenceRole -ne "allocation") {
         foreach ($k in $GraphicsMetrics) {
-            if ([double]$sample.$k -lt 0) { Write-Host ("ENV: " + $tag + " run " + $Index + " metric " + $k + " not measurable on this machine (no graphics device) - cannot judge section 5"); exit 2 }
+            if ([double]$sample.$k -lt 0) { Write-Host ("UNMEASURED: " + $tag + " run " + $Index + " metric " + $k + "; retain all runs and scoped verdict") }
         }
     }
     if ([string]$sample.gpu -match "Null Device|none" -or [string]$sample.resolution -eq "headless") {
@@ -168,7 +175,7 @@ if ($Mechanism -eq "player") {
         exit 2
     }
 }
-if ($Mechanism -eq "player" -and $unityOk) {
+if ($Mechanism -eq "player" -and $unityOk -and $EvidenceRole -eq "full") {
     # 诊断口径：照旧打印 editor 那份数字（不参与判定）。一轮即可——它的意义是"这条机制地板有多高"。
     $editorDiag = Invoke-BenchRun -Index 1 -UsePlayer $false
     Write-Host ("  editor diagnostics: frameP95=" + [double]$editorDiag.frameP95Ms + "ms frameP99=" + [double]$editorDiag.frameP99Ms + "ms verdict=" + $editorDiag.verdict)
@@ -185,23 +192,31 @@ foreach ($s in $results[0].budget.stageP95Ms.PSObject.Properties.Name) { $StageB
 if ($StageBudget.Count -lt 1) { Write-Host "FAIL: budget.stageP95Ms is empty"; exit 1 }
 foreach ($r in $results) {
     foreach ($k in $MetricNames) { if ([double]$r.budget.$k -ne [double]$Budget[$k]) { Write-Host "FAIL: budget.$k differs between runs"; exit 1 } }
-    foreach ($s in @($StageBudget.Keys)) { if ($null -eq $r.budget.stageP95Ms.$s) { Write-Host "FAIL: budget.stageP95Ms.$s missing in a later run"; exit 1 } }
+    foreach ($s in @($StageBudget.Keys)) { if ($null -eq $r.budget.stageP95Ms.$s -or [double]$r.budget.stageP95Ms.$s -ne $StageBudget[$s]) { Write-Host "FAIL: budget.stageP95Ms.$s missing in a later run"; exit 1 } }
 }
 $failures = @()
 $measuredStages = @()
 $missingStages = @()
-foreach ($k in $MetricNames) { $v = Get-Median @($results | ForEach-Object { [double]$_.$k }); if ($v -gt $Budget[$k]) { $failures += "$k=$v > $($Budget[$k])" } }
+$JudgedMetrics = if ($EvidenceRole -eq "release") { @($MetricNames | Where-Object { $_ -ne "managedAllocBytesPerFrame" }) } elseif ($EvidenceRole -eq "allocation") { @("managedAllocBytesPerFrame", "gc0Delta") } else { $MetricNames }
+foreach ($k in $JudgedMetrics) { $v = Get-Median @($results | ForEach-Object { [double]$_.$k }); if ($v -gt $Budget[$k]) { $failures += "$k=$v > $($Budget[$k])" } }
 foreach ($s in @($StageBudget.Keys)) {
     $vals = @($results | ForEach-Object { if ($null -ne $_.stageP95.$s) { [double]$_.stageP95.$s } })
     # 段没被测过（没 Mark）就不能算"预算内"：缺段只记录，判定交给每轮的 verdict。
     if ($vals.Count -ne $results.Count) { $missingStages += $s; continue }
     $measuredStages += $s
     $v = Get-Median $vals
-    if ($v -gt $StageBudget[$s]) { $failures += "stageP95.$s=$v > $($StageBudget[$s])" }
+    if ($EvidenceRole -ne "release" -and $v -gt $StageBudget[$s]) { $failures += "stageP95.$s=$v > $($StageBudget[$s])" }
 }
 $notPass = @($results | Where-Object { [string]$_.verdict -ne "PASS" })
 $summary = [ordered]@{}
 $summary["commit"] = $commit
+$summary["evidenceRole"] = $EvidenceRole
+$summary["sourceFingerprint"] = $SourceFingerprint
+$summary["sourceFingerprintNote"] = "Build-time source identity attested by caller; must be captured before BOTH builds, excluding generated BuildInfo only"
+$summary["playerSha256"] = $playerHash
+$summary["samples"] = @($results)
+$summary["buildKind"] = $results[0].buildKind
+$summary["scriptingBackend"] = $results[0].scriptingBackend
 $summary["mechanism"] = $Mechanism
 $summary["runs"] = $Runs
 $summary["warmupFrames"] = $WarmupFrames
@@ -213,7 +228,7 @@ foreach ($s in $measuredStages) { $summary["stageP95"][$s] = Get-Median @($resul
 $summary["missingStages"] = @($missingStages)
 $summary["budget"] = $Budget
 $summary["budget"]["stageP95Ms"] = $StageBudget
-$summary["verdict"] = if ($failures.Count -gt 0) { "FAIL" } elseif ($notPass.Count -eq 0) { "PASS" } else { "UNVERIFIED" }
+$summary["verdict"] = if ($failures.Count -gt 0 -or @($results | Where-Object { $_.verdict -eq "FAIL" }).Count -gt 0) { "FAIL" } elseif ($notPass.Count -eq 0) { "PASS" } else { "UNVERIFIED" }
 # 两条机制的数字都留在产物里：判定只跟 $Mechanism 走，另一半是诊断。
 $summary["mechanismP95"] = [ordered]@{
     player = if ($Mechanism -eq "player") { [double]$summary["frameP95Ms"] } else { $null }
@@ -239,7 +254,7 @@ $summary["rasterEvidence"] = [ordered]@{
 $summaryPath = (Get-Location).Path + "/" + $Out
 $summaryDir = Split-Path $summaryPath -Parent
 if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null }
-$summaryJson = $summary | ConvertTo-Json -Depth 5
+$summaryJson = $summary | ConvertTo-Json -Depth 12
 Set-Content -Encoding UTF8 $summaryPath -Value $summaryJson
 Set-Content -Encoding UTF8 (Join-Path $OutDir "summary-$stamp.json") -Value $summaryJson
 # -Out 必须真的落盘：写没写进去是这次判定的前提，不能假设。

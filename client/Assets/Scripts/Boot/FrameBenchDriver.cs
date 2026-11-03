@@ -27,6 +27,7 @@ namespace Ac.Boot
                 return;
             }
             // 测量窗外：引擎刚渲完最后一帧，拿窗口截图当"真的有画面"的证据（不计入任何帧时间样本）。
+            _bench.CompleteRenderedSample();
             CaptureScreenEvidence();
             AddRenderExtras();
             _bench.Finish();
