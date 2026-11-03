@@ -71,7 +71,12 @@ def main():
             (RUNNER / name).unlink(missing_ok=True)
         print("OWNED RUNNER REMOVED " + state["name"])
         return
-    if STATE.exists() or (RUNNER / ".runner").exists():
+    if STATE.exists():
+        previous = json.loads(STATE.read_text())
+        if not previous.get("removed"):
+            raise RuntimeError("Owned state still registered; inspect status/remove before preparing")
+        STATE.replace(RUNNER / ("p0-registration-removed-" + previous["name"] + ".json"))
+    if (RUNNER / ".runner").exists():
         raise RuntimeError("Runner directory already registered; inspect status, do not overwrite")
     downloads = request(token, prefix + "/runners/downloads")
     package = next(p for p in downloads if p["os"] == "win" and p["architecture"] == "x64")
@@ -79,7 +84,9 @@ def main():
         raise RuntimeError("Official runner package lacks checksum; refusing unverified executable")
     RUNNER.mkdir(parents=True, exist_ok=True)
     archive = RUNNER / package["filename"]
-    urllib.request.urlretrieve(package["download_url"], archive)
+    if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest().lower() != package["sha256_checksum"].lower():
+        with urllib.request.urlopen(package["download_url"], timeout=120) as response:
+            archive.write_bytes(response.read())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     if digest.lower() != package["sha256_checksum"].lower():
         raise RuntimeError("Official runner package checksum mismatch")
