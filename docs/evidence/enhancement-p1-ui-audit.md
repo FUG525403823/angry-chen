@@ -33,7 +33,7 @@
 
 本机 `build/reports/p1/ui-720-3dda8cb/` 保留14张Win32 PrintWindow(flags3)原图与capture-manifest/pixel-check；按明确exe路径匹配进程，不抓取无关窗口。捕获器GetClientRect及生成位图均为1024×576，而非请求1280×720；尚未区分DPI虚拟化、系统缩放或引擎尺寸差异，不能称720p证据。图像像素非纯色只排除全黑/单色，不能证明中文完整或渲染正确。当前模型不支持图像输入，read_image明确失败，未审阅、不填写视觉通过；5秒间隔且无阶段锁定也不保证捕获到了奖励窗口。原图未上传源码。
 
-下一次应先用DPI-aware测量并关联引擎Screen.width/height、OS缩放及窗口client像素，确认尺寸后再按下面矩阵采集；不把放大已有PNG当真实高分辨率验证。
+DPI-aware对照已进行：新起干净3dda8cb player请求1920×1080，同一个HWND在旧线程context下GetClientRect为1536×864，切换PerMonitorV2(-4)后为1920×1080，GetDpiForWindow=120（125%）。该同窗对照明确证明捕获器存在DPI逻辑坐标虚拟化；首次1024×576恰为1280×720的80%，但没有对首次旧窗做同窗复测，因此保留旧图不追认720p。新本机 `build/reports/p1/ui-1080-dpi-aware-3dda8cb/` 14张原图均1920×1080且非单色，另node2目录保留后续时间窗捕获；PrintWindow返回true仍不是内容正确性证明。此次测到OS物理client尺寸，未新增引擎Screen.width/height遥测；不能将其当内部渲染分辨率、字体清晰度或人工视觉验收。图像仍未审阅，不把放大旧PNG当高分辨率证据。
 
 ## 最小下一步证据方案（尚未全部执行）
 
