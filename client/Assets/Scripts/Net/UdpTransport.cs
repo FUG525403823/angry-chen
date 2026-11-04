@@ -152,6 +152,7 @@ namespace Ac.Net
         private ushort _fragIdCounter;
         private uint _lastKeepAliveMsgId;
         private double _lastKeepAliveSentMs = -1.0;
+        private ushort _expeditionSession;
 
         public UdpTransport(IDatagramSocket socket)
             : this(socket, null)
@@ -399,6 +400,12 @@ namespace Ac.Net
                 channel.NoteReceived(header.MsgId);
             }
 
+            if (header.Type == PacketType.ExpeditionState && header.Session == _session.Session)
+            {
+                ExpeditionStatePayload state;
+                if (ExpeditionCodec.DecodeState(payload, out state) == DecodeFailure.Ok)
+                    _expeditionSession = state.Mode == 1 ? header.Session : (ushort)0;
+            }
             _session.OnPacket(header.Session, now);
 
             switch (header.Type)
@@ -595,11 +602,26 @@ namespace Ac.Net
 
         private void OnStateChanged(ConnectionState previous, ConnectionState next)
         {
+            if (next == ConnectionState.Connected &&
+                (previous == ConnectionState.Zombie || previous == ConnectionState.Reconnecting) &&
+                _expeditionSession != 0 && _expeditionSession == _session.Session)
+            {
+                // Same-session expedition recovery supersedes old movement, not reliable actions.
+                foreach (var pair in _channels) pair.Value.RetirePacketType(PacketType.Command);
+                var queued = _backlog.Count;
+                for (var i = 0; i < queued; i++)
+                {
+                    var bytes = _backlog.Dequeue();
+                    if (bytes.Length >= 2 && bytes[1] == (byte)PacketType.Command) _backlogBytes -= bytes.Length;
+                    else _backlog.Enqueue(bytes);
+                }
+            }
             if (next != ConnectionState.Connected) _reassembler.Reset();   // 半截分片组一律作废
             if (next == ConnectionState.Connecting || next == ConnectionState.Disconnected)
             {
                 // 会话结束（或另起一次握手）才丢在途消息；Reconnecting 期间保留重传表，
                 // Resume 恢复的是同一个会话，msgId 继续单调，回来之后照旧重传。
+                _expeditionSession = 0;
                 foreach (var pair in _channels) pair.Value.DropOutstanding();
             }
             var handler = StateChanged;

@@ -19,6 +19,87 @@ namespace Ac.Tests
             SelfTest.Add("expedition.ui_modal_zero_and_release", ModalZeroAndRelease);
             SelfTest.Add("expedition.sampler_interact_reload_fire_remains_held", InteractReloadFireRemainsHeld);
             SelfTest.Add("expedition.loop_state14_restores_authority", LoopStateRestoresAuthority);
+            SelfTest.Add("expedition.acceptance_tool_phase_race_is_narrow", ToolPhaseRaceIsNarrow);
+            SelfTest.Add("expedition.sampler_number_keys_select_rifle_shotgun", NumberKeysSelectRifleShotgun);
+            SelfTest.Add("expedition.acceptance_refill_tracks_visible_pickup", RefillTargetTracksVisiblePickup);
+            SelfTest.Add("expedition.acceptance_combat_point_stays_in_purifier", CombatPointAvoidsVisibleThreatInsidePurifier);
+        }
+
+        private static void CombatPointAvoidsVisibleThreatInsidePurifier()
+        {
+            var view = new SnapshotView();
+            var local = new FrameEntity { Id = 1, XCm = 1200 };
+            view.ApplyFrame(new SnapshotFrame { Tick = 1, Entities = new[] { local,
+                new FrameEntity { Id = 2, KindFlags = 1, XCm = 1400, HpRatioUnits = 255 },
+                new FrameEntity { Id = 3, KindFlags = 1, XCm = 700, HpRatioUnits = 0 },
+                new FrameEntity { Id = 4, KindFlags = 3, XCm = 700 } },
+                EntityCount = 4, RemovedIds = new ushort[0] });
+            double x, z;
+            ExpeditionAcceptance.SelectCombatPoint(view, local, out x, out z);
+            var radiusSquared = (x - 12) * (x - 12) + z * z;
+            var threatSquared = (x - 14) * (x - 14) + z * z;
+            SelfTest.True(radiusSquared <= 25.00001 && threatSquared > 4,
+                "visible living threat leads to a safer point within purifier", x + "," + z);
+            ExpeditionAcceptance.SelectCombatPoint(new SnapshotView(), local, out x, out z);
+            SelfTest.True(x == 12 && z == 0, "no visible threats retains nominal objective point", x + "," + z);
+        }
+
+        private static void RefillTargetTracksVisiblePickup()
+        {
+            var view = new SnapshotView();
+            var local = new FrameEntity { Id = 1, XCm = 1050, ZCm = 979 };
+            view.ApplyFrame(new SnapshotFrame { Tick = 1, Entities = new[] {
+                local, new FrameEntity { Id = 5, KindFlags = 3, XCm = 871, ZCm = 836 },
+                new FrameEntity { Id = 6, KindFlags = 3, XCm = -1000, ZCm = -1000 },
+                new FrameEntity { Id = 7, KindFlags = 1, XCm = 1040, ZCm = 978 } },
+                EntityCount = 4, RemovedIds = new ushort[0] });
+            double x, z;
+            var id = ExpeditionAcceptance.SelectRefillTarget(view, local, out x, out z);
+            SelfTest.True(id == 5 && x == 8.71 && z == 8.36,
+                "refill follows nearest visible pickup, not nearby sheep or nominal spawn", id.ToString());
+            var oldDistance = System.Math.Sqrt((10.5 - 8.71) * (10.5 - 8.71) + (9.79 - 8.36) * (9.79 - 8.36));
+            SelfTest.True(oldDistance > 1.8 && x != 10 && z != 10,
+                "nominal stopping point leaves drifted crate outside production range", oldDistance.ToString());
+            id = ExpeditionAcceptance.SelectRefillTarget(new SnapshotView(), local, out x, out z);
+            SelfTest.True(id == 0 && x == 10 && z == 10, "unknown visibility uses nominal fallback", id.ToString());
+        }
+
+        private static void NumberKeysSelectRifleShotgun()
+        {
+            for (var slot = 1; slot <= 2; slot++)
+            {
+                var sampler = new InputSampler();
+                var key = slot == 1 ? KeyCode.Alpha2 : KeyCode.Alpha3;
+                sampler.SetKey(key, true);
+                sampler.Update(34);
+                InputIntent intent;
+                SelfTest.True(sampler.TryTakeCommand(out intent)
+                    && (intent.Buttons & InputSampler.ButtonSwitchWeapon) != 0 && intent.SwitchTo == slot,
+                    "number key produces normal weapon switch intent", slot.ToString());
+                sampler.SetKey(key, false); sampler.Update(34);
+                while (sampler.TryTakeCommand(out intent)) { }
+                sampler.SetKey(key, true); sampler.Update(34);
+                SelfTest.True(sampler.TryTakeCommand(out intent)
+                    && (intent.Buttons & InputSampler.ButtonSwitchWeapon) != 0 && intent.SwitchTo == slot,
+                    "released number key permits a retry press", slot.ToString());
+            }
+        }
+
+        private static void ToolPhaseRaceIsNarrow()
+        {
+            // Reflection keeps the diagnostic-only decision internal to Boot, not a gameplay API.
+            var predicate = typeof(ExpeditionAcceptance).GetMethod("IsToolPhaseRace",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            SelfTest.True(predicate != null, "acceptance phase-race classifier exists", "missing");
+            for (byte op = 1; op <= 7; op++)
+                for (byte result = 0; result <= 9; result++)
+                    for (byte stage = 0; stage <= 3; stage++)
+                    {
+                        var actual = (bool)predicate.Invoke(null, new object[] { op, result, stage });
+                        var expected = op == 5 && result == 4 && (stage == 1 || stage == 3);
+                        SelfTest.True(actual == expected, "only tool wrongPhase at reward/end is recoverable",
+                            op + ":" + result + ":" + stage);
+                    }
         }
 
         private static void PendingMatchesExactReceipt()

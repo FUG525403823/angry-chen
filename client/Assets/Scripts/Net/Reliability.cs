@@ -147,6 +147,16 @@ namespace Ac.Net
             return resent;
         }
 
+        // Retire superseded inputs without acknowledging durable actions or resetting msgIds.
+        public void RetirePacketType(PacketType type)
+        {
+            for (var i = _outstanding.Count - 1; i >= 0; i--)
+            {
+                var bytes = _outstanding[i].Datagram;
+                if (bytes.Length >= 2 && bytes[1] == (byte)type) _outstanding.RemoveAt(i);
+            }
+        }
+
         // 重连时只丢未确认表：msgId 继续单调（对端仍按旧窗口去重），已发出的旧消息不再重试。
         public void DropOutstanding()
         {

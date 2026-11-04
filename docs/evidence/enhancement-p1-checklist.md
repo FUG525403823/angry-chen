@@ -38,7 +38,9 @@
 - 首2人损伤轮与带诊断复轮均全倒地FAIL，后者合法解码后BaselineMismatch为864/818，而坏包/解码/分片错误为0；实际证明delta链断问题，不把恢复身份等同完整成功。本机目录 `build/reports/p1/players/20261104T021111222Z-5c9bb02c`。无损对照约380s、20Hz快照、两节点后server退出，真实exit=-1073741510（0xC000013A），不称访问违例崩溃或通关；来源未证实，进程记录保留。
 - 真实UDP stale恢复与P1有界600ms时效窗口红→绿，MSVC完整 **602/602，exit0**（本机 `build/reports/p1/76-window-tests.log`）；Classic仍2tick、future拒收、rewind仍200ms。修后真实2人损伤轮到第三节点progress112050ms后全倒地FAIL，hunter217击杀/24工具、稳定恢复478秒，中断0，不能据推进改善宣称完整成功（本机cb868865）。干净暂存源码release构建/依赖门exit0后4人损伤轮亦在第二节点全倒地FAIL，身份恢复true、稳定240秒（本机9c0509a6）。奖励恢复单独2人轮首次窗口恢复true且稳定，但后续request-rejected:4，整轮FAIL且recoveryInterruptions=6（本机b2cf2e71）。三个目录均在 `build/reports/p1/players/`，不随源码发布。
 - 冻结0948投影原硬预算三轮配对回归PASS，见[性能checkpoint](enhancement-p1-performance-checkpoint.md)。不证明远征奖励Canvas及最终修复产物性能，不能据此标包5通过。
-- 2/4人完整成功、奖励窗口恢复、P1 HUD截图视觉审阅、最终产物性能、最终交付与人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
+- 新带箱位/按键诊断的真实2人delay50/loss5/乱序重复/5秒断流 **完整三节点PASS，exit0**，本机1526baa7：hunter249击杀/485触发，breach205击杀/75触发，两端3选卡/27工具、身份保持、恢复后532秒中断0；humanFunVerified=false。产品与上轮相同，新增仅trace，不删除之前失败；不足以证明随机难度始终可通。
+- 后续4人损伤轮92a37721第三节点56250ms后全倒地FAIL；27655f98亦第二节点全倒地FAIL。奖励恢复f404cb3c首窗口恢复true，但后续中断9、第三节点全倒地FAIL。合法tool跨phase拒绝造成的driver整轮退出已独立边界测试修复，引擎290/290，不削弱服务端拒绝及整轮成功门。
+- 4人完整成功、奖励窗口完整恢复、P1 HUD截图视觉审阅、最终产物性能、最终交付与人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
 
 ## 执行与证据纪律
 

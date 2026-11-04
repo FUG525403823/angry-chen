@@ -24,6 +24,7 @@ namespace Ac.Tests
             SelfTest.Add("net.join_wire", ChecksJoinOnWire);
             SelfTest.Add("net.disconnect_reason", ChecksDisconnectReason);
             SelfTest.Add("net.auto_reconnect", ChecksAutoReconnect);
+            SelfTest.Add("net.blackout_resume_does_not_reenter_zombie_for_old_commands", ChecksBlackoutResumeOldCommands);
         }
 
         // 断线自动重连（产品路径）：Disconnected 不再是终点。没有它，任何一次会话释放都会把客户端永久
@@ -60,6 +61,183 @@ namespace Ac.Tests
             machine.OnDisconnect(DisconnectReason.ServerShutdown, now + 3000.0);
             machine.Tick(now + 20000.0);
             SelfTest.Equal((long)ConnectionState.Disconnected, (long)machine.State);   // 开关关着就不重连
+        }
+
+        private static void ChecksBlackoutResumeOldCommands()
+        {
+            CheckBlackoutResumeOldCommands(true, false);
+            CheckBlackoutResumeOldCommands(true, true);
+            CheckBlackoutResumeOldCommands(false, true);
+            CheckBlackoutResumeOldCommands(false, true, true);
+            CheckBlackoutResumeOldCommands(false, true, true, true);
+            ChecksRecoveryPreservesActionsAndNewFailures();
+        }
+
+        private static void CheckBlackoutResumeOldCommands(bool expedition, bool receiptFallback, bool switchFromExpedition = false, bool newSession = false)
+        {
+            var link = new MemoryLink();
+            var clock = new Clock();
+            var client = new UdpTransport(link.Create(1), clock.Now);
+            var peer = link.Create(2);
+            client.Connect("mem", 0);
+            // Start through the public handshake seam, then use a minimal peer which
+            // acknowledges every packet it actually receives, including Resume.
+            client.Machine.OnHelloAck(7, 100, 123, clock.NowMs);
+            var modeHeader = MakeHeader(PacketType.ExpeditionState, 7);
+            modeHeader.MsgId = 1;
+            if (switchFromExpedition)
+            {
+                var first = ExpeditionCodec.EncodeState(new ExpeditionStatePayload { Mode = 1 });
+                modeHeader.MsgId = 1;
+                link.Transmit(2, PacketWriter.Build(modeHeader, first, 0, first.Length));
+                link.Pump(); client.Poll(64);
+                modeHeader.MsgId = 2;
+                if (newSession)
+                {
+                    client.Machine.OnDisconnect(DisconnectReason.ServerShutdown, clock.NowMs);
+                    client.Connect("mem", 0);
+                    client.Machine.OnHelloAck(7, 100, 123, clock.NowMs);
+                }
+            }
+            var mode = ExpeditionCodec.EncodeState(new ExpeditionStatePayload { Mode = expedition ? (byte)1 : (byte)0 });
+            if (!newSession) link.Transmit(2, PacketWriter.Build(modeHeader, mode, 0, mode.Length));
+            link.Pump();
+            client.Poll(64);
+            var receive = new ReliabilityChannel();
+            var scratch = new byte[4096];
+            uint nextDown = switchFromExpedition ? 3u : 2u;
+            var recovered = false;
+            var zombiesAfterRecovery = 0;
+            var resumes = 0;
+            client.StateChanged += delegate(ConnectionState before, ConnectionState after)
+            {
+                if (recovered && after == ConnectionState.Zombie) zombiesAfterRecovery++;
+            };
+            var nextCommand = 0.0;
+            for (var step = 1; step <= 550; step++)
+            {
+                clock.Advance(20.0);
+                link.NowMs = clock.NowMs;
+                // Five seconds of genuine bidirectional loss; app continues its 30Hz
+                // command attempts, but Send still respects the connection state.
+                link.LossRate = clock.NowMs >= 1000.0 && clock.NowMs < 6000.0 ? 1.0 : 0.0;
+                if (clock.NowMs >= nextCommand)
+                {
+                    client.Send(PacketType.Command, new byte[0]);
+                    nextCommand += 1000.0 / 30.0;
+                }
+                client.Poll(64);
+                link.Pump();
+                while (peer.HasDatagram)
+                {
+                    var count = peer.Receive(scratch);
+                    var datagram = new byte[count];
+                    Array.Copy(scratch, datagram, count);
+                    var reader = new PacketReader(datagram);
+                    PacketHeader header;
+                    if (PacketHeader.Read(reader, out header) != DecodeFailure.Ok || !header.IsReliable) continue;
+                    receive.NoteReceived(header.MsgId);
+                    if (header.Type == PacketType.Resume) resumes++;
+                    var reply = MakeHeader(PacketType.KeepAlive, 7);
+                    reply.MsgId = nextDown++;
+                    var oldReceipt = receiptFallback && receive.AckBase > header.MsgId && receive.AckBase - header.MsgId > 32;
+                    reply.AckBase = oldReceipt ? header.MsgId : receive.AckBase;
+                    reply.AckBits = oldReceipt ? 0u : receive.AckBits;
+                    var bytes = PacketWriter.Build(reply, new byte[0], 0, 0);
+                    peer.Send(bytes, bytes.Length);
+                    if (header.Type == PacketType.Resume)
+                    {
+                        var full = MakeHeader(PacketType.Snapshot, 7);
+                        var snapshot = PacketWriter.Build(full, new byte[8], 0, 8);
+                        peer.Send(snapshot, snapshot.Length);
+                    }
+                }
+                link.Pump();
+                client.Poll(64);
+                if (!recovered && clock.NowMs >= 6000.0 && resumes > 0 && client.State == ConnectionState.Connected)
+                    recovered = true;
+            }
+            SelfTest.True(link.Dropped > 0 && resumes > 0 && recovered,
+                "blackout and successful same-session Resume must occur", "recovery precondition missing");
+            SelfTest.Equal(1, client.Machine.ReceiveTimeouts);
+            if (expedition) SelfTest.Equal(0, zombiesAfterRecovery);
+            else SelfTest.True(zombiesAfterRecovery > 0, "Classic retains old reliable failure semantics", "no old failure");
+            client.Close();
+        }
+
+        private static void ChecksRecoveryPreservesActionsAndNewFailures()
+        {
+            foreach (var type in new[] { PacketType.Command, PacketType.ExpeditionRequest })
+            {
+                var link = new MemoryLink();
+                var clock = new Clock();
+                var client = new UdpTransport(link.Create(1), clock.Now);
+                link.Create(2);
+                client.Connect("mem", 0);
+                client.Machine.OnHelloAck(7, 100, 123, 0);
+                var mode = ExpeditionCodec.EncodeState(new ExpeditionStatePayload { Mode = 1 });
+                var header = MakeHeader(PacketType.ExpeditionState, 7);
+                header.MsgId = 1;
+                link.Transmit(2, PacketWriter.Build(header, mode, 0, mode.Length));
+                link.Pump(); client.Poll(64);
+                var action = ExpeditionCodec.EncodeRequest(new ExpeditionRequest { RequestId = 1, Op = 1 });
+                SelfTest.True(client.Send(PacketType.ExpeditionRequest, action), "durable request accepted", "not sent");
+                // A receive timeout enters grace through the public machine. Same-session
+                // authority restores connectivity but is not a receipt for that request.
+                clock.Advance(3100); client.Poll(64);
+                header.MsgId = 2;
+                link.Transmit(2, PacketWriter.Build(header, mode, 0, mode.Length));
+                link.Pump(); client.Poll(64);
+                SelfTest.Equal((long)ConnectionState.Connected, (long)client.State);
+                var requestId = 0u;
+                foreach (var bytes in link.Wire)
+                {
+                    PacketHeader seen;
+                    if (PacketHeader.Read(new PacketReader(bytes), out seen) == DecodeFailure.Ok && seen.Type == PacketType.ExpeditionRequest)
+                    {
+                        if (requestId == 0) requestId = seen.MsgId;
+                        SelfTest.Equal(requestId, seen.MsgId);
+                    }
+                }
+                if (type == PacketType.Command)
+                {
+                    // Receipt the preserved action, then send fresh movement after recovery.
+                    header.MsgId = 3; header.AckBase = requestId;
+                    link.Transmit(2, PacketWriter.Build(header, mode, 0, mode.Length));
+                    link.Pump(); client.Poll(64);
+                    SelfTest.True(client.Send(PacketType.Command, new byte[0]), "new input accepted", "not sent");
+                }
+                var exhausted = client.Machine.RetransmitExhaustions;
+                var genuineZombies = 0;
+                client.StateChanged += delegate(ConnectionState before, ConnectionState after)
+                {
+                    if (after == ConnectionState.Zombie) genuineZombies++;
+                };
+                for (var i = 0; i < 210; i++)
+                {
+                    clock.Advance(20); link.NowMs = clock.NowMs;
+                    if (i % 25 == 0)
+                    {
+                        header.MsgId += 1;
+                        header.AckBase = type == PacketType.Command ? requestId : 0u;
+                        link.Transmit(2, PacketWriter.Build(header, mode, 0, mode.Length)); link.Pump();
+                    }
+                    client.Poll(64);
+                }
+                SelfTest.True(client.Machine.RetransmitExhaustions > exhausted,
+                    "new movement and preserved actions still fail on genuine delivery exhaustion", type.ToString());
+                SelfTest.True(genuineZombies > 0, "true reliable failure still enters Zombie", type.ToString());
+                var requestTransmits = 0;
+                foreach (var bytes in link.Wire)
+                {
+                    PacketHeader seen;
+                    if (PacketHeader.Read(new PacketReader(bytes), out seen) != DecodeFailure.Ok || seen.Type != PacketType.ExpeditionRequest) continue;
+                    SelfTest.Equal(requestId, seen.MsgId);
+                    requestTransmits++;
+                }
+                SelfTest.True(requestTransmits > 1, "durable request actually retransmits with original msgId", requestTransmits.ToString());
+                client.Close();
+            }
         }
 
         private sealed class CountingSink : ISessionControlSink

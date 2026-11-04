@@ -11,6 +11,50 @@ namespace Ac.Boot
     // Opt-in intent driver only. Never writes world, HP, cards, clocks or authority.
     public static class ExpeditionAcceptance
     {
+        internal static bool IsToolPhaseRace(byte pendingOp, byte result, byte stage)
+        {
+            return pendingOp == 5 && result == 4 && (stage == 1 || stage == 3);
+        }
+        // Read-only acceptance intent helper: visible authority only; zero id means fallback/unknown.
+        public static ushort SelectRefillTarget(SnapshotView view, FrameEntity local, out double x, out double z)
+        {
+            ushort nearest = 0;
+            var nearestX = 10.0; var nearestZ = 10.0; var best = double.MaxValue;
+            view.ForEachVisible((ushort id, in FrameEntity entity) => {
+                if ((entity.KindFlags & 3) != 3) return;
+                var px = entity.XCm / 100.0; var pz = entity.ZCm / 100.0;
+                var dx = px - local.XCm / 100.0; var dz = pz - local.ZCm / 100.0;
+                var distance = dx * dx + dz * dz;
+                if (distance >= best) return;
+                best = distance; nearest = id; nearestX = px; nearestZ = pz;
+            });
+            x = nearestX; z = nearestZ; return nearest;
+        }
+        public static void SelectCombatPoint(SnapshotView view, FrameEntity local, out double x, out double z)
+        {
+            // Eight ordinary movement destinations, all within radius 5 of the radius-6 objective.
+            // Rank only by visible living threats; never query future simulation or mutate authority.
+            var bestX = 12.0; var bestZ = 0.0; var bestScore = double.NegativeInfinity;
+            var foundThreat = false;
+            for (var point = 0; point < 8; point++)
+            {
+                var angle = point * Math.PI / 4;
+                var px = 12 + 5 * Math.Cos(angle); var pz = 5 * Math.Sin(angle);
+                var minimum = double.MaxValue;
+                view.ForEachVisible((ushort id, in FrameEntity entity) => {
+                    if ((entity.KindFlags & 3) != 1 || entity.HpRatioUnits == 0 || entity.State == 8) return;
+                    foundThreat = true;
+                    var dx = px - entity.XCm / 100.0; var dz = pz - entity.ZCm / 100.0;
+                    minimum = Math.Min(minimum, dx * dx + dz * dz);
+                });
+                var moveX = px - local.XCm / 100.0; var moveZ = pz - local.ZCm / 100.0;
+                // Distance is only a tie breaker, not a threat substitute.
+                var score = minimum - .001 * (moveX * moveX + moveZ * moveZ);
+                if (score <= bestScore) continue;
+                bestScore = score; bestX = px; bestZ = pz;
+            }
+            x = foundThreat ? bestX : 12; z = foundThreat ? bestZ : 0;
+        }
         private static Driver _driver;
         private static bool _checked;
         public static void Drive(GameLoop loop)
@@ -68,6 +112,7 @@ namespace Ac.Boot
             public ushort target, nearestPickupId;
             // id=0/count=0 means unknown/not currently visible, not proof that the world has no crate.
             public int discoveredPickupCount, sampledButtons;
+            public int desiredWeaponSlot, ammoSlot, sampledSwitchTo;
             public bool sampledInteractHeld;
             public double nearestPickupX, nearestPickupZ, nearestPickupDistance;
             public float x, z;
@@ -88,6 +133,8 @@ namespace Ac.Boot
             private bool _refilling;
             private byte _previousStage = 255;
             private int _combatReleaseFrames;
+            private double _nextWeaponPress, _weaponKeyReleaseAt;
+            private double _nextAvoidanceChoice, _combatGoalX = 12, _combatGoalZ;
 
             private int _seenStates, _nodeBits, _progressBits, _choices, _tools, _kills, _interruptions;
             private byte _pendingOp;
@@ -123,6 +170,9 @@ namespace Ac.Boot
                     yaw = loop.Sampler.YawRad, pitch = loop.Sampler.PitchRad,
                     hp = local.HpRatioUnits, mag = loop.Ammo.Mag, reserve = loop.Ammo.Reserve, kills = _kills,
                     cardMask = loop.Expedition.LocalCardMask, diagnostics = Observe(loop) };
+                e.desiredWeaponSlot = _build == "breach" ? 2 : 1;
+                e.ammoSlot = loop.Ammo.Slot;
+                e.sampledSwitchTo = loop.Sampler.CurrentSwitchTo;
                 e.sampledButtons = loop.Sampler.CurrentButtons;
                 e.sampledInteractHeld = (e.sampledButtons & InputSampler.ButtonInteract) != 0;
                 var nearestSquared = double.MaxValue;
@@ -166,6 +216,7 @@ namespace Ac.Boot
                 sampler.SetKey(KeyCode.W, false); sampler.SetKey(KeyCode.S, false);
                 sampler.SetKey(KeyCode.A, false); sampler.SetKey(KeyCode.D, false);
                 sampler.SetKey(KeyCode.R, false); sampler.SetKey(KeyCode.E, false);
+                sampler.SetKey(KeyCode.Alpha2, false); sampler.SetKey(KeyCode.Alpha3, false);
                 loop.LocalName = _name;
                 if (GameBootstrap.Presentation != null) GameBootstrap.Presentation.Flow.Lobby.SetName(_name);
                 var connected = loop.Transport.State == ConnectionState.Connected;
@@ -198,7 +249,9 @@ namespace Ac.Boot
                     {
                         _lastAck = state.LastRequestId;
                         Trace(loop, "receipt", _pendingOp);
-                        if (state.LastResult != 1 && !(_pendingOp == 5 && state.LastResult == 8))
+                        var phaseRace = IsToolPhaseRace(_pendingOp, state.LastResult, state.Stage);
+                        if (phaseRace) Trace(loop, "tool-phase-race-not-accepted", _pendingOp);
+                        if (state.LastResult != 1 && !(_pendingOp == 5 && state.LastResult == 8) && !phaseRace)
                         { Finish(loop, false, "request-rejected:" + state.LastResult); return; }
                         if (state.LastResult == 1 && _pendingOp == 2) _choices++;
                         if (state.LastResult == 1 && _pendingOp == 5) _tools++;
@@ -319,6 +372,17 @@ namespace Ac.Boot
             {
                 FrameEntity local;
                 if (!loop.View.TryGetLocalAuthority(out local)) return;
+                // Normal number-key press, held across several 30Hz samples; release before retry.
+                // Never mutate weapon/ammo or bypass modal/resume guards with per-frame API calls.
+                var desiredSlot = _build == "breach" ? 2 : 1;
+                if (loop.Ammo.Slot != desiredSlot && now >= _nextWeaponPress)
+                {
+                    _weaponKeyReleaseAt = now + .15;
+                    _nextWeaponPress = now + 1;
+                    Trace(loop, "weapon-number-key-press");
+                }
+                if (now < _weaponKeyReleaseAt)
+                    loop.Sampler.SetKey(desiredSlot == 2 ? KeyCode.Alpha3 : KeyCode.Alpha2, true);
                 var x = local.XCm / 100.0; var z = local.ZCm / 100.0;
                 FrameEntity target = default(FrameEntity); var distance = double.MaxValue;
                 loop.View.ForEachVisible((ushort id, in FrameEntity e) => {
@@ -347,8 +411,16 @@ namespace Ac.Boot
                 // Move along world-to-view basis toward a safe interior point. Movement remains normal commands.
                 if (loop.Ammo.Reserve < 15) _refilling = true;
                 if (loop.Ammo.Reserve >= 100) _refilling = false;
-                // Existing production crate at (10,10), E hold 1500ms. No ammo grants in driver.
-                var goalX = _refilling ? 10.0 : 12.0; var goalZ = _refilling ? 10.0 : 0.0;
+                // Follow existing visible production pickups, which can drift from their spawn.
+                // Unknown visibility retains the nominal fallback. E remains the same 1.5m intent gate.
+                double pickupX, pickupZ;
+                SelectRefillTarget(loop.View, local, out pickupX, out pickupZ);
+                if (!_refilling && now >= _nextAvoidanceChoice)
+                {
+                    SelectCombatPoint(loop.View, local, out _combatGoalX, out _combatGoalZ);
+                    _nextAvoidanceChoice = now + .5;
+                }
+                var goalX = _refilling ? pickupX : _combatGoalX; var goalZ = _refilling ? pickupZ : _combatGoalZ;
                 var mx = goalX - x; var mz = goalZ - z;
                 loop.Sampler.SetKey(KeyCode.E, _refilling && mx * mx + mz * mz <= 2.25);
                 // Barn is [-4,4] x [-4,4]; give player radius .4 and digital-axis steering clearance.
