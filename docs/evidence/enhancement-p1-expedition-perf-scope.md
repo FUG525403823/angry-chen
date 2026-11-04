@@ -1,4 +1,4 @@
-# P1 真实远征性能观测边界（方案，未实施）
+# P1 真实远征性能观测边界与首轮观测
 
 源码参考3dda8cb。现有[性能checkpoint](enhancement-p1-performance-checkpoint.md)仅证明原合成负载硬预算；本文件不增加PASS，不把方案当结果。
 
@@ -16,4 +16,8 @@ FrameBench会禁用生产driver并喂入synthetic快照，不覆盖真实Expedit
 
 ## 当前状态
 
-只读方案已核对生产调用边界，**未实现observer、未取得真实远征性能数字、未判定PASS**。若实施，先通过批准的生产Frame公共调用与实际player seam做红→绿，不测试私有字段，不改变Classic、原规则或预算。视觉及真人验收仍另行记录。
+已实施默认关闭的`-expeditionPerformanceOut`observer，经批准的公开primitive采样器与实际player接口验证：缺类型编译RED→实现GREEN，临时副本删除missing-counter防护的负控确实exit1；缺帧/坏时间/阶段中断/无样本不得PASS，原阈值超限FAIL。完整引擎295/295、release构建exit0。默认不加组件、不开recorder，不改VSync/targetFPS或模拟。独立runner用ObservePerformance开关传报告路径。
+
+首轮本机 `build/reports/p1/players/20261104T062556747Z-29ec9a6b/peer-1.performance.json`：真实单人、node1、cardMask1、1920×1080、引擎quality5、VSync1、targetFPS=-1；不是原quality2同场景回归。3×(120预热+600样本)、missing0；wall P95=17.1312/17.1159/17.033ms，P99=18.2348/17.7065/17.7265ms，drawMax57/46/64、triMax8077/5127/7763。按原20/33ms、120draw、180000tri，`scopedFrameGraphicsVerdict=PASS`。
+
+该结果含验收driver/trace/I/O/调度，且来自dirty视图投影，不能归给clean候选；仅首节点低负载，不证明第三节点满构筑、4人最大压力或奖励阶段。报告rewardStatus=UNVERIFIED、allocation=UNMEASURED、canvasHumanReview=UNREVIEWED，不赋予P1整体PASS。精确loop分配与reward专门窗口未实施，视觉及真人验收另行记录。

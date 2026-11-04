@@ -12,6 +12,7 @@ namespace Ac.Tests
     {
         public static void Register()
         {
+            ExpeditionPerformanceSuite.Register();
             SelfTest.Add("expedition.ui_pending_matches_exact_receipt", PendingMatchesExactReceipt);
             SelfTest.Add("expedition.loop_wrongrun_max_does_not_poison_request", WrongRunMaxDoesNotPoisonRequest);
             SelfTest.Add("expedition.ui_rejects_previous_run_until_reset", RejectsPreviousRunUntilReset);

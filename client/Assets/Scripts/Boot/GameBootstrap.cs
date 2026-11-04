@@ -116,6 +116,7 @@ namespace Ac.Boot
             var expeditionUi = Presentation.Root.GetComponent<ExpeditionUiRenderer>();
             if (expeditionUi == null) expeditionUi = Presentation.Root.AddComponent<ExpeditionUiRenderer>();
             expeditionUi.Bind(Loop, Presentation);
+            ExpeditionPerformanceObserver.Attach(Presentation.Root, Loop);
             Presentation.BindSettings(Settings);
             // 昵称兜底（见 DefaultLocalName）：必须在 Attach 之后 —— Attach 会把大厅昵称灌进帧回路，
             // 这里把"空名字"补成一个合法默认值；玩家一在大厅键入，SetName 就把它换掉并重发 kJoin。
