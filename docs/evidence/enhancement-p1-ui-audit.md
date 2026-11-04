@@ -35,6 +35,12 @@
 
 DPI-aware对照已进行：新起干净3dda8cb player请求1920×1080，同一个HWND在旧线程context下GetClientRect为1536×864，切换PerMonitorV2(-4)后为1920×1080，GetDpiForWindow=120（125%）。该同窗对照明确证明捕获器存在DPI逻辑坐标虚拟化；首次1024×576恰为1280×720的80%，但没有对首次旧窗做同窗复测，因此保留旧图不追认720p。新本机 `build/reports/p1/ui-1080-dpi-aware-3dda8cb/` 14张原图均1920×1080且非单色，另node2目录保留后续时间窗捕获；PrintWindow返回true仍不是内容正确性证明。此次测到OS物理client尺寸，未新增引擎Screen.width/height遥测；不能将其当内部渲染分辨率、字体清晰度或人工视觉验收。图像仍未审阅，不把放大旧PNG当高分辨率证据。
 
+## 1440p开局高频捕获（未审阅）
+
+捕获器先启动，再启动同一clean release，100ms采集间隔（实际PNG写盘会增加间隔），DPI-aware实际客户区与原图均2560×1440、DPI120。本机 `build/reports/p1/ui-1440-opening-3dda8cb/` 保留239张原图及manifest；9b32b1aa真实单人完整三节点技术PASS、exit0。没有为拍图调整奖励期限、推进速度或候选。
+
+`window-7280-083.png`时间近似关联首offer1、stage1、候选[1,4,0]，`window-7280-090.png`近似关联combat。关联使用进程StartTime与driver.elapsed，二者存在启动偏差，不能当same-frame权威证明；原始timeline与capture UTC均保留。两图非单色只排除纯色截图，不代表奖励确实可读。模型不支持图像输入，所有visualReviewed=false，未获得人类结论。其余尺寸奖励及后续长卡条款仍需精确关联与审阅，不因239张数量多宣布覆盖通过。
+
 ## 最小下一步证据方案（尚未全部执行）
 
 保持同一冻结release player及本地权威服务器，Unity / player与其他引擎工作按项目要求串行，由lead安排。不为拍图修改权威奖励、冷却、目标推进或卡内容，也不用纯fixture截图冒充联机状态。
