@@ -49,7 +49,7 @@ try {
  }) | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 "$out/player-tree-hashes.json"
  [ordered]@{ round=$round; players=$Players; impaired=[bool]$Impaired; recoveryStage=$(if($Impaired){$RecoveryStage}else{'none'}); delayMs=$delay; lossPct=$loss; outageMs=$(if($Impaired){5000}else{0}); stableSeconds=15; timeoutSeconds=$TimeoutSeconds; humanFunVerified=$false; dirtyProjection=$true; head=(git -C $root rev-parse HEAD); status=@(git -C $root status --porcelain); player=$playerPath; playerSha256=(Get-FileHash $playerPath).Hash; server=$serverPath; serverSha256=(Get-FileHash $serverPath).Hash; contentSha256=(Get-FileHash (Join-Path $root 'docs/expedition-p1-content.txt')).Hash } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 "$out/manifest.json"
  Copy-Item -LiteralPath (Join-Path $root 'docs/expedition-p1-content.txt') -Destination "$out/content.txt"
- $server = Start-Process -FilePath $serverPath -WorkingDirectory $root -ArgumentList @('--serve', "--udp-port=$UdpPort", "--http-port=$HttpPort", "--data-dir=$out/data", '--minutes=35') -RedirectStandardOutput "$out/server.log" -RedirectStandardError "$out/server.err.log" -PassThru
+ $server = Start-Process -FilePath $serverPath -WorkingDirectory $root -ArgumentList @('--serve', "--udp-port=$UdpPort", "--http-port=$HttpPort", "`"--data-dir=$out/data`"", '--minutes=35') -RedirectStandardOutput "$out/server.log" -RedirectStandardError "$out/server.err.log" -PassThru
  $null = $server.Handle
  Remember-ProcessStart $server 'server'
  $ready=$false
@@ -63,7 +63,7 @@ try {
  if ($Impaired) {
   $clientPort=$UdpPort+2
   $node=(Get-Command node -ErrorAction Stop).Source
-  $proxy = Start-Process -FilePath $node -ArgumentList @("`"$PSScriptRoot/udp-impairment.mjs`"", "port=$clientPort", "target=$UdpPort", "delay=$delay", "loss=$loss", 'reorder=1', 'duplicate=1', "`"report=$out/proxy.json`"", 'outage=5000', "team=$Players", 'trace=1', "`"trigger=$out`"") -RedirectStandardOutput "$out/proxy.log" -RedirectStandardError "$out/proxy.err.log" -PassThru
+  $proxy = Start-Process -FilePath $node -WorkingDirectory $root -ArgumentList @("`"$PSScriptRoot/udp-impairment.mjs`"", "port=$clientPort", "target=$UdpPort", "delay=$delay", "loss=$loss", 'reorder=1', 'duplicate=1', "`"report=$out/proxy.json`"", 'outage=5000', "team=$Players", 'trace=1', "`"trigger=$out`"") -RedirectStandardOutput "$out/proxy.log" -RedirectStandardError "$out/proxy.err.log" -PassThru
   $null=$proxy.Handle; Remember-ProcessStart $proxy 'proxy'; $ready=$false
   for($i=0;$i -lt 30;$i++) {
    if($proxy.HasExited){throw 'UDP proxy exited'}

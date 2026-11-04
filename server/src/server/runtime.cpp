@@ -476,9 +476,30 @@ void Runtime::handleCommand(std::uint16_t session, const std::uint8_t* frame,
     return;
   }
   const std::uint32_t serverTick = room_->world->tick;
-  const ac::security::ValidateResult tickCheck =
+  ac::security::ValidateResult tickCheck =
       ac::security::validateClientTick(decoded.value.clientTick, serverTick);
+  // ADR-022: the bounded expedition impairment profile needs up to 600ms of
+  // authority age; classic and future-tick rejection retain the original rule.
+  constexpr std::uint32_t kExpeditionClientTickSlack = 12u;
+  if (tickCheck.reason == ac::security::ValidateReason::kStaleTick &&
+      room_->expeditionEnabled && room_->phase == ac::room::MatchPhase::kPlaying &&
+      serverTick - decoded.value.clientTick <= kExpeditionClientTickSlack) {
+    tickCheck = {};
+  }
   if (!tickCheck.isOk) {
+    // A stale authority tick can signal a missing unreliable delta. Recover only the
+    // expedition stream; never execute the rejected input or relax anti-future checks.
+    if (tickCheck.reason == ac::security::ValidateReason::kStaleTick &&
+        room_->expeditionEnabled && room_->phase == ac::room::MatchPhase::kPlaying) {
+      const std::uint16_t distance = static_cast<std::uint16_t>(decoded.value.seq - client->snapshotHintSeq);
+      const bool newer = !client->hasSnapshotHint || (distance != 0u && distance < 0x8000u);
+      if (newer && (!client->hasSnapshotHint || serverTick - client->snapshotHintTick >= 4u)) {
+        client->hasSnapshotHint = true;
+        client->snapshotHintSeq = decoded.value.seq;
+        client->snapshotHintTick = serverTick;
+        client->isFullSnapshotDue = true;
+      }
+    }
     ac::security::noteValidateFailure(&counters_, tickCheck.reason);
     return;
   }
@@ -837,7 +858,7 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
       ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
       continue;
     }
-    client->isFullSnapshotDue = false;
+    // Keep an explicit recovery pending until the full frame is actually sent.
     // Legacy delta codec remains fixture-compatible; production frames are protocol 3.
     sendBuffer_[0] = ac::net::kCurrentProtocolVersion;
     recordSnapshotSize(outcome.bytes);
@@ -855,6 +876,7 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
       ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
       continue;
     }
+    if (outcome.isFull) client->isFullSnapshotDue = false;
     ac::replication::noteDrained(client->budget, outcome.bytes);
     // S03 §5.3/§5.4：本代帧真的发出去了 ⇒ 确认本帧带出的条目（按重传窗口递减/出队）。被跳过的 tick
     // （档位降档 / 背压 / 编码失败 / 发送失败）不走到这里，未确认条目留在房间队列里下一帧续投。

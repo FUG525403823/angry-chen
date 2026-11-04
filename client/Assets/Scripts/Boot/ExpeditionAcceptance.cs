@@ -26,6 +26,25 @@ namespace Ac.Boot
             try { _driver.Tick(loop); }
             catch (Exception ex) { _driver.Finish(loop, false, "driver-exception:" + ex.Message); }
         }
+        [Serializable] private sealed class Diagnostics
+        {
+            // Existing production counters only. No raw received-snapshot counter is exposed by GameLoop.
+            public int baselineMismatch, invalidSnapshots, decodeFailures, droppedSnapshots;
+            public int fragmentsReassembled, invalidPackets, duplicates, retransmits;
+            public double bytesInPerSec, bytesOutPerSec;
+        }
+        private static Diagnostics Observe(GameLoop loop)
+        {
+            if (loop == null) return null;
+            var s = loop.Transport == null ? null : loop.Transport.Stats;
+            return new Diagnostics {
+                baselineMismatch = loop.View.BaselineMismatch, invalidSnapshots = loop.View.InvalidSnapshots,
+                decodeFailures = loop.DecodeFailures, droppedSnapshots = s == null ? 0 : s.DroppedSnapshots,
+                fragmentsReassembled = s == null ? 0 : s.FragmentsReassembled,
+                invalidPackets = s == null ? 0 : s.InvalidPackets, duplicates = s == null ? 0 : s.Duplicates,
+                retransmits = s == null ? 0 : s.Retransmits,
+                bytesInPerSec = s == null ? 0 : s.BytesInPerSec, bytesOutPerSec = s == null ? 0 : s.BytesOutPerSec };
+        }
         [Serializable] private sealed class Result
         {
             public bool pass, humanFunVerified = false, recovered, identityPreserved;
@@ -34,6 +53,7 @@ namespace Ac.Boot
             public int processId, team, playerId, session, commands, snapshots, states, kills, acceptedChoices, acceptedTools;
             public int nodes, progressNodes, recoveryInterruptions, stableSeconds;
             public uint runId, triggers;
+            public Diagnostics diagnostics;
         }
         [Serializable] private sealed class Entry
         {
@@ -48,6 +68,7 @@ namespace Ac.Boot
             public ushort target;
             public float x, z;
             public double yaw, pitch;
+            public Diagnostics diagnostics;
         }
         private sealed class Driver
         {
@@ -97,7 +118,7 @@ namespace Ac.Boot
                     target = target, x = local.XCm / 100f, z = local.ZCm / 100f,
                     yaw = loop.Sampler.YawRad, pitch = loop.Sampler.PitchRad,
                     hp = local.HpRatioUnits, mag = loop.Ammo.Mag, reserve = loop.Ammo.Reserve, kills = _kills,
-                    cardMask = loop.Expedition.LocalCardMask };
+                    cardMask = loop.Expedition.LocalCardMask, diagnostics = Observe(loop) };
                 if (s != null) {
                     e.runId=s.RunId; e.revision=s.Revision; e.clockMs=s.ClockMs; e.progressMs=s.ProgressMs;
                     e.rewardDeadlineMs=s.RewardDeadlineMs; e.offerId=s.OfferId; e.lastRequestId=s.LastRequestId;
@@ -336,7 +357,7 @@ namespace Ac.Boot
             {
                 if (_done) return; _done = true;
                 var now = Time.realtimeSinceStartupAsDouble;
-                var result = new Result { pass = pass, reason = reason, build = _build,
+                var result = new Result { pass = pass, reason = reason, build = _build, diagnostics = Observe(loop),
                     recoveryStage = _rewardRecovery ? "reward" : "combat",
                     rewardRecovered = _rewardRecovery && _recovered, rewardStable = _rewardStable,
                     combatRecovered = _recovery && !_rewardRecovery && _recovered,

@@ -135,7 +135,10 @@ class Runtime {
     std::uint64_t lastTickSkips = 0u;
     std::uint64_t lastBudgetExceeded = 0u;
     std::size_t bytesOut = 0u;  // G2 的分子：本客户端实际写出的 UDP 载荷字节
-    bool isFullSnapshotDue = false;  // Resume 成功补一次全量（§5.5）
+    bool isFullSnapshotDue = false;  // Resume or bounded expedition stale-input recovery
+    bool hasSnapshotHint = false;
+    std::uint16_t snapshotHintSeq = 0u;  // independent from accepted-command dedup
+    std::uint32_t snapshotHintTick = 0u;
     ac::security::CommandDedup dedup{};
     // §5.3：客户端命令流的**接收**窗口（ackBase/ackBits 的来源）。回执位图随 MatchState 下行。
     ac::net::ReliableState commandRecv{};
