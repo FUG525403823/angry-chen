@@ -21,3 +21,11 @@ FrameBench会禁用生产driver并喂入synthetic快照，不覆盖真实Expedit
 首轮本机 `build/reports/p1/players/20261104T062556747Z-29ec9a6b/peer-1.performance.json`：真实单人、node1、cardMask1、1920×1080、引擎quality5、VSync1、targetFPS=-1；不是原quality2同场景回归。3×(120预热+600样本)、missing0；wall P95=17.1312/17.1159/17.033ms，P99=18.2348/17.7065/17.7265ms，drawMax57/46/64、triMax8077/5127/7763。按原20/33ms、120draw、180000tri，`scopedFrameGraphicsVerdict=PASS`。
 
 该结果含验收driver/trace/I/O/调度，且来自dirty视图投影，不能归给clean候选；仅首节点低负载，不证明第三节点满构筑、4人最大压力或奖励阶段。报告rewardStatus=UNVERIFIED、allocation=UNMEASURED、canvasHumanReview=UNREVIEWED，不赋予P1整体PASS。精确loop分配与reward专门窗口未实施，视觉及真人验收另行记录。
+
+## 第三节点4人满构筑观测：图形门FAIL
+
+新增目标节点参数1或3（默认1），公开行为测试先复现node1错误填充node3窗口RED，再过滤GREEN；非法节点与未到目标节点始终UNVERIFIED。完整引擎295/295、release构建exit0。真实4人无损隔离性能轮4d9eab01全员完整三节点技术PASS、真实exit0，但**四端scopedFrameGraphicsVerdict均FAIL**，不得将进程成功当性能成功。
+
+本机报告 `build/reports/p1/players/20261104T064234194Z-4d9eab01/peer-{1,2,3,4}.performance.json`：每端requestedNode/nodeMin/nodeMax=3、playerCount4，hunter cardMask7、breach56；1920×1080、引擎quality5/VSync1；每端3轮、missing0。十二个窗口P95范围16.9923–17.0726ms、P99范围17.3898–18.0302ms；triMax不超过53801。四端draw最高162/153/163/167，超过原120阈值；原阈值保留，不以帧率尚可为理由放宽。
+
+该轮为dirty视图投影，尚未归因到P1 Canvas、羊表现、远程玩家、质量设置或外部模型修改；不将其直接判为P1规则回归，也不能用clean旧候选合成场景PASS掩盖。下一步须构建更短的实际图形反馈环，并以相同快照/视角/质量对照clean与dirty及Canvas开销，先测后改；不得降低目标难度、减少羊或关界面来伪造通过。全P1性能门保持未通过。

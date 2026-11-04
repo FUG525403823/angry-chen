@@ -34,6 +34,9 @@ assert.match(runner, /requestedWindowWidth=\$WindowWidth; requestedWindowHeight=
 assert.match(runner, /\[switch\]\$ObservePerformance/);
 assert.match(runner, /if\(\$ObservePerformance\)\{\$arguments\+=@\('-expeditionPerformanceOut'/);
 assert.match(runner, /performanceObserver=\[bool\]\$ObservePerformance/);
+assert.match(runner, /\[ValidateSet\(1,3\)\]\[int\]\$PerformanceNode = 1/);
+assert.match(runner, /'-expeditionPerformanceNode', "\$PerformanceNode"/);
+assert.match(runner, /performanceNode=\$PerformanceNode/);
 assert.match(runner, /ValidateSet\('combat','reward'\)/);
 assert.match(runner, /-expeditionAcceptanceRecoveryStage/);
 assert.match(driver, /reward-recovery-deadline-expired/);

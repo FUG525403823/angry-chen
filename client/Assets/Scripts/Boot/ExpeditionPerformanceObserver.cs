@@ -25,7 +25,18 @@ namespace Ac.Boot
             _warmup = _sample = 0;
             DrawMax[Runs] = TriangleMax[Runs] = 0;
         }
+        public int RequestedNode { get; private set; }
+        public ExpeditionPerformanceSamples(int requestedNode = 1) { RequestedNode = requestedNode; }
+        public void Add(int frame, double wallMs, long draws, long triangles, byte mode, byte stage, byte node)
+        {
+            AddCore(frame, wallMs, draws, triangles, mode,
+                (RequestedNode == 1 || RequestedNode == 3) && node == RequestedNode ? stage : (byte)0);
+        }
         public void Add(int frame, double wallMs, long draws, long triangles, byte mode, byte stage)
+        {
+            Add(frame, wallMs, draws, triangles, mode, stage, 1);
+        }
+        private void AddCore(int frame, double wallMs, long draws, long triangles, byte mode, byte stage)
         {
             if (Complete) return;
             var consecutive = _lastFrame >= 0 && frame == _lastFrame + 1;
@@ -56,12 +67,13 @@ namespace Ac.Boot
     {
         private static bool _parsed;
         private static string _output;
+        private static int _requestedNode = 1;
         private GameLoop _loop;
         private ExpeditionPerformanceSamples _samples;
         private ProfilerRecorder _draws, _triangles;
         private double _previousWall;
         private int _previousFrame = -1;
-        private byte _previousMode, _previousStage;
+        private byte _previousMode, _previousStage, _previousNode;
         private bool _written;
         private int _nodeMin = int.MaxValue, _nodeMax, _cardsMin = int.MaxValue, _cardsMax;
         private int _playersMin = int.MaxValue, _playersMax;
@@ -74,13 +86,21 @@ namespace Ac.Boot
             {
                 _parsed = true;
                 var args = Environment.GetCommandLineArgs();
-                for (var i = 0; i + 1 < args.Length; i++)
-                    if (args[i] == "-expeditionPerformanceOut") _output = args[i + 1];
+                for (var i = 0; i < args.Length; i++)
+                {
+                    if (args[i] == "-expeditionPerformanceOut" && i + 1 < args.Length) _output = args[i + 1];
+                    if (args[i] == "-expeditionPerformanceNode")
+                    {
+                        int node;
+                        _requestedNode = i + 1 < args.Length && int.TryParse(args[i + 1], out node) && (node == 1 || node == 3) ? node : -1;
+                    }
+                }
             }
             if (string.IsNullOrEmpty(_output) || root.GetComponent<ExpeditionPerformanceObserver>() != null) return;
             var observer = root.AddComponent<ExpeditionPerformanceObserver>();
             observer._loop = loop;
-            observer._samples = new ExpeditionPerformanceSamples();
+            observer._samples = new ExpeditionPerformanceSamples(_requestedNode);
+            if (_requestedNode != 1 && _requestedNode != 3) Debug.LogWarning("Expedition performance node must be 1 or 3; report remains UNVERIFIED.");
             try { observer._draws = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count", 1, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); } catch (Exception) { }
             try { observer._triangles = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Triangles Count", 1, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); } catch (Exception) { }
         }
@@ -95,13 +115,14 @@ namespace Ac.Boot
                 _samples.Add(adjacent ? _previousFrame : frame, wall - _previousWall,
                     adjacent && _draws.Valid && _draws.Count > 0 ? _draws.LastValue : -1,
                     adjacent && _triangles.Valid && _triangles.Count > 0 ? _triangles.LastValue : -1,
-                    _previousMode, _previousStage);
+                    _previousMode, _previousStage, _previousNode);
             }
             _previousFrame = frame; _previousWall = wall;
             var state = _loop.Expedition.State;
             _previousMode = state == null ? (byte)0 : state.Mode;
             _previousStage = state == null ? (byte)0 : state.Stage;
-            if (_previousMode == 1 && _previousStage == 2)
+            _previousNode = state == null ? (byte)0 : state.Node;
+            if (_previousMode == 1 && _previousStage == 2 && _previousNode == _requestedNode)
             {
                 Range(state.Node, ref _nodeMin, ref _nodeMax);
                 Range(_loop.Expedition.LocalCardMask, ref _cardsMin, ref _cardsMax);
@@ -118,8 +139,8 @@ namespace Ac.Boot
         {
             public string scopedFrameGraphicsVerdict, rewardStatus = "UNVERIFIED", allocation = "UNMEASURED", canvasHumanReview = "UNREVIEWED";
             public string scope = "Completed engine-frame wall interval and graphics; includes acceptance driver, I/O, VSync and scheduling. Not GPU time or zero-allocation proof. Combat only; no phase mixing.";
-            public string sceneCoverage = "Early combat only; not worst-case scene or fully built node 3. Metadata ranges include warmup and interrupted combat candidates.";
-            public int runs, missing;
+            public string sceneCoverage = "Requested-node combat only; not a worst-case scene guarantee. Card/build/player ranges are observed, not assumed. Metadata includes warmup and interrupted candidates of the requested node.";
+            public int requestedNode, runs, missing;
             public int nodeMin, nodeMax, cardMaskMin, cardMaskMax, playerCountMin, playerCountMax;
             public int widthMin, widthMax, heightMin, heightMax, qualityMin, qualityMax, vSyncMin, vSyncMax, targetFpsMin, targetFpsMax;
             public double[] wallP95Ms, wallP99Ms;
@@ -129,7 +150,7 @@ namespace Ac.Boot
         {
             if (_written || _samples == null) return;
             _written = true;
-            var report = new Report { scopedFrameGraphicsVerdict = _samples.Status, runs = _samples.Runs, missing = _samples.Missing,
+            var report = new Report { requestedNode = _samples.RequestedNode, scopedFrameGraphicsVerdict = _samples.Status, runs = _samples.Runs, missing = _samples.Missing,
                 wallP95Ms = _samples.P95, wallP99Ms = _samples.P99, drawMax = _samples.DrawMax, triangleMax = _samples.TriangleMax,
                 nodeMin = _nodeMin == int.MaxValue ? -1 : _nodeMin, nodeMax = _nodeMax, cardMaskMin = _cardsMin == int.MaxValue ? -1 : _cardsMin, cardMaskMax = _cardsMax,
                 playerCountMin = _playersMin == int.MaxValue ? -1 : _playersMin, playerCountMax = _playersMax,

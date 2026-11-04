@@ -7,6 +7,14 @@ namespace Ac.Tests
         public static void Register() { SelfTest.Add("p1.performance_missing_is_unverified", Missing); }
         private static void Missing()
         {
+            var node3 = new ExpeditionPerformanceSamples(3);
+            for (var i = 1; i <= 2161; i++) node3.Add(i, 16, 20, 100, 1, 2, 1);
+            SelfTest.True(node3.Status == "UNVERIFIED", "node1 cannot populate node3 windows", node3.Status);
+            for (var i = 2162; i <= 4321; i++) node3.Add(i, 16, 20, 100, 1, 2, 3);
+            SelfTest.True(node3.Status == "PASS", "node3 completes three own windows", node3.Status);
+            var invalidNode = new ExpeditionPerformanceSamples(2);
+            for (var i = 1; i <= 2161; i++) invalidNode.Add(i, 16, 20, 100, 1, 2, 2);
+            SelfTest.True(invalidNode.Status == "UNVERIFIED", "unsupported target node cannot pass", invalidNode.Status);
             var a = new ExpeditionPerformanceSamples();
             SelfTest.True(a.Status == "UNVERIFIED", "no sample is unverified", a.Status);
             for (var i = 1; i <= 2161; i++) a.Add(i, 16, -1, 20, 1, 2);
