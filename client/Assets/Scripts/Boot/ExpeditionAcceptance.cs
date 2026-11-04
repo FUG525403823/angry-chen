@@ -30,30 +30,42 @@ namespace Ac.Boot
             });
             x = nearestX; z = nearestZ; return nearest;
         }
-        public static void SelectCombatPoint(SnapshotView view, FrameEntity local, out double x, out double z)
+        public static double ClosestVisibleThreatDistance(SnapshotView view, double x, double z)
         {
-            // Eight ordinary movement destinations, all within radius 5 of the radius-6 objective.
-            // Rank only by visible living threats; never query future simulation or mutate authority.
+            var squared = double.MaxValue;
+            view.ForEachVisible((ushort id, in FrameEntity entity) => {
+                if ((entity.KindFlags & 3) != 1 || entity.HpRatioUnits == 0 || entity.State == 8) return;
+                var dx = x - entity.XCm / 100.0; var dz = z - entity.ZCm / 100.0;
+                squared = Math.Min(squared, dx * dx + dz * dz);
+            });
+            return squared == double.MaxValue ? -1 : Math.Sqrt(squared);
+        }
+        public static void SelectCombatPoint(SnapshotView view, FrameEntity local, out double x, out double z)
+        { SelectCombatPoint(view, local, false, out x, out z); }
+        public static void SelectCombatPoint(SnapshotView view, FrameEntity local, bool breach, out double x, out double z)
+        {
+            var lx = local.XCm / 100.0; var lz = local.ZCm / 100.0;
+            var currentDistance = ClosestVisibleThreatDistance(view, lx, lz);
+            if (currentDistance < 0) { x = 12; z = 0; return; }
+            // A safe hunter stops moving, allowing the normal stationary-focus timer to build.
+            if (!breach && currentDistance > 3 && (lx - 12) * (lx - 12) + lz * lz <= 25)
+            { x = lx; z = lz; return; }
             var bestX = 12.0; var bestZ = 0.0; var bestScore = double.NegativeInfinity;
-            var foundThreat = false;
-            for (var point = 0; point < 8; point++)
+            // Center plus eight points at radii 3 and 5, entirely inside the objective.
+            for (var point = 0; point < 17; point++)
             {
-                var angle = point * Math.PI / 4;
-                var px = 12 + 5 * Math.Cos(angle); var pz = 5 * Math.Sin(angle);
-                var minimum = double.MaxValue;
-                view.ForEachVisible((ushort id, in FrameEntity entity) => {
-                    if ((entity.KindFlags & 3) != 1 || entity.HpRatioUnits == 0 || entity.State == 8) return;
-                    foundThreat = true;
-                    var dx = px - entity.XCm / 100.0; var dz = pz - entity.ZCm / 100.0;
-                    minimum = Math.Min(minimum, dx * dx + dz * dz);
-                });
-                var moveX = px - local.XCm / 100.0; var moveZ = pz - local.ZCm / 100.0;
-                // Distance is only a tie breaker, not a threat substitute.
-                var score = minimum - .001 * (moveX * moveX + moveZ * moveZ);
+                var angle = (point - 1) % 8 * Math.PI / 4;
+                var radius = point == 0 ? 0 : (point <= 8 ? 3 : 5);
+                var px = 12 + radius * Math.Cos(angle); var pz = radius * Math.Sin(angle);
+                var distance = ClosestVisibleThreatDistance(view, px, pz);
+                var moveX = px - lx; var moveZ = pz - lz;
+                // Breach wants 3–5m engagement, not maximum separation outside its six-meter mechanics.
+                var score = breach ? -Math.Abs(distance - 4) : distance;
+                score -= .001 * (moveX * moveX + moveZ * moveZ);
                 if (score <= bestScore) continue;
                 bestScore = score; bestX = px; bestZ = pz;
             }
-            x = foundThreat ? bestX : 12; z = foundThreat ? bestZ : 0;
+            x = bestX; z = bestZ;
         }
         private static Driver _driver;
         private static bool _checked;
@@ -116,7 +128,7 @@ namespace Ac.Boot
             public bool sampledInteractHeld;
             public double nearestPickupX, nearestPickupZ, nearestPickupDistance;
             public float x, z;
-            public double yaw, pitch;
+            public double yaw, pitch, selectedGoalX, selectedGoalZ, closestThreatDist;
             public Diagnostics diagnostics;
         }
         private sealed class Driver
@@ -135,6 +147,7 @@ namespace Ac.Boot
             private int _combatReleaseFrames;
             private double _nextWeaponPress, _weaponKeyReleaseAt;
             private double _nextAvoidanceChoice, _combatGoalX = 12, _combatGoalZ;
+            private double _selectedGoalX = 12, _selectedGoalZ;
 
             private int _seenStates, _nodeBits, _progressBits, _choices, _tools, _kills, _interruptions;
             private byte _pendingOp;
@@ -173,6 +186,8 @@ namespace Ac.Boot
                 e.desiredWeaponSlot = _build == "breach" ? 2 : 1;
                 e.ammoSlot = loop.Ammo.Slot;
                 e.sampledSwitchTo = loop.Sampler.CurrentSwitchTo;
+                e.selectedGoalX = _selectedGoalX; e.selectedGoalZ = _selectedGoalZ;
+                e.closestThreatDist = ClosestVisibleThreatDistance(loop.View, local.XCm / 100.0, local.ZCm / 100.0);
                 e.sampledButtons = loop.Sampler.CurrentButtons;
                 e.sampledInteractHeld = (e.sampledButtons & InputSampler.ButtonInteract) != 0;
                 var nearestSquared = double.MaxValue;
@@ -417,10 +432,11 @@ namespace Ac.Boot
                 SelectRefillTarget(loop.View, local, out pickupX, out pickupZ);
                 if (!_refilling && now >= _nextAvoidanceChoice)
                 {
-                    SelectCombatPoint(loop.View, local, out _combatGoalX, out _combatGoalZ);
-                    _nextAvoidanceChoice = now + .5;
+                    SelectCombatPoint(loop.View, local, _build == "breach", out _combatGoalX, out _combatGoalZ);
+                    _nextAvoidanceChoice = now + (_build == "breach" ? .5 : 1.2);
                 }
                 var goalX = _refilling ? pickupX : _combatGoalX; var goalZ = _refilling ? pickupZ : _combatGoalZ;
+                _selectedGoalX = goalX; _selectedGoalZ = goalZ;
                 var mx = goalX - x; var mz = goalZ - z;
                 loop.Sampler.SetKey(KeyCode.E, _refilling && mx * mx + mz * mz <= 2.25);
                 // Barn is [-4,4] x [-4,4]; give player radius .4 and digital-axis steering clearance.

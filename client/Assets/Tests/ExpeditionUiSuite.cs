@@ -40,6 +40,17 @@ namespace Ac.Tests
             var threatSquared = (x - 14) * (x - 14) + z * z;
             SelfTest.True(radiusSquared <= 25.00001 && threatSquared > 4,
                 "visible living threat leads to a safer point within purifier", x + "," + z);
+            ExpeditionAcceptance.SelectCombatPoint(view, local, true, out x, out z);
+            var breachDistance = System.Math.Sqrt((x - 14) * (x - 14) + z * z);
+            SelfTest.True(breachDistance >= 3 && breachDistance <= 5
+                && (x - 12) * (x - 12) + z * z <= 25.00001,
+                "breach prefers normal close-range engagement rather than fleeing beyond six", breachDistance.ToString());
+            var safe = new SnapshotView();
+            safe.ApplyFrame(new SnapshotFrame { Tick = 1, Entities = new[] { local,
+                new FrameEntity { Id = 2, KindFlags = 1, XCm = 2000, HpRatioUnits = 255 } },
+                EntityCount = 2, RemovedIds = new ushort[0] });
+            ExpeditionAcceptance.SelectCombatPoint(safe, local, false, out x, out z);
+            SelfTest.True(x == 12 && z == 0, "hunter holds safe position for stationary focus", x + "," + z);
             ExpeditionAcceptance.SelectCombatPoint(new SnapshotView(), local, out x, out z);
             SelfTest.True(x == 12 && z == 0, "no visible threats retains nominal objective point", x + "," + z);
         }
