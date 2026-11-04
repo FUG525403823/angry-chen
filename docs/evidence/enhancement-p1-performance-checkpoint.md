@@ -20,6 +20,12 @@
 
 配对development精确主窗口 managedAllocBytesPerFrame=0、GC0=0，八段stage均有测值且小于既有预算。配对判定PASS，failures/missing均空，真实exit0。
 
+## 干净源码 dabe801 配对复测
+
+排除外部dirty后，隔离Git源码自检291/291、release/dev串行构建exit0。最终投影fingerprint（排除生成BuildInfo）`04e346f4081e7d207091a267d48cc8d0ffcf2d90ec0adb3a5809941e9218a187`。同样1920×1080/quality2、每种3轮120+600，真实配对exit0/PASS，missing/failures空。本机报告 `build/reports/p1/perf-clean/{release-summary.json,dev-summary.json,paired.json}`。
+
+release三轮中值frameP95=4.866ms、P99=5.7331ms、drawCalls68、triangles34819、particles256、materials8、GC0=0；development精确主窗口0B/frame、GC0=0，八段齐全。该干净源码已含600ms受理窗口、P1恢复过时移动退役及最新intent driver。旧dirty与新clean视图模型不同，三角面下降不作为优化成果。该轮沿用原合成负载硬预算，只证明其覆盖范围，不伪装远征全部画面的实测。
+
 ## 不证明什么
 
 - 这是原合成负载场景在P1二进制上的回归，不证明远征奖励Canvas打开或远征三节点最坏压力的性能。

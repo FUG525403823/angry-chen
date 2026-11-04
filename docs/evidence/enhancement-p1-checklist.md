@@ -40,7 +40,10 @@
 - 冻结0948投影原硬预算三轮配对回归PASS，见[性能checkpoint](enhancement-p1-performance-checkpoint.md)。不证明远征奖励Canvas及最终修复产物性能，不能据此标包5通过。
 - 新带箱位/按键诊断的真实2人delay50/loss5/乱序重复/5秒断流 **完整三节点PASS，exit0**，本机1526baa7：hunter249击杀/485触发，breach205击杀/75触发，两端3选卡/27工具、身份保持、恢复后532秒中断0；humanFunVerified=false。产品与上轮相同，新增仅trace，不删除之前失败；不足以证明随机难度始终可通。
 - 后续4人损伤轮92a37721第三节点56250ms后全倒地FAIL；27655f98亦第二节点全倒地FAIL。奖励恢复f404cb3c首窗口恢复true，但后续中断9、第三节点全倒地FAIL。合法tool跨phase拒绝造成的driver整轮退出已独立边界测试修复，引擎290/290，不削弱服务端拒绝及整轮成功门。
-- 4人完整成功、奖励窗口完整恢复、P1 HUD截图视觉审阅、最终产物性能、最终交付与人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
+- 旧outstanding移动消息恢复风暴公开transport RED31→GREEN；仅同session Mode1恢复时退役旧Command，动作持久性/Classic/Mode0/新握手/真正耗尽均回归。最新dirty引擎294/294、干净dabe801源码291/291及release构建/依赖门exit0。服务端603/603。
+- 新2人奖励恢复轮69eaf8f5 **三节点PASS，exit0**，两端身份保持、完整首offer恢复/稳定，后续567秒中断0。干净dabe801 release的4人delay100/loss10/乱序重复/5秒断流轮4484ad7b **全员三节点PASS，exit0**、恢复后524秒中断0。4人奖励窗口fce0b861与82a10a31首offer恢复及15秒稳定均通过、全程恢复后中断0，但第三节点全倒地，整轮仍FAIL；不能把恢复子门通过当整轮成功。所有历史FAIL保留，不以成功覆盖。
+- 干净dabe801同源码release/dev原合成负载三轮120+600配对PASS，详见[性能checkpoint](enhancement-p1-performance-checkpoint.md)；不冒充远征奖励画面的实测。候选完整Windows包（含server、双击脚本、完整player树与逐文件SHA256）本机 `build/reports/p1/P1-dabe801-candidate.zip`，SHA256 `ac42db1c55572ff86fc3414fbb4ff66583351fb521074ca73b880c6cf05ca7d3`，不是最终验收包，也未上传GitHub构建缓存。
+- 4人奖励窗口整轮成功、P1 HUD截图视觉审阅、远征画面专门性能、人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
 
 ## 执行与证据纪律
 
