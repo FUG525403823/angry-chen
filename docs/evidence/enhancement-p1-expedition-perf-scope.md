@@ -29,3 +29,15 @@ FrameBench会禁用生产driver并喂入synthetic快照，不覆盖真实Expedit
 本机报告 `build/reports/p1/players/20261104T064234194Z-4d9eab01/peer-{1,2,3,4}.performance.json`：每端requestedNode/nodeMin/nodeMax=3、playerCount4，hunter cardMask7、breach56；1920×1080、引擎quality5/VSync1；每端3轮、missing0。十二个窗口P95范围16.9923–17.0726ms、P99范围17.3898–18.0302ms；triMax不超过53801。四端draw最高162/153/163/167，超过原120阈值；原阈值保留，不以帧率尚可为理由放宽。
 
 该轮为dirty视图投影，尚未归因到P1 Canvas、羊表现、远程玩家、质量设置或外部模型修改；不将其直接判为P1规则回归，也不能用clean旧候选合成场景PASS掩盖。下一步须构建更短的实际图形反馈环，并以相同快照/视角/质量对照clean与dirty及Canvas开销，先测后改；不得降低目标难度、减少羊或关界面来伪造通过。全P1性能门保持未通过。
+
+## 干净源码对照亦FAIL
+
+隔离Git2f45ef0源码（排除外部dirty表现/依赖/配置）完整自检292/292、release构建exit0。真实4人同样1080p/quality5/VSync1、目标node3、满构筑，d99ae8e1全员完整三节点技术PASS、exit0；每端3轮、missing0。但draw最高141/133/137/131，四端仍scopedFrameGraphicsVerdict=FAIL。十二窗口P95范围17.0835–17.2751ms，P99范围17.7089–20.1606ms，triMax20179；帧/面数子项通过不抵消draw超限。
+
+本机 `build/reports/p1/players/20261104T065621924Z-d99ae8e1/peer-{1,2,3,4}.performance.json`。该对照排除了“失败完全由外部dirty模型引起”的假设；因两轮非同seed/视角重放，不把dirty→clean差值当优化成果，不直接给Canvas定罪。
+
+## 缩短反馈环的现有边界
+
+GameLoop公共OnPacket/ApplySnapshot/Frame可喂入真实表现，但当前没有node3录制/回放CLI。现有FrameBench每帧强制生成4p60羊及MatchState/Event，会覆盖外部注入，不能直接冒充真实node3重放。现有acceptance trace仅有State14 base64/本地视角与汇总，缺全实体Snapshot，不能从中重建原峰值。
+
+下一最小诊断片段需全量起点及有序delta/removed、完整MatchState10/State14/Event6与到达时刻、输入/视角/dt、特效预卷、实际图形配置与构建身份，以及峰值frame号/engine draw/原图。可先2–5秒固定视角片段构建公开渲染反馈环，但不当正式预测或性能门；最终仍复测原四人节点场景。没有该反馈环前不盲改渲染或关功能，也不无限重跑以等待偶然PASS。
