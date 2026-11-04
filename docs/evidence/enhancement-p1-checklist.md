@@ -44,7 +44,9 @@
 - 新2人奖励恢复轮69eaf8f5 **三节点PASS，exit0**，两端身份保持、完整首offer恢复/稳定，后续567秒中断0。干净dabe801 release的4人delay100/loss10/乱序重复/5秒断流轮4484ad7b **全员三节点PASS，exit0**、恢复后524秒中断0。4人奖励窗口fce0b861与82a10a31首offer恢复及15秒稳定均通过、全程恢复后中断0，但第三节点全倒地，整轮仍FAIL；不能把恢复子门通过当整轮成功。所有历史FAIL保留，不以成功覆盖。
 - 干净dabe801同源码release/dev原合成负载三轮120+600配对PASS，详见[性能checkpoint](enhancement-p1-performance-checkpoint.md)；不冒充远征奖励画面的实测。候选完整Windows包（含server、双击脚本、完整player树与逐文件SHA256）本机 `build/reports/p1/P1-dabe801-candidate.zip`，SHA256 `ac42db1c55572ff86fc3414fbb4ff66583351fb521074ca73b880c6cf05ca7d3`，不是最终验收包，也未上传GitHub构建缓存。
 - 最新archetype-aware actual-intent driver（hunter安全站稳、breach正常3–5m接敌，不改产品规则）4人奖励窗口轮4a1b1ec9 **全员完整三节点PASS，exit0**：四端身份/首offer完整恢复、3次选卡、24/27/27/27工具，恢复后558–559秒中断0；hunter324/392击杀、653/790触发，breach98/84击杀、142/142触发。humanFunVerified全部false。此前失败仍保留，不说明任何随机局都能通关。
-- P1 HUD截图视觉审阅、远征画面专门性能、人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
+- 最新干净3dda8cb隔离源码引擎291/291、release构建与发布依赖审计exit0；该clean release在6d164835轮 **4人奖励窗口恢复及完整三节点全员PASS，exit0**，每端3次选卡、26/27/27/27工具、恢复后558秒中断0，击杀351/83/417/61，触发695/99/785/77。不是把dirty投影结果归给clean包。
+- 推荐候选更新为本机 `build/reports/p1/P1-3dda8cb-candidate.zip`，SHA256 `a04454e71d77fbf8d5db275ada5d9c7b38c659de7a8c55ca87d5fc034b172723`；含完整client/server、启动脚本、来源身份与逐文件SHA256。旧dabe801包保留作为历史候选，不覆盖其性能证据范围。
+- [P1 UI只读审计](enhancement-p1-ui-audit.md)明确旧IMGUI分辨率断言不能替代远征Canvas、现有鼠标奖励入口没有Tab/Enter选卡、长中文与构筑/工具矩形相交需实际视觉核验。P1 HUD截图视觉审阅、远征画面专门性能、人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
 
 ## 执行与证据纪律
 
