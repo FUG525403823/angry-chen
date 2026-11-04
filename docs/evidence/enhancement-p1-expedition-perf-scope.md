@@ -49,3 +49,9 @@ GameLoop公共OnPacket/ApplySnapshot/Frame可喂入真实表现，但当前没�
 本机 `build/reports/p1/172-draw-probe.json`、构建及player真实exit0。引擎draw各档稳定为54/97/145/58/58，Presentation submitted为5/29/53/7/7。24羊为Single，25羊转Instanced；阈值两侧87draw下降支持原25只实例化阈值造成中小羊群预算悬崖。该诊断不是原网络现场重放，不证明所有超预算均为该原因；没有关闭Canvas、减少目标压力或更改阴影来伪造改善。已仅为远征支持实例化硬件启用小羊群实例化，Classic阈值与历史回退保持。公开Batching策略编译RED→GREEN，clean投影引擎293/293。短环复测176-draw-probe-fixed.json：0/12/24/25/32羊draw54/58/58/58/58，全部valid，24羊145→58；未关闭Canvas、减少羊或更改阴影。原真实4人1080p/quality5/VSync1第三节点满构筑复测92f240db：全员完整三节点exit0，每端3轮missing0，四端scopedFrameGraphicsVerdict=PASS，最大draw74/65/73/72；P95范围16.9681–17.0597ms，P99最高17.7916ms，triMax21599。原FAIL与短环均保留。
 
 本机 `build/reports/p1/players/20261104T072109002Z-92f240db/peer-{1,2,3,4}.performance.json`。该隔离clean构建额外包含默认不运行的scratch诊断hook，实际联机轮无hook参数，原生产driver仍运行；不能据此称最终发布包全部退出。奖励阶段、精确分配与视觉/真人门仍未完成。本次支持“中小可见羊群Single路径”为预算失败来源之一，不声称排除了所有可能峰值。
+
+## 无诊断hook的干净候选确认
+
+干净Git15c3939、无scratch hook发布构建，完整引擎293/293、构建exit0、依赖泄漏审计exit0。实际4人完整三节点a054423b技术PASS、exit0，1080p/quality5/VSync1第三节点满构筑每端3轮missing0，四端scopedFrameGraphicsVerdict=PASS；最大draw71/65/70/70，全窗口P95最高17.486ms、P99最高21.8384ms，原20/33ms及120draw门保持。原本失败轮未删除，未将奖励/分配/真人状态改成PASS。
+
+本地候选 `build/reports/p1/P1-15c3939-candidate.zip` SHA256 `a7229340de550bbcf48cc68ac045b0a4938dfd3dc752498b03b418703b3d908c`，含完整client/server及启动脚本、BUILD-IDENTITY/逐文件哈希；运行包未上传GitHub。隔离导出首次审计因缺开发包缓存未能执行，后以现有已校验vendor内容对同一发布目录完成审计，不把缺测记PASS。

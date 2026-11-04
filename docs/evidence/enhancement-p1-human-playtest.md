@@ -1,6 +1,6 @@
 # P1 有限人类试玩记录（待真实玩家）
 
-状态：未验，不把自动化触发计数当作“好玩”或“打法不同”。现有本地Windows候选包 `build/reports/p1/P1-3dda8cb-candidate.zip`，SHA256 `a04454e71d77fbf8d5db275ada5d9c7b38c659de7a8c55ca87d5fc034b172723`，内含server/client双击脚本、完整player树及逐文件SHA256；该包对应干净3dda8cb源码（不是dirty模型投影），未随源码上传GitHub。部分技术退出门仍待验，所以不是最终验收包；首个构建失败轮不作为推荐交付。
+状态：未验，不把自动化触发计数当作“好玩”或“打法不同”。现有本地Windows候选包 `build/reports/p1/P1-15c3939-candidate.zip`，SHA256 `a7229340de550bbcf48cc68ac045b0a4938dfd3dc752498b03b418703b3d908c`，内含server/client双击脚本、完整player树及逐文件SHA256；该包对应干净15c3939源码（不是dirty模型投影，不含scratch诊断hook），引擎293/293与依赖泄漏审计通过；实际4人完整三节点及第三节点三轮帧/图形子门通过（a054423b），奖励性能与精确分配仍未测。未随源码上传GitHub。部分技术退出门仍待验，所以不是最终验收包；首个构建失败轮不作为推荐交付。
 
 ## 固定任务
 
