@@ -22,10 +22,18 @@
 
 - Canvas使用`ScaleWithScreenSize`、1280×720参考分辨率及固定矩形。三卡各306×218参考像素、卡条款字号18。源码配置不是三种分辨率真实显示证据。
 - 卡条款含收益、条件、代价和前置；需要实际检查换行后内容完整，而不是只确认字符串存在。
-- 按钮`Navigation.Mode.None`；自行创建EventSystem时设置`sendNavigationEvents=false`。当前奖励操作为鼠标点击，**没有实现Tab导航或Enter选择卡片**。这属于当前功能缺口，不应声称已具备键盘选卡；如需新增，另行确认范围，不作为本次审计顺手扩展。
+- 按钮`Navigation.Mode.None`；自行创建EventSystem时设置`sendNavigationEvents=false`。本轮已补远征奖励键盘适配器：Tab/Shift+Tab、方向键在三卡/重抽/跳过间循环并跳过失效项，Enter经官方Submit派发。通过公共HandleRewardNavigation生产接口、真实PlayMode EventSystem焦点和socket收到的Request13验证；不是私有反射或仅字符串检查。
 - 若场景已有EventSystem，本类不会重新关闭其导航事件。实际Enter焦点行为与误触需要验证；采样器Enter抑制测试不能证明EventSystem行为。
 - 构筑文本参考矩形为`x=18..1118, y=590..690`；治疗脉冲按钮为`x=980..1255, y=615..669`，二者矩形相交。**这只是源码几何风险，不是已观察到的遮挡缺陷**；较长构筑文字是否进入按钮区域需截图确认。
 - 目标投屏标记、距离/方向、屏边夹取及进入6米防守圈提示已有实现，但其清晰度、遮挡及玩家能否据此找到设施仍未由本审计验证。
+
+## 奖励键盘公共交互验证
+
+新增键盘适配器先缺接口编译RED，再独立编译GREEN；真实引擎EditMode首先失败于EventSystem未注册，官方setter亦明确拒绝未知实例，保留185/186/187失败日志。未用私有生命周期或全局静态篡改绕过，改为真实PlayMode等待60生产帧后执行UI rig。首次PlayMode因rig未BindSettings使设置测试失效，188轮保留FAIL；绑定真实SettingsStore后189及191轮KEYBOARD PLAYMODE OK/exit0。191轮将已完成/过期保护移到设置开启前独立验证，避免设置关闭同帧保护掩盖其失败。
+
+公共行为覆盖：首offer聚焦Card0、前进/后退、官方Submit只发一条实际选择Request13、pending拒绝第二次动作、新offer重置、普通状态保留鼠标选择、失效重抽跳过、非法方向拒绝、resolved/截止/设置阻断。InputSampler模态Enter不产生Ready/fire单独注册；完整引擎294/294。未改变Classic与共享EventSystem全局设置。
+
+这验证生产公共键盘接口与官方UI事件，但没有向实际player发送OS Tab/Enter，也未用截图确认focus可见对比。现有自建EventSystem禁内建导航；若外部共享EventSystem开启内建Submit，与自适配器双通路仍未验，pending不能单独证明同步回执无重复。视觉与真人门保持未通过；此前候选15c3939不含此后新增键盘实现。
 
 ## 首次窗口捕获尝试（未通过视觉门）
 

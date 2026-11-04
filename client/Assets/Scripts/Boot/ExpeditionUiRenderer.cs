@@ -19,6 +19,8 @@ namespace Ac.Boot
         private Font _font;
         private int _seenStates = -1, _seconds = -1, _toolSeconds = -1;
         private bool _lastPending;
+        private uint _focusRun, _focusOffer;
+        private int _focusChoices = -1;
         public void Bind(GameLoop loop, PresentationLayer presentation)
         {
             _loop = loop;
@@ -79,6 +81,60 @@ namespace Ac.Boot
             // The action frame remains modal even if an immediate ack closes the offer.
             if (_loop.Sampler != null && op >= 2 && op <= 4) _loop.Sampler.SetModalBlocked(true);
         }
+        // Shared production seam: keyboard adapter and tests use official Selectable focus/submit.
+        public bool HandleRewardNavigation(int direction, bool submit)
+        {
+            if (direction < -1 || direction > 1 || _loop == null || _reward == null) return false;
+            var model = _loop.Expedition;
+            var system = EventSystem.current;
+            _reward.SetActive(model.RewardVisible);
+            if (!model.RewardVisible)
+            {
+                if (system != null && RewardIndex(system.currentSelectedGameObject) >= 0) system.SetSelectedGameObject(null);
+                _focusChoices = -1;
+                return false;
+            }
+            var state = model.State;
+            var allowed = model.CanChoose && !_presentation.SettingsInputBlocked;
+            for (var i = 0; i < 3; i++) _cards[i].interactable = allowed;
+            _reroll.interactable = allowed && state.RerollsLeft > 0;
+            _skip.interactable = allowed;
+            if (!allowed || system == null) return false;
+            var choices = state.Choices[0] | state.Choices[1] << 8 | state.Choices[2] << 16;
+            var changed = _focusRun != state.RunId || _focusOffer != state.OfferId || _focusChoices != choices;
+            _focusRun = state.RunId; _focusOffer = state.OfferId; _focusChoices = choices;
+            var index = RewardIndex(system.currentSelectedGameObject);
+            if (changed || index < 0 || !RewardButton(index).IsInteractable())
+            {
+                index = 0;
+                _cards[0].Select();
+            }
+            var moved = false;
+            if (direction != 0)
+            {
+                for (var step = 0; step < 5; step++)
+                {
+                    index = (index + direction + 5) % 5;
+                    var button = RewardButton(index);
+                    if (!button.IsActive() || !button.IsInteractable()) continue;
+                    button.Select(); moved = true; break;
+                }
+            }
+            if (submit)
+            {
+                var button = RewardButton(index);
+                if (!button.IsActive() || !button.IsInteractable()) return moved;
+                ExecuteEvents.Execute(button.gameObject, new BaseEventData(system), ExecuteEvents.submitHandler);
+                return true;
+            }
+            return moved;
+        }
+        private Button RewardButton(int index) { return index < 3 ? _cards[index] : index == 3 ? _reroll : _skip; }
+        private int RewardIndex(GameObject selected)
+        {
+            for (var i = 0; i < 5; i++) if (RewardButton(i).gameObject == selected) return i;
+            return -1;
+        }
         private void LateUpdate()
         {
             if (_loop == null || _root == null) return;
@@ -103,6 +159,11 @@ namespace Ac.Boot
             _reroll.interactable = model.CanChoose && state.RerollsLeft > 0 && !blocked;
             _skip.interactable = model.CanChoose && !blocked;
             _tool.interactable = model.Visible && state.Stage == 2 && model.ToolSeconds == 0 && !model.Pending && !blocked;
+            var direction = 0;
+            if (Input.GetKeyDown(KeyCode.Tab)) direction = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift) ? -1 : 1;
+            else if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.DownArrow)) direction = 1;
+            else if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.UpArrow)) direction = -1;
+            HandleRewardNavigation(direction, Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter));
             if (_seenStates == _loop.ExpeditionStatesApplied && _seconds == model.RemainingSeconds
                 && _toolSeconds == model.ToolSeconds && _lastPending == model.Pending) return;
             _seenStates = _loop.ExpeditionStatesApplied; _seconds = model.RemainingSeconds; _toolSeconds = model.ToolSeconds; _lastPending = model.Pending;
@@ -181,6 +242,10 @@ namespace Ac.Boot
             var rect = obj.GetComponent<RectTransform>(); rect.anchorMin = rect.anchorMax = new Vector2(0, 1);
             rect.pivot = new Vector2(0, 1); rect.anchoredPosition = new Vector2(x, -y); rect.sizeDelta = new Vector2(w, h);
         }
-        private void OnDestroy() { if (_font != null) Destroy(_font); }
+        private void OnDestroy()
+        {
+            if (_font == null) return;
+            if (Application.isPlaying) Destroy(_font); else DestroyImmediate(_font);
+        }
     }
 }

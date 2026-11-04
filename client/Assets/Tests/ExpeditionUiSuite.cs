@@ -13,6 +13,7 @@ namespace Ac.Tests
         public static void Register()
         {
             ExpeditionPerformanceSuite.Register();
+            ExpeditionKeyboardSuite.Register();
             SelfTest.Add("expedition.batching_preserves_classic_threshold", BatchingPreservesClassicThreshold);
             SelfTest.Add("expedition.ui_pending_matches_exact_receipt", PendingMatchesExactReceipt);
             SelfTest.Add("expedition.loop_wrongrun_max_does_not_poison_request", WrongRunMaxDoesNotPoisonRequest);
