@@ -36,7 +36,7 @@
 - 补给根因已公共Room真实RED确认：远征开局跳过既有四箱生成；产品仅新增调用既有spawnAmmoCrates，公共E1500ms备弹0→120、节点不重生、新局清理/Classic四箱均通过。MSVC完整 **599/599**，见日志（本机 `../../build/reports/p1/54-ammo-server-tests.log`）。修复后首真实solo hunter **三节点技术PASS，exit0**：253击杀、3选卡、28工具接受、428触发，humanFunVerified=false；本机结果 `build/reports/p1/players/20261104T014640029Z-37c4121c/peer-1.json`。
 - 隔离暂存源码（不含外部dirty模型/依赖）的完整引擎自检 **285/285，exit0**；比dirty工作树少3项既有ModelGeometry测试，不是删除历史测试。隔离文档/素材门exit0，本机日志 `build/reports/p1/64-clean-index-engine.log`、`63-index-docs.log`、`63-index-assets.log`。
 - 首2人损伤轮与带诊断复轮均全倒地FAIL，后者合法解码后BaselineMismatch为864/818，而坏包/解码/分片错误为0；实际证明delta链断问题，不把恢复身份等同完整成功。本机目录 `build/reports/p1/players/20261104T021111222Z-5c9bb02c`。无损对照约380s、20Hz快照、两节点后server退出，真实exit=-1073741510（0xC000013A），不称访问违例崩溃或通关；来源未证实，进程记录保留。
-- 真实UDP stale恢复与P1有界600ms时效窗口红→绿，MSVC完整 **602/602，exit0**（本机 `build/reports/p1/76-window-tests.log`）；Classic仍2tick、future拒收、rewind仍200ms。修后真实2人损伤轮在跑，尚不能以单测宣称修复成功。
+- 真实UDP stale恢复与P1有界600ms时效窗口红→绿，MSVC完整 **602/602，exit0**（本机 `build/reports/p1/76-window-tests.log`）；Classic仍2tick、future拒收、rewind仍200ms。修后真实2人损伤轮到第三节点progress112050ms后全倒地FAIL，hunter217击杀/24工具、稳定恢复478秒，中断0，不能据推进改善宣称完整成功（本机cb868865）。干净暂存源码release构建/依赖门exit0后4人损伤轮亦在第二节点全倒地FAIL，身份恢复true、稳定240秒（本机9c0509a6）。奖励恢复单独2人轮首次窗口恢复true且稳定，但后续request-rejected:4，整轮FAIL且recoveryInterruptions=6（本机b2cf2e71）。三个目录均在 `build/reports/p1/players/`，不随源码发布。
 - 冻结0948投影原硬预算三轮配对回归PASS，见[性能checkpoint](enhancement-p1-performance-checkpoint.md)。不证明远征奖励Canvas及最终修复产物性能，不能据此标包5通过。
 - 2/4人完整成功、奖励窗口恢复、P1 HUD截图视觉审阅、最终产物性能、最终交付与人类试玩 **仍未通过**；当前提交为实施checkpoint，不宣称P1收尾。
 

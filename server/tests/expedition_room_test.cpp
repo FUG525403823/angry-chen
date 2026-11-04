@@ -105,6 +105,36 @@ AC_TEST(expedition_room_start_preserves_existing_ammo_crates) {
     if (room.world->entities[room.world->activeIds[i] - 1u].kind == ac::sim::EntityKind::kPickup) ++pickups;
   AC_CHECK(pickups == 4u);
 }
+AC_TEST(expedition_room_two_players_refill_with_fire_reload_and_missing_commands) {
+  RoomScenario scenario;
+  auto& room = *scenario.owned;
+  ac::room::Session peer{};
+  AC_CHECK(ac::room::roomJoin(room, peer, 0u) == ac::room::JoinOutcome::kOk);
+  peer.ready = true;
+  scenario.start();
+  AC_CHECK(scenario.request(1u, 2u, 1u, room.run.players[0].offerId));
+  ac::net::ExpeditionRequest choose{};
+  choose.runId = room.run.runId; choose.requestId = 1u; choose.op = 2u;
+  choose.choiceId = 4u; choose.offerId = room.run.players[1].offerId;
+  AC_CHECK(ac::room::roomExpeditionRequest(room, peer, choose, scenario.deps));
+  ac::room::roomTick(room, scenario.deps, 1550u);
+  auto* first = ac::room::playerEntityAt(room, scenario.host.pid);
+  auto* second = ac::room::playerEntityAt(room, peer.pid);
+  AC_CHECK(first != nullptr && second != nullptr && first != second);
+  first->pos = {10.0, 0.0, 10.0}; second->pos = {-10.0, 0.0, -10.0};
+  first->weapon.reserveAmmo = 0; second->weapon.reserveAmmo = 0;
+  for (auto& magazine : first->weapon.magInSlot) magazine = 0;
+  for (auto& magazine : second->weapon.magInSlot) magazine = 0;
+  ac::sim::Command held{};
+  held.buttons = ac::config::kButtonInteract | ac::config::kButtonReload | ac::config::kButtonFire;
+  AC_CHECK(ac::room::roomApplyCommand(room, scenario.host, held));
+  AC_CHECK(ac::room::roomApplyCommand(room, peer, held));
+  // No replacement command simulates dropped/stale-rejected inputs: Room retains last accepted intent.
+  for (uint32_t i = 0u; i < 30u; ++i) ac::room::roomTick(room, scenario.deps, 1600u + i * 50u);
+  AC_CHECK(first->interactHeld && second->interactHeld);
+  AC_CHECK(first->weapon.reserveAmmo == 120);
+  AC_CHECK(second->weapon.reserveAmmo == 120);
+}
 AC_TEST(expedition_room_supply_reaches_entity_and_pressure_is_finite) {
   RoomScenario scenario;
   scenario.start();

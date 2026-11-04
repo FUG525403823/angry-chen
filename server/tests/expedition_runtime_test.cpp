@@ -50,18 +50,27 @@ struct RecoveryPeer {
 AC_TEST(expedition_runtime_stale_command_recovers_delta_chain_without_accepting_input) {
   RecoveryPeer p;AC_CHECK(p.start(true));
   // One lost delta means the client keeps this last applied authority tick.
-  const auto applied=p.tick;for(int i=0;i<13;++i)p.step();
+  const auto applied=p.tick;
+  for (int i = 0; i < 13; ++i) {
+    p.step();
+  }
   const auto drops=ac::metrics::counterValue(p.runtime.counters(),ac::metrics::CounterId::kDroppedFrames);
   p.command(65535,applied,ac::config::kButtonFire);p.step();
   AC_CHECK(p.hasSnapshot);AC_CHECK_EQ(p.baseline,0u);
   AC_CHECK(p.ackedSeq!=65535);
   AC_CHECK(ac::metrics::counterValue(p.runtime.counters(),ac::metrics::CounterId::kDroppedFrames)>drops);
   // Replays cannot solicit another full even when the four-tick throttle expires.
-  for(int i=0;i<4;++i)p.step();p.command(65535,applied);p.step();AC_CHECK(p.baseline!=0);
+  for (int i = 0; i < 4; ++i) {
+    p.step();
+  }
+  p.command(65535,applied);p.step();AC_CHECK(p.baseline!=0);
   // Forward 16-bit wrapping is a new hint; it does not poison accepted-input dedup.
   p.command(1,applied);p.step();AC_CHECK_EQ(p.baseline,0u);
   p.command(2,applied);p.step();AC_CHECK(p.baseline!=0);
-  for(int i=0;i<4;++i)p.step();
+  for (int i = 0; i < 4; ++i) {
+    p.step();
+  }
+
   p.command(3,p.tick+100);p.step();AC_CHECK(p.baseline!=0);
   // Out-of-order hints and a different endpoint claiming this session are rejected.
   p.command(65534,applied);p.step();AC_CHECK(p.baseline!=0);
@@ -76,17 +85,25 @@ AC_TEST(expedition_runtime_bounded_profile_delay_accepts_twelve_ticks_only) {
   RecoveryPeer p;AC_CHECK(p.start(true));const auto applied=p.tick;
   // D=100ms with both directions reordered: 225+225+100+33.34ms,
   // rounded up to the 50ms tick is 12 ticks (600ms).
-  for(int i=0;i<12;++i)p.step();
+  for (int i = 0; i < 12; ++i) {
+    p.step();
+  }
   p.command(20,applied);p.runtime.pollOnce(p.now);p.drain();
   p.step();AC_CHECK_EQ(p.ackedSeq,20u);
   p.command(21,applied);p.step();AC_CHECK(p.ackedSeq!=21u);AC_CHECK_EQ(p.baseline,0u);
-  for(int i=0;i<4;++i)p.step();
+  for (int i = 0; i < 4; ++i) {
+    p.step();
+  }
+
   p.command(22,p.tick+1);p.runtime.pollOnce(p.now);p.drain();p.step();AC_CHECK(p.ackedSeq!=22u);AC_CHECK(p.baseline!=0u);
 }
 
 AC_TEST(expedition_runtime_classic_stale_input_does_not_request_full) {
   RecoveryPeer p;AC_CHECK(p.start(false));const auto applied=p.tick;
-  for(int i=0;i<4;++i)p.step();p.command(20,applied);p.step();
+  for (int i = 0; i < 4; ++i) {
+    p.step();
+  }
+  p.command(20,applied);p.step();
   AC_CHECK(p.hasSnapshot);AC_CHECK(p.baseline!=0);
 }
 

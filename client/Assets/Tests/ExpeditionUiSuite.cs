@@ -17,6 +17,7 @@ namespace Ac.Tests
             SelfTest.Add("expedition.ui_rejects_previous_run_until_reset", RejectsPreviousRunUntilReset);
             SelfTest.Add("expedition.ui_authority_pending_deadline", AuthorityPendingDeadline);
             SelfTest.Add("expedition.ui_modal_zero_and_release", ModalZeroAndRelease);
+            SelfTest.Add("expedition.sampler_interact_reload_fire_remains_held", InteractReloadFireRemainsHeld);
             SelfTest.Add("expedition.loop_state14_restores_authority", LoopStateRestoresAuthority);
         }
 
@@ -145,6 +146,27 @@ namespace Ac.Tests
                 "complete authority restores build/objective/tool without local reward", "restore");
             loop.OnPacket(new PacketHeader { Type = PacketType.ExpeditionState }, new byte[1]);
             SelfTest.True(loop.DecodeFailures == 1 && loop.Expedition.LocalCardMask == 1, "malformed state cannot erase authority", "bad length");
+        }
+
+        private static void InteractReloadFireRemainsHeld()
+        {
+            var sampler = new InputSampler();
+            sampler.SetKey(KeyCode.E, true);
+            sampler.SetKey(KeyCode.R, true);
+            sampler.SetKey(KeyCode.Mouse0, true);
+            var count = 0;
+            for (var i = 0; i < 60; i++)
+            {
+                sampler.Update(34);
+                InputIntent intent;
+                while (sampler.TryTakeCommand(out intent))
+                {
+                    count++;
+                    SelfTest.True((intent.Buttons & InputSampler.ButtonInteract) != 0,
+                        "held E survives reload and fire every production sample", intent.Buttons.ToString());
+                }
+            }
+            SelfTest.True(count >= 60, "continuous production samples cover refill interval", count.ToString());
         }
 
         private static void ModalZeroAndRelease()

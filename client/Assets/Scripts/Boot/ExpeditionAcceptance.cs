@@ -65,7 +65,11 @@ namespace Ac.Boot
             public uint runId, revision, clockMs, progressMs, rewardDeadlineMs, offerId, lastRequestId;
             public int node, stage, result, lastResult, cardMask, hp, mag, reserve, kills;
             public int[] candidates;
-            public ushort target;
+            public ushort target, nearestPickupId;
+            // id=0/count=0 means unknown/not currently visible, not proof that the world has no crate.
+            public int discoveredPickupCount, sampledButtons;
+            public bool sampledInteractHeld;
+            public double nearestPickupX, nearestPickupZ, nearestPickupDistance;
             public float x, z;
             public double yaw, pitch;
             public Diagnostics diagnostics;
@@ -119,6 +123,20 @@ namespace Ac.Boot
                     yaw = loop.Sampler.YawRad, pitch = loop.Sampler.PitchRad,
                     hp = local.HpRatioUnits, mag = loop.Ammo.Mag, reserve = loop.Ammo.Reserve, kills = _kills,
                     cardMask = loop.Expedition.LocalCardMask, diagnostics = Observe(loop) };
+                e.sampledButtons = loop.Sampler.CurrentButtons;
+                e.sampledInteractHeld = (e.sampledButtons & InputSampler.ButtonInteract) != 0;
+                var nearestSquared = double.MaxValue;
+                loop.View.ForEachVisible((ushort id, in FrameEntity pickup) => {
+                    if ((pickup.KindFlags & 3) != 3) return;
+                    e.discoveredPickupCount++;
+                    var px = pickup.XCm / 100.0; var pz = pickup.ZCm / 100.0;
+                    var dx = px - local.XCm / 100.0; var dz = pz - local.ZCm / 100.0;
+                    var squared = dx * dx + dz * dz;
+                    if (squared >= nearestSquared) return;
+                    nearestSquared = squared; e.nearestPickupId = id;
+                    e.nearestPickupX = px; e.nearestPickupZ = pz;
+                    e.nearestPickupDistance = Math.Sqrt(squared);
+                });
                 if (s != null) {
                     e.runId=s.RunId; e.revision=s.Revision; e.clockMs=s.ClockMs; e.progressMs=s.ProgressMs;
                     e.rewardDeadlineMs=s.RewardDeadlineMs; e.offerId=s.OfferId; e.lastRequestId=s.LastRequestId;
