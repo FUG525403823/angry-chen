@@ -12,6 +12,7 @@ param(
  [ValidateSet(1,3)][int]$PerformanceNode = 1,
  [ValidateSet('combat','reward')][string]$PerformanceStage = 'combat',
  [ValidateSet('combat','reward')][string]$RecoveryStage = 'combat',
+ [ValidateRange(0,20)][int]$RewardReadSeconds = 0,
  [ValidateRange(600,1800)][int]$TimeoutSeconds = 900,
  [string]$OutDir = 'build/reports/expedition-acceptance'
 )
@@ -21,6 +22,8 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $playerPath = (Resolve-Path $Player).Path
 $serverPath = (Resolve-Path $ServerExe).Path
 if ($Impaired -and $Players -eq 1) { throw 'Impaired matrix is defined only for 2/4 peers' }
+# Reading wait is acceptance sampling pacing only and exists solely for the reward window.
+if ($RewardReadSeconds -gt 0 -and -not ($ObservePerformance -and $PerformanceStage -eq 'reward')) { throw 'RewardReadSeconds applies only to the reward performance run' }
 $round = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8)
 $out = Join-Path ([IO.Path]::GetFullPath((Join-Path $root $OutDir))) $round
 New-Item -ItemType Directory -Path $out | Out-Null
@@ -52,7 +55,7 @@ try {
  @(Get-ChildItem -LiteralPath $playerRoot -Recurse -File | ForEach-Object {
   [ordered]@{path=$_.FullName.Substring($playerRoot.Length+1);bytes=$_.Length;sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash}
  }) | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 "$out/player-tree-hashes.json"
- [ordered]@{ round=$round; players=$Players; requestedWindowWidth=$WindowWidth; requestedWindowHeight=$WindowHeight; performanceObserver=[bool]$ObservePerformance; performanceNode=$PerformanceNode; performanceStage=$PerformanceStage; impaired=[bool]$Impaired; recoveryStage=$(if($Impaired){$RecoveryStage}else{'none'}); delayMs=$delay; lossPct=$loss; outageMs=$(if($Impaired){5000}else{0}); stableSeconds=15; timeoutSeconds=$TimeoutSeconds; humanFunVerified=$false; dirtyProjection=$true; head=(git -C $root rev-parse HEAD); status=@(git -C $root status --porcelain); player=$playerPath; playerSha256=(Get-FileHash $playerPath).Hash; server=$serverPath; serverSha256=(Get-FileHash $serverPath).Hash; contentSha256=(Get-FileHash (Join-Path $root 'docs/expedition-p1-content.txt')).Hash } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 "$out/manifest.json"
+ [ordered]@{ round=$round; players=$Players; requestedWindowWidth=$WindowWidth; requestedWindowHeight=$WindowHeight; performanceObserver=[bool]$ObservePerformance; performanceNode=$PerformanceNode; performanceStage=$PerformanceStage; impaired=[bool]$Impaired; recoveryStage=$(if($Impaired){$RecoveryStage}else{'none'}); delayMs=$delay; lossPct=$loss; outageMs=$(if($Impaired){5000}else{0}); stableSeconds=15; timeoutSeconds=$TimeoutSeconds; humanFunVerified=$false; dirtyProjection=$true; head=(git -C $root rev-parse HEAD); status=@(git -C $root status --porcelain); rewardReadSeconds=$RewardReadSeconds; player=$playerPath; playerSha256=(Get-FileHash $playerPath).Hash; server=$serverPath; serverSha256=(Get-FileHash $serverPath).Hash; contentSha256=(Get-FileHash (Join-Path $root 'docs/expedition-p1-content.txt')).Hash } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 "$out/manifest.json"
  Copy-Item -LiteralPath (Join-Path $root 'docs/expedition-p1-content.txt') -Destination "$out/content.txt"
  $server = Start-Process -FilePath $serverPath -WorkingDirectory $root -ArgumentList @('--serve', "--udp-port=$UdpPort", "--http-port=$HttpPort", "`"--data-dir=$out/data`"", '--minutes=35') -RedirectStandardOutput "$out/server.log" -RedirectStandardError "$out/server.err.log" -PassThru
  $null = $server.Handle
@@ -79,7 +82,7 @@ try {
  }
  for ($i=1;$i -le $Players;$i++) {
   $build=if($Players -eq 1){$SoloBuild}elseif($i % 2 -eq 1){'hunter'}else{'breach'}
-  $arguments=@('-acserver', "127.0.0.1:$clientPort", '-screen-fullscreen', '0', '-screen-width', "$WindowWidth", '-screen-height', "$WindowHeight", '-expeditionAcceptanceOut', "`"$out/peer-$i.json`"", '-expeditionAcceptanceName', "p1peer$i", '-expeditionAcceptanceTeam', "$Players", '-expeditionAcceptanceBuild', $build, '-expeditionAcceptanceTimeout', "$TimeoutSeconds", '-expeditionAcceptanceRecovery', "$([int]$Impaired.IsPresent)", '-expeditionAcceptanceStableSeconds', '15', '-expeditionAcceptanceRecoveryStage', $RecoveryStage, '-logFile', "`"$out/peer-$i.log`"")
+  $arguments=@('-acserver', "127.0.0.1:$clientPort", '-screen-fullscreen', '0', '-screen-width', "$WindowWidth", '-screen-height', "$WindowHeight", '-expeditionAcceptanceOut', "`"$out/peer-$i.json`"", '-expeditionAcceptanceName', "p1peer$i", '-expeditionAcceptanceTeam', "$Players", '-expeditionAcceptanceBuild', $build, '-expeditionAcceptanceTimeout', "$TimeoutSeconds", '-expeditionAcceptanceRecovery', "$([int]$Impaired.IsPresent)", '-expeditionAcceptanceStableSeconds', '15', '-expeditionAcceptanceRecoveryStage', $RecoveryStage, '-expeditionAcceptanceRewardReadSeconds', "$RewardReadSeconds", '-logFile', "`"$out/peer-$i.log`"")
   if($ObservePerformance){$arguments+=@('-expeditionPerformanceOut', "`"$out/peer-$i.performance.json`"", '-expeditionPerformanceNode', "$PerformanceNode", '-expeditionPerformanceStage', $PerformanceStage)}
   $child=Start-Process -FilePath $playerPath -WorkingDirectory (Split-Path -Parent $playerPath) -ArgumentList $arguments -PassThru
   $null=$child.Handle; $children += $child

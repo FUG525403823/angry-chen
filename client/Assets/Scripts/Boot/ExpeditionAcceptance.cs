@@ -137,6 +137,7 @@ namespace Ac.Boot
             private readonly int _team, _timeout, _stable;
             private readonly bool _recovery, _rewardRecovery;
             private bool _rewardStable;
+            private readonly RewardReadingWindow _rewardRead;
             private readonly double _start;
             private double _nextAction, _nextTrace, _stableAt = -1;
             private bool _done, _armed, _interrupted, _recovered;
@@ -166,6 +167,7 @@ namespace Ac.Boot
                 _recovery = BenchJson.ArgInt(args, "-expeditionAcceptanceRecovery", 0) == 1;
                 _rewardRecovery = _recovery && BenchJson.Arg(args, "-expeditionAcceptanceRecoveryStage", "combat") == "reward";
                 _stable = BenchJson.ArgInt(args, "-expeditionAcceptanceStableSeconds", 15);
+                _rewardRead = new RewardReadingWindow(BenchJson.ArgInt(args, "-expeditionAcceptanceRewardReadSeconds", 0));
                 _start = Time.realtimeSinceStartupAsDouble;
                 Application.runInBackground = true;
             }
@@ -351,6 +353,9 @@ namespace Ac.Boot
                 }
                 if (state.Stage == 1 && loop.Expedition.CanChoose && now >= _nextAction)
                 {
+                    // Acceptance-driver pacing only: default 0 keeps the historical immediate choice.
+                    // It never grants cards, mutates the 30s authoritative deadline or shortens combat.
+                    if (!_rewardRead.Elapsed(state.RunId, state.OfferId, now)) return;
                     byte choice = 0;
                     var preferred = _build == "breach" ? new byte[] {4, 6, 5} : new byte[] {1, 2, 3};
                     foreach (var p in preferred) foreach (var c in state.Choices) if (c == p && choice == 0) choice = c;
@@ -478,6 +483,40 @@ namespace Ac.Boot
                 Debug.Log("EXPEDITION ACCEPTANCE " + (pass ? "OK " : "FAIL ") + reason);
                 Application.Quit(pass ? 0 : 1);
             }
+        }
+    }
+
+    // Acceptance-only reading wait for the opt-in reward performance run.
+    // It must not influence product rules: it only delays the driver's normal choice request
+    // so the frame sampler can collect complete 120+600 frame windows inside the real,
+    // untouched 30s authoritative reward offer. Default 0 = no wait, as before.
+    public sealed class RewardReadingWindow
+    {
+        public const double MaxSeconds = 20.0;
+        private readonly double _seconds;
+        private bool _started;
+        private uint _runId, _offerId;
+        private double _startedAt;
+
+        public RewardReadingWindow(double seconds)
+        {
+            _seconds = seconds > 0 ? (seconds > MaxSeconds ? MaxSeconds : seconds) : 0;
+        }
+
+        public double Seconds { get { return _seconds; } }
+
+        // Restarts for every run/offer pair, so each legal reward offer gets its own reading time
+        // and stale elapsed state can never skip a later offer.
+        public bool Elapsed(uint runId, uint offerId, double nowSeconds)
+        {
+            if (!_started || runId != _runId || offerId != _offerId)
+            {
+                _started = true;
+                _runId = runId;
+                _offerId = offerId;
+                _startedAt = nowSeconds;
+            }
+            return nowSeconds - _startedAt >= _seconds;
         }
     }
 }

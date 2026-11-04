@@ -263,6 +263,7 @@ namespace Ac.Boot
         public bool TraceReconciliation { get; set; }
         public Action<FrameStage> DiagnosticStageMarked;
         public Action DiagnosticFrameBegin;
+        public Action DiagnosticFrameEnd;
 
         private void MarkStage(FrameStage stage)
         {
@@ -552,6 +553,9 @@ namespace Ac.Boot
 
         public void Frame(double dtMs)
         {
+            // Exact production-frame boundary for opt-in diagnostics (allocation observer).
+            // These hooks stay null in normal play, so the single production frame entry is unchanged.
+            if (DiagnosticFrameBegin != null) DiagnosticFrameBegin();
             _profiler.Begin();
             // 当帧信号：上一帧的"响过"不能留到这一帧（否则枪口火焰会一直亮）。
             LocalShotFired = false;
@@ -704,6 +708,7 @@ namespace Ac.Boot
 
             _profiler.End();
             Frames += 1;
+            if (DiagnosticFrameEnd != null) DiagnosticFrameEnd();
         }
 
         // type 11 Join（ADR-009「握手时序」）：把本地昵称送到服务端。两个时机都要覆盖：

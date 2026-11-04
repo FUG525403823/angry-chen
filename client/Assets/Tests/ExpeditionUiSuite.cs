@@ -26,6 +26,8 @@ namespace Ac.Tests
             SelfTest.Add("expedition.sampler_number_keys_select_rifle_shotgun", NumberKeysSelectRifleShotgun);
             SelfTest.Add("expedition.acceptance_refill_tracks_visible_pickup", RefillTargetTracksVisiblePickup);
             SelfTest.Add("expedition.acceptance_combat_point_stays_in_purifier", CombatPointAvoidsVisibleThreatInsidePurifier);
+            SelfTest.Add("expedition.reward_read_window_default_is_zero", RewardReadWindowDefaultIsZero);
+            SelfTest.Add("expedition.reward_read_window_resets_per_offer", RewardReadWindowResetsPerOffer);
         }
 
         private static void BatchingPreservesClassicThreshold()
@@ -298,6 +300,29 @@ namespace Ac.Tests
             sampler.SetKey(KeyCode.Mouse0, true);
             sampler.Update(34);
             SelfTest.True((sampler.CurrentButtons & InputSampler.ButtonFire) != 0, "new input after release works", "fresh press");
+        }
+
+        private static void RewardReadWindowDefaultIsZero()
+        {
+            var immediate = new RewardReadingWindow(0);
+            SelfTest.True(immediate.Seconds == 0 && immediate.Elapsed(1, 1, 100),
+                "default acceptance reading wait is immediately elapsed", immediate.Seconds.ToString());
+            var negative = new RewardReadingWindow(-3);
+            SelfTest.True(negative.Seconds == 0, "negative reading wait clamps to zero", negative.Seconds.ToString());
+            var oversized = new RewardReadingWindow(25);
+            SelfTest.True(oversized.Seconds == RewardReadingWindow.MaxSeconds && oversized.Seconds == 20,
+                "reading wait clamps to the approved maximum", oversized.Seconds.ToString());
+        }
+
+        private static void RewardReadWindowResetsPerOffer()
+        {
+            var window = new RewardReadingWindow(18);
+            SelfTest.True(!window.Elapsed(7, 100, 1000), "reading wait does not elapse immediately", "early");
+            SelfTest.True(!window.Elapsed(7, 100, 1017.999), "reading wait requires the full interval", "early");
+            SelfTest.True(window.Elapsed(7, 100, 1018), "reading wait elapses at the boundary", "late");
+            SelfTest.True(!window.Elapsed(7, 101, 1020), "a new offer restarts the reading interval", "stale");
+            SelfTest.True(!window.Elapsed(8, 101, 1030), "a new run restarts the reading interval", "stale");
+            SelfTest.True(window.Elapsed(8, 101, 1048), "the restarted interval elapses", "late");
         }
     }
 }

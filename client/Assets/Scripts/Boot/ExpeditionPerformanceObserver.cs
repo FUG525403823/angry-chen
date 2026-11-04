@@ -77,6 +77,44 @@ namespace Ac.Boot
         }
     }
 
+    // Exact whole-production-frame allocation seam: only the single GameLoop.Frame call is inside
+    // the measured window. Acceptance Drive, settings persistence and Canvas/LateUpdate stay outside.
+    // Zero allocation is the original budget; an absent counter is UNMEASURED, never assumed 0 B.
+    public sealed class ExpeditionLoopAllocationSamples
+    {
+        public int Warmup { get; private set; }
+        public int Measured { get; private set; }
+        public int NonZero { get; private set; }
+        public int Unmeasurable { get; private set; }
+        public long TotalBytes { get; private set; }
+        public long MaxBytes { get; private set; }
+        public string Reason { get; private set; }
+        public double BytesPerFrame { get { return Measured == 0 ? -1 : TotalBytes / (double)Measured; } }
+        public string Status
+        {
+            get
+            {
+                if (Unmeasurable > 0) return "UNMEASURED";
+                if (Measured < FrameBudget.SampleFrames) return "UNVERIFIED";
+                return TotalBytes == 0 ? "PASS" : "FAIL";
+            }
+        }
+        public void Add(long bytes, string reason)
+        {
+            if (bytes < 0)
+            {
+                Unmeasurable++;
+                if (string.IsNullOrEmpty(Reason)) Reason = reason;
+                return;
+            }
+            if (Warmup < FrameBudget.WarmupFrames) { Warmup++; return; }
+            Measured++;
+            TotalBytes += bytes;
+            if (bytes > MaxBytes) MaxBytes = bytes;
+            if (bytes != 0) NonZero++;
+        }
+    }
+
     // Opt-in only. Does not replace the driver, render manually, or change pacing.
     public sealed class ExpeditionPerformanceObserver : MonoBehaviour
     {
@@ -86,6 +124,9 @@ namespace Ac.Boot
         private static byte _requestedStage = 2;
         private GameLoop _loop;
         private ExpeditionPerformanceSamples _samples;
+        private ExpeditionLoopAllocationSamples _allocation;
+        private bool _allocationArmed;
+        private long _allocationStart;
         private ProfilerRecorder _draws, _triangles;
         private double _previousWall;
         private int _previousFrame = -1;
@@ -120,11 +161,40 @@ namespace Ac.Boot
             var observer = root.AddComponent<ExpeditionPerformanceObserver>();
             observer._loop = loop;
             observer._samples = new ExpeditionPerformanceSamples(_requestedNode, _requestedStage);
+            observer._allocation = new ExpeditionLoopAllocationSamples();
+            if (loop != null)
+            {
+                // Pay the counter/JIT warm-up before any measured window opens.
+                var counterAvailable = BenchAlloc.CounterAvailable;
+                if (!counterAvailable) Debug.LogWarning("Exact loop allocation counter unavailable; allocation stays UNMEASURED.");
+                loop.DiagnosticFrameBegin += observer.BeginLoopAllocationFrame;
+                loop.DiagnosticFrameEnd += observer.EndLoopAllocationFrame;
+            }
             if (_requestedStage == 1) _requestedNode = 0;
             if ((_requestedStage != 1 && _requestedStage != 2) || (_requestedStage == 2 && _requestedNode != 1 && _requestedNode != 3))
                 Debug.LogWarning("Expedition performance stage must be combat or reward; combat node must be 1 or 3. Report remains UNVERIFIED.");
             try { observer._draws = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Draw Calls Count", 1, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); } catch (Exception) { }
             try { observer._triangles = ProfilerRecorder.StartNew(ProfilerCategory.Render, "Triangles Count", 1, ProfilerRecorderOptions.Default | ProfilerRecorderOptions.SumAllSamplesInFrame); } catch (Exception) { }
+        }
+        private void BeginLoopAllocationFrame()
+        {
+            _allocationArmed = false;
+            if (_written || _loop == null || _allocation == null) return;
+            var state = _loop.Expedition.State;
+            if (state == null || state.Mode != 1) return;
+            var eligible = _requestedStage == 1
+                ? state.Stage == 1
+                : state.Stage == 2 && state.Node == _requestedNode;
+            if (!eligible) return;
+            _allocationStart = BenchAlloc.Begin();
+            _allocationArmed = true;
+        }
+        private void EndLoopAllocationFrame()
+        {
+            if (!_allocationArmed) return;
+            _allocationArmed = false;
+            string reason;
+            _allocation.Add(BenchAlloc.BytesSince(_allocationStart, out reason), reason);
         }
         private void Update()
         {
@@ -161,7 +231,12 @@ namespace Ac.Boot
         [Serializable] private sealed class Report
         {
             public string scopedFrameGraphicsVerdict, requestedStage, rewardStatus = "UNVERIFIED", combatStatus = "UNVERIFIED", allocation = "UNMEASURED", canvasHumanReview = "UNREVIEWED";
-            public string scope = "Completed engine-frame wall interval and graphics; includes acceptance driver, I/O, VSync and scheduling. Not GPU time or zero-allocation proof. Requested stage only; partial windows never cross phases or reward offers.";
+            public string scope = "Completed engine-frame wall interval and graphics; includes acceptance driver, I/O, VSync and scheduling. Allocation is measured separately on the exact GameLoop.Frame boundary (see allocationScope), never by heap delta. Requested stage only; partial windows never cross phases or reward offers.";
+            public string allocationScope = "Exact Memory/'GC Allocated In Frame' delta across the single GameLoop.Frame call inside eligible production frames (120 warmup + >=600 measured). Excludes acceptance Drive, settings persistence and Canvas/LateUpdate. Development/editor counter only; release reports UNMEASURED instead of a heap-delta or an assumed 0 B.";
+            public int loopAllocWarmupFrames, loopAllocMeasuredFrames, loopAllocNonZeroFrames, loopAllocUnmeasurable;
+            public long loopAllocTotalBytes, loopAllocMaxBytes;
+            public double loopAllocBytesPerFrame;
+            public string loopAllocReason;
             public string sceneCoverage = "Requested-node combat or all-node reward only; not a worst-case scene guarantee. Card/build/player ranges are observed, not assumed. Metadata includes warmup and interrupted candidates of the requested node.";
             public int requestedNode, runs, missing;
             public int nodeMin, nodeMax, cardMaskMin, cardMaskMax, playerCountMin, playerCountMax;
@@ -177,6 +252,15 @@ namespace Ac.Boot
                 requestedStage = _requestedStage == 1 ? "reward" : _requestedStage == 2 ? "combat" : "invalid",
                 rewardStatus = _requestedStage == 1 ? _samples.Status : "UNVERIFIED", combatStatus = _requestedStage == 2 ? _samples.Status : "UNVERIFIED",
                 scopedFrameGraphicsVerdict = _samples.Status, runs = _samples.Runs, missing = _samples.Missing,
+                allocation = _allocation == null ? "UNMEASURED" : _allocation.Status,
+                loopAllocWarmupFrames = _allocation == null ? 0 : _allocation.Warmup,
+                loopAllocMeasuredFrames = _allocation == null ? 0 : _allocation.Measured,
+                loopAllocNonZeroFrames = _allocation == null ? 0 : _allocation.NonZero,
+                loopAllocUnmeasurable = _allocation == null ? 0 : _allocation.Unmeasurable,
+                loopAllocTotalBytes = _allocation == null ? -1 : _allocation.TotalBytes,
+                loopAllocMaxBytes = _allocation == null ? -1 : _allocation.MaxBytes,
+                loopAllocBytesPerFrame = _allocation == null ? -1 : _allocation.BytesPerFrame,
+                loopAllocReason = _allocation == null ? "no allocation sampler" : _allocation.Reason,
                 wallP95Ms = _samples.P95, wallP99Ms = _samples.P99, drawMax = _samples.DrawMax, triangleMax = _samples.TriangleMax,
                 nodeMin = _nodeMin == int.MaxValue ? -1 : _nodeMin, nodeMax = _nodeMax, cardMaskMin = _cardsMin == int.MaxValue ? -1 : _cardsMin, cardMaskMax = _cardsMax,
                 playerCountMin = _playersMin == int.MaxValue ? -1 : _playersMin, playerCountMax = _playersMax,
@@ -192,6 +276,15 @@ namespace Ac.Boot
             catch (Exception error) { Debug.LogWarning("Expedition performance report unavailable: " + error.Message); }
         }
         private void OnApplicationQuit() { WriteReport(); }
-        private void OnDestroy() { WriteReport(); _draws.Dispose(); _triangles.Dispose(); }
+        private void OnDestroy()
+        {
+            WriteReport();
+            if (_loop != null)
+            {
+                _loop.DiagnosticFrameBegin -= BeginLoopAllocationFrame;
+                _loop.DiagnosticFrameEnd -= EndLoopAllocationFrame;
+            }
+            _draws.Dispose(); _triangles.Dispose();
+        }
     }
 }

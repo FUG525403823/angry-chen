@@ -1,10 +1,56 @@
 using Ac.Core;
 using Ac.Boot;
+using Ac.Sim;
+using Ac.UI;
+using Ac.View;
 namespace Ac.Tests
 {
     internal static class ExpeditionPerformanceSuite
     {
-        public static void Register() { SelfTest.Add("p1.performance_missing_is_unverified", Missing); }
+        public static void Register()
+        {
+            SelfTest.Add("p1.performance_missing_is_unverified", Missing);
+            SelfTest.Add("p1.performance_loop_allocation_exact_zero_only", LoopAllocationExactZeroOnly);
+            SelfTest.Add("p1.performance_loop_diagnostics_bracket_frame", LoopDiagnosticsBracketFrame);
+        }
+
+        private static void LoopAllocationExactZeroOnly()
+        {
+            var unsampled = new ExpeditionLoopAllocationSamples();
+            SelfTest.True(unsampled.Status == "UNVERIFIED", "no exact loop allocation sample is unverified", unsampled.Status);
+            var missing = new ExpeditionLoopAllocationSamples();
+            for (var i = 0; i < FrameBudget.WarmupFrames + FrameBudget.SampleFrames; i++)
+                missing.Add(-1, "GC Allocated In Frame unavailable in release");
+            SelfTest.True(missing.Status == "UNMEASURED" && missing.Reason == "GC Allocated In Frame unavailable in release",
+                "missing exact counter is unmeasured instead of zero bytes", missing.Status);
+            var pass = new ExpeditionLoopAllocationSamples();
+            for (var i = 0; i < FrameBudget.WarmupFrames + FrameBudget.SampleFrames; i++) pass.Add(0, null);
+            SelfTest.True(pass.Status == "PASS" && pass.Measured == FrameBudget.SampleFrames
+                    && pass.BytesPerFrame == 0 && pass.MaxBytes == 0 && pass.NonZero == 0,
+                "600 exact zero frames pass the original zero budget", pass.Status);
+            pass.Add(1, null);
+            SelfTest.True(pass.Status == "FAIL" && pass.NonZero == 1 && pass.MaxBytes == 1 && pass.TotalBytes == 1,
+                "one allocated byte fails the zero budget", pass.Status);
+            var shortRun = new ExpeditionLoopAllocationSamples();
+            for (var i = 0; i < FrameBudget.WarmupFrames + FrameBudget.SampleFrames - 1; i++) shortRun.Add(0, null);
+            SelfTest.True(shortRun.Status == "UNVERIFIED" && shortRun.Measured == FrameBudget.SampleFrames - 1,
+                "insufficient exact frames cannot pass", shortRun.Status);
+        }
+
+        private static void LoopDiagnosticsBracketFrame()
+        {
+            var loop = new GameLoop(new SnapshotView(), new EntityViews(), new Hud(), new FrameProfiler());
+            var begin = 0;
+            var end = 0;
+            loop.DiagnosticFrameBegin = () => begin++;
+            loop.DiagnosticFrameEnd = () => end++;
+            loop.Frame(16);
+            SelfTest.True(begin == 1 && end == 1,
+                "loop diagnostics bracket exactly one production frame", begin + "/" + end);
+            loop.Frame(16);
+            SelfTest.True(begin == 2 && end == 2, "loop diagnostics keep firing per frame", begin + "/" + end);
+        }
+
         private static void Missing()
         {
             var reward = new ExpeditionPerformanceSamples(0, 1);
