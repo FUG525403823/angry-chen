@@ -883,9 +883,7 @@ namespace Ac.Boot
             _weaponAccentObject.transform.SetParent(_weaponObject.transform, false);
             _weaponAccentFilter = _weaponAccentObject.AddComponent<MeshFilter>();
             _weaponAccentRenderer = _weaponAccentObject.AddComponent<MeshRenderer>();
-            var accentMaterial = MakeInstancedMaterial("Ac/WeaponAccent", new Color32(0x9A, 0x9E, 0xA8, 255));
-            accentMaterial.color = new Color(0.60f, 0.62f, 0.66f, 1f);
-            MaterialCullOff(accentMaterial);
+            var accentMaterial = WeaponMesh.CreateMaterial("Ac/WeaponAccent");
             _weaponAccentRenderer.sharedMaterial = accentMaterial;
             _weaponAccentRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             _weaponAccentRenderer.receiveShadows = false;
@@ -912,10 +910,7 @@ namespace Ac.Boot
             shellRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             shellRenderer.receiveShadows = false;
             _shellObject.SetActive(false);
-            var material = MakeInstancedMaterial("Ac/Weapon", new Color32(0x55, 0x57, 0x5E, 255));
-            material.color = new Color(0.42f, 0.43f, 0.47f, 1f);
-            // 双面：手写长方体的绕序难免有个别面朝里，单面会看到“空心的枪”
-            MaterialCullOff(material);
+            var material = WeaponMesh.CreateMaterial("Ac/Weapon");
             _weaponRenderer.sharedMaterial = material;
             _weaponRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             _weaponRenderer.receiveShadows = false;

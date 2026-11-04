@@ -25,6 +25,7 @@ namespace Ac.View
         private readonly GameObject _root;
         private readonly Mesh _cube;
         private readonly Mesh _gun;
+        private readonly Material _gunMaterial;
         private readonly Material[] _materials;
         private readonly Model[] _models = new Model[EntityViews.Capacity];
         private readonly int[] _byId = new int[EntityViews.Capacity + 1];
@@ -46,7 +47,8 @@ namespace Ac.View
             _root = new GameObject("Ac.RemotePlayers");
             _root.transform.SetParent(parent, false);
             _cube = BuildCube();
-            _gun = WeaponMesh.BuildBody(1);
+            _gun = WeaponMesh.BuildComplete(1);
+            _gunMaterial = WeaponMesh.CreateMaterial("Ac/ChenRifle");
             _materials = new[]
             {
                 ArenaMaterials.CreateInstanced("Ac/ChenUniform", ArtPalette.Hex(0x36566B)),
@@ -130,7 +132,7 @@ namespace Ac.View
 
         private void DrawGroup(int group, int count)
         {
-            Graphics.DrawMeshInstanced(group == 4 ? _gun : _cube, 0, _materials[group == 4 ? 2 : group], _batch, count);
+            Graphics.DrawMeshInstanced(group == 4 ? _gun : _cube, 0, (group == 4 ? _gunMaterial : _materials[group]), _batch, count);
             SubmittedDraws++;
             SubmittedInstances += count;
         }
@@ -166,23 +168,53 @@ namespace Ac.View
             model.Root = new GameObject("ChenSir");
             model.Root.transform.SetParent(_root.transform, false);
             model.Body = Pivot("Body", model.Root.transform, Vector3.zero);
-            Part("Torso", model.Body, new Vector3(0f, 1.13f, 0f), new Vector3(.48f, .58f, .27f), 0);
-            Part("Belt", model.Body, new Vector3(0f, .86f, 0f), new Vector3(.49f, .09f, .29f), 2);
-            Part("Badge", model.Body, new Vector3(-.12f, 1.27f, .145f), new Vector3(.075f, .09f, .025f), 3);
-            model.Head = Pivot("HeadAim", model.Body, new Vector3(0f, 1.48f, 0f));
-            Part("Head", model.Head, new Vector3(0f, .1f, 0f), new Vector3(.30f, .34f, .29f), 1);
-            Part("Hair", model.Head, new Vector3(0f, .25f, -.015f), new Vector3(.32f, .10f, .30f), 2);
-            Part("Brow", model.Head, new Vector3(0f, .15f, .151f), new Vector3(.24f, .035f, .025f), 2);
-            Part("Nose", model.Head, new Vector3(0f, .07f, .17f), new Vector3(.065f, .08f, .07f), 1);
-            model.Arms = Pivot("Aim", model.Body, new Vector3(0f, 1.32f, 0f));
-            Part("LeftArm", model.Arms, new Vector3(-.24f, -.09f, .20f), new Vector3(.16f, .18f, .48f), 0);
-            Part("RightArm", model.Arms, new Vector3(.24f, -.09f, .20f), new Vector3(.16f, .18f, .48f), 0);
-            Part("LeftHand", model.Arms, new Vector3(-.15f, -.09f, .43f), new Vector3(.16f, .14f, .15f), 1);
-            Part("RightHand", model.Arms, new Vector3(.16f, -.09f, .43f), new Vector3(.16f, .14f, .15f), 1);
-            var gun = Part("Rifle", model.Arms, new Vector3(.08f, -.04f, .40f), Vector3.one, 2);
+            Part("Torso", model.Body, new Vector3(0, 1.105f, 0), new Vector3(.50f, .55f, .30f), 0);
+            Part("Belt", model.Body, new Vector3(0, .848f, 0), new Vector3(.51f, .075f, .32f), 2);
+            Part("Buckle", model.Body, new Vector3(0, .848f, .17f), new Vector3(.083f, .059f, .025f), 3);
+            Part("Neck", model.Body, new Vector3(0, 1.40f, 0), new Vector3(.18f, .14f, .19f), 1);
+            for (var side = -1; side <= 1; side += 2)
+            {
+                var collar = Part(side < 0 ? "LeftCollar" : "RightCollar", model.Body,
+                    new Vector3(side * .085f, 1.348f, .154f), new Vector3(.11f, .065f, .035f), 2);
+                collar.transform.localRotation = Quaternion.Euler(0, 0, side * 24f);
+                Part(side < 0 ? "LeftEpaulet" : "RightEpaulet", model.Body,
+                    new Vector3(side * .212f, 1.38f, .005f), new Vector3(.115f, .027f, .23f), 3);
+                Part(side < 0 ? "LeftPocket" : "RightPocket", model.Body,
+                    new Vector3(side * .14f, 1.13f, .154f), new Vector3(.12f, .115f, .025f), 0);
+                Part(side < 0 ? "LeftPocketFlap" : "RightPocketFlap", model.Body,
+                    new Vector3(side * .14f, 1.184f, .17f), new Vector3(.13f, .030f, .025f), 2);
+            }
+            Part("Tie", model.Body, new Vector3(0, 1.227f, .16f), new Vector3(.040f, .16f, .026f), 2);
+            Part("Badge", model.Body, new Vector3(-.14f, 1.27f, .17f), new Vector3(.068f, .082f, .028f), 3);
+            model.Head = Pivot("HeadAim", model.Body, new Vector3(0, 1.43f, 0));
+            Part("Head", model.Head, new Vector3(0, .135f, 0), new Vector3(.365f, .40f, .335f), 1);
+            Part("Hair", model.Head, new Vector3(0, .304f, -.025f), new Vector3(.378f, .115f, .33f), 2);
+            Part("HairBack", model.Head, new Vector3(0, .20f, -.16f), new Vector3(.345f, .21f, .045f), 2);
+            for (var side = -1; side <= 1; side += 2)
+            {
+                Part(side < 0 ? "LeftEar" : "RightEar", model.Head,
+                    new Vector3(side * .182f, .12f, -.005f), new Vector3(.063f, .10f, .10f), 1);
+                Part(side < 0 ? "LeftEye" : "RightEye", model.Head,
+                    new Vector3(side * .085f, .158f, .168f), new Vector3(.033f, .039f, .018f), 2);
+                var brow = Part(side < 0 ? "LeftBrow" : "RightBrow", model.Head,
+                    new Vector3(side * .085f, .211f, .17f), new Vector3(.102f, .023f, .025f), 2);
+                brow.transform.localRotation = Quaternion.Euler(0, 0, side * 12f);
+            }
+            Part("Nose", model.Head, new Vector3(0, .10f, .182f), new Vector3(.065f, .075f, .075f), 1);
+            Part("Mouth", model.Head, new Vector3(0, .035f, .169f), new Vector3(.095f, .016f, .018f), 2);
+            model.Arms = Pivot("Aim", model.Body, new Vector3(0, 1.30f, 0));
+            // Bent elbows converge on the rifle grip and handguard instead of parallel forward blocks.
+            Limb("LeftSleeve", model.Arms, new Vector3(-.25f, .025f, 0), new Vector3(-.26f, -.20f, .21f), .16f, 0);
+            Limb("LeftForearm", model.Arms, new Vector3(-.26f, -.20f, .21f), new Vector3(.035f, -.135f, .535f), .115f, 1);
+            Limb("RightSleeve", model.Arms, new Vector3(.25f, .025f, 0), new Vector3(.28f, -.22f, .15f), .16f, 0);
+            Limb("RightForearm", model.Arms, new Vector3(.28f, -.22f, .15f), new Vector3(.08f, -.145f, .34f), .115f, 1);
+            Part("LeftHand", model.Arms, new Vector3(.035f, -.135f, .535f), new Vector3(.125f, .10f, .13f), 1);
+            Part("RightHand", model.Arms, new Vector3(.08f, -.145f, .34f), new Vector3(.105f, .12f, .10f), 1);
+            var gun = Part("Rifle", model.Arms, new Vector3(.07f, -.08f, .37f), Vector3.one, 2);
             gun.GetComponent<MeshFilter>().sharedMesh = _gun;
-            model.LeftLeg = Leg("LeftLeg", model.Body, -.14f);
-            model.RightLeg = Leg("RightLeg", model.Body, .14f);
+            gun.GetComponent<MeshRenderer>().sharedMaterial = _gunMaterial;
+            model.LeftLeg = Leg("LeftLeg", model.Body, -.135f);
+            model.RightLeg = Leg("RightLeg", model.Body, .135f);
             // Model topology is immutable after construction. Mesh.triangles and hierarchy queries
             // allocate, so cache their actual counts here rather than on the frame path.
             var renderers = model.Root.GetComponentsInChildren<MeshRenderer>();
@@ -204,8 +236,8 @@ namespace Ac.View
         private Transform Leg(string name, Transform parent, float x)
         {
             var leg = Pivot(name, parent, new Vector3(x, .82f, 0f));
-            Part("Trouser", leg, new Vector3(0f, -.35f, 0f), new Vector3(.20f, .70f, .22f), 0);
-            Part("Boot", leg, new Vector3(0f, -.74f, .05f), new Vector3(.22f, .16f, .34f), 2);
+            Part("Trouser", leg, new Vector3(0, -.325f, 0), new Vector3(.215f, .65f, .25f), 0);
+            Part("Boot", leg, new Vector3(0, -.73f, .045f), new Vector3(.23f, .18f, .36f), 2);
             return leg;
         }
 
@@ -226,24 +258,17 @@ namespace Ac.View
             return node.gameObject;
         }
 
+        private void Limb(string name, Transform parent, Vector3 from, Vector3 to, float width, int material)
+        {
+            var part = Part(name, parent, (from + to) * .5f, new Vector3(width, width, (to - from).magnitude), material);
+            part.transform.localRotation = Quaternion.LookRotation(to - from);
+        }
+
         private static Mesh BuildCube()
         {
-            // Four separate vertices per face keep the low-poly silhouette flat shaded.
-            var corners = new[] { new Vector3(-.5f,-.5f,-.5f), new Vector3(.5f,-.5f,-.5f), new Vector3(.5f,.5f,-.5f), new Vector3(-.5f,.5f,-.5f), new Vector3(-.5f,-.5f,.5f), new Vector3(.5f,-.5f,.5f), new Vector3(.5f,.5f,.5f), new Vector3(-.5f,.5f,.5f) };
-            var faces = new[] { 0,3,2,1, 4,5,6,7, 0,1,5,4, 3,7,6,2, 0,4,7,3, 1,2,6,5 };
-            var vertices = new Vector3[24];
-            var triangles = new int[36];
-            for (var f = 0; f < 6; f++)
-            {
-                for (var v = 0; v < 4; v++) vertices[f * 4 + v] = corners[faces[f * 4 + v]];
-                var t = f * 6; var b = f * 4;
-                triangles[t] = b; triangles[t+1] = b+1; triangles[t+2] = b+2;
-                triangles[t+3] = b; triangles[t+4] = b+2; triangles[t+5] = b+3;
-            }
-            var mesh = new Mesh { name = "ChenSirCube", vertices = vertices, triangles = triangles };
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-            return mesh;
+            var mesh = new ModelMeshBuilder();
+            mesh.BeveledBox(Vector3.zero, Vector3.one * .5f, .13f, new Color32(255, 255, 255, 255), Quaternion.identity);
+            return mesh.Finish("ChenSirBeveledBox");
         }
 
         public void Dispose()
@@ -257,6 +282,7 @@ namespace Ac.View
             Kill(_root);
             Kill(_cube);
             Kill(_gun);
+            Kill(_gunMaterial);
             for (var i = 0; i < _materials.Length; i++) Kill(_materials[i]);
         }
 

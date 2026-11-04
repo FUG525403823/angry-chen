@@ -20,6 +20,7 @@ namespace Ac.Tests
             FixturePredictSuite.Register();
             ArenaSuite.Register();
             SheepSuite.Register();
+            ModelGeometrySuite.Register();
             EffectsSuite.Register();
             HudSuite.Register();
             AudioSuite.Register();

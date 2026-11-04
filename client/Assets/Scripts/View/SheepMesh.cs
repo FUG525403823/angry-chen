@@ -56,73 +56,72 @@ namespace Ac.View
             return (float)(ClusterScaleMin + (ClusterScaleMax - ClusterScaleMin) * unit);
         }
 
-        // 连续蛋形躯干 + 少量轮廓羊毛；所有坐标是局部空间，体型缩放只由 SheepVisuals 施加。
+        // A compact fleece silhouette, short legs and an expressive face, within the frozen budgets.
         public static Mesh Build(SheepKind kind)
         {
             var mesh = new Builder();
             var wool = ColorOf(kind);
-            var fleece = Shade(wool, 12);
-            var face = new Color32(72, 61, 58, 255);
-            var muzzle = new Color32(111, 88, 79, 255);
-            var hoof = new Color32(42, 37, 39, 255);
-            var bone = new Color32(226, 201, 157, 255);
-            var cheek = new Color32(183, 120, 109, 255);
-            var width = kind == SheepKind.Ram ? 1.12f : kind == SheepKind.Elite ? 0.92f : kind == SheepKind.King ? 1.18f : 1f;
+            var fleece = Shade(wool, 8);
+            var face = new Color32(83, 68, 65, 255);
+            var muzzle = new Color32(143, 103, 87, 255);
+            var hoof = new Color32(38, 35, 39, 255);
+            var bone = new Color32(213, 175, 112, 255);
+            var cheek = new Color32(192, 126, 117, 255);
+            var width = kind == SheepKind.Ram ? 1.15f : kind == SheepKind.Elite ? .90f : kind == SheepKind.King ? 1.20f : 1f;
+            var headWidth = kind == SheepKind.Ram || kind == SheepKind.King ? .235f : .215f;
 
-            mesh.Ellipsoid(new Vector3(0f, 0.55f, -0.055f), new Vector3(0.31f * width, 0.255f, 0.415f), wool, 8, 3);
-            mesh.Ellipsoid(new Vector3(0f, 0.64f, -0.30f), new Vector3(0.225f * width, 0.165f, 0.23f), fleece, 6, 2);
-            mesh.Ellipsoid(new Vector3(0f, 0.70f, -0.015f), new Vector3(0.235f * width, 0.13f, 0.26f), fleece, 6, 2);
-            // 颈部同时深入肩部和头部，不能悬在躯干前面。
-            mesh.Ellipsoid(new Vector3(0f, 0.635f, 0.305f), new Vector3(0.17f, 0.18f, 0.21f), wool, 8, 1);
-            mesh.Ellipsoid(new Vector3(0f, 0.72f, 0.425f), new Vector3(0.195f, 0.165f, 0.215f), face, 8, 2);
-            mesh.Ellipsoid(new Vector3(0f, 0.663f, 0.595f), new Vector3(0.14f, 0.085f, 0.115f), muzzle, 8, 2);
-            mesh.Ellipsoid(new Vector3(0f, 0.842f, 0.385f), new Vector3(0.16f, 0.058f, 0.135f), fleece, 6, 2);
-            mesh.Ellipsoid(new Vector3(0f, 0.56f, -0.46f), new Vector3(0.075f, 0.09f, 0.14f), fleece, 6, 2);
+            // One continuous scalloped fleece surface avoids intersecting, pointed wool clumps.
+            mesh.Ellipsoid(new Vector3(0, .50f, -.10f), new Vector3(.36f * width, .29f, .46f), wool, 16, 4, true);
+            mesh.Ellipsoid(new Vector3(0, .59f, .28f), new Vector3(.205f, .20f, .22f), wool, 8, 1);
+            mesh.Ellipsoid(new Vector3(0, .655f, .46f), new Vector3(headWidth, .202f, .195f), face, 8, 2);
+            mesh.Ellipsoid(new Vector3(0, .565f, .595f), new Vector3(.17f, .095f, .112f), muzzle, 6, 2);
+            mesh.Ellipsoid(new Vector3(0, .80f, .407f), new Vector3(.21f, .10f, .174f), fleece, 8, 3);
+            mesh.Ellipsoid(new Vector3(0, .51f, -.51f), new Vector3(.09f, .105f, .13f), fleece, 6, 1);
 
             for (var side = -1; side <= 1; side += 2)
             {
-                // 扁长耳朵从头部侧面伸出；彩色内耳是独立薄片，不增加材质或 draw call。
-                mesh.Ellipsoid(new Vector3(side * 0.205f, 0.765f, 0.41f), new Vector3(0.145f, 0.05f, 0.075f), face, 6, 1);
-                mesh.Diamond(new Vector3(side * 0.25f, 0.775f, 0.462f), new Vector3(0.075f, 0f, 0f), new Vector3(0f, 0.024f, 0f), cheek);
-                var eye = new Vector3(side * 0.112f, 0.755f, 0.566f);
-                mesh.Ellipsoid(eye, new Vector3(0.047f, 0.057f, 0.070f), new Color32(255, 247, 228, 255), 6, 2);
-                mesh.Diamond(eye + new Vector3(-side * 0.008f, -0.001f, 0.053f), new Vector3(0.022f, 0f, 0f), new Vector3(0f, 0.031f, 0f), hoof);
-                mesh.Diamond(eye + new Vector3(-side * 0.009f, 0.013f, 0.054f), new Vector3(0.007f, 0f, 0f), new Vector3(0f, 0.009f, 0f), new Color32(255, 255, 255, 255));
-                mesh.Diamond(new Vector3(side * 0.047f, 0.678f, 0.684f), new Vector3(0.013f, 0f, 0f), new Vector3(0f, 0.009f, 0f), hoof);
+                mesh.Ellipsoid(new Vector3(side * .235f, .719f, .415f), new Vector3(.145f, .055f, .078f), face, 6, 1);
+                mesh.Diamond(new Vector3(side * .285f, .722f, .471f), new Vector3(.064f, side * -.014f, 0), new Vector3(0, .022f, 0), cheek);
+                // Shallow eyes sit inside the face rather than projecting like spheres.
+                var eye = new Vector3(side * .12f, .681f, .642f);
+                mesh.Eye(eye, .049f, .052f, new Color32(250, 239, 216, 255));
+                mesh.Diamond(eye + new Vector3(-side * .006f, -.002f, .001f), new Vector3(.019f, 0, 0), new Vector3(0, .029f, 0), hoof);
+                mesh.Diamond(eye + new Vector3(-side * .011f, .012f, .002f), new Vector3(.006f, 0, 0), new Vector3(0, .008f, 0), new Color32(255, 255, 255, 255));
+                var frown = kind == SheepKind.Grunt ? -.002f : kind == SheepKind.Elite ? .018f : .026f;
+                mesh.Diamond(new Vector3(side * .12f, .738f, .643f), new Vector3(.052f, side * frown, 0), new Vector3(0, .011f, 0), hoof);
+                mesh.Diamond(new Vector3(side * .052f, .580f, .687f), new Vector3(.014f, 0, 0), new Vector3(0, .008f, 0), hoof);
             }
-            mesh.Diamond(new Vector3(0f, 0.646f, 0.695f), new Vector3(0.047f, 0f, 0f), new Vector3(0f, 0.006f, 0f), hoof);
-
+            mesh.Diamond(new Vector3(0, .538f, .697f), new Vector3(.045f, 0, 0), new Vector3(0, .006f, 0), hoof);
             for (var leg = 0; leg < 4; leg++)
             {
-                var x = ((leg & 1) == 0 ? -1f : 1f) * 0.178f * width;
-                var z = leg < 2 ? -0.245f : 0.20f;
-                mesh.Box(new Vector3(x, 0.255f, z), new Vector3(0.050f, 0.195f, 0.054f), face);
-                mesh.Box(new Vector3(x, 0.045f, z + 0.014f), new Vector3(0.064f, 0.045f, 0.085f), hoof);
+                var x = ((leg & 1) == 0 ? -1f : 1f) * .20f * width;
+                var z = leg < 2 ? -.29f : .175f;
+                mesh.Box(new Vector3(x, .18f, z), new Vector3(.049f, .125f, .052f), face);
+                mesh.Box(new Vector3(x, .047f, z + .012f), new Vector3(.075f, .047f, .09f), hoof);
             }
             if (kind == SheepKind.Ram || kind == SheepKind.King)
             {
-                mesh.Horn(-1, bone);
-                mesh.Horn(1, bone);
+                mesh.Horn(-1, bone); mesh.Horn(1, bone);
             }
             if (kind == SheepKind.King)
             {
                 for (var spike = -1; spike <= 1; spike++)
-                    mesh.Ellipsoid(new Vector3(spike * 0.105f, 0.86f, 0.355f),
-                        new Vector3(0.04f, spike == 0 ? 0.115f : 0.09f, 0.045f), bone, 4, 1);
+                    mesh.Ellipsoid(new Vector3(spike * .105f, .86f, .385f),
+                        new Vector3(.04f, spike == 0 ? .115f : .09f, .045f), bone, 4, 1);
             }
-            // 用局部高度契约统一王羊/精英的实际高度，避免 BodyHeight 与头部使用两种缩放。
             return mesh.Finish("Sheep" + kind, (float)(Form(kind).HeightM / Form(kind).Scale));
         }
 
         public static Vector3 EmblemAnchor(SheepKind kind)
         {
             var factor = LocalHeightFactor(kind);
-            return new Vector3(0f, 0.811f * factor, 0.602f * factor);
+            // Follow the new fleece forehead with the live -55 degree emblem tilt.
+            return new Vector3(0, .865f * factor, .540f * factor);
         }
 
         private static float LocalHeightFactor(SheepKind kind)
         {
-            var designHeight = kind == SheepKind.King ? 0.975f : 0.9f;
+            var designHeight = kind == SheepKind.King ? .975f : .9f;
             return (float)(Form(kind).HeightM / Form(kind).Scale) / designHeight;
         }
 
@@ -160,7 +159,7 @@ namespace Ac.View
                 indices[indexCount++] = a; indices[indexCount++] = b; indices[indexCount++] = c;
             }
 
-            public void Ellipsoid(Vector3 center, Vector3 radii, Color32 color, int segments, int rings)
+            public void Ellipsoid(Vector3 center, Vector3 radii, Color32 color, int segments, int rings, bool scalloped = false)
             {
                 var top = Vertex(center + new Vector3(0f, radii.y, 0f), Vector3.up, color);
                 var first = vertexCount;
@@ -171,7 +170,13 @@ namespace Ac.View
                     {
                         var theta = 2f * Mathf.PI * segment / segments;
                         var unit = new Vector3(Mathf.Cos(theta) * Mathf.Sin(phi), Mathf.Cos(phi), Mathf.Sin(theta) * Mathf.Sin(phi));
-                        Vertex(center + Vector3.Scale(unit, radii), new Vector3(unit.x / radii.x, unit.y / radii.y, unit.z / radii.z), color);
+                        var point = Vector3.Scale(unit, radii);
+                        if (scalloped)
+                        {
+                            var puff = 1f + .055f * Mathf.Cos(theta * 6f + phi * 3f) * Mathf.Sin(phi);
+                            point.x *= puff; point.z *= puff;
+                        }
+                        Vertex(center + point, new Vector3(unit.x / radii.x, unit.y / radii.y, unit.z / radii.z), color);
                     }
                 }
                 var bottom = Vertex(center - new Vector3(0f, radii.y, 0f), -Vector3.up, color);
@@ -188,6 +193,18 @@ namespace Ac.View
                     }
                     Face(bottom, first + (rings - 1) * segments + next, first + (rings - 1) * segments + segment);
                 }
+            }
+
+            public void Eye(Vector3 center, float width, float height, Color32 color)
+            {
+                const int segments = 8;
+                var middle = Vertex(center, Vector3.forward, color);
+                for (var i = 0; i < segments; i++)
+                {
+                    var angle = 2f * Mathf.PI * i / segments;
+                    Vertex(center + new Vector3(Mathf.Cos(angle) * width, Mathf.Sin(angle) * height, 0), Vector3.forward, color);
+                }
+                for (var i = 0; i < segments; i++) Face(middle, middle + 1 + i, middle + 1 + (i + 1) % segments);
             }
 
             public void Diamond(Vector3 center, Vector3 across, Vector3 up, Color32 color)
@@ -222,15 +239,15 @@ namespace Ac.View
 
             public void Horn(int side, Color32 color)
             {
-                const int steps = 4;
-                const int segments = 4;
+                const int steps = 5;
+                const int segments = 3;
                 var first = vertexCount;
                 for (var step = 0; step <= steps; step++)
                 {
-                    var angle = (-55f + step * 285f / steps) * Mathf.PI / 180f;
-                    var radius = 0.115f - step * 0.006f;
-                    var center = new Vector3(side * (0.19f + 0.07f * step / steps),
-                        0.735f + Mathf.Cos(angle) * radius, 0.405f + Mathf.Sin(angle) * radius);
+                    var angle = (-55f + step * 300f / steps) * Mathf.PI / 180f;
+                    var radius = .15f - step * .006f;
+                    var center = new Vector3(side * (.235f + .075f * step / steps),
+                        .715f + Mathf.Cos(angle) * radius, .365f + Mathf.Sin(angle) * radius);
                     var radial = new Vector3(0f, Mathf.Cos(angle), Mathf.Sin(angle));
                     var thickness = 0.055f * (1f - 0.80f * step / steps);
                     for (var segment = 0; segment < segments; segment++)
@@ -250,7 +267,10 @@ namespace Ac.View
                     }
                 }
                 var end = first + steps * segments;
-                Quad(vertices[end], vertices[end + 1], vertices[end + 2], vertices[end + 3], color);
+                var capNormal = Vector3.Cross(vertices[end + 1] - vertices[end], vertices[end + 2] - vertices[end]).normalized;
+                var cap = Vertex(vertices[end], capNormal, color);
+                Vertex(vertices[end + 1], capNormal, color); Vertex(vertices[end + 2], capNormal, color);
+                Face(cap, cap + 1, cap + 2);
             }
 
             public Mesh Finish(string name, float targetHeight)
@@ -282,7 +302,7 @@ namespace Ac.View
         public static Mesh BuildEmblem(SheepKind kind)
         {
             var form = Form(kind);
-            var size = (float)(form.EmblemSizeM / form.Scale) * 0.55f;
+            var size = (float)(form.EmblemSizeM / form.Scale) * .50f;
             var color = EmblemColorPure(kind);
             // 实心菱形（4 三角形）+ 菱形描边（4 片，8 三角形）+ 外圈方框（4 片，8 三角形）
             var vertices = new Vector3[5 + 8 * 4];

@@ -101,6 +101,8 @@ Shader "Ac/SheepVertexLit"
             #pragma fragment ShadowPassFragment
             #pragma multi_compile_instancing
             #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
+            // Shadows.hlsl uses LerpWhiteTo from CommonMaterial in URP 14.
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonMaterial.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/Shaders/ShadowCasterPass.hlsl"
             ENDHLSL
         }
