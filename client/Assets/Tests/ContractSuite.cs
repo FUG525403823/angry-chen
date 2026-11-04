@@ -24,7 +24,7 @@ namespace Ac.Tests
             // Ac.Boot 是后加的**组合根**：它必须能看到全部六个程序集才能把帧回路接起来，
             // 而它自己不被任何运行期程序集引用 ⇒ 依赖图仍是 DAG，没有环。C01 §5.2 的表写在它存在之前，
             // 这次扩充已记入 docs/evidence/client-audit-consolidated.md。
-            { "Ac.Boot", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio" } },
+            { "Ac.Boot", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio", "UnityEngine.UI" } },
             { "Ac.Tests", new[] { "Ac.Core", "Ac.Sim", "Ac.Net", "Ac.View", "Ac.UI", "Ac.Audio", "Ac.Boot" } },
         };
 

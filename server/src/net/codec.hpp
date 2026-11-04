@@ -296,7 +296,11 @@ inline constexpr std::size_t kDisconnectPayloadBytes = 1u;  // reason u8
 struct HelloPayload {
   uint32_t nonce;
   uint32_t token;
+  uint32_t contentVersion{1u};
+  uint32_t contentHash{0x079e8cb1u}; // FNV1a32 of frozen raw UTF-8 content
 };
+inline constexpr uint32_t kExpeditionContentVersion = 1u;
+inline constexpr uint32_t kExpeditionContentHash = 0x079e8cb1u;
 struct HelloAckPayload {
   uint32_t serverTick;
   uint32_t salt;

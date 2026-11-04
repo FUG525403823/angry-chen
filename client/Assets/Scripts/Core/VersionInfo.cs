@@ -3,17 +3,17 @@ using System;
 namespace Ac.Core
 {
     // C15 §5 冻结：客户端版本行的唯一来源（semver + commit + proto）。
-    // 服务器对应行：ac_server 0.1.0 protocol=2 tick=50ms（S01/S15 冻结）。
+    // 服务器对应行：ac_server 0.1.0 protocol=3 tick=50ms（P1 / ADR-022）。
     public static class VersionInfo
     {
         public const string ProductName = "ac-client";
         public const string SemanticVersion = "0.1.0";
-        public const int ProtocolVersion = 2;
+        public const int ProtocolVersion = 3;
 
         public static string BuildCommit { get { return BuildInfo.Commit; } }
         public static string BuildTimeUtc { get { return BuildInfo.BuildTimeUtc; } }
 
-        // ac-client 0.1.0+<sha7> proto=2
+        // ac-client 0.1.0+<sha7> proto=3
         public static string VersionLine
         {
             get { return ProductName + " " + SemanticVersion + "+" + BuildCommit + " proto=" + ProtocolVersion; }

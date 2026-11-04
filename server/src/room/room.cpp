@@ -249,7 +249,9 @@ Session* sessionByPid(Room& room, uint32_t pid) noexcept {
 
 JoinOutcome roomJoin(Room& room, Session& session, uint64_t nowMs) noexcept {
   // §5.4：playing 阶段不接受新身份（带令牌的宽限重连走 roomReconnect）。
-  if (room.phase == MatchPhase::kPlaying) return JoinOutcome::kMatchInProgress;
+  if (room.phase == MatchPhase::kPlaying ||
+      (room.expeditionEnabled && (room.phase == MatchPhase::kLoading || room.phase == MatchPhase::kIntermission)))
+    return JoinOutcome::kMatchInProgress;
   // §5.8 要求 MatchState 的 name 为 1–12 字节；净化在握手层（S12）完成，这里兜底，
   // 保证「任何时刻组装的 MatchState 都可编码」这条不变量不被上层漏判破坏。
   if (session.nameBytes < ac::net::kNameMinBytes) {
@@ -344,6 +346,15 @@ bool removeMember(Room& room, Session& session, uint64_t nowMs, bool leftMidMatc
   }
   if (index < 0) return false;
   const uint32_t pid = session.pid;
+  // Permanent departure ends the identity; a recycled EntityId must not inherit request history.
+  for (auto& receipt : room.expeditionReceipts) if (receipt.pid == pid) receipt = {};
+  uint8_t retainedTools = 0u;
+  for (uint8_t i = 0u; i < room.expeditionToolCount; ++i) {
+    if (room.expeditionToolQueue[i] == pid) continue;
+    room.expeditionToolQueue[retainedTools] = room.expeditionToolQueue[i];
+    room.expeditionToolRequestIds[retainedTools++] = room.expeditionToolRequestIds[i];
+  }
+  room.expeditionToolCount = retainedTools;
   const bool wasMidMatch = room.phase == MatchPhase::kPlaying || room.phase == MatchPhase::kIntermission;
   PlayerRecord* const record = playerRecordFor(room, pid);
   if (record != nullptr && leftMidMatch && wasMidMatch) record->leftMidMatch = true;
@@ -487,7 +498,8 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
     room.match.counters.peakEntities = room.world->activeCount;
   }
   // §5.7-2：阶段推进（loading / intermission 计时 + 全员准备跳过）。
-  updateMatch(room, nowMs, ac::config::kStepDtMs);
+  const bool matchChanged = updateMatch(room, nowMs, ac::config::kStepDtMs);
+  if (room.expeditionEnabled && !matchChanged) tickRoomExpedition(room, ac::config::kStepDtMs);
   applyWeaponSelections(room);
   buildCommands(room);
   captureShotBaseline(room);
@@ -496,12 +508,31 @@ bool roomTick(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
     // S06 冻结的 stepWorld 是四参数（不带 CombatContext）⇒ S08 的回滚上下文此刻仍整体关闭；
     // world.poseHistory 由 stepWorld 自己每 tick 记录，接上上下文的活儿留给后续相位。
     ac::sim::stepWorld(*room.world, room.commands, room.commandCount, ac::config::kStepDtMs);
+    if (room.expeditionEnabled) executeExpeditionTools(room);
     accumulateMatchEvents(room);
     applyShotDeltas(room);
     accumulateMatchTime(room, ac::config::kStepDtMs);
-    waveCleared = driveDirector(room, nowMs);
+    if (room.expeditionEnabled) stepRoomEncounter(room, nowMs, ac::config::kStepDtMs);
+    else waveCleared = driveDirector(room, nowMs);
   } else if (room.phase == MatchPhase::kIntermission) {
+    if (room.expeditionEnabled) executeExpeditionTools(room);
     accumulateMatchTime(room, ac::config::kStepDtMs);
+  }
+  if (room.expeditionEnabled) {
+    uint32_t triggerSignature = 0u;
+    for (uint8_t i = 0u; i < room.sessionCount; ++i) {
+      const auto* member = room.sessions[i];
+      const auto* entity = member ? playerEntityAt(room, member->pid) : nullptr;
+      triggerSignature = triggerSignature * 37u + (entity ? entity->build.triggerCount : 0u);
+    }
+    if (triggerSignature != room.expeditionTriggerSignature) {
+      room.expeditionTriggerSignature = triggerSignature; ++room.run.revision;
+    }
+    room.expeditionTimerMs += ac::config::kStepDtMs;
+    if (room.expeditionTimerMs >= 1000u || room.expeditionSentRevision != room.run.revision) {
+      if (room.expeditionTimerMs >= 1000u) room.expeditionTimerMs -= 1000u;
+      broadcastExpeditionState(room, deps);
+    }
   }
   // S16：清波进入波间的那一拍立即广播 MatchState（升级点与 ready 重置即时可见，不等 1Hz 节拍）。
   if (waveCleared) broadcastMatchState(room, deps);
@@ -525,6 +556,11 @@ bool updateRoom(Room& room, const RoomDeps& deps, uint64_t nowMs) noexcept {
   refreshEmptySince(room, nowMs);
   if (room.sessionCount == 0u) {
     if (room.phase == MatchPhase::kPlaying || room.phase == MatchPhase::kIntermission) {
+      if (room.expeditionEnabled && room.run.enabled) {
+        room.run.stage = ac::expedition::Stage::kEnded;
+        room.run.result = ac::expedition::Result::kAllDowned;
+        ++room.run.revision;
+      }
       endMatch(room, nowMs, 1);
       broadcastMatchState(room, deps);
     }

@@ -851,7 +851,7 @@ namespace Ac.Tests
         private static PacketHeader MatchStateHeader()
         {
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = PacketType.MatchState;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.MatchState);
             return header;
@@ -859,7 +859,7 @@ namespace Ac.Tests
 
         private static PacketHeader SnapshotHeader()        {
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = PacketType.Snapshot;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.Snapshot);
             return header;
@@ -1370,6 +1370,12 @@ namespace Ac.Tests
                 if (header.IsReliable) _received.NoteReceived(header.MsgId);
                 if (header.Type == Ac.Net.PacketType.Hello)
                 {
+                    byte[] helloBytes;
+                    reader.TryReadBytes(reader.Remaining, out helloBytes);
+                    Ac.Net.HelloPayload hello;
+                    if (header.Version != Ac.Net.PacketHeader.CurrentProtocolVersion ||
+                        Ac.Net.HandshakeCodec.DecodeHello(helloBytes, header.Version, out hello) != Ac.Net.DecodeFailure.Ok ||
+                        hello.ContentVersion != Ac.Net.HandshakeCodec.ContentVersion || hello.ContentHash != Ac.Net.HandshakeCodec.ContentHash) return true;
                     var payload = Ac.Net.HandshakeCodec.EncodeHelloAck(HelloSession, 0xCAFEBABEu);
                     _inbound.Enqueue(Control(Ac.Net.PacketType.HelloAck, payload));
                     return true;
@@ -1382,7 +1388,7 @@ namespace Ac.Tests
             private byte[] Control(Ac.Net.PacketType type, byte[] payload)
             {
                 var header = new Ac.Net.PacketHeader();
-                header.Version = Ac.Net.PacketHeader.ProtocolVersion;
+                header.Version = Ac.Net.PacketHeader.CurrentProtocolVersion;
                 header.Type = type;
                 header.Flags = (Ac.Net.PacketFlags)Ac.Net.PacketHeader.RequiredFlags(type);
                 header.Session = 7;

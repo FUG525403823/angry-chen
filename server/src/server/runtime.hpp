@@ -18,6 +18,7 @@
 #include "metrics/gauges.hpp"
 #include "metrics/metrics.hpp"
 #include "net/codec.hpp"
+#include "net/expedition_codec.hpp"
 #include "net/fragment.hpp"
 #include "net/handshake.hpp"
 #include "net/udp_socket.hpp"
@@ -125,6 +126,7 @@ class Runtime {
     std::uint16_t seq = 0u;          // 命令/控制通道的 **msgId 流**（MatchState 与 KeepAlive 共用）
     std::uint16_t snapshotSeq = 0u;  // 快照通道（type 5，不可靠）
     std::uint16_t matchStateSeq = 0u;  // MatchState 的包头 seq（客户端按类型统计，必须自己一条）
+    std::uint16_t expeditionSeq = 0u;
     std::uint16_t keepAliveSeq = 0u;   // 心跳（type 7，ackOnly）的包头 seq：同上，另行一条
     ac::replication::ClientBaseline baseline{};
     ac::replication::OutboundBudget budget{};
@@ -166,6 +168,9 @@ class Runtime {
   void handleJoin(std::uint16_t session, const std::uint8_t* frame, std::size_t size);
   // type 12 UpgradeSelect（S16）：波间购买升级（可靠 C→S，载荷 1 字节 upgradeId）。
   void handleUpgradeSelect(std::uint16_t session, const std::uint8_t* frame, std::size_t size);
+  void handleExpeditionRequest(std::uint16_t session, const std::uint8_t* frame, std::size_t size);
+  void onSendExpeditionState(ac::room::Session& session, const ac::net::ExpeditionState& state) noexcept;
+  static void expeditionStateThunk(void*, const ac::room::Room&, ac::room::Session&, const ac::net::ExpeditionState&);
   void purgeReleasedClients();
   void ensureMatchRunning(std::uint64_t nowMs);
   void topUpSheep() noexcept;

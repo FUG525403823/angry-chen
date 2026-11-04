@@ -21,6 +21,7 @@ namespace Ac.Net
     {
         public uint ClientNonce;
         public uint ReconnectToken;
+        public uint ContentVersion, ContentHash;
     }
 
     public struct HelloAckPayload
@@ -34,6 +35,24 @@ namespace Ac.Net
     public static class HandshakeCodec
     {
         public const int TokenBytes = 8;
+        public const uint ContentVersion = 1;
+        public const uint ContentHash = 0x079e8cb1;
+        public static byte[] EncodeHello(uint nonce, uint token, byte version)
+        {
+            if(version==PacketHeader.ProtocolVersion)return EncodeHello(nonce,token);
+            if(version!=PacketHeader.CurrentProtocolVersion)throw new ArgumentException("Invalid protocol version");
+            var b=new byte[20];PutU32(b,0,nonce);WriteToken(b,4,token);PutU32(b,12,ContentVersion);PutU32(b,16,ContentHash);return b;
+        }
+        public static DecodeFailure DecodeHello(byte[] payload, byte version, out HelloPayload hello)
+        {
+            hello=default(HelloPayload);
+            if(version==PacketHeader.ProtocolVersion)return DecodeHello(payload,out hello);
+            if(version!=PacketHeader.CurrentProtocolVersion)return DecodeFailure.BadVersion;
+            if(payload==null || payload.Length!=20)return DecodeFailure.BadLength;
+            var r=new PacketReader(payload);r.TryReadU32(out hello.ClientNonce);DecodeFailure failure;
+            if(!TryReadToken(r,out hello.ReconnectToken,out failure))return failure;
+            r.TryReadU32(out hello.ContentVersion);r.TryReadU32(out hello.ContentHash);return DecodeFailure.Ok;
+        }
         public const int HelloPayloadBytes = 12;   // clientNonce u32 + reconnectToken(ASCII)
         public const int HelloAckPayloadBytes = 8; // serverTick u32 + salt u32
         public const int ResumePayloadBytes = 8;   // reconnectToken(ASCII)

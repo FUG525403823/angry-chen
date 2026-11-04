@@ -38,6 +38,12 @@ namespace Ac.Boot
         public int ReadyCount { get; private set; }
         public int RosterRows { get; private set; }
         public int ApplyCount { get; private set; }
+        public bool ExpeditionVisible { get; private set; }
+        public void ApplyExpedition(bool visible)
+        {
+            ExpeditionVisible = visible;
+            if (visible) Upgrades.Hide();
+        }
 
         public ScreenFlow() { Phase = Hud.PhaseLobby; }
 

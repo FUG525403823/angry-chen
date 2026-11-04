@@ -23,7 +23,8 @@ bool isFlagsValidForType(uint8_t type, uint16_t flags) noexcept {
 
 // 编码入口的包头校验：版本、类型、flags 三者必须自洽（§5.1）。
 bool isEncodeHeaderValid(const PacketHeader& header, PacketType expectedType) noexcept {
-  if (header.version != kProtocolVersion) return false;
+  if (header.version != kProtocolVersion && header.version != kCurrentProtocolVersion) return false;
+  if (header.type >= 13 && header.version != kCurrentProtocolVersion) return false;
   if (header.type != static_cast<uint8_t>(expectedType)) return false;
   if (!isPacketTypeValid(header.type)) return false;
   return isFlagsValidForType(header.type, header.flags);
@@ -324,10 +325,10 @@ DecodeResult<PacketInfo> decodePacket(const uint8_t* bytes, std::size_t size) no
   PacketInfo info{};
   ByteReader reader(bytes, size);
   info.header = readHeader(reader);
-  if (info.header.version != kProtocolVersion) {
+  if (info.header.version != kProtocolVersion && info.header.version != kCurrentProtocolVersion) {
     return decodedFail<PacketInfo>(DecodeFailure::kBadVersion);
   }
-  if (!isPacketTypeValid(info.header.type)) {
+  if (!isPacketTypeValid(info.header.type) || (info.header.type >= 13 && info.header.version != kCurrentProtocolVersion)) {
     return decodedFail<PacketInfo>(DecodeFailure::kBadType);
   }
   if (!isFlagsValidForType(info.header.type, info.header.flags)) {
@@ -587,11 +588,12 @@ bool checkPayload(DecodeResult<PacketInfo>& packet, PacketType expectedType,
 EncodeResult encodeHello(const PacketHeader& header, const HelloPayload& payload, uint8_t* out,
                          std::size_t capacity) noexcept {
   if (out == nullptr || !isEncodeHeaderValid(header, PacketType::kHello)) return encodeFail();
-  const std::size_t total = kCommonHeaderBytes + kHelloPayloadBytes;
+  const std::size_t total = kCommonHeaderBytes + (header.version == kCurrentProtocolVersion ? 20u : kHelloPayloadBytes);
   if (total > capacity) return encodeFail();
   ByteWriter writer = handshakeWriter(header, ReliableExt{}, false, out, capacity);
   writer.writeU32(payload.nonce);
   writeToken(writer, payload.token);
+  if (header.version == kCurrentProtocolVersion) { writer.writeU32(payload.contentVersion); writer.writeU32(payload.contentHash); }
   if (writer.isOverflow) return encodeFail();
   return encodeOk(writer.size());
 }
@@ -599,7 +601,7 @@ EncodeResult encodeHello(const PacketHeader& header, const HelloPayload& payload
 DecodeResult<HelloPayload> decodeHello(const uint8_t* bytes, std::size_t size) noexcept {
   auto packet = decodePacket(bytes, size);
   DecodeFailure failure = DecodeFailure::kOk;
-  if (!checkPayload(packet, PacketType::kHello, kHelloPayloadBytes, failure)) {
+  if (!checkPayload(packet, PacketType::kHello, packet.isOk && packet.value.header.version == kCurrentProtocolVersion ? 20u : kHelloPayloadBytes, failure)) {
     return decodedFail<HelloPayload>(failure);
   }
   ByteReader reader = payloadReader(packet.value, bytes, size);
@@ -609,6 +611,7 @@ DecodeResult<HelloPayload> decodeHello(const uint8_t* bytes, std::size_t size) n
     return decodedFail<HelloPayload>(reader.isTruncated ? DecodeFailure::kTruncated
                                                        : DecodeFailure::kBadValue);
   }
+  if (packet.value.header.version == kCurrentProtocolVersion) { payload.contentVersion = reader.readU32(); payload.contentHash = reader.readU32(); }
   return decodedOk(payload);
 }
 

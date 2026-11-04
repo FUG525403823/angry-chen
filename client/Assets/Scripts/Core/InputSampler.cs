@@ -101,6 +101,9 @@ namespace Ac.Core
         public double RecoilPitchRad { get { return _recoilRecoverPitchRad; } }
         public double RecoilYawRad { get { return _recoilRecoverYawRad; } }
         public bool Focused { get; private set; }
+        // Explicit acceptance/replay opt-in; never changes real keyboard focus semantics.
+        public bool AllowBackgroundInjectedInput { get; set; }
+        public bool BackgroundInjectionActive { get { return _injected && AllowBackgroundInjectedInput; } }
         public int CommandsMerged { get; private set; }
         public int PendingCount { get { return _pendingCount; } }
         // §5.6：只有指针锁定时鼠标增量才计入视角（引擎路径；注入路径不受影响）。
@@ -124,7 +127,7 @@ namespace Ac.Core
 
         public bool RequestWeaponSlot(int slot)
         {
-            if (slot < 0 || slot >= 3 || !Focused) return false;
+            if (slot < 0 || slot >= 3 || !Focused || ModalBlocked || _resumeGuard) return false;
             _switchTo = (byte)slot;
             _switchPending = true;
             return true;
@@ -174,7 +177,7 @@ namespace Ac.Core
             if (focused)
             {
                 // 聊天缓冲开着时重新获得焦点，意图仍然按 0 处理：恢复由 Resume() 负责，不由焦点负责
-                _intentCleared = Suspended;
+                _intentCleared = Suspended || ModalBlocked;
                 return;
             }
             _intentCleared = true;
@@ -188,6 +191,20 @@ namespace Ac.Core
         // 还要继续报零意图（服务端按"缺命令"处理会让玩家停在原地，按"零意图"处理语义更明确）。
         // 与失焦的区别：Suspend 不动 PointerLocked，指针锁定由 Driver 按缓冲开关单独管。
         public bool Suspended { get; private set; }
+        public bool ModalBlocked { get; private set; }
+        private bool _resumeGuard;
+        public void SetModalBlocked(bool blocked)
+        {
+            if (ModalBlocked == blocked) return;
+            ModalBlocked = blocked;
+            _intentCleared = blocked || Suspended;
+            ClearIntentInternal();
+            ConfirmPressed = false;
+            _confirmWasDown = _injected ? _confirmDown : Input.GetKey(ConfirmKey);
+            _resumeGuard = !blocked;
+            Enqueue(ZeroIntent());
+            _sinceLastSendMs = 0;
+        }
 
         public void Suspend()
         {
@@ -203,7 +220,7 @@ namespace Ac.Core
         {
             if (!Suspended) return;
             Suspended = false;
-            _intentCleared = false;
+            _intentCleared = ModalBlocked || _resumeGuard;
         }
 
         // §9/§5.6：绕过 30Hz 间隔立刻发一条（失焦时也照发，零意图命令就是"别再动"的唯一手段）。
@@ -231,10 +248,21 @@ namespace Ac.Core
         // §5.1：1ms 级步进调用；间隔未到不发。返回本帧是否发送/合并了一条。
         public bool Update(double dtMs)
         {
-            if (Application.isPlaying && !Application.isFocused) OnFocusChanged(false);
+            if (!BackgroundInjectionActive && Application.isPlaying && !Application.isFocused) OnFocusChanged(false);
             if (!Focused) return false;
             if (dtMs < 0.0) dtMs = 0.0;
             _switchThisFrame = false;
+            if (_resumeGuard)
+            {
+                // Only reopen on a later frame after the initiating buttons have been released.
+                var held = _injected ? _keys[7] || _confirmDown : Input.GetKey(KeyCode.Mouse0) || Input.GetKey(ConfirmKey);
+                if (!held) _resumeGuard = false;
+                _confirmWasDown = _injected ? _confirmDown : Input.GetKey(ConfirmKey);
+                ConfirmPressed = false;
+                Enqueue(ZeroIntent());
+                return true;
+            }
+            _intentCleared = Suspended || ModalBlocked;
             Sample();
             DecayRecoil(dtMs);
             _sinceLastSendMs += dtMs;
@@ -289,7 +317,7 @@ namespace Ac.Core
             }
             // 大厅准备键的按下沿。引擎路径读真实按键（键位由 ConfirmKey 给，默认表的 ActionReady）；注入路径用 SetConfirm。
             var confirmDown = _injected ? _confirmDown : Input.GetKey(ConfirmKey);
-            ConfirmPressed = confirmDown && !_confirmWasDown;
+            ConfirmPressed = !ModalBlocked && !_resumeGuard && confirmDown && !_confirmWasDown;
             _confirmWasDown = confirmDown;
         }
 
@@ -312,6 +340,7 @@ namespace Ac.Core
             var intent = ZeroIntent();
             // 准备位先落，且**不受失焦清零影响**：失焦清的是移动/视角/开火那一套局内意图，而"已准备"
             // 是玩家在大厅做出的承诺，重获焦点前撤销它会让大厅永远开不了局。服务端只在大厅相位采用它。
+            if (ModalBlocked || _resumeGuard) return intent;
             if (ReadyHeld) intent.Buttons |= ButtonReady;
             // 失焦清理之后一律零意图：引擎路径读的是真实按键，不能只看 _keys。
             if (_intentCleared)

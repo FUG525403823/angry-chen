@@ -256,7 +256,7 @@ AC_TEST(security_malicious_08c_retransmit_burst_applied_once) { expectDuplicateO
 // ---- 矩阵 9：未知 opcode ----
 AC_TEST(security_malicious_09a_opcode_zero) { expectUnknownOpcode(0u); }
 // 13 是尚未分配的类型码（11 = Join、12 = UpgradeSelect（S16），见 security_opcode_whitelist）。
-AC_TEST(security_malicious_09b_opcode_thirteen) { expectUnknownOpcode(13u); }
+AC_TEST(security_malicious_09b_opcode_fifteen) { expectUnknownOpcode(15u); }
 AC_TEST(security_malicious_09c_opcode_255) { expectUnknownOpcode(255u); }
 
 // ---- 矩阵 10：越界字段夹取 ----

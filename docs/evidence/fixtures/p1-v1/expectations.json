@@ -1,0 +1,41 @@
+{
+  "schema": "p1-hand-expectations-v1",
+  "checks": [
+    {"case":"three-nodes","tick":0,"fields":{"stage":"2","node":"1","progress":"50","mask":"1","choices":"1,4,0","ack":"1"}},
+    {"case":"three-nodes","tick":1,"fields":{"revision":"3","mask":"1","ack":"1"}},
+    {"case":"three-nodes","tick":2,"fields":{"revision":"3","ack":"7"}},
+    {"case":"three-nodes","tick":3,"fields":{"revision":"3","ack":"3","lastId":"1"}},
+    {"case":"three-nodes","tick":4,"fields":{"revision":"3","ack":"3","lastId":"1"}},
+    {"case":"three-nodes","tick":5,"fields":{"revision":"3","ack":"3","lastId":"1"}},
+    {"case":"three-nodes","tick":6,"fields":{"revision":"4","ack":"4","lastId":"2"}},
+    {"case":"three-nodes","tick":3598,"fields":{"stage":"2","progress":"179950"}},
+    {"case":"three-nodes","tick":3599,"fields":{"stage":"1","node":"2","progress":"0","deadline":"210000"}},
+    {"case":"three-nodes","tick":3601,"fields":{"rerolls":"0","offer":"3","ack":"1"}},
+    {"case":"three-nodes","tick":3602,"fields":{"rerolls":"0","offer":"3","ack":"1"}},
+    {"case":"three-nodes","tick":3603,"fields":{"ack":"8"}},
+    {"case":"three-nodes","tick":10804,"fields":{"stage":"3","node":"3","result":"1","progress":"180000"}},
+    {"case":"invaders","tick":2498,"fields":{"hpMilli":"400","result":"0"}},
+    {"case":"invaders","tick":2499,"fields":{"hpMilli":"0","result":"2","progress":"125000"}},
+    {"case":"timeout","tick":4798,"fields":{"left":"50","result":"0","progress":"0"}},
+    {"case":"timeout","tick":4799,"fields":{"left":"0","result":"3","progress":"0"}},
+    {"case":"priority","tick":3599,"fields":{"hpMilli":"0","progress":"180000","result":"2"}}
+  ],
+  "buildChecks": [
+    {"tick":0,"cardIndex":0,"column":2,"value":"3feb333333333333"},
+    {"tick":1,"cardIndex":0,"column":2,"value":"3ff0000000000000"},
+    {"tick":2,"cardIndex":0,"column":2,"value":"3ff8000000000000"},
+    {"tick":1,"cardIndex":1,"column":4,"value":"2"},
+    {"tick":10,"cardIndex":1,"column":4,"value":"2"},
+    {"tick":11,"cardIndex":1,"column":4,"value":"3"},
+    {"tick":19,"cardIndex":2,"column":2,"value":"3ffc000000000000"},
+    {"tick":20,"cardIndex":2,"column":2,"value":"3fe999999999999a"},
+    {"tick":0,"cardIndex":3,"column":12,"value":"2000"},
+    {"tick":0,"cardIndex":3,"column":14,"value":"7"},
+    {"tick":2,"cardIndex":4,"column":3,"value":"404d000000000000"},
+    {"tick":2,"cardIndex":5,"column":4,"value":"12"},
+    {"tick":2,"cardIndex":5,"column":6,"value":"0000000000000000"},
+    {"tick":22,"cardIndex":6,"column":2,"value":"3fe4e3bcd35a8588"},
+    {"tick":99,"cardIndex":0,"column":2,"value":"3ff8000000000000"},
+    {"tick":100,"cardIndex":0,"column":2,"value":"3feb333333333333"}
+  ]
+}

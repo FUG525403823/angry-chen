@@ -71,11 +71,13 @@ bool isClientToServerType(uint8_t type) noexcept {
     case ac::net::PacketType::kFragment:
     case ac::net::PacketType::kJoin:
     case ac::net::PacketType::kUpgradeSelect:
+    case ac::net::PacketType::kExpeditionRequest:
       return true;
     case ac::net::PacketType::kHelloAck:
     case ac::net::PacketType::kSnapshot:
     case ac::net::PacketType::kEvent:
     case ac::net::PacketType::kMatchState:
+    case ac::net::PacketType::kExpeditionState:
       return false;
   }
   return false;

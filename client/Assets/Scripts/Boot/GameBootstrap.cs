@@ -113,6 +113,9 @@ namespace Ac.Boot
             // 呈现层：造出 Unity 对象，再把三条呈现缝与帧回路接起来（没接上的段就不打点）
             if (Presentation == null) Presentation = PresentationLayer.Create(settings);
             Presentation.Attach(Loop);
+            var expeditionUi = Presentation.Root.GetComponent<ExpeditionUiRenderer>();
+            if (expeditionUi == null) expeditionUi = Presentation.Root.AddComponent<ExpeditionUiRenderer>();
+            expeditionUi.Bind(Loop, Presentation);
             Presentation.BindSettings(Settings);
             // 昵称兜底（见 DefaultLocalName）：必须在 Attach 之后 —— Attach 会把大厅昵称灌进帧回路，
             // 这里把"空名字"补成一个合法默认值；玩家一在大厅键入，SetName 就把它换掉并重发 kJoin。
@@ -452,7 +455,8 @@ namespace Ac.Boot
                     if (Input.GetKeyDown(GameBootstrap.DebugPanelKey)) presentation.ToggleDebugPanel();
                     if (presentation.Flow.LobbyVisible) presentation.Flow.CaptureName(Input.inputString);
                 }
-                chat.SetVisible(loop.ChatVisible);
+                if (loop.ExpeditionInputBlocked) chat.Focus(false);
+                chat.SetVisible(loop.ChatVisible && !loop.ExpeditionInputBlocked);
                 chat.ApplyInputFrame(presentation.SettingsInputBlocked ? string.Empty : Input.inputString,
                     !presentation.SettingsInputBlocked && Input.GetKeyDown(KeyCode.Escape),
                     !presentation.SettingsInputBlocked && ChatKeyDown(), Time.unscaledDeltaTime * 1000.0);
@@ -462,7 +466,12 @@ namespace Ac.Boot
             var sampler = loop.Sampler;
             if (sampler != null)
             {
-                var typing = (chat != null && chat.Focused) || (presentation != null && presentation.SettingsInputBlocked);
+                var expeditionUiPointer = loop.Expedition.Visible && UnityEngine.EventSystems.EventSystem.current != null
+                    && UnityEngine.EventSystems.EventSystem.current.IsPointerOverGameObject() && Input.GetMouseButton(0);
+                sampler.SetModalBlocked(loop.ExpeditionInputBlocked || expeditionUiPointer);
+                var typing = loop.ExpeditionInputBlocked || expeditionUiPointer || (chat != null && chat.Focused) || (presentation != null && presentation.SettingsInputBlocked);
+                if (!typing && loop.Expedition.Visible && loop.Expedition.State.Stage == 2 && Input.GetKeyDown(KeyCode.G))
+                    loop.RequestExpedition(5, 1);
                 if (typing)
                 {
                     // 打字期间不抢指针：既解锁（锁定下鼠标增量会继续转视角），也不让"点一下画面"再锁上
@@ -493,11 +502,12 @@ namespace Ac.Boot
                     Cursor.visible = false;
                 }
                 if (!loop.CombatVisible) _pointerUnlockRequested = false;   // 出对局就复位，下次进对局重新自动锁
-                if (Application.isFocused != sampler.Focused) sampler.OnFocusChanged(Application.isFocused);
+                if (!sampler.BackgroundInjectionActive && Application.isFocused != sampler.Focused) sampler.OnFocusChanged(Application.isFocused);
                 // 打字期间不能一边聊天一边开枪：意图按 0 处理，但 30Hz 上行照发零意图（服务端语义明确）
                 if (typing) sampler.Suspend();
                 else sampler.Resume();
             }
+            ExpeditionAcceptance.Drive(loop);
             loop.Frame(Time.unscaledDeltaTime * 1000.0);
             if (settings != null && !settings.ReadOnlyFile && !Input.GetMouseButton(0) && Time.unscaledTime >= _nextSettingsSaveTime)
             {

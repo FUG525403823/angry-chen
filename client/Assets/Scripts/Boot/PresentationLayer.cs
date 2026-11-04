@@ -381,8 +381,8 @@ namespace Ac.Boot
             var flow = Flow;
             sources.Hud = loop == null ? null : loop.Hud;
             sources.Lobby = flow == null ? null : flow.Lobby;
-            sources.Intermission = flow == null ? null : flow.Intermission;
-            sources.Upgrades = flow == null ? null : flow.Upgrades;
+            sources.Intermission = flow == null || (loop != null && loop.Expedition.Visible) ? null : flow.Intermission;
+            sources.Upgrades = flow == null || (loop != null && loop.Expedition.Visible) ? null : flow.Upgrades;
             sources.Results = flow == null ? null : flow.Results;
             sources.Debug = DebugPanel;
             sources.Chat = flow == null ? null : flow.Chat;      // 局内聊天（显隐由 GameLoop 按相位驱动）

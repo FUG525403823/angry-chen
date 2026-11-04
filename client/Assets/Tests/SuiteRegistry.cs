@@ -39,6 +39,8 @@ namespace Ac.Tests
             PlanAliasSuite.Register();   // B6：必须最后注册（要核对前面所有用例前缀是否真的存在）
             QuantizeSuite.Register();
             CodecSuite.Register();
+            ExpeditionCodecSuite.Register();
+            ExpeditionUiSuite.Register();
             FixtureSuite.Register();
             UpgradeSuite.Register();   // S16：波间升级的纯逻辑层用例
             JointSuite.Register();   // C15 §5 六步联调：无 AC_JOINT_UDP 时自己打印 [joint] skipped

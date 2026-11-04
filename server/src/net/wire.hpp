@@ -10,7 +10,8 @@
 
 namespace ac::net {
 
-inline constexpr uint8_t kProtocolVersion = 2u;
+inline constexpr uint8_t kProtocolVersion = 2u; // frozen historical codec default
+inline constexpr uint8_t kCurrentProtocolVersion = 3u;
 
 inline constexpr std::size_t kCommonHeaderBytes = 8u;
 inline constexpr std::size_t kReliableExtBytes = 12u;
@@ -46,10 +47,12 @@ enum class PacketType : uint8_t {
   kMatchState = 10,
   kJoin = 11,
   kUpgradeSelect = 12,
+  kExpeditionRequest = 13,
+  kExpeditionState = 14,
 };
 
 inline constexpr uint8_t kMinPacketType = 1u;
-inline constexpr uint8_t kMaxPacketType = 12u;
+inline constexpr uint8_t kMaxPacketType = 14u;
 
 struct PacketHeader {
   uint8_t version;

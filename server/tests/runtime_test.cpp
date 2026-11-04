@@ -43,7 +43,7 @@ ac::server::RuntimeConfig testConfig() {
 
 std::size_t encodeHelloFrame(std::uint8_t* out, std::size_t capacity, std::uint32_t nonce) {
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kHello);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kHello);
   const ac::net::EncodeResult encoded =
@@ -55,7 +55,7 @@ std::size_t encodeCommandFrame(std::uint8_t* out, std::size_t capacity, std::uin
                                std::uint16_t seq, std::uint32_t clientTick,
                                std::uint8_t buttons = 0u, std::int8_t moveX = 127) {
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kCommand);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kCommand);
   header.session = session;
@@ -76,7 +76,7 @@ std::size_t encodeCommandFrame(std::uint8_t* out, std::size_t capacity, std::uin
 std::size_t encodeJoinFrame(std::uint8_t* out, std::size_t capacity, std::uint16_t session,
                             std::uint16_t seq, const char* name) {
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kJoin);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kJoin);
   header.session = session;
@@ -179,7 +179,7 @@ AC_TEST(runtime_acknowledges_retransmit_older_than_receive_bitmap) {
   AC_CHECK(session != 0u);
   auto send = [&](std::uint32_t id, std::uint64_t now) {
     ac::net::PacketHeader header{};
-    header.version = ac::net::kProtocolVersion;
+    header.version = ac::net::kCurrentProtocolVersion;
     header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
     header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
     header.session = session;
@@ -221,7 +221,7 @@ AC_TEST(runtime_advances_round_and_replicates_snapshots) {
     now += 25u;
     if (i % 20 == 0) {
       ac::net::PacketHeader header{};
-      header.version = ac::net::kProtocolVersion;
+      header.version = ac::net::kCurrentProtocolVersion;
       header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
       header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
       header.session = session;
@@ -273,7 +273,7 @@ AC_TEST(runtime_reassembles_client_fragments_without_dropping_them) {
   const std::uint64_t dropped = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
 
   ac::net::PacketHeader messageHeader{};
-  messageHeader.version = ac::net::kProtocolVersion;
+  messageHeader.version = ac::net::kCurrentProtocolVersion;
   messageHeader.type = static_cast<std::uint8_t>(ac::net::PacketType::kCommand);
   messageHeader.flags = ac::net::requiredFlags(ac::net::PacketType::kCommand);
   messageHeader.session = session;
@@ -298,7 +298,7 @@ AC_TEST(runtime_reassembles_client_fragments_without_dropping_them) {
   const std::uint64_t beforeKeepAlive = counterOf(runtime, ac::metrics::CounterId::kDroppedFrames);
   std::uint8_t keepAlive[ac::net::kCommonHeaderBytes + ac::net::kReliableExtBytes] = {};
   ac::net::PacketHeader keepAliveHeader{};
-  keepAliveHeader.version = ac::net::kProtocolVersion;
+  keepAliveHeader.version = ac::net::kCurrentProtocolVersion;
   keepAliveHeader.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
   keepAliveHeader.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
   keepAliveHeader.session = session;
@@ -331,7 +331,7 @@ AC_TEST(runtime_serves_health_and_metrics_over_http) {
   std::uint64_t now = 20000u;
   const std::string health = httpGet(runtime, "/health", now);
   AC_CHECK(health.rfind("HTTP/1.1 200 OK", 0u) == 0u);
-  AC_CHECK(health.find("\"protocolVersion\":2") != std::string::npos);
+  AC_CHECK(health.find("\"protocolVersion\":3") != std::string::npos);
   now = 21000u;
   const std::string metrics = httpGet(runtime, "/metrics", now);
   AC_CHECK(metrics.rfind("HTTP/1.1 200 OK", 0u) == 0u);
@@ -1000,7 +1000,7 @@ AC_TEST(runtime_grace_stops_old_movement_and_fire) {
   };
   const auto pollWithObserver = [&](std::uint64_t now) {
     ac::net::PacketHeader heartbeat{};
-    heartbeat.version = ac::net::kProtocolVersion;
+    heartbeat.version = ac::net::kCurrentProtocolVersion;
     heartbeat.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
     heartbeat.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
     heartbeat.session = observerSession;
@@ -1056,7 +1056,7 @@ AC_TEST(runtime_grace_disconnect_and_same_client_resume) {
   AC_CHECK_EQ(runtime.clientCount(), 1u);
   std::uint8_t frame[2048] = {};
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kResume);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kResume);
   header.session = session;
@@ -1210,7 +1210,7 @@ AC_TEST(runtime_session_rejects_other_endpoint_before_ack_and_liveness) {
                              ac::config::kButtonReady, 127);
   AC_CHECK(other.sendTo(server, {scratch, bytes}) > 0);
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
   header.session = session;
@@ -1331,7 +1331,7 @@ AC_TEST(runtime_lobby_ready_bit_starts_match) {
   for (int i = 0; i < 200; ++i) {
     if (i % 16 == 0) {
       ac::net::PacketHeader heartbeat{};
-      heartbeat.version = ac::net::kProtocolVersion;
+      heartbeat.version = ac::net::kCurrentProtocolVersion;
       heartbeat.type = static_cast<std::uint8_t>(ac::net::PacketType::kKeepAlive);
       heartbeat.flags = ac::net::requiredFlags(ac::net::PacketType::kKeepAlive);
       std::uint8_t frame[32] = {};

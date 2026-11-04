@@ -642,7 +642,7 @@ AC_TEST(codec_command_bad_type) {
   const auto wrongType = net::decodeCommand(buffer, sizeof buffer);
   AC_CHECK(!wrongType.isOk);
   AC_CHECK(wrongType.failure == DecodeFailure::kBadType);
-  buffer[1] = 13u;  // 尚未分配的类型码（11 = Join，12 = UpgradeSelect（S16），13 空闲）
+  buffer[1] = 15u;  // Unallocated after P1 Request/State (13/14); old golden bytes remain unchanged.
   const auto badType = net::decodePacket(buffer, sizeof buffer);
   AC_CHECK(!badType.isOk);
   AC_CHECK(badType.failure == DecodeFailure::kBadType);

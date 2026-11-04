@@ -1,0 +1,13 @@
+schema=angry-chen-expedition/1
+rules=expedition-p1-v1
+layout=1,pasture-classic-v1
+objective=1,purifier-zone,12,0,6,180000,240000,1000,2
+run=3,30000,1
+spawn=25000,8,12,16
+pulse=1,20000,8,25
+card=1,hunter-mark,hunter,0,head-hit-marks-target-3000ms;marked-direct-hit-x1.5;unmarked-body-x0.85
+card=2,hunter-refund,hunter,1,head-hit-refunds-1-round;cooldown-500ms;body-x0.85
+card=3,hunter-focus,hunter,1,stationary-1000ms-head-x1.75;moving-x0.8
+card=4,breach-stagger,breach,0,within-6m-hit-staggers-500ms;per-target-cooldown-2000ms;outside-6m-x0.8
+card=5,breach-sustain,breach,4,within-6m-kill-heals-8;cooldown-1000ms;outside-6m-x0.8
+card=6,breach-tempo,breach,4,within-6m-kill-refills-active-mag-and-cancels-reload;cooldown-2000ms;outside-6m-x0.8

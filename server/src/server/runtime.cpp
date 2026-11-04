@@ -12,6 +12,8 @@
 #include "core/scheduler.hpp"
 #include "core/version.hpp"
 #include "net/codec.hpp"
+#include "net/expedition_codec.hpp"
+#include "expedition/room_run.hpp"
 #include "report.hpp"
 #include "replication/delta.hpp"
 #include "waves/director.hpp"
@@ -45,7 +47,7 @@ ac::sim::Command toSimCommand(const ac::net::CommandPayload& payload) noexcept {
 ac::net::PacketHeader makeHeader(ac::net::PacketType type, std::uint16_t session,
                                  std::uint16_t seq) noexcept {
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(type);
   header.flags = ac::net::requiredFlags(type);
   header.session = session;
@@ -87,6 +89,7 @@ bool Runtime::start(const RuntimeConfig& config, std::string* error) {
   deps_.user = this;
   deps_.replicate = &Runtime::replicateThunk;
   deps_.sendMatchState = &Runtime::matchStateThunk;
+  deps_.sendExpeditionState = &Runtime::expeditionStateThunk;
 
   if (config_.isHttpEnabled) {
     ac::http::HttpListenerDeps httpDeps{};
@@ -190,6 +193,17 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
     return;
   }
   const ac::net::PacketInfo& info = packet.value;
+  if (info.header.version != ac::net::kCurrentProtocolVersion) {
+    if (info.header.type == static_cast<uint8_t>(ac::net::PacketType::kHello)) {
+      uint8_t reply[32]{};
+      const auto rejected = ac::net::encodeDisconnect(
+          makeHeader(ac::net::PacketType::kDisconnect, 0u, 0u), ac::net::ReliableExt{},
+          ac::net::DisconnectPayload{static_cast<uint8_t>(ac::net::DisconnectReason::kVersionMismatch)}, reply, sizeof(reply));
+      if (rejected.isOk) (void)udp_.sendTo(from, std::span<const uint8_t>(reply,rejected.bytes));
+    }
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
   // 超长包单独归类（§5 的 oversized 出口），其余解码失败都算丢弃帧。
   if (!ac::security::validatePacketSize(size).isOk) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kOversizedFrames, 1u);
@@ -257,6 +271,9 @@ void Runtime::handlePacket(const ac::net::Endpoint& from, const std::uint8_t* by
       // S16 type 12：波间购买升级。同样在方向白名单里，必须在此处置（否则计成丢弃帧）。
       handleUpgradeSelect(info.header.session, bytes, size);
       break;
+    case ac::net::PacketType::kExpeditionRequest:
+      handleExpeditionRequest(info.header.session, bytes, size);
+      break;
     case ac::net::PacketType::kKeepAlive: {
       const ac::net::SessionValidation validation =
           handshake_.validateSession(info.header.session);
@@ -319,6 +336,17 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;
   }
+  if (hello.value.contentVersion != ac::net::kExpeditionContentVersion ||
+      hello.value.contentHash != ac::net::kExpeditionContentHash) {
+    uint8_t reply[32]{};
+    const auto encoded = ac::net::encodeDisconnect(
+        makeHeader(ac::net::PacketType::kDisconnect,0u,0u),ac::net::ReliableExt{},
+        ac::net::DisconnectPayload{static_cast<uint8_t>(ac::net::DisconnectReason::kVersionMismatch)},
+        reply,sizeof(reply));
+    if(encoded.isOk) (void)udp_.sendTo(from,std::span<const uint8_t>(reply,encoded.bytes));
+    ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
+    return;
+  }
   const ac::net::HandshakeOutcome outcome =
       handshake_.onHello(hello.value.nonce, hello.value.token, wallMs32(nowMs),
                          (static_cast<std::uint64_t>(from.ipv4) << 16u) | from.port);
@@ -359,6 +387,10 @@ void Runtime::handleHello(const ac::net::Endpoint& from, const std::uint8_t* fra
     }
   }
   if (!admitted) sendRoomUnavailable(from, outcome.session);
+  else if(room_ != nullptr) {
+    (void)ac::room::broadcastMatchState(*room_,deps_);
+    (void)ac::room::sendExpeditionState(*room_,client->session,deps_);
+  }
 }
 
 void Runtime::sendRoomUnavailable(const ac::net::Endpoint& to, std::uint16_t session) {
@@ -412,7 +444,10 @@ void Runtime::handleResume(const ac::net::Endpoint& from, std::uint16_t session,
       ac::room::Session* existing = room_->sessions[i];
       if (existing == nullptr) continue;
       if (existing->token == 0u || existing->token != resume.value.token) continue;
-      if (ac::room::roomReconnect(*room_, *existing, resumed->session)) break;
+      if (ac::room::roomReconnect(*room_, *existing, resumed->session)) {
+        (void)ac::room::sendExpeditionState(*room_,resumed->session,deps_);
+        break;
+      }
     }
   }
 }
@@ -525,7 +560,7 @@ void Runtime::handleUpgradeSelect(std::uint16_t session, const std::uint8_t* fra
     return;
   }
   const std::uint8_t id = decoded.value.upgradeId;
-  if (room_->phase != ac::room::MatchPhase::kIntermission || id >= ac::config::kUpgradeCount) {
+  if (room_->expeditionEnabled || room_->phase != ac::room::MatchPhase::kIntermission || id >= ac::config::kUpgradeCount) {
     ac::metrics::addCounter(counters_, ac::metrics::CounterId::kDroppedFrames, 1u);
     return;
   }
@@ -549,6 +584,13 @@ void Runtime::handleUpgradeSelect(std::uint16_t session, const std::uint8_t* fra
   entity->upgrade.points -= 1u;
   *level += 1u;
   (void)ac::room::broadcastMatchState(*room_, deps_);
+}
+
+void Runtime::handleExpeditionRequest(std::uint16_t session, const std::uint8_t* frame, std::size_t size) {
+  const auto decoded = ac::net::decodeExpeditionRequest(frame,size);
+  Client* client = findClientByTransport(session);
+  if (!decoded.isOk || client == nullptr || room_ == nullptr || !ac::room::isInRoom(client->session)) return;
+  (void)ac::room::roomExpeditionRequest(*room_,client->session,decoded.value,deps_);
 }
 
 void Runtime::pollOnce(std::uint64_t nowMs) {
@@ -683,6 +725,7 @@ void Runtime::ensureMatchRunning(std::uint64_t nowMs) {
   if (room_ == nullptr) return;
   // 「已结束、还没重置」是结算记录唯一可读的时刻：先落盘（战绩 + 报告），再走重置。
   flushMatchOutcome();
+  if (room_->expeditionEnabled && room_->phase == ac::room::MatchPhase::kEnded) return;
   if (room_->phase == ac::room::MatchPhase::kPlaying) return;
   if (room_->phase == ac::room::MatchPhase::kEnded) {
     (void)ac::room::applyMatchTransition(*room_, ac::room::MatchPhase::kLobby);
@@ -709,7 +752,7 @@ void Runtime::ensureMatchRunning(std::uint64_t nowMs) {
 
 void Runtime::topUpSheep() noexcept {
   if (room_ == nullptr || room_->world == nullptr) return;
-  if (config_.sheepTarget <= 0) return;
+  if (room_->expeditionEnabled || config_.sheepTarget <= 0) return;
   if (room_->phase != ac::room::MatchPhase::kPlaying) return;
   const std::size_t alive = static_cast<std::size_t>(ac::waves::aliveSheepCount(*room_->world));
   if (alive >= static_cast<std::size_t>(config_.sheepTarget)) return;
@@ -736,6 +779,28 @@ void Runtime::matchStateThunk(void* user, const ac::room::Room& room, ac::room::
                               const ac::net::MatchState& state) {
   static_cast<void>(room);
   static_cast<Runtime*>(user)->onSendMatchState(session, state);
+}
+
+void Runtime::expeditionStateThunk(void* user, const ac::room::Room&, ac::room::Session& session,
+                                   const ac::net::ExpeditionState& state) {
+  static_cast<Runtime*>(user)->onSendExpeditionState(session,state);
+}
+
+void Runtime::onSendExpeditionState(ac::room::Session& session,const ac::net::ExpeditionState& state) noexcept {
+  Client* client=findClientByTransport(static_cast<uint16_t>(session.id));
+  if(client==nullptr || !client->isUsed) return;
+  auto header=makeHeader(ac::net::PacketType::kExpeditionState,client->transportId,++client->expeditionSeq);
+  ac::net::ReliableExt ext{};
+  ext.msgId=++client->seq;
+  ext.ackBase=client->commandRecv.ackBase;
+  ext.ackBits=client->commandRecv.ackBits;
+  uint8_t buffer[256]{};
+  const auto encoded=ac::net::encodeExpeditionState(header,ext,state,buffer,sizeof(buffer));
+  if(!encoded.isOk) return;
+  if(udp_.sendTo(client->endpoint,std::span<const uint8_t>(buffer,encoded.bytes))<=0) return;
+  client->bytesOut+=encoded.bytes;
+  ac::metrics::addCounter(counters_,ac::metrics::CounterId::kBytesOut,encoded.bytes);
+  ac::metrics::addCounter(counters_,ac::metrics::CounterId::kFramesOut,1u);
 }
 
 void Runtime::httpFillThunk(void* user, ac::http::HttpDeps& out) {
@@ -773,6 +838,8 @@ void Runtime::onReplicate(ac::room::Room& room) noexcept {
       continue;
     }
     client->isFullSnapshotDue = false;
+    // Legacy delta codec remains fixture-compatible; production frames are protocol 3.
+    sendBuffer_[0] = ac::net::kCurrentProtocolVersion;
     recordSnapshotSize(outcome.bytes);
     const ac::replication::QueueVerdict verdict = ac::replication::enqueueSnapshot(
         client->budget, outcome.bytes, &counters_, &gauges_, outcome.recordCount);

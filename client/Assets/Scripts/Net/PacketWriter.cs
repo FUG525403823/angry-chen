@@ -24,7 +24,8 @@ namespace Ac.Net
             var size = Size(header);
             var total = size + count;
             if (total > buffer.Length) throw new ArgumentException("数据报缓冲不足：" + total + " > " + buffer.Length);
-            if (header.Version != PacketHeader.ProtocolVersion) throw new ArgumentException("协议版本必须为 " + PacketHeader.ProtocolVersion);
+            if ((header.Version != PacketHeader.ProtocolVersion && header.Version != PacketHeader.CurrentProtocolVersion) || ((byte)header.Type >= 13 && header.Version != PacketHeader.CurrentProtocolVersion)) throw new ArgumentException("Invalid protocol version");
+            if ((byte)header.Type < 1 || (byte)header.Type > PacketHeader.MaxPacketType) throw new ArgumentException("Invalid packet type");
             if (!PacketHeader.IsFlagsValidForType(header.Type, (ushort)header.Flags))
                 throw new ArgumentException("flags 与 type 不符：" + header.Type + "/" + header.Flags);
 

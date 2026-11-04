@@ -255,7 +255,7 @@ namespace Ac.Boot
         {
             if (layer.SettingsInputBlocked) return;
             var flow = layer.Flow;
-            if (flow == null || !flow.IntermissionVisible) return;
+            if (flow == null || !flow.IntermissionVisible || flow.ExpeditionVisible) return;
             var upgrades = flow.Upgrades;
             if (upgrades == null || !upgrades.Visible) return;
             var mouse = Event.current.mousePosition;

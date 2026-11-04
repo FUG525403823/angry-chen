@@ -141,6 +141,7 @@ namespace Ac.Boot
         private void ClearIdentity()
         {
             LastMatchState = default(MatchStatePayload);
+            Expedition.Reset();
             MatchStateCount = 0;
             _sample.Rage = 0;
             _sample.RageLeft100Ms = 0;
@@ -222,6 +223,32 @@ namespace Ac.Boot
         // 而相位本身不能只靠 Sample.Phase（HudSample 装不下 players 表）。
         public MatchStatePayload LastMatchState { get; private set; }
         public int MatchStateCount { get; private set; }
+        public readonly ExpeditionHudModel Expedition = new ExpeditionHudModel();
+        private uint _expeditionRequestId;
+        public int ExpeditionStatesApplied { get; private set; }
+        public string ExpeditionRequestFailure { get; private set; }
+        public bool ExpeditionInputBlocked { get { return Expedition.RewardVisible; } }
+        public bool RequestExpedition(byte op, byte choiceId = 0)
+        {
+            if (op < 1 || op > 7 || (op == 2 ? choiceId > 6 : choiceId != (op == 5 ? 1 : 0))) return false;
+            var state = Expedition.State;
+            var transport = Transport;
+            if (transport == null || transport.State != ConnectionState.Connected || Expedition.Pending) return false;
+            if (_expeditionRequestId == uint.MaxValue)
+            {
+                ExpeditionRequestFailure = "requestIdExhausted";
+                return false; // Never wrap and emit reserved requestId zero or reuse an old ID.
+            }
+            ExpeditionRequestFailure = null;
+            var id = ++_expeditionRequestId;
+            var request = new ExpeditionRequest { RunId = op == 1 || op == 6 ? 0u : state == null ? 0u : state.RunId,
+                OfferId = op >= 2 && op <= 4 && state != null ? state.OfferId : 0u,
+                RequestId = id, Op = op, ChoiceId = choiceId };
+            var payload = ExpeditionCodec.EncodeRequest(request);
+            if (payload == null || !transport.Send(PacketType.ExpeditionRequest, payload)) return false;
+            Expedition.BeginRequest(id);
+            return true;
+        }
 
         public int Frames { get; private set; }
         public int SnapshotsApplied { get; private set; }
@@ -288,6 +315,23 @@ namespace Ac.Boot
                     // 只复用、**不重建**：数组在构造期分配一次，TryToFrame 负责把计数与内容抄进来。
                     if (!SnapshotCodec.TryToFrame(decoded, ref _scratchFrame)) { DecodeFailures += 1; return; }
                     ApplySnapshot(_scratchFrame);
+                    return;
+                }
+                case PacketType.ExpeditionState:
+                {
+                    ExpeditionStatePayload expedition;
+                    if (ExpeditionCodec.DecodeState(payload, out expedition) != DecodeFailure.Ok) { DecodeFailures += 1; return; }
+                    if (Expedition.Apply(expedition))
+                    {
+                        ExpeditionStatesApplied += 1;
+                        // Only an accepted receipt belonging to our established identity can
+                        // restore a watermark. Rejections (especially late wrongRun/MAX) are
+                        // not evidence about the current run's accepted request sequence.
+                        if (expedition.LastResult == 1 && LocalPlayerId != 0 && expedition.LocalPid == LocalPlayerId
+                            && expedition.LastRequestId > _expeditionRequestId)
+                            _expeditionRequestId = expedition.LastRequestId;
+                    }
+                    if (Sampler != null && ExpeditionInputBlocked) Sampler.SetModalBlocked(true);
                     return;
                 }
                 case PacketType.MatchState:
@@ -512,6 +556,8 @@ namespace Ac.Boot
             // 当帧信号：上一帧的"响过"不能留到这一帧（否则枪口火焰会一直亮）。
             LocalShotFired = false;
 
+            Expedition.Tick(dtMs);
+            if (Sampler != null && ExpeditionInputBlocked) Sampler.SetModalBlocked(true);
             // ① input：采样 → 上行 + 本地预测 + 本地武器镜像
             PumpInput(dtMs);
             PumpWeapon(dtMs);

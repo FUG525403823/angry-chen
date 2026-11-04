@@ -7,7 +7,8 @@
         "Ac.Net",
         "Ac.View",
         "Ac.UI",
-        "Ac.Audio"
+        "Ac.Audio",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

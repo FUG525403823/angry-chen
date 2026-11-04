@@ -223,7 +223,7 @@ namespace Ac.Tests
 
         private static bool IsCommandDatagram(byte[] datagram)
         {
-            return datagram.Length >= 8 && datagram[0] == PacketHeader.ProtocolVersion && datagram[1] == (byte)PacketType.Command;
+            return datagram.Length >= 8 && datagram[0] == PacketHeader.CurrentProtocolVersion && datagram[1] == (byte)PacketType.Command;
         }
 
         // ADR-009「握手时序」的 type 11（昵称上报）：载荷必须是 nameLen u8 + UTF-8 字节，
@@ -250,19 +250,19 @@ namespace Ac.Tests
 
             // 上界回归：NewType 之前这里写死成 MatchState，新增 type 11 后收包侧把 Join 判成 BadType
             // ——发送侧"成功"、接收侧"未知类型"。上界必须与码表同一步走（S16 追加 12=UpgradeSelect），
-            // 且 13 仍须被拒。
-            SelfTest.Equal((long)PacketType.UpgradeSelect, (long)PacketHeader.MaxPacketType);
+            // 协议3追加13/14，15仍须被拒。
+            SelfTest.Equal((long)PacketType.ExpeditionState, (long)PacketHeader.MaxPacketType);
             PacketHeader probe;
             var joinFrame = new byte[22];              // 8 通用包头 + 12 可靠扩展头 + nameLen + 1 字节名
-            joinFrame[0] = PacketHeader.ProtocolVersion;
+            joinFrame[0] = PacketHeader.CurrentProtocolVersion;
             joinFrame[1] = (byte)PacketType.Join;
             joinFrame[2] = 1;                          // reliable
             joinFrame[20] = 5;
             joinFrame[21] = (byte)'a';
             SelfTest.Equal((long)DecodeFailure.Ok, (long)PacketHeader.Read(new PacketReader(joinFrame), out probe));
             var unknownFrame = new byte[22];
-            unknownFrame[0] = PacketHeader.ProtocolVersion;
-            unknownFrame[1] = 13;                      // 尚未分配的类型码
+            unknownFrame[0] = PacketHeader.CurrentProtocolVersion;
+            unknownFrame[1] = 15;                      // 尚未分配的类型码
             unknownFrame[2] = 1;
             SelfTest.Equal((long)DecodeFailure.BadType, (long)PacketHeader.Read(new PacketReader(unknownFrame), out probe));
 
@@ -625,7 +625,7 @@ namespace Ac.Tests
             var anchorGroup = new FragmentReassembler();
             var anchorSlices = new List<byte[]>();
             var anchorTemplate = new PacketHeader();
-            anchorTemplate.Version = PacketHeader.ProtocolVersion;
+            anchorTemplate.Version = PacketHeader.CurrentProtocolVersion;
             anchorTemplate.Type = PacketType.Command;
             anchorTemplate.Flags = PacketFlags.Reliable;
             anchorTemplate.Session = 7;
@@ -755,7 +755,7 @@ namespace Ac.Tests
         private static PacketHeader MakeHeader(PacketType type, ushort _session)
         {
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = type;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(type);
             header.Session = _session;
@@ -888,7 +888,9 @@ namespace Ac.Tests
                     case PacketType.Hello:
                     {
                         HelloPayload hello;
-                        if (HandshakeCodec.DecodeHello(body, out hello) != DecodeFailure.Ok) return;
+                        if (header.Version != PacketHeader.CurrentProtocolVersion ||
+                            HandshakeCodec.DecodeHello(body, header.Version, out hello) != DecodeFailure.Ok ||
+                            hello.ContentVersion != HandshakeCodec.ContentVersion || hello.ContentHash != HandshakeCodec.ContentHash) return;
                         HelloCount += 1;
                         LastNonce = hello.ClientNonce;
                         if (DropFirstHello && HelloCount == 1) return;   // 注入：首包丢掉
@@ -965,7 +967,7 @@ namespace Ac.Tests
             {
                 if (type == PacketType.HelloAck) _session = 7;
                 var header = new PacketHeader();
-                header.Version = PacketHeader.ProtocolVersion;
+                header.Version = PacketHeader.CurrentProtocolVersion;
                 header.Type = type;
                 header.Flags = (PacketFlags)PacketHeader.RequiredFlags(type);
                 header.Session = _session;
@@ -988,7 +990,7 @@ namespace Ac.Tests
             {
                 var channel = ChannelFor(type);
                 var header = new PacketHeader();
-                header.Version = PacketHeader.ProtocolVersion;
+                header.Version = PacketHeader.CurrentProtocolVersion;
                 header.Type = type;
                 header.Flags = (PacketFlags)PacketHeader.RequiredFlags(type);
                 header.Session = _session;

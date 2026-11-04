@@ -12,6 +12,9 @@
 #include "waves/director.hpp"
 
 #include "config/pickup.hpp"
+#include "expedition/run.hpp"
+#include "expedition/encounter.hpp"
+#include "expedition/room_run.hpp"
 
 namespace ac::room {
 
@@ -42,6 +45,8 @@ struct RoomDeps {
   void (*sendMatchState)(void* user, const Room& room, Session& session,
                          const ac::net::MatchState& state) = nullptr;
   void (*replicate)(void* user, Room& room) = nullptr;
+  void (*sendExpeditionState)(void* user, const Room& room, Session& session,
+                              const ac::net::ExpeditionState& state) = nullptr;
 };
 
 struct Room {
@@ -55,6 +60,29 @@ struct Room {
   ac::sim::Command commands[kMaxPlayersPerRoom] = {};
   uint8_t commandCount = 0u;
   MatchRuntime match{};
+  bool expeditionEnabled = false;
+  ac::expedition::RunState run{};
+  ac::expedition::EncounterState encounter{};
+  uint32_t nextRunId = 1u;
+  uint32_t pressureTimerMs = 0u;
+  uint32_t expeditionSentRevision = 0u;
+  uint32_t expeditionTimerMs = 0u;
+  uint32_t expeditionTriggerSignature = 0u;
+  struct ExpeditionReceipt {
+    uint16_t pid = 0u;
+    ac::net::ExpeditionRequest request{};
+    uint8_t result = 0u;
+    uint32_t ackRequestId = 0u;
+    uint8_t ackResult = 0u;
+    uint32_t watermarkRunId = 0u;
+    uint32_t highRequestId = 0u;
+    bool queued = false;
+    ac::net::ExpeditionRequest toolRequest{};
+    uint8_t toolResult = 0u;
+  } expeditionReceipts[kMaxPlayersPerRoom]{};
+  uint16_t expeditionToolQueue[16]{};
+  uint32_t expeditionToolRequestIds[16]{};
+  uint8_t expeditionToolCount = 0u;
   ac::waves::DirectorState director{};
   MatchPhase phase = MatchPhase::kLobby;
   int32_t wave = 0;

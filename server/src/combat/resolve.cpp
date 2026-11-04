@@ -11,6 +11,7 @@
 #include "config/upgrades.hpp"
 #include "config/weapons.hpp"
 #include "core/math.hpp"
+#include "expedition/build.hpp"
 #include "sim/arena.hpp"
 #include "sim/step.hpp"
 
@@ -74,7 +75,8 @@ void applyHit(World& world, Entity& shooter, const ShotTrace& trace, const ac::c
   const bool wasDowned = target.kind == EntityKind::kPlayer && target.downed.downed;
   ac::combat::DamageResult damage{};
   // S16：射手升级伤害乘数（默认 1.0 位等价）。
-  const double damageMultiplier = ac::config::upgradeDamageMultiplier(shooter.upgrade.damageLevel);
+  const double damageMultiplier = ac::config::upgradeDamageMultiplier(shooter.upgrade.damageLevel) *
+      ac::expedition::calculateHitModifier(shooter, target, trace.part, trace.distanceM, world.timeMs);
   ac::combat::computeDamage(def, trace.part, trace.distanceM, rage, target.armor, damage, damageMultiplier);
   const double total = damage.hpDamage + damage.armorDamage;
   if (counters != nullptr) {
@@ -106,8 +108,10 @@ void applyHit(World& world, Entity& shooter, const ShotTrace& trace, const ac::c
 
   pushEvent(world, kEventPlayerHit, flags, shooter.id, target.id, trace.x, trace.y, trace.z, total);
 
-  if (!killed) return;
   const bool isElite = target.state == ac::config::kSheepEliteState;
+  ac::expedition::onHit(shooter, target, trace.part, trace.distanceM, world.timeMs);
+  if (!killed) return;
+  ac::expedition::onKill(shooter, target, trace.distanceM, world.timeMs);
   ac::combat::addKillRage(shooter.rage, isElite, damage.isHeadshot, static_cast<double>(world.timeMs));
   pushEvent(world, kEventSheepKilled, flags, shooter.id, target.id, target.pos.x, target.pos.y, target.pos.z, total,
             target.sheepKind);
@@ -338,6 +342,7 @@ void resolveCombat(World& world, const Command* commands, uint32_t commandCount,
     Entity* found = entityById(world, world.activeIds[i]);
     if (found == nullptr || !found->active || found->kind != EntityKind::kPlayer) continue;
     ac::combat::updateWeapon(found->weapon, nowMs, static_cast<double>(dtMs), fireRateMultiplierFor(*found, nowMs));
+    ac::expedition::updateBuild(*found, world.timeMs, dtMs);
   }
 
   uint32_t slot = 0u;

@@ -97,6 +97,7 @@ void resetMatchForRestart(Room& room) noexcept {
   room.match.hasResult = false;
   room.match.lastResult = MatchResultRecord{};
   room.wave = 0;
+  resetRoomExpedition(room);
   room.intermissionMs = 0;
   room.matchStateTimerMs = 0;
   room.director = ac::waves::createDirectorState();
@@ -131,12 +132,17 @@ bool updateMatch(Room& room, uint64_t nowMs, uint32_t elapsedMs) noexcept {
       if (!applyMatchTransition(room, MatchPhase::kPlaying)) return false;
       room.wave = 1;
       room.match.startedAtMs = nowMs;
+      if (room.expeditionEnabled) {
+        beginRoomExpedition(room);
+        return true;
+      }
       refillPlayers(room);
       spawnAmmoCrates(room);  // S16：补给箱随每场比赛生成（id 在玩家之后，pid==EntityId 不变）
       return true;
     }
     return false;
   }
+  if (room.expeditionEnabled) return false;
   if (room.phase == MatchPhase::kIntermission) {
     room.intermissionMs -= static_cast<int64_t>(elapsedMs);
     const int64_t elapsed = kIntermissionMs - room.intermissionMs;

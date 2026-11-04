@@ -285,12 +285,13 @@ namespace Ac.Net
         void ISessionControlSink.SendHello(uint clientNonce, uint reconnectToken)
         {
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = PacketType.Hello;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.Hello);
             header.Session = 0;
             header.Seq = 0;
-            SendRaw(PacketWriter.Build(header, HandshakeCodec.EncodeHello(clientNonce, reconnectToken), 0, HandshakeCodec.HelloPayloadBytes));
+            var hello = HandshakeCodec.EncodeHello(clientNonce, reconnectToken, PacketHeader.CurrentProtocolVersion);
+            SendRaw(PacketWriter.Build(header, hello, 0, hello.Length));
         }
 
         void ISessionControlSink.SendResume(uint reconnectToken)
@@ -302,7 +303,7 @@ namespace Ac.Net
         {
             var channel = CommandChannel;
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = PacketType.KeepAlive;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.KeepAlive);
             header.Session = _session.Session;
@@ -325,6 +326,7 @@ namespace Ac.Net
             var reader = new PacketReader(bytes);
             PacketHeader header;
             var failure = PacketHeader.Read(reader, out header);
+            if (failure == DecodeFailure.Ok && header.Version != PacketHeader.CurrentProtocolVersion) failure = DecodeFailure.BadVersion;
             if (failure != DecodeFailure.Ok)
             {
                 Stats.OnInvalidPacket();
@@ -443,7 +445,7 @@ namespace Ac.Net
             msgId = 0;
             var flags = (PacketFlags)PacketHeader.RequiredFlags(channel);
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = channel;
             header.Flags = flags;
             header.Session = channel == PacketType.Hello ? (ushort)0 : _session.Session;
@@ -668,7 +670,7 @@ namespace Ac.Net
         private void SendVersionMismatch(byte[] datagram)
         {
             var header = new PacketHeader();
-            header.Version = PacketHeader.ProtocolVersion;
+            header.Version = PacketHeader.CurrentProtocolVersion;
             header.Type = PacketType.Disconnect;
             header.Flags = (PacketFlags)PacketHeader.RequiredFlags(PacketType.Disconnect);
             header.Session = datagram.Length >= 6 ? (ushort)(datagram[4] | (datagram[5] << 8)) : (ushort)0;

@@ -11,6 +11,7 @@
 #include "combat/rage.hpp"
 #include "combat/weapon.hpp"
 #include "core/math.hpp"
+#include "expedition/build.hpp"
 
 namespace ac::sim {
 
@@ -88,6 +89,7 @@ struct Entity {
   ac::ai::SheepAiState ai{};           // 每只羊的 AI 状态（仇恨槽 / 计时 / 冲锋方向 / 邻居槽）
   // —— S16 追加 ——
   UpgradeState upgrade{};              // 波次升级等级 / 升级点 / 补给箱蓄力进度
+  ac::expedition::BuildState build{};  // P1: disabled in Classic, retained on reconnect.
 };
 
 struct SpawnParams {
@@ -126,6 +128,7 @@ inline void resetEntity(Entity& entity) noexcept {
   ac::combat::resetKnockbackState(entity.knock);
   ac::ai::resetSheepAiState(entity.ai);
   resetUpgradeState(entity.upgrade);
+  ac::expedition::resetBuild(entity.build);
 }
 
 // 只读视图：查询语义与 EntityTable 完全一致（模拟遍历与只读消费方用它）。

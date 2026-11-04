@@ -88,7 +88,10 @@ AC_TEST(world_create_initializes_defaults) {
   // 状态（仇恨槽 8 + 邻居槽 12 + 计时/冲锋方向）→ 232 -> 960 字节（README §12 的字节账；两轴评审后
   // 删掉了与 S08 `Entity::sheepKind` 重复的 `ai.sheepKind` 镜像，故由 968 回落到 960）。
   // S16 追加 UpgradeState（5×u8 + double ammoRefillMs，按 8 对齐 = 16 字节）→ 960 -> 976。
-  AC_CHECK_EQ(sizeof(sim::Entity), 976u);
+  // P1 appends the default-disabled build; the frozen Classic prefix remains unchanged.
+  AC_CHECK_EQ(offsetof(sim::Entity, build), 976u);
+  AC_CHECK(!world->entities[0].build.enabled);
+  AC_CHECK_EQ(world->entities[0].build.selectedMask, 0u);
   AC_CHECK_EQ(sizeof(sim::Entity::id), 2u);
   AC_CHECK_EQ(sizeof(sim::Entity::aliveMs), 4u);
 
@@ -152,7 +155,8 @@ AC_TEST(world_create_initializes_defaults) {
   // S05 的 128 KiB 只是「一次性预分配」的卫生上限；S08 扩到 265352 字节、S09 再随 Entity 的
   // 羊群 AI 状态扩到 1010824 字节（1024 实体 × 960 B + 256 事件 × 48 B + 姿态环 7688），
   // 上限抬到 1 MiB 并保留同量级约束（README §12 已声明）。
-  AC_CHECK(sizeof(sim::World) < 1024u * 1024u);
+  // ADR-022: exact P1 fixed storage, +81920 B; runtime RSS/zero-allocation gates are unchanged.
+  AC_CHECK_EQ(sizeof(sim::World), 1110440u);
 }
 
 AC_TEST(world_reset_returns_to_start) {
