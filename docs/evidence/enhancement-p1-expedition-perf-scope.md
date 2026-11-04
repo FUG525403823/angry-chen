@@ -41,3 +41,11 @@ FrameBench会禁用生产driver并喂入synthetic快照，不覆盖真实Expedit
 GameLoop公共OnPacket/ApplySnapshot/Frame可喂入真实表现，但当前没有node3录制/回放CLI。现有FrameBench每帧强制生成4p60羊及MatchState/Event，会覆盖外部注入，不能直接冒充真实node3重放。现有acceptance trace仅有State14 base64/本地视角与汇总，缺全实体Snapshot，不能从中重建原峰值。
 
 下一最小诊断片段需全量起点及有序delta/removed、完整MatchState10/State14/Event6与到达时刻、输入/视角/dt、特效预卷、实际图形配置与构建身份，以及峰值frame号/engine draw/原图。可先2–5秒固定视角片段构建公开渲染反馈环，但不当正式预测或性能门；最终仍复测原四人节点场景。没有该反馈环前不盲改渲染或关功能，也不无限重跑以等待偶然PASS。
+
+## 短合成诊断复现阈值悬崖
+
+已在隔离clean源码加throwaway player hook（仅scratch，非产品入口），实际Bootstrap/Canvas、4玩家满构筑、固定相机(12,1.6,-12)/yaw0、1080p、quality5、supportsInstancing=true。保留场地、远端玩家及光影，按公开ApplySnapshot/State14/Frame接口扫0/12/24/25/32只可见同形羊，每档60预热+120实际引擎帧。下一Update读completed frame计数与唯一驱动上一帧呈现tuple关联，全部valid、实际culled/drawn数等于目标、remoteCount3、remoteSubmitted5。
+
+本机 `build/reports/p1/172-draw-probe.json`、构建及player真实exit0。引擎draw各档稳定为54/97/145/58/58，Presentation submitted为5/29/53/7/7。24羊为Single，25羊转Instanced；阈值两侧87draw下降支持原25只实例化阈值造成中小羊群预算悬崖。该诊断不是原网络现场重放，不证明所有超预算均为该原因；没有关闭Canvas、减少目标压力或更改阴影来伪造改善。已仅为远征支持实例化硬件启用小羊群实例化，Classic阈值与历史回退保持。公开Batching策略编译RED→GREEN，clean投影引擎293/293。短环复测176-draw-probe-fixed.json：0/12/24/25/32羊draw54/58/58/58/58，全部valid，24羊145→58；未关闭Canvas、减少羊或更改阴影。原真实4人1080p/quality5/VSync1第三节点满构筑复测92f240db：全员完整三节点exit0，每端3轮missing0，四端scopedFrameGraphicsVerdict=PASS，最大draw74/65/73/72；P95范围16.9681–17.0597ms，P99最高17.7916ms，triMax21599。原FAIL与短环均保留。
+
+本机 `build/reports/p1/players/20261104T072109002Z-92f240db/peer-{1,2,3,4}.performance.json`。该隔离clean构建额外包含默认不运行的scratch诊断hook，实际联机轮无hook参数，原生产driver仍运行；不能据此称最终发布包全部退出。奖励阶段、精确分配与视觉/真人门仍未完成。本次支持“中小可见羊群Single路径”为预算失败来源之一，不声称排除了所有可能峰值。

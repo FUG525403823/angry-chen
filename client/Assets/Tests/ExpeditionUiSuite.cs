@@ -13,6 +13,7 @@ namespace Ac.Tests
         public static void Register()
         {
             ExpeditionPerformanceSuite.Register();
+            SelfTest.Add("expedition.batching_preserves_classic_threshold", BatchingPreservesClassicThreshold);
             SelfTest.Add("expedition.ui_pending_matches_exact_receipt", PendingMatchesExactReceipt);
             SelfTest.Add("expedition.loop_wrongrun_max_does_not_poison_request", WrongRunMaxDoesNotPoisonRequest);
             SelfTest.Add("expedition.ui_rejects_previous_run_until_reset", RejectsPreviousRunUntilReset);
@@ -24,6 +25,17 @@ namespace Ac.Tests
             SelfTest.Add("expedition.sampler_number_keys_select_rifle_shotgun", NumberKeysSelectRifleShotgun);
             SelfTest.Add("expedition.acceptance_refill_tracks_visible_pickup", RefillTargetTracksVisiblePickup);
             SelfTest.Add("expedition.acceptance_combat_point_stays_in_purifier", CombatPointAvoidsVisibleThreatInsidePurifier);
+        }
+
+        private static void BatchingPreservesClassicThreshold()
+        {
+            SelfTest.True(Batching.Decide(24) == DrawMode.Single && Batching.Decide(25) == DrawMode.Instanced,
+                "Classic retains its historical 24/25 threshold", "Classic");
+            SelfTest.True(Batching.DecideForExpedition(0) == DrawMode.Single,
+                "empty Expedition submits no instanced group", "zero");
+            foreach (var visible in new[] { 1, 12, 24 })
+                SelfTest.True(Batching.DecideForExpedition(visible) == DrawMode.Instanced,
+                    "Expedition avoids the small-crowd single-draw shadow multiplier", visible.ToString());
         }
 
         private static void CombatPointAvoidsVisibleThreatInsidePurifier()

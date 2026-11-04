@@ -499,7 +499,7 @@ namespace Ac.Boot
             {
                 // 画质档的实例上限（256/512/1024）在这里生效：低档先保帧率
                 var cap = Batching.VisibleInstances(culled, Batching.QualityTier);
-                LastDrawMode = Batching.Decide(cap);
+                LastDrawMode = _loop != null && _loop.Expedition.Visible && SystemInfo.supportsInstancing ? Batching.DecideForExpedition(cap) : Batching.Decide(cap);
                 var instanced = LastDrawMode == DrawMode.Instanced;
                 for (var form = 0; form < SheepMesh.FormCount && drawn < cap; form++)
                 {

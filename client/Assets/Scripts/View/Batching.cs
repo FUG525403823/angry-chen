@@ -27,6 +27,11 @@ namespace Ac.View
             return visibleSameKind >= InstanceThreshold ? DrawMode.Instanced : DrawMode.Single;
         }
 
+        public static DrawMode DecideForExpedition(int visibleSameKind)
+        {
+            return visibleSameKind > 0 ? DrawMode.Instanced : DrawMode.Single;
+        }
+
         public static bool ShouldCombineStatic(int sameMaterialMeshCount)
         {
             return sameMaterialMeshCount >= CombineMeshThreshold;
