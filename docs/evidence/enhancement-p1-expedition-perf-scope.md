@@ -55,3 +55,11 @@ GameLoop公共OnPacket/ApplySnapshot/Frame可喂入真实表现，但当前没�
 干净Git15c3939、无scratch hook发布构建，完整引擎293/293、构建exit0、依赖泄漏审计exit0。实际4人完整三节点a054423b技术PASS、exit0，1080p/quality5/VSync1第三节点满构筑每端3轮missing0，四端scopedFrameGraphicsVerdict=PASS；最大draw71/65/70/70，全窗口P95最高17.486ms、P99最高21.8384ms，原20/33ms及120draw门保持。原本失败轮未删除，未将奖励/分配/真人状态改成PASS。
 
 本地候选 `build/reports/p1/P1-15c3939-candidate.zip` SHA256 `a7229340de550bbcf48cc68ac045b0a4938dfd3dc752498b03b418703b3d908c`，含完整client/server及启动脚本、BUILD-IDENTITY/逐文件哈希；运行包未上传GitHub。隔离导出首次审计因缺开发包缓存未能执行，后以现有已校验vendor内容对同一发布目录完成审计，不把缺测记PASS。
+
+## 奖励独立观测：一轮完整，不足三轮
+
+默认仍combat，新增显式Stage=reward选择；reward忽略combat节点过滤并报告requestedNode=0。同一reward中offer改变、离开奖励阶段会清未完成窗口与旧峰，完整轮次可来自不同offer，但不拼接部分窗口。公开采样行为RED→GREEN，完整引擎294/294、release构建exit0；runner opt-in参数/manifest guardrail RED→GREEN，不改权威30秒期限、推进速度或选卡流程。
+
+真实4人1080p/quality5/VSync1奖励重连损伤轮ef782d29（delay100/loss10/5秒断流及15秒恢复稳定窗口），完整三节点技术PASS、实际exit0。四端奖励各仅1轮完整120预热+600样本、missing0，因后续奖励自动正常选卡没有足够连续窗口，**scopedFrameGraphicsVerdict/rewardStatus/combatStatus均UNVERIFIED**。已完整一轮P95为17.0745/17.0424/17.0531/17.1247ms，P99为18.4218/17.9613/18.4199/17.4155ms，drawMax均36、triMax4797/4797/4797/4809；只作已测一轮数据，不称三轮预算PASS。报告数组余下0是未填窗口，必须连同runs=1解读，不能当0ms实测。
+
+本机 `build/reports/p1/players/20261104T082737445Z-ef782d29/peer-{1,2,3,4}.performance.json`。下一步可仅让诊断驱动像玩家阅读一样在每次合法奖励内等待后再正常选卡，累计三个完整窗口；不得延长期限、抹掉不完整样本或调用游戏后门。精确分配与视觉/真人仍另待。

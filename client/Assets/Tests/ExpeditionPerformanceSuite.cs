@@ -7,6 +7,22 @@ namespace Ac.Tests
         public static void Register() { SelfTest.Add("p1.performance_missing_is_unverified", Missing); }
         private static void Missing()
         {
+            var reward = new ExpeditionPerformanceSamples(0, 1);
+            for (var i = 1; i <= 2161; i++) reward.Add(i, 16, 20, 100, 1, 1, 0, 10);
+            SelfTest.True(reward.Status == "PASS", "reward node0 completes its own windows", reward.Status);
+            reward = new ExpeditionPerformanceSamples(0, 1);
+            for (var i = 1; i <= 4000; i++) reward.Add(i, 16, 20, 100, 1, 1, 1, (uint)(i / 500));
+            SelfTest.True(reward.Status == "UNVERIFIED", "partial windows cannot cross offers", reward.Status);
+            reward = new ExpeditionPerformanceSamples(0, 1);
+            for (var i = 1; i <= 2163; i++) reward.Add(i, 16, 20, 100, 1, 1, (byte)((i - 1) / 721), (uint)((i - 1) / 721));
+            SelfTest.True(reward.Status == "PASS", "completed rounds can span reward offers and nodes", reward.Status);
+            var invalidStage = new ExpeditionPerformanceSamples(1, 0);
+            for (var i = 1; i <= 2161; i++) invalidStage.Add(i, 16, 20, 100, 1, 2, 1, 1);
+            SelfTest.True(invalidStage.Status == "UNVERIFIED", "invalid requested stage cannot pass", invalidStage.Status);
+            reward = new ExpeditionPerformanceSamples(3, 1);
+            for (var i = 1; i <= 200; i++) reward.Add(i, 16, 999, 999999, 1, 1, 0, 1);
+            for (var i = 201; i <= 2360; i++) reward.Add(i, 16, 20, 100, 1, 1, 2, 2);
+            SelfTest.True(reward.Status == "PASS" && reward.RequestedNode == 0, "new offer clears partial maxima and reward ignores node", reward.Status);
             var node3 = new ExpeditionPerformanceSamples(3);
             for (var i = 1; i <= 2161; i++) node3.Add(i, 16, 20, 100, 1, 2, 1);
             SelfTest.True(node3.Status == "UNVERIFIED", "node1 cannot populate node3 windows", node3.Status);
