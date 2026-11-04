@@ -35,6 +35,12 @@
 
 这验证生产公共键盘接口与官方UI事件，但没有向实际player发送OS Tab/Enter，也未用截图确认focus可见对比。现有自建EventSystem禁内建导航；若外部共享EventSystem开启内建Submit，与自适配器双通路仍未验，pending不能单独证明同步回执无重复。视觉与真人门保持未通过；此前候选15c3939不含此后新增键盘实现。
 
+## 实际player OS键盘诊断：前台焦点未取得
+
+隔离干净ccc31d5加入仅scratch临时probe构建exit0，保留生产ExpeditionUiRenderer.LateUpdate及真实Input.GetKeyDown，不调用HandleRewardNavigation。探针仅以公开State14与内存传输提供候选[1,4,0]，不是联机或真人验收；ready报告确认官方焦点Card0、自建Ac.ExpeditionEventSystem、sendNavigationEvents=false、请求0。
+
+194/195/196三次OS输入尝试均未取得目标player前台焦点；第三次明确记录非零目标HWND与不同foregroundHWND，排除只因MainWindowHandle尚未就绪。SetForegroundWindow及短期AttachThreadInput均未成功。脚本先校验目标前台再发送，故**三轮均未发送任何按键**，保留报告及driver日志，失败记未验证而非产品键盘功能失败或通过。进程由脚本finally收尾，无遗留player；不向无关前台窗口盲发Tab/Enter，也不以公共接口调用冒充OS输入。所测scratch产物不纳入发布候选，未提交源码；现阶段只证明player默认焦点建立，OS键盘端到端仍需交互桌面验证。
+
 ## 首次窗口捕获尝试（未通过视觉门）
 
 独立runner增加WindowWidth/WindowHeight参数（默认仍960×540），manifest仅记录requested尺寸，不声称实际尺寸。离线guardrail先RED exit1再GREEN exit0。以干净3dda8cb release请求1280×720启动，真实单人541dac29轮完整三节点技术PASS、exit0。
