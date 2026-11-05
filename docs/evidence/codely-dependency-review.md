@@ -15,7 +15,7 @@
 
 [验证器](../../tools/codely-dependencies.mjs)同时检查包名/版本、manifest精确引用、lock source/version/registry、工具的直接依赖闭包和editorcoroutines/nunit固定来源。Generators声明Bridge最低1.0.76，当前直接依赖将其解析为1.0.87；二者分别登记，不把声明的最低版本误作实际已安装版本。
 
-[获取器](../../tools/codely-fetch.mjs)只读记录中的HTTPS官方URL，下载后先验归档SHA256再列出并检查路径、解包、验证包树；默认仅staging，显式`--install-missing`只安装不存在的目标，不覆盖已有目标。不修改manifest/lock、不执行供应商代码。新归档hash即使版本号不变也失败。使用系统tar（Windows bsdtar支持ZIP）；冷网络失败不能替代通过。
+[获取器](../../tools/codely-fetch.mjs)只读记录中的HTTPS官方URL，下载后先验归档SHA256再列出并检查路径、解包、验证包树；默认仅staging，显式`--install-missing`只安装不存在的目标，不覆盖已有目标。不修改manifest/lock、不执行供应商代码。新归档hash即使版本号不变也失败。解包按归档能力选择工具：TGZ用系统`tar`；ZIP优先bsdtar（Windows/macOS），GNU tar环境用`unzip`，因为GNU tar不能读ZIP。冷网络失败不能替代通过。
 
 ## 使用权与开发工具风险
 
@@ -51,6 +51,14 @@ exit 1（预期反向命中）
 | 隔离临时Git仓库，使用`git show HEAD:client/Packages/manifest.json`及lock原字节，复制门脚本但不安装工具、不放准入记录，再执行`node tools/check-assets.mjs` | exit0；实际HEAD无两开发工具，34项官方依赖。证明clean质量门不要求引入开发工具；独立`verify`仍保持完整登记组合严格语义，不把缺项当完整准入通过 |
 
 保持限制：准入记录是受审代码配置，不是抵抗有权修改记录的攻击者的签名；不会自动信任新版本。未将开发准入通过冒充发布审计通过或P0完整验收；新投影实物审计及其余性能/CI/联机门由Lead汇总。
+
+## 2026-11-05 CI回归修复（ZIP解包）
+
+GitHub Actions `quality`（ubuntu-latest）在`node tools/codely-fetch.mjs build/scratch/codely-ci-staging --install-missing .`处失败：Bridge TGZ已通过并打印`FETCH VERIFIED`，第二个包的`tar -tf .../1.zip`报`tar: This does not look like a tar archive`。归档SHA256已通过，故障仅在解包。
+
+根因：获取器把ZIP交给系统`tar`。Windows/macOS的`tar`是bsdtar（能读ZIP），ubuntu-latest的`tar`是GNU tar（不能读ZIP）；旧实现只在Windows bsdtar上验证过。修复：`tools/codely-fetch.mjs`探测`tar --version`，输出含bsdtar/libarchive才用`tar`，否则用`unzip`列出/解包ZIP；TGZ仍用`tar`。`tools/test-codely-dependencies.mjs`增加真实ZIP列出/解包断言，由quality job在Ubuntu上执行。准入记录、manifest、lock与所有SHA256未改。
+
+本地（Windows，bsdtar分支）已执行`node tools/test-codely-dependencies.mjs`：exit 0，新增`PASS ZIP listing and extraction`；`node tools/codely-fetch.mjs <临时staging> --install-missing <独立临时workspace>`也exit 0，打印两行`FETCH VERIFIED`，安装树Bridge 435 + Generators 705文件。Linux的`unzip`分支由下一次`quality` job验证。
 
 ## 附录：历史1.0.85证据（不适用于当前）
 

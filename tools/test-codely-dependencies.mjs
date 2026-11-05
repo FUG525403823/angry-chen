@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync, readFileSync } f
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { treeFingerprint, verifyAdmission, auditRelease } from './codely-dependencies.mjs';
-import { verifyArchive, verifyArchivePaths } from './codely-fetch.mjs';
+import { verifyArchive, verifyArchivePaths, listArchive, extractArchive } from './codely-fetch.mjs';
 import { createHash } from 'node:crypto';
 const root = mkdtempSync(join(tmpdir(), 'ac-codely-admission-'));
 try {
@@ -49,6 +49,20 @@ try {
   verifyArchivePaths('package/package.json\npackage/file\n');
   for (const unsafe of ['../escape', '/absolute', 'C:\\escape', 'package/../../escape', 'package\\..\\escape', '']) assert.throws(() => verifyArchivePaths(unsafe), /Unsafe/);
   console.log('PASS archive digest and traversal contract');
+  // Real ZIP bytes with forward-slash names, including a directory entry. This exercises the
+  // platform extractor (bsdtar on Windows, unzip where GNU tar cannot read ZIP) in CI.
+  const zipPath = join(root, 'fixture.zip');
+  writeFileSync(zipPath, Buffer.from('UEsDBBQAAAAAALttZV0AAAAAAAAAAAAAAAAIAAAAcGFja2FnZS9QSwMEFAAAAAgAu21lXburVo4UAAAAEgAAABQAAABwYWNrYWdlL3BhY2thZ2UuanNvbqtWykvMTVWyUkrLrCgpLUpVqgUAUEsDBBQAAAAIALttZV2GphA2BwAAAAUAAAARAAAAcGFja2FnZS9oZWxsby50eHTLSM3JyQcAUEsBAhQAFAAAAAAAu21lXQAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAHBhY2thZ2UvUEsBAhQAFAAAAAgAu21lXburVo4UAAAAEgAAABQAAAAAAAAAAAAAAAAAJgAAAHBhY2thZ2UvcGFja2FnZS5qc29uUEsBAhQAFAAAAAgAu21lXYamEDYHAAAABQAAABEAAAAAAAAAAAAAAAAAbAAAAHBhY2thZ2UvaGVsbG8udHh0UEsFBgAAAAADAAMAtwAAAKIAAAAAAA==', 'base64'));
+  const archiveListing = listArchive('zip', zipPath);
+  verifyArchivePaths(archiveListing);
+  assert.match(archiveListing, /package\/package\.json/);
+  assert.match(archiveListing, /package\/hello\.txt/);
+  const unpacked = join(root, 'zip-unpacked');
+  mkdirSync(unpacked);
+  extractArchive('zip', zipPath, unpacked);
+  assert.equal(readFileSync(join(unpacked, 'package/package.json'), 'utf8'), '{"name":"fixture"}');
+  assert.equal(readFileSync(join(unpacked, 'package/hello.txt'), 'utf8'), 'hello');
+  console.log('PASS ZIP listing and extraction');
   rmSync(join(root, 'vendor'), { recursive: true });
   assert.throws(() => verifyAdmission(root, manifest, lock), /ENOENT/); console.log('PASS missing package rejected');
 } finally { rmSync(root, { recursive: true, force: true }); }

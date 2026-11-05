@@ -1,4 +1,5 @@
 // Public official archives only. Immutable bytes are checked before extraction; no credentials.
+// Extraction: tgz uses tar; zip uses bsdtar when present, otherwise unzip (GNU tar cannot read zip).
 // Usage: node tools/codely-fetch.mjs <staging-root> [--install-missing <workspace>]
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, existsSync, cpSync } from 'node:fs';
@@ -16,6 +17,38 @@ export function verifyArchive(data, archive, name = '') {
 export function verifyArchivePaths(listing) {
   if (!listing.trim() || listing.split(/\r?\n/).some(p => /(^|[\\/])\.\.([\\/]|$)|^[\\/]|^[A-Za-z]:|[\x00-\x08\x0b-\x1f]/.test(p))) throw Error('Unsafe archive path');
 }
+const LISTING_MAX_BUFFER = 16 * 1024 * 1024;
+function runArchiveTool(command, args) {
+  try {
+    return execFileSync(command, args, { encoding: 'utf8', maxBuffer: LISTING_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  } catch (error) {
+    const detail = String(error.stderr ?? '').trim() || error.message;
+    throw Error(`Archive tool ${command} failed: ${detail}`);
+  }
+}
+let zipCommand;
+function zipTool() {
+  if (zipCommand) return zipCommand;
+  try {
+    const version = execFileSync('tar', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    zipCommand = /bsdtar|libarchive/i.test(version) ? 'tar' : 'unzip';
+  } catch { zipCommand = 'unzip'; }
+  return zipCommand;
+}
+export function listArchive(kind, archive) {
+  if (kind === 'tgz') return runArchiveTool('tar', ['-tzf', archive]);
+  if (kind !== 'zip') throw Error('Unsupported archive kind: ' + kind);
+  return zipTool() === 'tar' ? runArchiveTool('tar', ['-tf', archive]) : runArchiveTool('unzip', ['-Z1', archive]);
+}
+export function extractArchive(kind, archive, destination) {
+  if (kind === 'tgz') {
+    runArchiveTool('tar', ['-xzf', archive, '-C', destination]);
+    return;
+  }
+  if (kind !== 'zip') throw Error('Unsupported archive kind: ' + kind);
+  if (zipTool() === 'tar') runArchiveTool('tar', ['-xf', archive, '-C', destination]);
+  else runArchiveTool('unzip', ['-q', '-o', archive, '-d', destination]);
+}
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) try {
   if (!process.argv[2] || (process.argv[3] && process.argv[3] !== '--install-missing') || process.argv.length > 5) throw Error('Usage: codely-fetch.mjs <staging-root> [--install-missing <workspace>]');
   const destination = resolve(process.argv[2] ?? 'build/codely-fetch');
@@ -29,10 +62,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const digest = verifyArchive(data, entry.archive, entry.name);
     const archive = join(destination, `${i}.${entry.archive.kind}`), extracted = join(destination, `${i}-unpacked`);
     writeFileSync(archive, data); mkdirSync(extracted);
-    const args = entry.archive.kind === 'tgz' ? ['-tzf', archive] : ['-tf', archive];
-    const listing = execFileSync('tar', args, { encoding: 'utf8' });
+    const listing = listArchive(entry.archive.kind, archive);
     verifyArchivePaths(listing);
-    execFileSync('tar', [entry.archive.kind === 'tgz' ? '-xzf' : '-xf', archive, '-C', extracted]);
+    extractArchive(entry.archive.kind, archive, extracted);
     const packageRoot = join(extracted, entry.archive.subdirectory);
     verifyPackage(extracted, { ...entry, path: entry.archive.subdirectory });
     if (process.argv[3] === '--install-missing') {
