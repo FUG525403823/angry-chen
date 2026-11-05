@@ -5,6 +5,8 @@
 - [玩法、Roguelite、UI/交互与防回归计划](enhancement-plan.md)
 - [P0基线复测与框架加固证据](evidence/enhancement-p0.md)
 - [P0接续小包：依赖摘要契约与当前复测](evidence/enhancement-resume.md)
+- [证据索引：当前 P1/P0/v2 验收与 fixtures](evidence/README.md)
+- [v1 冻结实现恢复说明](evidence/v1-frozen-reference.md)
 
 本目录是《愤怒的陈sir vs 发疯的羊群》**v2（C++ 权威服务器 + Unity 客户端）**的全部施工依据。按顺序读、按顺序做，不需要额外的口头上下文。
 
@@ -14,13 +16,20 @@
 |---|---|
 | `server/` | C++20 权威服务器（S01–S15 链的落点） |
 | `client/` | 团结引擎（Tuanjie，Unity 2022.3 线）+ URP 客户端（C01–C15 链的落点） |
-| `tools/` | 纯 Node 门禁脚本：`check-docs.mjs`（文档链与链接）、`check-assets.mjs`（零素材与依赖白名单） |
+| `tools/` | 纯 Node 门禁脚本：`check-docs.mjs`（文档链与链接）、`check-assets.mjs`（零素材与依赖白名单）；以及 PowerShell 清理脚本 `clean-artifacts.ps1` |
 | `docs/` | 本目录：共识、需求、选型与两条线性计划链 |
 
-- v1 的 TypeScript 全栈实现（`packages/**`）、Node/pnpm 工具链、Docker 与反代配置、以及只描述 v1 的文档（`P01–P10`、`O01–O10`、`evidence/`、验收报告、运维手册、部署清单）已随重构**移出仓库**；冻结副本在 `D:\projects\tmp\angry-chen-bak`（含 `node_modules`，可直接跑 v1 做基准对照）。
-- 两份计划链里出现的 `packages/**` 路径，一律指**上述备份仓库**里的冻结实现。
+- v1 的 TypeScript 全栈实现（`packages/**`）、Node/pnpm 工具链、Docker 与反代配置、以及只描述 v1 的文档（`P01–P10`、`O01–O10`、`evidence/`、验收报告、运维手册、部署清单）已随重构**移出仓库**；源码仍在 git 历史，恢复方式见 [v1 冻结实现恢复说明](evidence/v1-frozen-reference.md)。仓库外的旧备份已于 2026-11-05 删除。
+- 两份计划链里出现的 `packages/**` 路径，一律指**上述 git 历史中的冻结实现**，不是当前工作树。
 - v2 的 `docs/evidence/` 是本轮**新建**的证据目录（对拍向量 `fixtures/`、验收与审计报告），与上一条已移出的 v1 `evidence/` 无关。
 - 本仓库的门禁是 `node tools/check-docs.mjs && node tools/check-assets.mjs`，两步都必须退出码 0。
+
+## 0.1 2026-11-05 仓库清洗
+
+- 删除本地可再生产物：`build/`、`client/Build/`、`server/build/`、`client/Logs/`、根 `data|ac-*-data/` 等；保留 `client/Library`、`client/.codely-cli`、`client/.codely.packages` 以避免 Unity 重导入与本地包解析失败。
+- 删除 21 份已完成里程碑旧证据；当前证据入口是 [evidence/README.md](evidence/README.md)，旧文档可按文件名从 git 历史恢复。
+- 删除仓库外 v1 备份与派生 fixture；恢复方式见 [evidence/v1-frozen-reference.md](evidence/v1-frozen-reference.md)。
+- 重复清理使用 `powershell -NoProfile -File tools/clean-artifacts.ps1`（默认 dry-run，`-Apply` 才删除）。
 
 ## 1. 约束层（读一次）
 

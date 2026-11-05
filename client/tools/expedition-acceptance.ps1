@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
  [Parameter(Mandatory=$true)][string]$Player,
- [string]$ServerExe = "build/scratch/server-clean/ac_server.exe",
+ [string]$ServerExe = "server/build/ac_server.exe",
  [ValidateSet(1,2,4)][int]$Players = 1,
  [ValidateSet('hunter','breach')][string]$SoloBuild = 'hunter',
  [int]$UdpPort = 29888, [int]$HttpPort = 29887,

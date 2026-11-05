@@ -1,5 +1,7 @@
 # P1 Agent Handoff
 
+> 2026-11-05 仓库清洗：文中 `build/**`、`client/Build/**` 本地产物已删除；结论与哈希保留，文件需按文内命令重建。
+
 ## Objective and boundaries
 
 Continue only the approved P1 finite Expedition slice in D:/projects/tmp/angry-chen. Do not repeat requirements interviews, redesign the project, reopen P0 or expand P2-P4. Preserve Classic, historical fixtures and external uncommitted edits. User authorizes committing/pushing verified P1-only changes, not secrets, build caches or public deployment. P1 is NOT accepted yet. Never fabricate visual or human approval.
@@ -42,7 +44,7 @@ Frozen code commit for this handoff: `53f8a292b5babc804940bebf9603444a001e94cd` 
 ## Environment and commands
 
 - Windows Tuanjie D:/tools/unity/unity_install/2022.3.62t16/Editor/Tuanjie.exe. Build method Ac.Editor.BuildEntry.BuildWindows64. Full suite Ac.Tests.SuiteRegistry.RunAll. tools/p0-engine-local.ps1 handles normal engine calls; custom PlayMode method Ac.Tests.ExpeditionKeyboardSuite.RunInPlayMode must run WITHOUT -quit (the helper only special-cases the old PlayModeSmoke.Run). Serialize engine/build/player/performance; never benchmark concurrently. Save real child exit codes, not only wrapper exit0.
-- Clean export: git checkout-index --all --prefix=<new-absolute-isolated-dir>/, never reuse/overwrite old evidence. Build against clean export to exclude external dirty. Current server build/scratch/p0-msvc/Release/ac_server.exe. Acceptance client/tools/expedition-acceptance.ps1 supports Players1/2/4, Impaired, RecoveryStage combat/reward, WindowWidth/Height, ObservePerformance, PerformanceStage combat/reward, PerformanceNode1/3 and RewardReadSeconds0..20 (default0; reward performance only). Reward stage reports requestedNode0 by design.
+- Clean export: git checkout-index --all --prefix=<new-absolute-isolated-dir>/, never reuse/overwrite old evidence. Build against clean export to exclude external dirty. Current server `server/build/ac_server.exe` (run `server/build.ps1` first). Acceptance client/tools/expedition-acceptance.ps1 supports Players1/2/4, Impaired, RecoveryStage combat/reward, WindowWidth/Height, ObservePerformance, PerformanceStage combat/reward, PerformanceNode1/3 and RewardReadSeconds0..20 (default0; reward performance only). Reward stage reports requestedNode0 by design.
 - RewardReadSeconds IS implemented (53f8a29), planned value 18. The allocation observer uses GameLoop DiagnosticFrameBegin/End and a development/editor GC counter only.
 - Read enhancement-p1-expedition-perf-scope.md, enhancement-p1-ui-audit.md, enhancement-p1-performance-checkpoint.md and enhancement-p1-human-playtest.md for numbers and limitations. Local build/reports evidence and scratch hooks are ignored, not GitHub artifacts. Client cached vendor package directory is needed for codely-dependencies audit-release; clean export lacks it, so use verified vendor contents at workspace root against explicit clean release stage, disclose this distinction.
 - At this handoff no required engine/player background work is running. Do not start an automation loop to chase a pass for gates that require a human; run each real gate once per verified build and record the actual outcome.

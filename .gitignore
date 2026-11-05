@@ -17,3 +17,15 @@ client/.codely.packages/
 # 一次性上传/截图留档
 server-src-upload.tar
 tools/*.png
+
+# 通用临时/备份文件（2026-11-05 清洗后防复发）
+*.bak
+*.orig
+*.rej
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 历史空目录，防止被误建成第二个 Unity 工程根
+/Assets/

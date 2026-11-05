@@ -9,7 +9,7 @@
 | 技术前提（引擎/版本/依赖白名单）     | [docs/03-技术选型-v2.md](../docs/03-技术选型-v2.md)              |
 | 零外部素材与问界额标策略             | [ADR-003](../docs/00-共识/ADR/ADR-003-美术素材与问界标识策略.md) |
 | 跨语言确定性契约                     | [ADR-010](../docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md)     |
-| 旧 TypeScript 客户端（已移出） | 备份仓库 `angry-chen-bak`                          |
+| 旧 TypeScript 客户端（已移出） | git 历史 `cea8adb^`（仓库外旧备份已于 2026-11-05 删除） |
 
 **当前状态**：C01（MC01）已交付工程基线与构建链（程序集边界、URP 管线资产、零素材门、唯一构建入口）；C02（MC02）在其上落地确定性数学（`Vec3`、mulberry32 三流、量化/反量化、共享角度表）、v2 协议解码（命令/快照/事件/MatchState）与批处理自检框架。渲染、玩法与表现由 C03 起落地。实测记录见 `docs/evidence/client-c01-acceptance.md` 与 `docs/evidence/client-c02-acceptance.md`。
 

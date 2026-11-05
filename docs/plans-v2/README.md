@@ -1,6 +1,6 @@
 # v2 双链计划索引
 
-v1 的 P01–P10 与 O01–O10 已随 v1 代码一起移出本仓库，只存在于备份仓库 `D:\projects\tmp\angry-chen-bak`；v2 的施工由**两条各自线性**的计划链驱动：
+v1 的 P01–P10 与 O01–O10 已随 v1 代码一起移出本仓库；源码在 git 历史 `cea8adb^`（仓库外旧备份已于 2026-11-05 删除）。v2 的施工由**两条各自线性**的计划链驱动：
 
 - **服务器链**：`server/`（C++ 权威服务器），S01 → S15
 - **客户端链**：`client/`（团结引擎客户端，Tuanjie / Unity 2022.3 线），C01 → C15
@@ -9,9 +9,9 @@ v1 的 P01–P10 与 O01–O10 已随 v1 代码一起移出本仓库，只存在
 
 ### v1 冻结实现的读取位置
 
-本仓库不再包含 v1 的 TypeScript 实现。计划里出现的所有 `packages/**` 路径（读源码、`Select-String`、生成对拍向量）都指**备份仓库根** `D:\projects\tmp\angry-chen-bak`：该副本含 `node_modules`，可直接用 `node`/`pnpm` 运行；把命令的工作目录切到该根即可。
+本仓库不再包含 v1 的 TypeScript 实现，仓库外旧备份 `D:\projects\tmp\angry-chen-bak` 已于 2026-11-05 删除。计划里出现的所有 `packages/**` 路径（读源码、`Select-String`、生成对拍向量）都指 **git 历史 `cea8adb^`** 中的冻结实现；恢复方式见 [v1 冻结实现恢复说明](../evidence/v1-frozen-reference.md)。下文各计划中的 `angry-chen-bak`/`angry-chen-fixture` 命令是历史施工记录，不再可原样执行；已完成的对拍导出以仓库内 `docs/evidence/fixtures/` 为准。
 
-`angry-chen-bak` **全程只读**（含 S07）。需要给 v1 侧打补丁才能导出对拍向量的部分（ADR-010 §3 的「以同表替换 `Math.sin/cos/atan2/asin` 后导出」），在**可写派生副本** `D:\projects\tmp\angry-chen-fixture` 上做：由 bak 复制而来，入口条件是 §5 门禁里的只读校验（`git -C D:\projects\tmp\angry-chen-bak status --short` 为空）。
+`S07` 等涉及 v1 补丁的步骤已经完成，其产物（fixtures、`configHash`、哈希链）已入库；如未来确需重跑，先把 `cea8adb^` 导出为可写副本，再按 `v1-frozen-reference.md` 安装依赖。
 
 <!-- chain: server S 15 -->
 <!-- chain: client C 15 -->

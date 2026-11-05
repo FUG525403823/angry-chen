@@ -1,10 +1,12 @@
 # 完整增强 P0：基线复测与防假绿加固
 
+> 2026-11-05 仓库清洗：文中 `build/**` 本地产物已删除；结论与哈希保留，文件需按文内命令重建。
+
 ## 范围与身份
 
 本轮工作起点HEAD：`9a5cf1f65a22513e4f1f4069dfc185e8e25cc08b`。工作区起初已有BuildInfo.g.cs、manifest.json、ProjectSettings.asset修改，以及未跟踪的远程性能证据，不覆盖。完整批准方案见[增强计划](../enhancement-plan.md)。
 
-本记录只验收下述小范围工作，不宣称P0全部完成或新玩法已实现。原始本地报告：`build/reports/enhancement-p0/`；构建树：`build/scratch/server-clean/`。
+本记录只验收下述小范围工作，不宣称P0全部完成或新玩法已实现。原始本地报告：`build/reports/enhancement-p0/`；构建树：`build/scratch/server-clean/`（两者均已于 2026-11-05 清洗删除，需按文内命令重建）。
 
 ## 本次实际复测
 

@@ -1,5 +1,7 @@
 # P1 真实远征性能观测边界与首轮观测
 
+> 2026-11-05 仓库清洗：文中 `build/**`、`client/Build/**` 本地产物已删除；结论与哈希保留，文件需按文内命令重建。
+
 源码参考3dda8cb。现有[性能checkpoint](enhancement-p1-performance-checkpoint.md)仅证明原合成负载硬预算；本文件不增加PASS，不把方案当结果。
 
 ## 不可复用为真实远征的证据

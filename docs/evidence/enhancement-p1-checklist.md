@@ -1,5 +1,7 @@
 # P1 有限退出清单
 
+> 2026-11-05 仓库清洗：文中 `build/**`、`client/Build/**` 本地产物已删除；结论与哈希保留，文件需按文内命令重建。
+
 状态：实施中，尚未通过。入口HEAD `d82f9a2bc29732b4978dc4eda253fccd4ceac5b5`；P0以[最终收尾](enhancement-p0-closeout.md)为准，不重新开放历史阻断。批准范围见[计划](../enhancement-plan.md)第9节。
 
 ## 固定范围

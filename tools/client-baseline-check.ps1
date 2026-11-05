@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([ValidateSet('Compare','HEAD','Worktree')][string]$Mode='Compare',[string]$RoslynDirectory='D:\tools\Visualstudio\software\MSBuild\Current\Bin\Roslyn')
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -32,10 +32,10 @@ function Read-Source([string]$relative) {
  }
  return [IO.File]::ReadAllText((Join-Path $root $relative))
 }
-$files=@('Boot/GameLoop.cs','View/EntityViews.cs','View/Interpolation.cs','View/ErrorSmoother.cs','Core/InputSampler.cs','Core/MiniJson.cs','Core/FrameProfiler.cs','Core/CombatFlags.cs','Core/SettingsStore.cs')
+$files=@('Boot/GameLoop.cs','View/EntityViews.cs','View/Interpolation.cs','View/ErrorSmoother.cs','Core/InputSampler.cs','Core/MiniJson.cs','Core/FrameProfiler.cs','Core/CombatFlags.cs','Core/SettingsStore.cs','Net/ExpeditionCodec.cs')
 $files+=@(git -C $root ls-tree -r --name-only $headId -- client/Assets/Scripts/Sim | Where-Object {$_ -match '\.cs$' -and $_ -notmatch 'FixtureLoader.cs'} | ForEach-Object {$_.Substring('client/Assets/Scripts/'.Length)})
 $files+=@('CommandCodec','EventCodec','EventIdTracker','LocalIdentity','MatchStateCodec','PacketReader','PacketWriter','SnapshotCodec','UpgradeCodec' | ForEach-Object {"Net/$_.cs"})
-$files+=@('Hud','AmmoCounter','RageBar','Crosshair','DownedOverlay','RevivePrompt','WaveBanner','KillFeed','UiThrottle' | ForEach-Object {"UI/$_.cs"})
+$files+=@('Hud','AmmoCounter','RageBar','Crosshair','DownedOverlay','RevivePrompt','WaveBanner','KillFeed','UiThrottle','ExpeditionHudModel' | ForEach-Object {"UI/$_.cs"})
 $usings=@('using Debug = UnityEngine.Debug;','using System;','using Ac.Boot;','using Ac.Core;','using Ac.Net;','using Ac.Sim;','using Ac.UI;','using Ac.View;')
 $sources=@(); $hashes=@()
 function Add-Source([string]$relative,[string]$text) {

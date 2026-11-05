@@ -1,5 +1,7 @@
 # 服务端 v2 验收报告（S15 §7）
 
+> 2026-11-05 仓库清洗：文中仓库外备份路径已失效；v1 源码从 git 历史 `cea8adb^` 恢复，见 [v1-frozen-reference.md](v1-frozen-reference.md)。
+
 范围：`docs/plans-v2/server/S15-发布运维与验收.md`。固定点：S14 提交 `cdf1353`（= 本步改动的父提交）。
 发布版号 **0.1.0**，协议版本 **1**。
 

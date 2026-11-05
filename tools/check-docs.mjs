@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 文档门禁（v2）：校验必需文档、v2 双链（S/C 链）的机器可校验部分、docs 内相对链接与素材纪律。
-// v1 的 P01–P10 计划链与 packages/** 已随重构移出仓库，历史实现见备份仓库 angry-chen-bak。
+// v1 的 P01–P10 计划链与 packages/** 已随重构移出仓库；v1 源码可从 git 历史 cea8adb^ 恢复（见 docs/evidence/v1-frozen-reference.md）。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ const REQUIRED_DOCS = [
   'docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md',
   'docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md',
   'docs/plans-v2/README.md',
+  'docs/evidence/README.md',
 ];
 
 const REQUIRED_SECTIONS = [

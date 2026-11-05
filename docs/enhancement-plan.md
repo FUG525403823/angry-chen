@@ -22,9 +22,9 @@
 | `client/Assets/Scripts/Core/InputSampler.cs` | 8个按钮位已用满，新增意图必须明确升版 |
 | `server/tests/tiny_test.hpp`、`client/Assets/Tests/SuiteRegistry.cs` | 有测试基础，但注册可靠性和实际执行需要守门 |
 
-近期证据记录两项Unity既有失败、每帧分配超预算、素材门本地依赖冲突，以及差分快照丢链恢复等待。这些都必须复测和归因。原始证据：[多人整改](evidence/multiplayer-remediation-2026-10-26.md)。本轮结果另见[P0证据](evidence/enhancement-p0.md)，不得混用历史与当前结果。
+近期证据记录两项Unity既有失败、每帧分配超预算、素材门本地依赖冲突，以及差分快照丢链恢复等待。这些都必须复测和归因。原始多人整改记录已随 2026-11-05 仓库清洗移出工作树，结论保留在 ADR-019/ADR-020 与 git 历史（`git log --all -- docs/evidence/multiplayer-remediation-2026-10-26.md`）。本轮结果另见[P0证据](evidence/enhancement-p0.md)，不得混用历史与当前结果。
 
-工作区已有BuildInfo.g.cs、manifest.json、ProjectSettings.asset修改及未跟踪远程性能文档，保持原状。不清理历史产物或未知数据。
+该轮起点工作区已有BuildInfo.g.cs、manifest.json、ProjectSettings.asset修改及未跟踪远程性能文档，未覆盖。2026-11-05 仓库清洗已统一处理历史产物、旧证据与仓库外备份；后续保持工作区干净，产物清理用 `tools/clean-artifacts.ps1`。
 
 ## 3. 对局与战斗
 

@@ -1,5 +1,7 @@
 # 计划链审计与修复底稿（v2 文档纠错轮）
 
+> 2026-11-05 仓库清洗：文中仓库外备份路径 `D:\projects\tmp\angry-chen-bak` / `angry-chen-fixture` 已失效；v1 源码从 git 历史 `cea8adb^` 恢复，见 [v1-frozen-reference.md](v1-frozen-reference.md)。
+
 > 本轮范围：**只改文档**。不安装/配置任何环境、不建 Unity 工程、不执行 S01/C01 的施工内容。
 > 每条给出"改前 → 改后"的判据；执行时逐条勾选。分组与本轮计划 §4 的 G0–G13 一一对应。
 

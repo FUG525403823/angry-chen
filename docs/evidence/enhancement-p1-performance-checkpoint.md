@@ -1,8 +1,10 @@
 # P1 性能 checkpoint（非最终退出）
 
+> 2026-11-05 仓库清洗：文中 `build/**`、`client/Build/**` 本地产物已删除；结论与哈希保留，文件需按文内命令重建。
+
 2026-11-04对冻结dirty业务投影执行原P0硬预算，不改阈值。源码fingerprint `7ebf896f916eae0fc341d541ba7b09069a53f94e63e3863d4d87a614638b1571`；同投影串行release与development构建，均为Windows Mono。
 
-本机生成报告（不随源码发布）：`build/reports/p1/perf-0948/{release-summary.json,dev-summary.json,paired.json}`。
+本机生成报告（不随源码发布，已于 2026-11-05 清洗删除）：`build/reports/p1/perf-0948/{release-summary.json,dev-summary.json,paired.json}`。
 
 ## 实测
 

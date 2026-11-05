@@ -1,5 +1,7 @@
 # 增强实施接续：P0 小包验收
 
+> 2026-11-05 仓库清洗：文中 `build/**`、`server/build/**` 本地产物已删除；命令与结论保留，证据需按文内命令重建。
+
 ## 边界与结论
 
 本轮读取已批准增强计划及两份P0/依赖审查证据，不重新访谈。起点HEAD `9a5cf1f65a22513e4f1f4069dfc185e8e25cc08b`。当前会话Agent Teams工具与Dispatch模式不兼容，经用户选择，本次改为独立执行，不启动子agent；因此不声称完成子agent实施/独立agent复核。既有修改保留，未推送、未部署、未更新公网服务器。
@@ -44,7 +46,7 @@ exit1。P95为4.2464/4.0264/3.8425ms；三轮分配均为-1（不可测），摘
 
 ## 环境与保留现场
 
-初始workspace-write下创建build/reports/enhancement-resume被Windows拒绝。经授权运行权限诊断，补齐build与build/reports当前用户权限并验证，但受限环境重试仍拒绝；用户切换本会话完全权限后，同一操作成功。权限恢复备份/逐项撤销脚本在`D:/projects/tmp/angry-chen-permission-recovery/`，报告`acl-report-ec714a0b1fc54f359f7fda29829006eb.jsonl`。没有修改所有者或文件内容，没有继续手工改权限。
+初始workspace-write下创建build/reports/enhancement-resume被Windows拒绝。经授权运行权限诊断，补齐build与build/reports当前用户权限并验证，但受限环境重试仍拒绝；用户切换本会话完全权限后，同一操作成功。权限恢复备份/逐项撤销脚本原在`D:/projects/tmp/angry-chen-permission-recovery/`（已于 2026-11-05 仓库清洗删除），报告`acl-report-ec714a0b1fc54f359f7fda29829006eb.jsonl`。没有修改所有者或文件内容，没有继续手工改权限。
 
 引擎本轮生成的packages-lock.json修改已恢复到本轮起点（该文件起点内容干净）；GraphicsSettings.asset起点已有修改标记，未覆盖其内容。其余用户原有修改全部保留。
 

@@ -12,9 +12,9 @@
 | 技术前提（语言/版本/依赖白名单）     | [docs/03-技术选型-v2.md](../docs/03-技术选型-v2.md)          |
 | 协议与传输契约                       | [ADR-009](../docs/00-共识/ADR/ADR-009-UDP传输与协议重构.md)  |
 | 跨语言确定性契约                     | [ADR-010](../docs/00-共识/ADR/ADR-010-跨语言确定性与对拍.md) |
-| 旧 TypeScript 服务器（仓库外冻结对照实现） | `D:\projects\tmp\angry-chen-bak\packages\server\`（不在本仓库） |
+| 旧 TypeScript 服务器（已移出） | git 历史 `cea8adb^` 的 `packages/server/`（仓库外旧备份已于 2026-11-05 删除） |
 
-文中的 `packages/**` 均为历史 v1 路径，相对于仓库外只读备份 `D:\projects\tmp\angry-chen-bak`；不表示本仓库仍包含这些目录。
+文中的 `packages/**` 均为历史 v1 路径，指 git 历史 `cea8adb^` 中的冻结实现；仓库外旧备份目录 `D:\projects\tmp\angry-chen-bak` 已于 2026-11-05 删除，恢复方式见 [`docs/evidence/v1-frozen-reference.md`](../docs/evidence/v1-frozen-reference.md)。本仓库当前不包含这些目录。
 
 ## 1. 构建与测试（S01 冻结的三条命令）
 
@@ -1641,7 +1641,7 @@ G5 0.000/5.000 pass | G6 0.000/2.000ms pass | G7 RSS 未测（同 §15.2 的环�
 - Nginx/Caddy 必须覆盖 `X-Real-IP`，不能透传调用方自报身份。直接本机健康检查无须该头。只有实际部署反代时才启用信任开关；回环信任不是本机进程之间的安全隔离。
 - systemd 单元仅传 `--serve`，端口以 `server.env` 为准，不再被硬编码 CLI 覆盖。Nginx upstream 端口须与 `AC_HTTP_PORT` 同步；Caddy 使用该进程环境中的同名端口，缺省 8787。
 - 新增环境变量先校验，再应用 CLI 覆盖；非法环境值安全失败，不被 CLI 掩盖。历史验收段中“环境与 CLI 端口双写”的描述不再是当前部署行为。
-- Windows 服务端回归与未验证项见 [本次修复记录](../docs/evidence/obvious-defects-repair.md)；Linux 与反代语法尚未在本轮运行验证。
+- Windows 服务端回归与未验证项的历史修复记录已随 2026-11-05 仓库清洗移出工作树（`git log --all -- docs/evidence/obvious-defects-repair.md`）；Linux 与反代语法尚未在本轮运行验证。
 
 ### 18.4 日志轮转
 

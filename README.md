@@ -8,9 +8,22 @@
 | [server/](server/README.md) | C++ 服务端工程根；开发、测试与部署说明 |
 | [docs/](docs/README.md) | 共识、协议、计划与证据 |
 | [运维手册](docs/运维手册.md) | 客户端构建、分发、配置与排障 |
-| `deploy/`、`tools/`、`data/` | 部署资产、仓库质量门与共享数据 |
+| `deploy/`、`tools/` | 部署资产与仓库质量门脚本 |
+| `data/`、`ac-*-data/` | 运行时数据目录（脚本按需重建，不入库） |
 
-根目录的空 `Assets/` 及本机 `ac-*-data/` 是历史/本地工作目录，不是现役 Unity 工程或发布入口。根 `build/` 按 `reports/<scenario>/<run-id>/`、`runtime/<run-id>/`、`scratch/` 归纳跨端报告、运行数据和临时实验；`server/build/` 保留 CMake 构建树，`client/Build/` 承担客户端 staging 与发布。旧产物不自动清理；不要从历史目录判断最新播放器。旧 TypeScript 实现已移出，历史对照见备份仓库 `angry-chen-bak`。
+根目录不再保留空的 `Assets/` 历史目录。`build/`、`client/Build/`、`server/build/`、`client/Logs/` 都是**可再生的本地产物**，不入库；2026-11-05 清洗已删除全部历史产物，不要用历史目录判断最新播放器。旧 TypeScript 实现已移出，源码在 git 历史 `cea8adb^`。
+
+## 仓库卫生与恢复
+
+```powershell
+# 默认 dry-run，只列出将删除的可再生产物；确认后加 -Apply
+powershell -NoProfile -File tools/clean-artifacts.ps1
+powershell -NoProfile -File tools/clean-artifacts.ps1 -Apply
+```
+
+- 默认保留 `client/Library`、`client/.codely-cli`、`client/.codely.packages`；后两者是 `client/Packages/manifest.json` 的本地 `file:` 依赖，删除会导致 Unity 无法解析包。
+- 仓库外旧备份 `angry-chen-bak` / `angry-chen-fixture` / `angry-chen-permission-recovery` 已于 2026-11-05 删除；v1 源码从 git `cea8adb^` 恢复，步骤见 [docs/evidence/v1-frozen-reference.md](docs/evidence/v1-frozen-reference.md)。
+- 当前证据入口：[docs/evidence/README.md](docs/evidence/README.md)。
 
 ## 客户端发布
 

@@ -2,7 +2,7 @@
 
 > 冻结契约：S07 §5（口径 / 比较规则 / 再生成纪律）与 [ADR-010](../../00-共识/ADR/ADR-010-跨语言确定性与对拍.md) §6、§8。
 > 当前版本：2026-10-26 ADR-019 已批准 **targeting-v2**，活动14条中10条由真实新C++服务端生成，4条保持冻结TS原产物；旧10条及旧实现保存在 `legacy/targeting-v1/`，不自动重复运行。详见§8。
-> 历史真值来源（下文§1–7保留原批次证据）：冻结的 v1 实现 `D:\projects\tmp\angry-chen-bak`——**全程只读**。旧字节统计与旧TS `--check 14/14` 是历史结果，不代表targeting-v2。
+> 历史真值来源（下文§1–7保留原批次证据）：冻结的 v1 实现（git 历史 `cea8adb^`；仓库外旧备份已于 2026-11-05 删除）。旧字节统计与旧TS `--check 14/14` 是历史结果，不代表targeting-v2。
 > 本批口径变更：**存「怎么跑」而不是「跑出来的每一帧」**（种子 + 初态 + 命令脚本 + 每 tick 全量投影的哈希链 + 少量关键帧）。
 > 两侧都**重算**同一份全量投影再比对，逐位强度不变；每 tick 落到盘上的是 8 字节链节点（16 位十六进制），不再是 ~950 B 的投影文本。
 
@@ -214,7 +214,7 @@ hashChain [ 每 tick 一个 16 位十六进制 ]
 
 ## 8. ADR-019 行为版本 targeting-v2（2026-10-26）
 
-人类已明确批准“版本化更新受影响向量（推荐）”。这不是schema升级，也不是允许迁就实现任意改期望值：只对已证明与多人稳定选敌冲突的10条重建。活动14份总计 **273702 B**，最大 **59115 B**，仍遵守64 KiB/份与512 KiB/批原门限。旧10份逐字节保存在 `legacy/targeting-v1/`；完整SHA256清单和首差异tick见 [server-targeting evidence](../server-targeting-2026-10-26.md)。旧§1字节数/冻结TS检查结论仅属历史批次。
+人类已明确批准“版本化更新受影响向量（推荐）”。这不是schema升级，也不是允许迁就实现任意改期望值：只对已证明与多人稳定选敌冲突的10条重建。活动14份总计 **273702 B**，最大 **59115 B**，仍遵守64 KiB/份与512 KiB/批原门限。旧10份逐字节保存在 `legacy/targeting-v1/`；完整SHA256清单和首差异tick随 2026-11-05 清洗移出工作树，记录保留在 ADR-019 与 git 历史（`git log --all -- docs/evidence/server-targeting-2026-10-26.md`）。旧§1字节数/冻结TS检查结论仅属历史批次。
 
 - schema `version=2` / `configHash=19a978ea` / setup / script / keyframe tick集合 / snapshot tick集合均不变；行为版本在本节、ADR和证据中明确记录。
 - 新数据来源是当前C++ `stepWorld` + 外部导演 + 真正快照encode/decode，不是冻结TS。`server/tools/export-targeting-fixtures.cpp`复用现有`fixture_test.cpp`的初态与投影helper；它是独立离线进程，不修改测试比较流程。`tools/update-targeting-fixtures.mjs`复用原export serializer，先算完10份并执行原大小门后才写活动文件；`--check`重新运行真实服务端逐字节校验。
