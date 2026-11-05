@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param([ValidateSet('Compare','HEAD','Worktree')][string]$Mode='Compare',[string]$RoslynDirectory='D:\tools\Visualstudio\software\MSBuild\Current\Bin\Roslyn')
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $root=Split-Path -Parent $PSScriptRoot
 $scratch=Join-Path $root 'build/scratch/client-baseline'
 New-Item -ItemType Directory -Force $scratch | Out-Null
@@ -11,12 +12,12 @@ if($Mode -eq 'Compare') {
  }
  $head=Get-Content (Join-Path $scratch 'HEAD/results.json') -Raw | ConvertFrom-Json
  $work=Get-Content (Join-Path $scratch 'Worktree/results.json') -Raw | ConvertFrom-Json
+ if($head.tests.Count -ne 2 -or $work.tests.Count -ne 2){throw 'Expected both targeted checks to execute'}
  for($i=0;$i -lt $head.tests.Count;$i++) {
-  if($head.tests[$i].name -ne $work.tests[$i].name -or $head.tests[$i].error -ne $work.tests[$i].error){throw 'Baseline verdict differs'}
-  $expected=@('expected=42 actual=0','expected=3 actual=5')[$i]
-  if($head.tests[$i].passed -or $head.tests[$i].error -ne $expected){throw "Expected existing failure changed: $expected"}
+  if($head.tests[$i].name -ne $work.tests[$i].name){throw 'Baseline test identity differs'}
+  if(!$work.tests[$i].passed){throw "Worktree regression: $($work.tests[$i].name): $($work.tests[$i].error)"}
  }
- Write-Output 'HEAD and Worktree reproduce identical existing failures (comparison PASS; tests remain RED).'
+ Write-Output 'Worktree targeted checks PASS; HEAD outcomes remain in results.json (offline, not Unity acceptance).'
  return
 }
 if([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object {$_.GetName().Name -match '^UnityEngine'}){throw 'Unity assemblies forbidden'}
