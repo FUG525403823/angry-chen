@@ -232,3 +232,13 @@ latency-200                 verdict=pass exit=0 duration=120.0s cpuMean=1.29% bw
 
 结论：可靠下发（窗口内重复 2 次）**把事件字节抬了少量**：G3 P95 +0 ~ +18 B、G4 帧上限 +16 ~ +85 B、G2 +0.14 ~ +0.44 KB/s（最坏 `soak` 20.47 → 20.91），**全部判据与冻结门限不变**（G2 ≤ 40 KB/s、G3 ≤ 1228 B、G4 ≤ 2048 B、G8 = 0），四个场景 `verdict` 与 §8 一致（`break` 仍按预期 `fail exit=1`）；**没有为迁就改动而放宽任何限值**。G1 的差异是 30 s/300 s 窗口内的跑次噪声（同一份代码的历史跑次本身就横跨 0.6 ~ 3.9%）。`dropped=0` 说明窗口与队列容量在稳态下没打满（打满时的口径由用例 `room_event_queue_overflow_is_counted` 钉住：256 条队列 + 44 条溢出 → `ac_events_dropped_total` +44）。
 
+## 10. 2026-11-05 协议 3 回归与门禁可信性修复
+
+`server-perf` 的反向自检在 CI 失败：`ac_gate` 的 4 个 `ac_bot` 全部被服务器断开（20 包/20 秒，`hasSession=0`），所有指标为 0；`--break=G3=0` 因为 measured=0 没有变红，反向自检遂判红。
+
+根因：`85e3718` 引入 `kCurrentProtocolVersion = 3`，`Runtime` 只接受 3；`ac_bot` 仍用 `kProtocolVersion = 2` 发 Hello/Command，服务器在版本检查处直接回 `Disconnect(versionMismatch)`。
+
+修复：`server/tools/bot.cpp` 两处改用 `kCurrentProtocolVersion`；`server/tools/gate.cpp` 在杀 bot 前取报告指标（Windows 的 `killChild` 最多等 2 s，之后心跳超时会把仍在房间的会话标成掉线，`players` 会在收尾阶段归 0），并新增零流量判红：`players < scenario.players` 或 `snapshots == 0` 时整跑次 fail。
+
+本机复跑（MinGW g++ 15.2.0，`AC_WERROR=ON`）：`ac_tests` 603/603；`gate-4p2min` 全量 120 s `verdict=pass exit=0`（G1 2.17%、G2 21.73 KB/s、G3 1066 B、G4 1154 B）；`--break=G3=0 --minutes=0.2` 短跑 `verdict=fail exit=1`（G3 1033 B > 0 B）；用假 bot 造零流量时 `exit=1`，note 为 `traffic invalid: players=0/4 snapshots=0`。Linux CI 由下一次 `server-perf` 验证。
+

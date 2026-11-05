@@ -627,6 +627,9 @@ int main(int argc, char** argv) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   const double durationSec = static_cast<double>(ac::core::nowMs() - startWallMs) / 1000.0;
+  // 先取报告指标，再杀 bot / 拉 HTTP：killChild 在 Windows 最多等 2 s，之后
+  // 心跳超时会把仍在房间的会话标成掉线，players 会在收尾阶段凭空归 0。
+  const ac::server::RuntimeMetrics metrics = runtime.metrics();
   killChild(child);
 
   // §2-3：HTTP 面在负载之后仍可服务（运行中的存活证明写进报告 note）。
@@ -637,7 +640,6 @@ int main(int argc, char** argv) {
   const bool hasSnapshotsCounter =
       metricsResponse.find("ac_snapshots_sent_total") != std::string::npos;
 
-  const ac::server::RuntimeMetrics metrics = runtime.metrics();
   std::string note{};
   bool isScenarioFailed = false;
   if (scenario->isSoak) {
@@ -654,6 +656,15 @@ int main(int argc, char** argv) {
           std::to_string(metricsStatus) + (hasSnapshotsCounter ? " counters=ok" : " counters=missing");
   if (scenario->isLatency) {
     note += "; latency-200：隔墙命中与回滚夹取的判定留在 S07/S11 的用例组（step/security 全绿）";
+  }
+  // 零流量不能算通过：场景承诺的玩家没进房、或服务端一帧快照都没发，说明负载根本没建立，
+  // 阈值测到的 0 是「没测」而不是「很好」。挡住这种假绿，反向自检才有意义。
+  if (metrics.players < static_cast<std::size_t>(scenario->players) ||
+      metrics.snapshotSamples == 0u) {
+    isScenarioFailed = true;
+    note += "; traffic invalid: players=" + std::to_string(metrics.players) + "/" +
+            std::to_string(scenario->players) + " snapshots=" +
+            std::to_string(metrics.snapshotSamples);
   }
 
   ac::perf::PerfSample sample{};

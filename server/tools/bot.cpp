@@ -145,7 +145,7 @@ bool isDropped(Bot& bot, const Options& options) {
 void sendHello(Bot& bot, const Options& options) {
   std::uint8_t buffer[64] = {};
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kHello);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kHello);
   header.session = 0u;
@@ -159,7 +159,7 @@ void sendHello(Bot& bot, const Options& options) {
 void sendCommand(Bot& bot, const Options& options) {
   std::uint8_t buffer[64] = {};
   ac::net::PacketHeader header{};
-  header.version = ac::net::kProtocolVersion;
+  header.version = ac::net::kCurrentProtocolVersion;
   header.type = static_cast<std::uint8_t>(ac::net::PacketType::kCommand);
   header.flags = ac::net::requiredFlags(ac::net::PacketType::kCommand);
   header.session = bot.session;
